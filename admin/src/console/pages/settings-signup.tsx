@@ -31,7 +31,7 @@ import {
   intOf,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 // ---------------------------------------------------------------------------
 // 注册与邀请

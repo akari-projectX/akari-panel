@@ -7,24 +7,21 @@
 // disabled while fields need fixing); leaving with unsaved changes asks.
 import { ChevronLeft, ChevronRight, CloudCog, ExternalLink, Lock, Search, TriangleAlert } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { Link, Navigate, useBlocker } from "react-router";
+import { useCallback, useState, type ComponentType, type ReactNode } from "react";
+import { Link, Navigate } from "react-router";
 import { cn } from "../../shared/cn";
 import { get } from "../../shared/api";
 import { useTr } from "../../shared/i18n";
 import { Button } from "../../shared/ui/button";
 import { Tile } from "../../shared/ui/card";
-import { useConfirm } from "../../shared/ui/confirm";
-import { Input, Kbd, MOD_KEY } from "../../shared/ui/form";
-import { useToast } from "../../shared/ui/toast";
-import { useErrText } from "../kit";
+import { Input } from "../../shared/ui/form";
 import { useRoute } from "../router";
 import { useCrumb } from "../session";
 import { AccessSection, RetentionSection } from "./settings-access";
 import { useAccess, useAuthSettings, useSettings } from "./settings-data";
 import { DomainsSection, SiteSection } from "./settings-general";
 import { MOVED_OUT, OLD_IDS, OVERVIEW_TINT, SECTIONS, SETTINGS_IA, type Section, type SectionId } from "./settings-ia";
-import { OwnerBadge, SaveContext, useWide, type SavePart, type SaveRegistry } from "./settings-kit";
+import { OwnerBadge, SectionForm, useWide } from "../components/settings-kit";
 import { AlertsSection, MailSection, NoticesSection, TemplatesSection } from "./settings-mail";
 import { BlockSection, InstallSection, ProbeSection, UpdatesSection } from "./settings-misc";
 import { CommissionSection, PaymentsSection } from "./settings-payments";
@@ -613,7 +610,7 @@ function SectionPage({ s }: { s: Section }) {
   const Body = BODIES[s.id as Exclude<SectionId, "account">];
   useCrumb(tr(s.zh, s.en));
   return (
-    <SaveScope>
+    <SectionForm>
       {!wide && (
         <Link
           to="/settings"
@@ -639,167 +636,6 @@ function SectionPage({ s }: { s: Section }) {
       <div className="grid gap-6">
         <Body />
       </div>
-    </SaveScope>
-  );
-}
-
-function SaveScope({ children }: { children: ReactNode }) {
-  const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
-  const errText = useErrText();
-  const parts = useRef(new Map<string, { current: SavePart }>());
-  const [, setTick] = useState(0);
-  const registry = useMemo<SaveRegistry>(
-    () => ({
-      set: (id, part) => {
-        parts.current.set(id, part);
-        setTick((t) => t + 1);
-      },
-      remove: (id) => {
-        parts.current.delete(id);
-        setTick((t) => t + 1);
-      },
-      bump: () => setTick((t) => t + 1),
-    }),
-    [],
-  );
-  const all = [...parts.current.values()].map((p) => p.current);
-  const count = all.reduce((n, p) => n + p.count, 0);
-  const errors = all.reduce((n, p) => n + (p.count > 0 ? p.errors : 0), 0);
-  const [saving, setSaving] = useState(false);
-  const dirty = useRef(false);
-  dirty.current = count > 0;
-
-  // A save asked for while one runs (⌘S pressed again right after an edit) is
-  // not dropped: it runs once the first has finished, with the latest values.
-  const busy = useRef(false);
-  const again = useRef(false);
-  const save = useCallback(async () => {
-    if (busy.current) {
-      again.current = true;
-      return;
-    }
-    const list = [...parts.current.values()].map((p) => p.current);
-    if (list.some((p) => p.count > 0 && p.errors > 0)) return;
-    busy.current = true;
-    setSaving(true);
-    let ok = true;
-    try {
-      for (const p of list)
-        if (p.count > 0 && !(await p.save())) {
-          ok = false;
-          break;
-        }
-    } catch (e) {
-      ok = false;
-      toast({ tone: "error", title: errText(e) });
-    } finally {
-      busy.current = false;
-      setSaving(false);
-    }
-    if (again.current) {
-      again.current = false;
-      // After the re-render, so the parts carry the values typed meanwhile.
-      if (ok) setTimeout(() => dirty.current && void saveRef.current(), 0);
-    }
-  }, [toast, errText]);
-  const discard = () => {
-    for (const p of parts.current.values()) p.current.discard();
-  };
-
-  // ⌘/Ctrl+S saves.
-  const saveRef = useRef(save);
-  saveRef.current = save;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        if (dirty.current) void saveRef.current();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  // Leaving with unsaved changes asks (another section, another page, the browser).
-  const blocker = useBlocker(
-    ({ currentLocation, nextLocation }) => dirty.current && currentLocation.pathname !== nextLocation.pathname,
-  );
-  useEffect(() => {
-    if (blocker.state !== "blocked") return;
-    void confirm({
-      title: tr("放弃未保存的修改？", "Discard unsaved changes?"),
-      description: tr(
-        `这个分区还有 ${count} 项修改没有保存，离开后不会保存。`,
-        `${count} changes in this section are not saved; they are lost if you leave.`,
-      ),
-      confirmLabel: tr("放弃修改", "Discard"),
-      tone: "warning",
-    }).then((ok) => (ok ? blocker.proceed() : blocker.reset()));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocker.state]);
-  useEffect(() => {
-    if (count === 0) return;
-    const onUnload = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
-  }, [count]);
-
-  // The bar floats over the bottom of the window, aligned with the section's column.
-  const box = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState<{ left: number; width: number } | null>(null);
-  useEffect(() => {
-    const el = box.current;
-    if (!el || count === 0) return;
-    const measure = () => {
-      const r = el.getBoundingClientRect();
-      setPlace((p) => (p && p.left === r.left && p.width === r.width ? p : { left: r.left, width: r.width }));
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    window.addEventListener("resize", measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [count]);
-
-  return (
-    <SaveContext.Provider value={registry}>
-      <div ref={box} className="pb-24">
-        {children}
-      </div>
-      {count > 0 && (
-        <div
-          role="region"
-          aria-label={tr("保存栏", "Save bar")}
-          style={place ? { left: place.left, width: place.width } : undefined}
-          className="glass fixed inset-x-3 bottom-[calc(60px+env(safe-area-inset-bottom))] z-20 flex items-center gap-3 rounded-2xl bg-popover px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
-        >
-          <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden="true" />
-          <span className="min-w-0 flex-1 text-body" role="status">
-            <span className="font-medium">
-              {tr(`${count} 项未保存的修改`, `${count} unsaved ${count === 1 ? "change" : "changes"}`)}
-            </span>
-            {errors > 0 && (
-              <span className="ml-2 text-destructive max-sm:ml-0 max-sm:block">
-                {tr(`· ${errors} 处需要修正`, `· ${errors} to fix`)}
-              </span>
-            )}
-          </span>
-          <Button variant="ghost" size="sm" disabled={saving} onClick={discard}>
-            {tr("放弃", "Discard")}
-          </Button>
-          <Button variant="primary" size="sm" loading={saving} disabled={errors > 0} onClick={() => void save()}>
-            {tr("保存", "Save")}
-            <span aria-hidden="true" className="max-sm:hidden">
-              <Kbd className="bg-white/20 text-white">{MOD_KEY === "⌘" ? "⌘S" : "Ctrl S"}</Kbd>
-            </span>
-          </Button>
-        </div>
-      )}
-    </SaveContext.Provider>
+    </SectionForm>
   );
 }

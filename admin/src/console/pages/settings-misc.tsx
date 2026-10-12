@@ -32,7 +32,7 @@ import {
   urlError,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 // ---------------------------------------------------------------------------
 // 安装与证书

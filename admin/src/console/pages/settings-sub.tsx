@@ -19,7 +19,16 @@ import { useToast } from "../../shared/ui/toast";
 import { useAction } from "../data";
 import { Mono } from "../kit";
 import { fresh, useAccess, useSettings, type Rule, type SettingsView } from "./settings-data";
-import { DangerZone, FieldRow, InfoRow, Loaded, SwitchRow, urlError, useDraft, useSavePart } from "./settings-kit";
+import {
+  DangerZone,
+  FieldRow,
+  InfoRow,
+  Loaded,
+  SwitchRow,
+  urlError,
+  useDraft,
+  useSavePart,
+} from "../components/settings-kit";
 
 const RULE_TYPES = ["geosite", "geoip", "domain", "domain_suffix", "domain_keyword", "ip_cidr"];
 const ACTIONS = ["direct", "proxy", "reject"];

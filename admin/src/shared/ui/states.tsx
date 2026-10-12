@@ -2,14 +2,14 @@
 // loading (skeleton), empty (never had data vs. nothing matches the filter)
 // and error (mapped message + code + retry).
 import { CircleAlert, RefreshCw, Search, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { cn } from "../cn";
 import { errorCode, errorText } from "../errors";
 import { useLang, useTr } from "../i18n";
 import { Button } from "./button";
 
-export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn("skeleton rounded-md", className)} aria-hidden="true" />;
+export function Skeleton({ className, style }: { className?: string; style?: CSSProperties }) {
+  return <div className={cn("skeleton rounded-md", className)} style={style} aria-hidden="true" />;
 }
 
 /** A block placeholder while a section loads (announced once). */
@@ -57,37 +57,85 @@ export function EmptyState({
   );
 }
 
+/**
+ * Error state (whole page or inside a card): the error mapped to one
+ * sentence + its code, the raw text collapsible (`raw`, v2), and Retry.
+ * `title` replaces "加载失败"; `detail` replaces the mapped sentence.
+ */
 export function ErrorState({
   onRetry,
   error,
+  title,
   detail,
+  raw,
   className,
   compact,
 }: {
   onRetry?: () => void;
   error?: unknown;
-  detail?: string;
+  title?: ReactNode;
+  detail?: ReactNode;
+  /** The original error text (backend message, provider payload), collapsed. */
+  raw?: string;
   className?: string;
   compact?: boolean;
 }) {
   const tr = useTr();
   const lang = useLang();
   const code = error ? errorCode(error) : "";
+  const rawText = raw ?? "";
   return (
     <div className={cn("flex flex-col items-center px-6 text-center", compact ? "py-6" : "py-12", className)}>
       <div className="mb-3 inline-flex size-11 items-center justify-center rounded-full bg-destructive-soft text-destructive">
         <CircleAlert className="size-5" aria-hidden="true" />
       </div>
-      <div className="text-headline font-semibold">{tr("加载失败", "Failed to load")}</div>
+      <div className="text-headline font-semibold">{title ?? tr("加载失败", "Failed to load")}</div>
       <div className="mt-1 max-w-sm text-body text-muted-foreground">
         {detail ?? (error ? errorText(error, lang) : tr("可以稍后重试。", "Try again shortly."))}
         {code && <div className="mt-1 font-mono text-caption">{code}</div>}
       </div>
+      {rawText && (
+        <details className="mt-2 max-w-md text-footnote text-muted-foreground">
+          <summary className="cursor-default text-faint">{tr("查看原始错误", "Show the raw error")}</summary>
+          <pre className="mt-1 rounded-md bg-window p-2 text-left font-mono text-caption break-all whitespace-pre-wrap">
+            {rawText}
+          </pre>
+        </details>
+      )}
       {onRetry && (
         <Button className="mt-4" size="sm" variant="outline" icon={RefreshCw} onClick={onRetry}>
           {tr("重试", "Retry")}
         </Button>
       )}
+    </div>
+  );
+}
+
+/**
+ * List skeleton (v2): rows of the real row height (avatar dot, a line of
+ * varying width, a short value), so nothing jumps when the data arrives.
+ */
+export function SkeletonRows({
+  rows = 6,
+  height = 44,
+  avatar = true,
+  className,
+}: {
+  rows?: number;
+  height?: number;
+  avatar?: boolean;
+  className?: string;
+}) {
+  const tr = useTr();
+  return (
+    <div role="status" aria-label={tr("加载中", "Loading")} className={cn("divide-y divide-separator", className)}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="flex items-center gap-3 px-4" style={{ height }}>
+          {avatar && <Skeleton className="size-7 rounded-full" />}
+          <Skeleton className="h-3 flex-1" style={{ maxWidth: `${40 + ((i * 17) % 40)}%` }} />
+          <Skeleton className="h-3 w-16" />
+        </div>
+      ))}
     </div>
   );
 }

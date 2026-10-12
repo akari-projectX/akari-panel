@@ -38,7 +38,7 @@ import {
   intOf,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 // ---------------------------------------------------------------------------
 // 支付方式

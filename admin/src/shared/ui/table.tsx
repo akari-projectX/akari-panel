@@ -476,21 +476,29 @@ export function Pager({
   );
 }
 
-/** Small removable filter chip for table toolbars (44px clear target on touch). */
-export function FilterChip({ label, value, onClear }: { label: string; value: string; onClear: () => void }) {
+/**
+ * A filter that is on, as a removable chip (v2: primary-soft pill, "注册早于
+ * 2026-06-01 ×"); 44px clear target on touch. Without `onClear` it is a
+ * plain label.
+ */
+export function FilterChip({ label, value, onClear }: { label: string; value?: ReactNode; onClear?: () => void }) {
   const tr = useTr();
   return (
-    <span className="inline-flex h-7 items-center gap-1 rounded-full bg-secondary pr-1 pl-2.5 text-footnote pointer-coarse:h-9">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium">{value}</span>
-      <button
-        type="button"
-        onClick={onClear}
-        className="hit-44 ml-0.5 inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-        aria-label={tr(`清除筛选：${label}`, `Clear filter: ${label}`)}
-      >
-        <X className="size-3" aria-hidden="true" />
-      </button>
+    <span className="inline-flex h-7 items-center gap-1 rounded-full bg-primary-soft pr-1 pl-2.5 text-footnote font-medium text-primary pointer-coarse:h-9">
+      <span className="text-primary/75">{label}</span>
+      {value != null && value !== "" && <span>{value}</span>}
+      {onClear ? (
+        <button
+          type="button"
+          onClick={onClear}
+          className="hit-44 ml-0.5 inline-flex size-5 items-center justify-center rounded-full hover:bg-primary/15"
+          aria-label={tr(`清除筛选：${label}`, `Clear filter: ${label}`)}
+        >
+          <X className="size-3" aria-hidden="true" />
+        </button>
+      ) : (
+        <span className="w-1.5" aria-hidden="true" />
+      )}
     </span>
   );
 }

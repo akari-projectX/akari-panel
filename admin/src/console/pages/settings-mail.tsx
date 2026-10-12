@@ -31,7 +31,7 @@ import {
   urlError,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 type Mail = {
   version: number;

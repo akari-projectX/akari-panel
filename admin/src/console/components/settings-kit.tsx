@@ -1,4 +1,5 @@
-// 系统设置的共用部件（2026-10 改版）：
+// 设置积木（2026-10 改版；v2 kit：设置分区之外，套餐 / 优惠券等编辑弹窗也用
+// useDraft + SRow；页面级"唯一保存栏"用 SectionForm + useSavePart）：
 // - 保存栏：每个分区只有一种保存方式。分区里的每一块表单（SavePart）登记
 //   "改了几项、有几处错误、怎么保存、怎么放弃"，页面底部的保存栏汇总并依次
 //   保存（危险的修改在各自的 save 里确认）。
@@ -8,7 +9,8 @@
 // - 行：标签与说明在左、控件在右（手机上叠放），错误写在字段下面并关联到
 //   控件（aria-invalid / aria-describedby）。
 import type { UseQueryResult } from "@tanstack/react-query";
-import { Lock, Search, TriangleAlert } from "lucide-react";
+import { CircleAlert, Lock, Search, TriangleAlert } from "lucide-react";
+import { useBlocker } from "react-router";
 import {
   createContext,
   useCallback,
@@ -19,14 +21,19 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
 } from "react";
 import { cn } from "../../shared/cn";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Switch } from "../../shared/ui/form";
-import { Input } from "../../shared/ui/form";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Input, Kbd, MOD_KEY, Switch } from "../../shared/ui/form";
+import { Banner } from "../../shared/ui/layout";
+import { useToast } from "../../shared/ui/toast";
+import { useErrText } from "../kit";
+import { useMe } from "../session";
 import { Popover } from "../../shared/ui/menu";
 import { ErrorState, LoadingBlock } from "../../shared/ui/states";
 
@@ -66,6 +73,211 @@ export function useSavePart(part: SavePart): void {
   useEffect(() => {
     reg?.bump();
   }, [reg, part.count, part.errors]);
+}
+
+/**
+ * One save scope (a settings section, or any page with the same "one save
+ * bar" rule): collects the `useSavePart` parts inside, shows the floating
+ * SaveBar while anything is edited (N 项未保存的修改 · N 处需要修正 · 放弃 ·
+ * 保存 ⌘S), saves the parts in order (each confirms its dangerous changes),
+ * and guards leaving (in-app navigation and the browser) with unsaved edits.
+ */
+export function SectionForm({ children }: { children: ReactNode }) {
+  const tr = useTr();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const errText = useErrText();
+  const parts = useRef(new Map<string, { current: SavePart }>());
+  const [, setTick] = useState(0);
+  const registry = useMemo<SaveRegistry>(
+    () => ({
+      set: (id, part) => {
+        parts.current.set(id, part);
+        setTick((t) => t + 1);
+      },
+      remove: (id) => {
+        parts.current.delete(id);
+        setTick((t) => t + 1);
+      },
+      bump: () => setTick((t) => t + 1),
+    }),
+    [],
+  );
+  const all = [...parts.current.values()].map((p) => p.current);
+  const count = all.reduce((n, p) => n + p.count, 0);
+  const errors = all.reduce((n, p) => n + (p.count > 0 ? p.errors : 0), 0);
+  const [saving, setSaving] = useState(false);
+  const dirty = useRef(false);
+  dirty.current = count > 0;
+
+  // A save asked for while one runs (⌘S pressed again right after an edit) is
+  // not dropped: it runs once the first has finished, with the latest values.
+  const busy = useRef(false);
+  const again = useRef(false);
+  const save = useCallback(async () => {
+    if (busy.current) {
+      again.current = true;
+      return;
+    }
+    const list = [...parts.current.values()].map((p) => p.current);
+    if (list.some((p) => p.count > 0 && p.errors > 0)) return;
+    busy.current = true;
+    setSaving(true);
+    let ok = true;
+    try {
+      for (const p of list)
+        if (p.count > 0 && !(await p.save())) {
+          ok = false;
+          break;
+        }
+    } catch (e) {
+      ok = false;
+      toast({ tone: "error", title: errText(e) });
+    } finally {
+      busy.current = false;
+      setSaving(false);
+    }
+    if (again.current) {
+      again.current = false;
+      // After the re-render, so the parts carry the values typed meanwhile.
+      if (ok) setTimeout(() => dirty.current && void saveRef.current(), 0);
+    }
+  }, [toast, errText]);
+  const discard = () => {
+    for (const p of parts.current.values()) p.current.discard();
+  };
+
+  // ⌘/Ctrl+S saves.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (dirty.current) void saveRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Leaving with unsaved changes asks (another section, another page, the browser).
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) => dirty.current && currentLocation.pathname !== nextLocation.pathname,
+  );
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    void confirm({
+      title: tr("放弃未保存的修改？", "Discard unsaved changes?"),
+      description: tr(
+        `这个分区还有 ${count} 项修改没有保存，离开后不会保存。`,
+        `${count} changes in this section are not saved; they are lost if you leave.`,
+      ),
+      confirmLabel: tr("放弃修改", "Discard"),
+      tone: "warning",
+    }).then((ok) => (ok ? blocker.proceed() : blocker.reset()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocker.state]);
+  useEffect(() => {
+    if (count === 0) return;
+    const onUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [count]);
+
+  // The bar floats over the bottom of the window, aligned with the section's column.
+  const box = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<{ left: number; width: number } | null>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || count === 0) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setPlace((p) => (p && p.left === r.left && p.width === r.width ? p : { left: r.left, width: r.width }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [count]);
+
+  return (
+    <SaveContext.Provider value={registry}>
+      <div ref={box} className="pb-24">
+        {children}
+      </div>
+      {count > 0 && (
+        <SaveBar
+          count={count}
+          errors={errors}
+          saving={saving}
+          onDiscard={discard}
+          onSave={() => void save()}
+          style={place ? { left: place.left, width: place.width } : undefined}
+        />
+      )}
+    </SaveContext.Provider>
+  );
+}
+
+/**
+ * The floating save bar (presentational; SectionForm drives it). Fixed over
+ * the bottom of the window (above the phone tab bar); `style` aligns it with
+ * the content column.
+ */
+export function SaveBar({
+  count,
+  errors,
+  saving,
+  onDiscard,
+  onSave,
+  style,
+}: {
+  count: number;
+  errors: number;
+  saving?: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+  style?: CSSProperties;
+}) {
+  const tr = useTr();
+  return (
+    <div
+      role="region"
+      aria-label={tr("保存栏", "Save bar")}
+      style={style}
+      data-savebar
+      className="glass fixed inset-x-3 bottom-[calc(60px+env(safe-area-inset-bottom))] z-20 flex items-center gap-3 rounded-2xl bg-popover px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
+    >
+      <span
+        className={cn("size-2 shrink-0 rounded-full", errors > 0 ? "bg-destructive" : "bg-warning")}
+        aria-hidden="true"
+      />
+      <span className="min-w-0 flex-1 text-body" role="status">
+        <span className="font-medium">
+          {tr(`${count} 项未保存的修改`, `${count} unsaved ${count === 1 ? "change" : "changes"}`)}
+        </span>
+        {errors > 0 && (
+          <span className="ml-2 text-destructive max-sm:ml-0 max-sm:block">
+            {tr(`· ${errors} 处需要修正`, `· ${errors} to fix`)}
+          </span>
+        )}
+      </span>
+      <Button variant="ghost" size="sm" disabled={saving} onClick={onDiscard}>
+        {tr("放弃", "Discard")}
+      </Button>
+      <Button variant="primary" size="sm" loading={saving} disabled={errors > 0} onClick={onSave}>
+        {tr("保存", "Save")}
+        <span aria-hidden="true" className="max-sm:hidden">
+          <Kbd className="bg-white/20 text-white">{MOD_KEY === "⌘" ? "⌘S" : "Ctrl S"}</Kbd>
+        </span>
+      </Button>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +332,12 @@ export function intError(raw: string, min: number, max: number, tr: Tr, blankOk 
   const n = Number(t);
   if (n < min || n > max) return tr(`请输入 ${min}–${max} 的整数`, `Enter a whole number from ${min} to ${max}`);
   return undefined;
+}
+
+/** v2 name: integer in [min, max]; `blank` = what an empty field means (then blank is allowed). */
+export function intErr(raw: string, min: number, max: number, tr: Tr, blank?: string): string | undefined {
+  const e = intError(raw, min, max, tr, blank !== undefined);
+  return e && blank && raw.trim() !== "" ? tr(`${e}，留空 = ${blank}`, `${e}; blank = ${blank}`) : e;
 }
 
 /** The integer of a validated field (null = blank). */
@@ -195,6 +413,7 @@ export function FieldRow({
   stack,
   children,
   className,
+  changed,
 }: {
   label: ReactNode;
   description?: ReactNode;
@@ -202,6 +421,8 @@ export function FieldRow({
   stack?: boolean;
   children: (a: FieldAria) => ReactNode;
   className?: string;
+  /** v2: blue bar on the left while the value differs from the saved one. */
+  changed?: boolean;
 }) {
   const id = useId();
   const aria: FieldAria = {
@@ -211,7 +432,8 @@ export function FieldRow({
     ...(error ? { "aria-invalid": true as const } : {}),
   };
   return (
-    <div className={cn("px-4 py-2.5", className)}>
+    <div className={cn("relative px-4 py-2.5", className)}>
+      {changed && <ChangedBar />}
       <div
         className={cn(
           "flex flex-wrap gap-x-4 gap-y-2",
@@ -250,7 +472,9 @@ export function SwitchRow({
   onChange,
   disabled,
   children,
+  changed,
 }: {
+  changed?: boolean;
   label: string;
   /** The switch's accessible name when the label alone is ambiguous. */
   name?: string;
@@ -263,7 +487,8 @@ export function SwitchRow({
 }) {
   const id = useId();
   return (
-    <div className="px-4 py-2.5">
+    <div className="relative px-4 py-2.5">
+      {changed && <ChangedBar />}
       <div className="flex min-h-7 items-center gap-4">
         <div className="min-w-0 flex-1">
           <label htmlFor={id} className="block text-body font-medium">
@@ -495,5 +720,168 @@ export function useWide(): boolean {
     },
     () => window.matchMedia(WIDE).matches,
     () => true,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// v2 rows and blocks
+// ---------------------------------------------------------------------------
+
+/** The blue bar on the left of an edited row (and "已修改" for screen readers). */
+function ChangedBar() {
+  const tr = useTr();
+  return (
+    <span className="absolute inset-y-2 left-0 w-[3px] rounded-r-full bg-primary" data-changed>
+      <span className="sr-only">{tr("已修改", "Edited")}</span>
+    </span>
+  );
+}
+
+/**
+ * A settings-style row (v2 SRow): label + description left, controls right,
+ * the error underneath; `changed` = blue bar on the left, `locked` = lock
+ * after the label (owner only), `wide` = the controls take a full line on a
+ * phone. For a labelled single control prefer `FieldRow` (aria wiring);
+ * SRow is for rows with several controls or a custom one.
+ */
+export function SRow({
+  label,
+  description,
+  children,
+  changed,
+  error,
+  locked,
+  wide,
+  icon,
+  className,
+}: {
+  label: ReactNode;
+  description?: ReactNode;
+  children?: ReactNode;
+  changed?: boolean;
+  error?: ReactNode;
+  locked?: boolean;
+  wide?: boolean;
+  icon?: ReactNode;
+  className?: string;
+}) {
+  const tr = useTr();
+  return (
+    <div className={cn("relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5", className)}>
+      {changed && <ChangedBar />}
+      <div className={cn("flex min-w-0 flex-1 items-center gap-3", wide && "max-sm:basis-full")}>
+        {icon}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 text-body font-medium">
+            {label}
+            {locked && (
+              <Lock className="size-3 text-faint" role="img" aria-label={tr("仅所有者可修改", "Owner only")} />
+            )}
+          </div>
+          {description && <div className="mt-0.5 text-footnote text-muted-foreground">{description}</div>}
+        </div>
+      </div>
+      {children && (
+        <div className={cn("flex shrink-0 items-center gap-2", wide && "max-sm:w-full max-sm:[&>*]:flex-1")}>
+          {children}
+        </div>
+      )}
+      {error && (
+        <p
+          className="flex basis-full items-center justify-end gap-1 text-footnote text-destructive max-sm:justify-start"
+          role="alert"
+        >
+          <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A row inside DangerZone: label + consequence, the action (if any) on the right. */
+export function DangerRow({
+  label,
+  description,
+  action,
+  locked,
+}: {
+  label: ReactNode;
+  description?: ReactNode;
+  action?: ReactNode;
+  locked?: boolean;
+}) {
+  const tr = useTr();
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+      <div className="min-w-0 flex-1 basis-64">
+        <div className="flex items-center gap-1.5 text-body font-medium">
+          {label}
+          {locked && <Lock className="size-3 text-faint" role="img" aria-label={tr("仅所有者可修改", "Owner only")} />}
+        </div>
+        {description && <div className="mt-0.5 text-footnote text-muted-foreground">{description}</div>}
+      </div>
+      {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+    </div>
+  );
+}
+
+/** Whether the signed-in admin is the owner (R47: owner-only sections are read-only otherwise). */
+export function useOwner(): boolean {
+  return useMe().is_owner;
+}
+
+/** "Only the owner may change this" banner at the top of a read-only section. */
+export function OwnerNotice({ what }: { what?: string }) {
+  const tr = useTr();
+  return (
+    <Banner tone="info" icon={<Lock />} title={tr("仅所有者可修改", "Owner only")}>
+      {tr(
+        `你以管理员身份登录，${what ?? "这个分区"}对你只读。需要修改时请联系所有者。`,
+        `You are signed in as an admin: ${what ?? "this section"} is read-only for you. Ask the owner to change it.`,
+      )}
+    </Banner>
+  );
+}
+
+/** A grey read-only value in place of a control (locked rows). */
+export function ReadValue({ children, mono }: { children: ReactNode; mono?: boolean }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex min-h-8 items-center rounded-md bg-window px-2.5 text-body text-muted-foreground ring-1 ring-border ring-inset",
+        mono && "font-mono text-footnote",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** A titled block without the group frame (free layout inside a section). */
+export function Panel({
+  title,
+  footer,
+  action,
+  children,
+  className,
+}: {
+  title?: ReactNode;
+  footer?: ReactNode;
+  action?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={cn("grid gap-1.5", className)}>
+      {(title || action) && (
+        <div className="flex items-end gap-2 px-1">
+          <h3 className="flex-1 text-footnote font-semibold text-muted-foreground">{title}</h3>
+          {action}
+        </div>
+      )}
+      {children}
+      {footer && <p className="px-1 text-footnote text-faint">{footer}</p>}
+    </section>
   );
 }

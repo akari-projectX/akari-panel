@@ -58,3 +58,18 @@ export function useQueryParam(name: string): [string, (v: string | null) => void
   const { query } = useRoute();
   return [query.get(name) ?? "", (v) => setQuery({ [name]: v })];
 }
+
+/**
+ * The query string and a patcher that changes several parameters in one
+ * navigation (v2 prototype `useQS`; calling `useQueryParam` setters one after
+ * the other would each start from the same old URL). `null` or "" removes a
+ * key. Pushes a history entry by default (Back undoes a filter); pass
+ * `replace` for typing in a search box.
+ */
+export function useQS(): [
+  URLSearchParams,
+  (patch: Record<string, string | null | undefined>, replace?: boolean) => void,
+] {
+  const { query } = useRoute();
+  return [query, (patch, replace = false) => setQuery(patch, replace)];
+}
