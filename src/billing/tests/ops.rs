@@ -308,11 +308,133 @@ async fn manual_order_http() {
     assert_eq!(v["order"]["paid_via"], "manual");
     assert_eq!(v["order"]["amount_cents"], 990);
     assert_eq!(v["order"]["gift_cents"], 0);
+    assert_eq!(v["order"]["action"], "new");
+    assert_eq!(v["order"]["action"], "new");
     assert_eq!(v["events"][0]["outcome"], "manual_order");
     let r = c.get("/test/api/v1/orders?via=manual").await;
     assert_eq!(r.json().as_array().unwrap().len(), 1);
     let r = c.get("/test/api/v1/orders?via=cash").await;
     assert_eq!(r.json()["code"], "export.via_invalid");
+    db.drop().await;
+}
+
+/// Admin redesign: the ledger's one search box (`q`: `@…` = email contains,
+/// else order / trade number contains; LIKE wildcards literal), the
+/// `refunded` filter, and GET /orders/summary (per-status counts that
+/// ignore the status filters, per-site-day totals under all of them).
+#[tokio::test]
+async fn orders_search_and_summary() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let (_, plan) = catalog_plan(&db, "s", &[(PeriodKind::Month, None, 990)], |_| {}).await;
+    let (u1, u2) = (db.user().await, db.user().await);
+    let paid = manual(&db, &req(u1, plan, PeriodKind::Month, false))
+        .await
+        .unwrap();
+    manual(&db, &req(u2, plan, PeriodKind::Month, true))
+        .await
+        .unwrap();
+    let (otn, email1): (String, String) = sqlx::query_as(
+        "SELECT o.out_trade_no, u.email FROM orders o JOIN users u ON u.id = o.user_id \
+         WHERE o.id = $1",
+    )
+    .bind(paid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let today: chrono::NaiveDate = sqlx::query_scalar("SELECT akari_site_day(now())")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let c = admin(&state, &db).await;
+    let list = |path: String| {
+        let c = &c;
+        async move {
+            let r = c.get(&path).await;
+            assert_eq!(r.status, StatusCode::OK, "{path}");
+            r.json().as_array().unwrap().len()
+        }
+    };
+    // `@` + part of the address; a bare address works too.
+    let part = &email1[..8];
+    assert_eq!(list(format!("/test/api/v1/orders?q=%40{part}")).await, 1);
+    assert_eq!(list(format!("/test/api/v1/orders?q={email1}")).await, 1);
+    // Part of the order number, any case; wildcards are literal.
+    let mid = otn[2..otn.len() - 2].to_lowercase();
+    assert_eq!(list(format!("/test/api/v1/orders?q={mid}")).await, 1);
+    assert_eq!(list("/test/api/v1/orders?q=%25".into()).await, 0);
+    assert_eq!(list("/test/api/v1/orders?q=_".into()).await, 0);
+    assert_eq!(list("/test/api/v1/orders?q=".into()).await, 2);
+    assert_eq!(list("/test/api/v1/orders?refunded=true".into()).await, 0);
+    assert_eq!(list("/test/api/v1/orders?refunded=false".into()).await, 2);
+
+    let r = c
+        .get(&format!(
+            "/test/api/v1/orders/summary?status=pending&from={today}&to={today}"
+        ))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let v: Value = r.json();
+    // Counts ignore the status filter; the days do not.
+    assert_eq!(
+        v["counts"],
+        json!({"all": 2, "pending": 0, "paid": 2, "unfulfilled": 0, "refunded": 0,
+               "expired": 0, "cancelled": 0})
+    );
+    assert_eq!(v["days"], json!([]));
+    let r = c
+        .get(&format!(
+            "/test/api/v1/orders/summary?from={today}&to={today}"
+        ))
+        .await;
+    let v: Value = r.json();
+    assert_eq!(
+        v["days"],
+        json!([{"day": today.to_string(), "orders": 2, "paid_cents": 990, "refund_cents": 0}])
+    );
+    let r = c
+        .get(&format!("/test/api/v1/orders/summary?q=%40{part}"))
+        .await;
+    let v: Value = r.json();
+    assert_eq!(v["counts"]["all"], 1);
+    assert_eq!(v["days"], json!([]));
+    // Refunded orders are counted (and their channel money taken off the day).
+    let r = c
+        .post(
+            &format!("/test/api/v1/orders/{paid}/refund"),
+            json!({"reason": "t", "to_balance": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let v: Value = c
+        .get(&format!(
+            "/test/api/v1/orders/summary?refunded=true&from={today}&to={today}"
+        ))
+        .await
+        .json();
+    assert_eq!(v["counts"]["refunded"], 1);
+    assert_eq!(v["days"][0]["refund_cents"], 990);
+    assert_eq!(v["days"][0]["orders"], 1);
+    // Bad input: half a range, a range too long, a bad status, non-admin.
+    let r = c
+        .get(&format!("/test/api/v1/orders/summary?from={today}"))
+        .await;
+    assert_eq!(r.json()["code"], "export.range_invalid");
+    let r = c
+        .get("/test/api/v1/orders/summary?from=2020-01-01&to=2026-01-01")
+        .await;
+    assert_eq!(r.json()["code"], "export.range_too_long");
+    let r = c.get("/test/api/v1/orders/summary?status=gone").await;
+    assert_eq!(r.json()["code"], "request.status_invalid");
+    let r = c.get("/test/api/v1/orders/summary?via=cash").await;
+    assert_eq!(r.json()["code"], "export.via_invalid");
+    let uc = user_client(&state, u1).await;
+    assert_eq!(
+        uc.get("/test/api/v1/orders/summary").await.status,
+        StatusCode::FORBIDDEN
+    );
     db.drop().await;
 }
 
