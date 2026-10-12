@@ -6,7 +6,7 @@
 // ?action=install|enroll).
 import { expect, test, type Page } from "@playwright/test";
 
-import { ADMIN, USER, apiJson, confirmDialog, dialog, openConsole, sql, toast, uniq } from "./helpers";
+import { ADMIN, apiJson, confirmDialog, dialog, openConsole, sql, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -204,17 +204,21 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await expect(card.getByText("出站拦截 开")).toBeVisible();
   // NOD-12 / NOD-13 / NOD-20: the node dialog (with a day of traffic history; yesterday, so a
   // run around the site's midnight still finds it inside the 30 days).
-  sql(
+  // Its own user (a shared fixture user may have been removed by another spec).
+  const heavy = `${uniq(info, "heavy")}@e2e.test`;
+  await apiJson("POST", "/users", { email: heavy, password: "heavy-user-pass-1" });
+  const inserted = sql(
     `INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes) ` +
       `SELECT u.id, akari_site_day(now()) - 1, n.id, e.id, 1048576, 2097152, 3145728 FROM users u, nodes n JOIN entrances e ON e.node_id = n.id ` +
-      `WHERE u.email = '${USER}' AND n.name = '${node}'`,
+      `WHERE u.email = '${heavy}' AND n.name = '${node}' RETURNING 1`,
   );
+  expect(inserted, "traffic rows for the node's entrances").not.toBe("");
   await card.getByRole("button", { name: `编辑节点 ${node}` }).click();
   d = dialog(page, `节点 · ${node}`);
   await d.getByRole("tab", { name: "审计与流量" }).click();
   await expect(d.getByRole("switch", { name: "出站拦截" })).toHaveAttribute("aria-checked", "true");
   await expect(d.getByText("节点流量 · 30 天")).toBeVisible();
-  await expect(d.getByRole("list", { name: "用量最高的用户" })).toContainText(USER);
+  await expect(d.getByRole("list", { name: "用量最高的用户" })).toContainText(heavy);
   // One form, one save: the display name and the inbound together.
   await d.getByRole("tab", { name: "基本" }).click();
   await box(d, /^显示名称/).fill(`${node} 显示`);

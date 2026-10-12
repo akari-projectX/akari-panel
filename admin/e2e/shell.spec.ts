@@ -278,7 +278,8 @@ test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in 
   await apiJson("PUT", "/settings/site", { version: s.version, timezone: "UTC" });
   try {
     await page.goto(CONSOLE);
-    await expect(page.getByText(/站点时区 UTC/)).toBeVisible();
+    // (The phone header drops this line to save space; it is still rendered.)
+    await expect(page.getByText(/站点时区 UTC/)).toBeAttached();
   } finally {
     const s2 = await apiJson<{ version: number }>("GET", "/settings");
     await apiJson("PUT", "/settings/site", { version: s2.version, timezone: null });

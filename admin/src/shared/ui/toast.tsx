@@ -1,8 +1,8 @@
-// Toasts (sonner): bottom right on a desktop, bottom on a phone (above the
-// tab bar). Errors stay longer. The close button is translated and has a
+// Toasts (sonner): bottom right on a desktop, at the top on a phone (the
+// bottom there holds the tab bar, save bars, composers and sheet buttons). Errors stay longer. The close button is translated and has a
 // 44px target.
 import { Toaster as Sonner, toast as sonner } from "sonner";
-import { useCallback } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { useTr } from "../i18n";
 
 export type ToastInput = { tone: "success" | "error" | "info"; title: string; description?: string };
@@ -17,14 +17,23 @@ export function useToast(): (t: ToastInput) => void {
   }, []);
 }
 
+const PHONE = "(max-width: 639px)";
+const subscribe = (cb: () => void) => {
+  const m = window.matchMedia?.(PHONE);
+  m?.addEventListener?.("change", cb);
+  return () => m?.removeEventListener?.("change", cb);
+};
+const isPhone = () => !!window.matchMedia?.(PHONE).matches;
+
 export function Toaster() {
   const tr = useTr();
+  const phone = useSyncExternalStore(subscribe, isPhone, () => false);
   return (
     <Sonner
-      position="bottom-right"
+      position={phone ? "top-center" : "bottom-right"}
       gap={8}
       offset={16}
-      mobileOffset={{ bottom: "calc(72px + env(safe-area-inset-bottom))", left: 12, right: 12 }}
+      mobileOffset={{ top: "calc(56px + env(safe-area-inset-top))", left: 12, right: 12 }}
       closeButton
       containerAriaLabel={tr("通知", "Notifications")}
       toastOptions={{

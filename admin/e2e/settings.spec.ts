@@ -334,11 +334,11 @@ test("SET-06 SET-07: console address card (masked) and prefix rotation (random o
   await expect(page.locator(`[data-allow="${mine}"]`)).toContainText("包含你的地址");
   await save(page);
   await expect(dialog(page)).toContainText("akari settings unset admin-allow");
-  await confirmDialog(page);
+  await confirmDialog(page, undefined, "保存白名单");
   await toast(page, "白名单已保存");
   for (const x of [mine!, "203.0.113.7"]) await page.getByRole("button", { name: `移除 ${x}` }).click();
   await save(page);
-  await confirmDialog(page);
+  await confirmDialog(page, undefined, "保存白名单");
   await toast(page, "白名单已保存");
   await expect(bar(page)).toHaveCount(0);
 });

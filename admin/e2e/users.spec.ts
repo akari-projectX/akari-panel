@@ -37,13 +37,11 @@ async function user(email: string, extra: Record<string, unknown> = {}): Promise
   return (await apiJson<{ id: string }>("POST", "/users", { email, password: "user-password-1", ...extra })).id;
 }
 
-async function search(page: Page, text: string) {
-  const box = page.getByLabel("搜索邮箱或 ID");
-  const before = await box.inputValue();
-  await box.fill(text);
+async function search(page: Page, text: string, settled = false) {
+  await page.getByLabel("搜索邮箱或 ID").fill(text);
   // The box reaches the URL (and the list) after a debounce; a selection made
-  // before that would belong to the old view and be dropped.
-  if (before !== text) await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe(text);
+  // before that belongs to the old view and is dropped (USR-24 waits for it).
+  if (settled) await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe(text);
 }
 
 async function openUser(page: Page, email: string) {
@@ -372,7 +370,7 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
   const tag = uniq(info, "ubulk");
   for (const n of ["a", "b", "c"]) await user(`${tag}-${n}@e2e.test`);
   await openConsole(page, "/users");
-  await search(page, tag);
+  await search(page, tag, true);
   await expect(row(page, `${tag}-c@e2e.test`)).toBeVisible();
   for (const n of ["a", "b"]) await tick(page, info, `${tag}-${n}@e2e.test`);
   await expect(bar(page)).toContainText("已选 2 个");
