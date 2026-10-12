@@ -2144,6 +2144,9 @@ mp_mail diag@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings/mail")" = "200" ] \
   && [ "$(last_json "d['provider'] == 'smtp' and d['providers'] == ['smtp', 'resend'] and d['api_key_set'] is False")" = "True" ] \
   || { echo "FAIL: mail settings provider view"; cat /tmp/akari-smoke/last; exit 1; }
+# Admin redesign (settings v2): the mail status strip's 24-hour counts, the newest dead letter, sent per kind.
+[ "$(last_json "isinstance(d['sent_24h'], int) and isinstance(d['dead_24h'], int) and d['dead_24h'] >= 0 and isinstance(d['sent_30d'], dict) and all(isinstance(n, int) for n in d['sent_30d'].values()) and 'last_dead_error' in d and 'last_dead_at' in d")" = "True" ] \
+  || { echo "FAIL: mail settings 24h / 30d counts"; cat /tmp/akari-smoke/last; exit 1; }
 # Reset links need the main domain (never the request's Host): set it for
 # this section only (IP literal; the host gate keeps accepting 127.0.0.1).
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }

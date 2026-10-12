@@ -389,6 +389,34 @@ async fn failures_retry_dead_letter_and_expire() {
     );
     let v = c.get("/test/api/v1/settings/mail").await.json();
     assert_eq!(v["dead_letters"], 2);
+    // The status strip: settled in the last 24 hours, the newest dead letter, sent per kind.
+    assert_eq!(v["dead_24h"], 2);
+    let sent: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_outbox WHERE status = 'sent'")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(sent >= 1);
+    assert_eq!(v["sent_24h"], sent);
+    assert!(v["last_dead_error"].is_string());
+    assert!(v["last_dead_at"].is_string());
+    let per_kind = v["sent_30d"].as_object().unwrap();
+    assert_eq!(
+        per_kind.values().map(|n| n.as_i64().unwrap()).sum::<i64>(),
+        sent
+    );
+    // Older than the windows: not counted.
+    sqlx::query(
+        "UPDATE mail_outbox SET settled_at = now() - interval '2 days' WHERE status <> 'pending'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let v = c.get("/test/api/v1/settings/mail").await.json();
+    assert_eq!(
+        (v["dead_24h"].as_i64(), v["sent_24h"].as_i64()),
+        (Some(0), Some(0))
+    );
+    assert_eq!(v["sent_30d"].as_object().unwrap().len(), per_kind.len());
     db.drop().await;
 }
 

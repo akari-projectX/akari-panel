@@ -179,6 +179,15 @@ pub struct MailView {
     /// Dead letters (for the card's badge).
     dead_letters: i64,
     pending: i64,
+    /// Mails settled in the last 24 hours: delivered / given up (the
+    /// settings' status strip; the outbox keeps sent rows 30 days).
+    sent_24h: i64,
+    dead_24h: i64,
+    /// The newest dead letter's error and when it was given up.
+    last_dead_error: Option<String>,
+    last_dead_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Mails delivered in the last 30 days per kind (通知种类 "近 30 天 N 封").
+    sent_30d: std::collections::BTreeMap<String, i64>,
     warnings: Vec<String>,
 }
 
@@ -190,6 +199,28 @@ async fn view(conn: &mut PgConnection) -> Result<MailView, ApiError> {
     )
     .fetch_one(&mut *conn)
     .await?;
+    // Bounded by the (status, settled_at) index: one day / thirty days of
+    // settled rows (sent rows older than 30 days are pruned anyway).
+    let (sent_24h, dead_24h): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'sent'), count(*) FILTER (WHERE status = 'dead') \
+         FROM mail_outbox WHERE status <> 'pending' AND settled_at > now() - interval '24 hours'",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let last_dead: Option<(Option<String>, Option<chrono::DateTime<chrono::Utc>>)> =
+        sqlx::query_as(
+            "SELECT last_error, settled_at FROM mail_outbox WHERE status = 'dead' \
+         ORDER BY settled_at DESC LIMIT 1",
+        )
+        .fetch_optional(&mut *conn)
+        .await?;
+    let sent_30d: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT kind, count(*) FROM mail_outbox \
+         WHERE status = 'sent' AND settled_at > now() - interval '30 days' GROUP BY kind",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let (last_dead_error, last_dead_at) = last_dead.unwrap_or((None, None));
     let signup = crate::signup::load_settings(conn).await?;
     let mut warnings = Vec::new();
     if !s.enabled && (signup.register_enabled || signup.reset_enabled) {
@@ -218,6 +249,11 @@ async fn view(conn: &mut PgConnection) -> Result<MailView, ApiError> {
         notify_refund: s.notify_refund,
         dead_letters: dead,
         pending,
+        sent_24h,
+        dead_24h,
+        last_dead_error,
+        last_dead_at,
+        sent_30d: sent_30d.into_iter().collect(),
         warnings,
     })
 }
