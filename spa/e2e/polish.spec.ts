@@ -45,10 +45,14 @@ test('#52 withdrawal form: inline errors, the first bad field is focused, nothin
   await freshUser(page, info, 'polish-wd');
   /* 余额、提现记录、网络由桩给出：这条只测表单本身 */
   await page.route(/\/api\/v1\/me\/balance(\?|$)/, (r) => r.fulfill({ json: { balance_cents: 8000, withdrawable_cents: 5000, entries: [] } }));
-  await page.route(/\/api\/v1\/me\/invite$/, async (r) => {
-    const res = await r.fetch();
-    await r.fulfill({ response: res, json: { ...(await res.json()), usdt_chains: [{ id: 'trc20', name: 'TRC20 (Tron)' }], min_withdrawal_cents: 1000 } });
-  });
+  /* 整个答复由桩给出（route.fetch 不走浏览器的 host-resolver-rules，取不到 portal.e2e.test） */
+  await page.route(/\/api\/v1\/me\/invite$/, (r) => r.fulfill({
+    json: {
+      enabled: true, rate_percent: 20, first_order_only: false, hold_days: 7, min_withdrawal_cents: 1000,
+      usdt_chains: [{ id: 'trc20', name: 'TRC20 (Tron)' }], usdt_rate_cents: null, invite_codes: [], invited_count: 0,
+      pending_cents: 0, credited_cents: 5000, reversed_cents: 0, balance_cents: 8000, withdrawable_cents: 5000, commissions: [],
+    },
+  }));
   let posted = 0;
   await page.route(/\/api\/v1\/me\/withdrawals$/, (r) => {
     if (r.request().method() === 'POST') posted++;
