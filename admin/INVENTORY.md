@@ -317,6 +317,7 @@
 | `/agent-releases*`、`/agent-updates*`、`/rollouts*` | UPD-* |
 | `GET /audit` | AUD-* |
 | `GET/PUT /settings`、`PUT /settings/site`、`POST /settings/dns-check`、`/domains/impact`、`/server-names/remove` | SET-01…05、25 |
+| `PUT /settings/passkey-domain` | SET-27 |
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |
 | `GET/PUT /settings/auth` | SET-08、14 |
 | `PUT /settings/security`、`/settings/nodes`、`/settings/probe`、`/settings/subscription` | SET-09、20、21、11、12、26 |
