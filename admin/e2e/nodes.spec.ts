@@ -435,10 +435,7 @@ test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance'
 test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and groups, term changes applied to subscribers, disable, delete", async ({
   page,
 }, info) => {
-  const act = async (label: string, item: string) => {
-    await page.getByRole("button", { name: label, exact: true }).click();
-    await page.getByRole("menuitem", { name: item }).click();
-  };
+  const act = (label: string, item: string) => menu(page, label, item);
   const tabs = page.getByRole("navigation", { name: "套餐页面" });
   const srv = uniq(info, "plan-host");
   const { id: serverId } = await apiJson<{ id: string }>("POST", "/servers", { name: srv });
