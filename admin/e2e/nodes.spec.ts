@@ -31,8 +31,6 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
 }, info) => {
   const name = uniq(info, "srv");
   await openConsole(page, "/nodes");
-  for (const t of ["服务器在线", "落地节点", "入口", "探测失败已隐藏"])
-    await expect(page.getByText(t, { exact: true }).first()).toBeVisible();
   // NOD-03: name + TLS domain → the one-time install command (step 2).
   await page.getByRole("button", { name: "添加服务器" }).first().click();
   let d = dialog(page, "添加服务器");
@@ -56,6 +54,9 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   // NOD-01 / NOD-02: the row (a link to the server page), waiting for its agent.
   const row = serverRow(page, name);
   await expect(row.getByText("等待安装")).toBeVisible();
+  // The fleet stats (shown once there is a server; an empty fleet is the "add your first server" state).
+  for (const t of ["服务器在线", "落地节点", "入口", "探测失败已隐藏"])
+    await expect(page.locator("main").getByText(t, { exact: true }).first()).toBeVisible();
   // Filters live in the URL: a server without its agent needs a look.
   const filters = page.getByRole("group", { name: "筛选" });
   await filters.getByRole("button", { name: /^需要关注/ }).click();
@@ -79,7 +80,8 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   await openServer(page, name);
   await expect(page).toHaveURL(/\/nodes\/[0-9a-f-]{36}/);
   await expect(tab(page, /^节点与入口/)).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("这台服务器上还没有节点。")).toBeVisible();
+  // No agent yet: the tab says how to install it instead of listing nodes.
+  await expect(page.getByText("等待 agent 首次连接")).toBeVisible();
   // NOD-04: a new install command; a new enrollment token (consequences first).
   await page.getByRole("button", { name: "安装命令" }).first().click();
   d = dialog(page, `安装命令 · ${name}`);

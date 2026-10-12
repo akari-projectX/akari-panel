@@ -100,7 +100,8 @@ test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, views, more filters as c
   await expect(page.getByText("匹配 2 个")).toBeVisible();
   // Plan filter (in 更多筛选) → only a, shown as a chip.
   await page.getByRole("button", { name: "更多筛选" }).click();
-  await page.getByLabel("套餐", { exact: true }).selectOption(planId);
+  // The label wraps the select: its name also carries the chosen option.
+  await page.getByRole("combobox", { name: /^套餐/ }).selectOption(planId);
   await page.getByRole("button", { name: "应用" }).click();
   await expect(row(page, `${tag}-b@e2e.test`)).toHaveCount(0);
   await expect(row(page, `${tag}-a@e2e.test`)).toBeVisible();
@@ -159,10 +160,11 @@ test("USR-05 USR-06 USR-07 USR-08 USR-09 USR-10 USR-11: new user with a plan, th
   await openConsole(page, "/users");
   await page.getByRole("button", { name: "新建用户" }).click();
   const d = dialog(page, "新建用户");
-  await d.getByLabel("邮箱", { exact: true }).fill(email);
-  await d.getByLabel("密码", { exact: true }).fill("new-user-pass-1");
-  await d.getByLabel("套餐", { exact: true }).selectOption(p1);
-  await d.getByLabel("周期", { exact: true }).selectOption("month");
+  await d.getByRole("textbox", { name: /^邮箱/ }).fill(email);
+  // Field labels wrap the control with its hint (and a select's options): match the start.
+  await d.getByLabel(/^密码/).fill("new-user-pass-1");
+  await d.getByRole("combobox", { name: /^套餐/ }).selectOption(p1);
+  await d.getByRole("combobox", { name: /^周期/ }).selectOption("month");
   await expect(d).toContainText("到期");
   await d.getByRole("button", { name: "创建用户" }).click();
   await expect(dialog(page, "用户已创建")).toBeVisible();
@@ -262,7 +264,9 @@ test("USR-12 USR-13 USR-14 USR-15 USR-16 USR-17 USR-18 USR-19: ban, role, passwo
   // 账户与安全: password, sessions, verification, role, sign-in methods.
   await tab(page, email, "账户与安全");
   await u.getByRole("button", { name: "设置新密码" }).click();
-  await dialog(page, "设置新密码").getByLabel("新密码", { exact: true }).fill("brand-new-pass-2");
+  await dialog(page, "设置新密码")
+    .getByLabel(/^新密码/)
+    .fill("brand-new-pass-2");
   await dialog(page, "设置新密码").getByRole("button", { name: "设置并踢下线" }).click();
   await toast(page, "密码已修改");
   await u.getByRole("button", { name: "踢下线", exact: true }).click();
