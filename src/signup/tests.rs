@@ -1991,8 +1991,11 @@ async fn unverified_account_verifies_later() {
         )
         .await;
     assert_eq!(r.json()["code"], "account.mail_off");
+    // The portal learns it beforehand (hides "change email").
+    assert_eq!(c.get("/test/auth/options").await.json()["mail"], false);
     // Reset is not for unverified addresses (no mail is queued).
     enable_mail(&db).await;
+    assert_eq!(c.get("/test/auth/options").await.json()["mail"], true);
     set_signup(&db, "reset_enabled = true").await;
     let r = c
         .post(

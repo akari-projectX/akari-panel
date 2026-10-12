@@ -197,7 +197,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /auth/passkey/options | — (passkeys available) | W27：可发现凭据登录的挑战 `{state, options}`（`options` = WebAuthn `publicKey` 请求选项；`no-store`；每客户端地址 30 次/分钟）。没有 https 主域名 = 标准拒绝 |
 | POST | /auth/passkey/login | — (passkeys available) | W27：`{state, credential}`（浏览器的 `PublicKeyCredential` JSON）→ 会话 cookie + 登录应答。所有失败都返回统一的 401 |
 | POST | /auth/logout | — | 清除 cookie，并终止该账号的所有会话 |
-| GET | /auth/options | — | W15：登录页提供的选项 `{register, invite_required, email_domains, reset, email_verify, site_name, branding, guard}`；`Cache-Control: no-store`。W27 `guard` = `{form_token, form_min_secs, honeypot, turnstile: {site_key, login, register, reset} \| null}`（null = 设置不可读：表单拒绝提交）；W36-b `timezone`（站点时区，IANA 名称） |
+| GET | /auth/options | — | W15：登录页提供的选项 `{register, invite_required, email_domains, reset, email_verify, site_name, branding, guard}`；`Cache-Control: no-store`。W27 `guard` = `{form_token, form_min_secs, honeypot, turnstile: {site_key, login, register, reset} \| null}`（null = 设置不可读：表单拒绝提交）；W36-b `timezone`（站点时区，IANA 名称）；`mail`（站点是否开启发信，门户据此隐藏「更换邮箱」） |
 | POST | /auth/register/code | — (registration + verification on) | W15：`{email, invite_code?, locale?, guard?}` → 对任何地址都返回 `{"ok":true}`（邮件发送验证码，或发送“已注册”提示邮件）；按客户端和地址限速 |
 | POST | /auth/register | — (registration on) | W15：`{email, code \| pow, password, invite_code?, locale?, guard?}`（开启 注册需要邮箱验证 时用 `code`，否则用 W24 工作量证明）；被拦截的机器人得到该模式的通用拒绝 → 账号（地址已验证）+ 会话 `{id, email, role, …}`；验证码错误/过期/已用 = 400 `invalid or expired code` |
 | POST | /auth/password-reset/request | — (reset on) | W15：`{email, guard?}` → 对任何地址都返回 `{"ok":true}`（被拦截的机器人也一样：不发送任何东西）；30 分钟有效的一次性链接发往已验证的地址 |
