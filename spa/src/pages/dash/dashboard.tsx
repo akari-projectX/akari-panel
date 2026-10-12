@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
+import { useHashScroll } from '@/hooks/use-hash-scroll';
 import { Ban, BookOpen, ChevronRight, Headphones, Megaphone, TrendingUp, Wifi, Zap } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
@@ -75,6 +76,7 @@ function BannedNotice() {
 
 function Overview({ full }: { full: boolean }) {
   const enter = useEnter();
+  useHashScroll();
   const tr = useT();
   const tp = useTp();
   const nav = useNavigate();
@@ -216,7 +218,7 @@ function Overview({ full }: { full: boolean }) {
             },
             {
               /* 单一余额：佣金入账就进余额（佣金追回后可以是负数），可提现的是其中一部分 */
-              k: tr('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—',
+              k: tr('账户余额'), v: balance.data ? balance.data.balance_cents : '—', fmt: formatMoney,
               x: balance.data ? tp('其中可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) }) : tr('下单时可以抵扣'),
             },
           ]}
@@ -258,8 +260,8 @@ function Overview({ full }: { full: boolean }) {
         </Section>
       )}
 
-      {/* ── 订阅 + 公告 ── */}
-      <Section>
+      {/* ── 订阅 + 公告（#subscribe：付款结果弹窗的「查看订阅」直达这里） ── */}
+      <Section id="subscribe">
         <Split
           left={
             <>

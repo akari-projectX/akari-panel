@@ -4,7 +4,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { payAtGateway, psql } from './panel.ts';
-import { admin, expect, mine, open, seed, signIn, test } from './fixtures.ts';
+import { admin, expect, mine, open, payResult, seed, signIn, test } from './fixtures.ts';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -20,9 +20,18 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await page.getByRole('button', { name: '购买', exact: true }).click();
   await expect(page.getByRole('dialog').getByText('余额抵扣')).toBeVisible();
   await page.getByRole('button', { name: '确认开通' }).click();
+  /* 当场付清：付款结果弹窗（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
+  await expect(page.getByRole('dialog').getByRole('button', { name: '查看订阅' })).toBeVisible();
+  await expect(page.getByRole('dialog').getByRole('button', { name: '返回仪表盘' })).toBeVisible();
+  await expect(page.getByRole('dialog').getByText('到期时间')).toBeVisible();
+  await payResult(page, '支付成功', seed.plan, 10_000, `pay-success-${info.project.name}`);
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await expect(page.getByText('已付款').first()).toBeVisible();
   await expect(page.getByText('流量重置').first()).toBeVisible();
+  /* 只弹一次：刷新后不再出现 */
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await open(page, '/wallet');
   await expect(page.getByText('订单支付').locator('visible=true').first()).toBeVisible();
 
@@ -32,6 +41,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await page.locator('.plan-col.is-current').getByRole('button', { name: '续费' }).click();
   await page.getByRole('dialog').getByRole('button', { name: /月付/ }).first().click();
   await page.getByRole('button', { name: '确认开通' }).click();
+  await payResult(page, '支付成功', seed.plan);
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await expect(page.getByText('续费').first()).toBeVisible();
 
@@ -60,7 +70,9 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await expect(page.getByText(/扫码支付|支付宝付款/).first()).toBeVisible();
     const otn = (await page.locator('code').first().textContent())?.trim() ?? '';
     await payAtGateway(otn);
-    await expect(page.getByText('已付款').first()).toBeVisible({ timeout: 30_000 });
+    /* 轮询看到已付款：同一个结果弹窗 */
+    await payResult(page, '支付成功', seed.premium, 30_000);
+    await expect(page.getByText('已付款').first()).toBeVisible();
     await expect(page.getByText('更换套餐').first()).toBeVisible();
   } finally {
     await a.call('DELETE', `/api/v1/settings/payments/${second.id}`);
@@ -80,6 +92,7 @@ test('#37 credit beyond the new price is forfeited only after an explicit acknow
   await expect(dialog.getByRole('button', { name: '确认开通' })).toBeDisabled();
   await dialog.getByRole('checkbox').check();
   await dialog.getByRole('button', { name: '确认开通' }).click();
+  await payResult(page, '支付成功', seed.plan);
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await expect(page.getByText('已付款').first()).toBeVisible();
 });

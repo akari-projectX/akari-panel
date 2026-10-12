@@ -7,6 +7,8 @@
     "scripts/*.mjs",
     "e2e/*.ts",
     "e2e/*.mjs",
+    "e2e/perf/*",
+    "playwright.perf.config.ts",
     "src/**/*.test.ts"
   ],
   "ignore": [

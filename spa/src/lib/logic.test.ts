@@ -4,7 +4,7 @@ import { safeRedirect, scopeOf } from './auth';
 import { docCategories, pick } from './doc-categories';
 import { defaultPasskeyName } from './passkey-name';
 import { allowed, R } from './routes';
-import { needsMethod, needsSwitchConfirm, offerKey, planRefusal, preselect } from './shop';
+import { needsMethod, needsSwitchConfirm, offerKey, outcomeOf, planRefusal, preselect } from './shop';
 import { enabledFormats, importLinks, mySubUrl, withFormat } from './sub-links';
 import { ruleText, trafficByEntrance, trafficDays } from './traffic';
 
@@ -150,5 +150,15 @@ describe('passkey names', () => {
     expect(defaultPasskeyName('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) AppleWebKit Version/17.0 Mobile Safari/604.1')).toBe('iPhone · Safari');
     expect(defaultPasskeyName('Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36 Edg/130.0')).toBe('Windows · Edge');
     expect(defaultPasskeyName('')).toBe('Passkey');
+  });
+});
+
+describe('payment result (pay-result dialog)', () => {
+  it('paid and fulfilled is a success, paid but not fulfilled was refunded, expired is a timeout, the rest shows nothing', () => {
+    expect(outcomeOf({ status: 'paid', fulfilled: true })).toBe('success');
+    expect(outcomeOf({ status: 'paid', fulfilled: false })).toBe('refunded');
+    expect(outcomeOf({ status: 'expired', fulfilled: false })).toBe('expired');
+    expect(outcomeOf({ status: 'cancelled', fulfilled: false })).toBeNull();
+    expect(outcomeOf({ status: 'pending', fulfilled: false })).toBeNull();
   });
 });

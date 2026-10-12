@@ -105,9 +105,11 @@
   /* 动效：与门户 spa/src/index.css 同名同值（scripts/check-tokens.mjs） */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-press: 0.12s;
   --dur-hover: 0.2s;
   --dur-fast: 0.26s;
   --dur-base: 0.42s;
+  --dur-slow: 0.7s;
   --dur-exit: 0.14s;
   /* 后台独有：开关的回弹 */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { ArrowLeft, Check, Clock, Copy, ExternalLink, FileText, Undo2, Wallet, XCircle } from 'lucide-react';
 import { toast } from '@/lib/toast';
@@ -9,6 +9,8 @@ import { PageTitle, Section } from '@/components/flat';
 import { LoadError } from '@/components/data-state';
 import { DashSkeleton } from '@/components/loading';
 import StatusTag from '@/components/status-tag';
+import PayResult from '@/components/pay-result';
+import { outcomeOf, type PayOutcome } from '@/lib/shop';
 import { useCopy } from '@/hooks/use-copy';
 import { orderApi, type MyOrder, type RefundEffect, type RefundRoute } from '@/api';
 import { useApi, usePending } from '@/hooks/use-api';
@@ -53,7 +55,16 @@ export default function OrderDetail() {
   const alipayJump = !!qr && IS_MOBILE && isAlipayQr(qr);
   const [cancelling, runCancel] = usePending();
   const [copiedNo, copyText] = useCopy(1600);
-
+  const loc = useLocation();
+  /* 付款结果弹窗（components/pay-result）：轮询到状态变化时，或商店当场付清后带着 state.paid 跳过来时 */
+  const [outcome, setOutcome] = useState<PayOutcome | null>(null);
+  const arrivedPaid = (loc.state as { paid?: boolean } | null)?.paid === true;
+  useEffect(() => {
+    if (!arrivedPaid || !data) return;
+    setOutcome(outcomeOf(data));
+    /* 只放一次：刷新、后退回来都不再弹 */
+    nav(loc.pathname, { replace: true, state: null });
+  }, [arrivedPaid, data, nav, loc.pathname]);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -77,13 +88,11 @@ export default function OrderDetail() {
         const o = await orderApi.get(id);
         if (!alive || o.status === 'pending') return;
         clearInterval(timer);
+        /* 先弹结果再换数据：setData 让 pending 变 false，这个 effect 随即被清理（alive = false）。
+           到期时间读的是 useAuth 的套餐，刷新回来弹窗里自己就更新 */
+        setOutcome(outcomeOf(o));
         order.setData(o);
-        if (o.status === 'paid') {
-          toast.success(o.fulfilled ? tr('支付成功，套餐已生效') : tr('已收到付款'));
-          void refreshAuth();
-        } else if (o.status === 'expired') {
-          toast.error(tr('订单已超时关闭'), { description: tr('超过支付时限仍未收到付款。如果已经扣款，请提交工单处理') });
-        }
+        if (o.status === 'paid') void refreshAuth();
       } catch { /* 轮询失败不打扰用户，下一轮再试 */ } finally {
         busy = false;
       }
@@ -127,7 +136,7 @@ export default function OrderDetail() {
           type="button" aria-label={tr('复制订单号')} onClick={() => copyText(data.out_trade_no)}
           className="text-muted-foreground transition-colors hover:text-brand"
         >
-          {copiedNo !== null ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+          {copiedNo !== null ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
         </button>
       </span>
     )],
@@ -156,6 +165,7 @@ export default function OrderDetail() {
 
   return (
     <>
+      <PayResult order={data} outcome={outcome} onClose={() => setOutcome(null)} />
       <PageTitle
         title={tr('订单详情')}
         sub={tp('{p} · {n}', { p: data.plan_name, n: data.out_trade_no })}

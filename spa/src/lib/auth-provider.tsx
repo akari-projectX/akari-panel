@@ -10,7 +10,6 @@ import {
 import { setSiteTimeZone } from '@/lib/format';
 import { sameSiteOptions, turnstileOn } from '@/api/guard';
 import { PageLoading } from '@/components/loading';
-import { useLocale } from '@/i18n';
 
 /* ───────────── 站点公开配置 ───────────── */
 
@@ -72,7 +71,6 @@ export function SiteProvider({ children }: { children: ReactNode }) {
 const sanitize = (me: Me): Me => ({ ...me, sub_token: null, sub_url: null });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { locale } = useLocale();
   const [me, setMe] = useState<Me | undefined>(() => readCache<Me>(K.me));
   const [plan, setPlan] = useState<MyPlan | undefined>(() => readCache<MyPlan>(K.plan));
   const [authed, setAuthed] = useState(() => readCache<Me>(K.me) !== undefined);
@@ -133,15 +131,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     else void load().catch(() => {});
   }), [drop, load]);
 
-  /* 邮件语言跟着界面语言走（面板按账户的 locale 发邮件） */
-  const want = locale === 'en' ? 'en' : 'zh';
-  const accountLocale = me?.role === 'user' ? me.locale : undefined;
-  useEffect(() => {
-    if (!accountLocale || accountLocale === want) return;
-    meApi.setLocale(want)
-      .then(() => setMe((m) => (m ? { ...m, locale: want } : m)))
-      .catch(() => { /* 尽力而为 */ });
-  }, [accountLocale, want]);
+  /* 邮件语言：只在用户主动切换界面语言时跟过去（见 AuthCtxValue.setMailLocale），加载时不改 */
+  const setMailLocale = useCallback((l: 'zh' | 'en') => {
+    if (me?.role !== 'user' || me.email_pending || me.locale === l) return;
+    meApi.setLocale(l)
+      .then(() => { if (alive.current) setMe((m) => (m ? { ...m, locale: l } : m)); })
+      .catch(() => { /* 尽力而为：下次切换再试 */ });
+  }, [me]);
 
   const signIn = useCallback(async (result: LoginResult) => {
     clearCache();
@@ -165,8 +161,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthCtxValue>(() => ({
     authed, booting, me, plan, scope: me ? scopeOf(me) : undefined,
-    passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh,
-  }), [authed, booting, me, plan, passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh]);
+    passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh, setMailLocale,
+  }), [authed, booting, me, plan, passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh, setMailLocale]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

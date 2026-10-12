@@ -1,4 +1,4 @@
-import type { CouponRefusal, Me, Offer, OfferAction, OfferRefusal, Shop, ShopPlan } from '@/api';
+import type { CouponRefusal, Me, MyOrder, Offer, OfferAction, OfferRefusal, Shop, ShopPlan } from '@/api';
 
 /**
  * 商店的纯逻辑（有单测）。价格一律由面板算好（/me/shop 的 offers），前端只负责挑选和展示，不做任何价格计算。
@@ -73,3 +73,9 @@ export const COUPON_REFUSAL_TEXT: Record<CouponRefusal, string> = {
   period: '该优惠码不适用于此购买时长',
   below_minimum: '订单金额未达到优惠码的最低消费',
 };
+
+/** 付款结果弹窗（components/pay-result）的三种样子：付清并开通 / 付了但没能开通（自动退回余额）/ 超时关闭 */
+export type PayOutcome = 'success' | 'refunded' | 'expired';
+
+export const outcomeOf = (o: Pick<MyOrder, 'status' | 'fulfilled'>): PayOutcome | null =>
+  o.status === 'paid' ? (o.fulfilled ? 'success' : 'refunded') : o.status === 'expired' ? 'expired' : null;

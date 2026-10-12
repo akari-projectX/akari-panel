@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { AlertDialog as AlertPrimitive, Dialog as DialogPrimitive } from 'radix-ui';
 import { XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { useVisualViewport } from '@/lib/visual-viewport';
 
 /*
  * 弹窗按用途分三类，每类一套外形，同类之间统一：
@@ -16,25 +17,29 @@ import { cn } from '@/lib/utils';
  *                       底部一条不动的小结栏：左边是「这一步的结果」（应付金额、剩余字数），右边是按钮。
  *
  * 以前八个弹窗共用一个居中卡片，看公告、确认重置和付款长得一模一样，分不出轻重。
- * 手机上三类都从底部升起（整宽、顶部圆角），拇指够得着按钮；桌面上居中。
+ *
+ * 手机上也居中（用户 2026-10-12：不要贴在底部 / 中下部），四边留 12px：
+ *   · 限高 = 可见视口高度 − 上下留白（安全区更大时取安全区），超出的部分在弹窗内部滚动，头尾不动；
+ *   · 跟着可见视口居中（lib/visual-viewport）：弹出软键盘时弹窗挪到键盘上方，不被盖住；
+ *   · 进场 = 淡入 + 从 0.96 放大 + 上浮 8px（--dur-hover、--ease-out），退场更快（--dur-exit），见 index.css「弹出层」。
  */
 
 /* 遮罩：比原来深一档，弹窗和页面的层次分得开。
  * 各层都带 data-slot（…-content / …-overlay）：index.css 按它套站内的弹层节奏——打开稍慢、关闭干脆 */
 const overlay = 'fixed inset-0 z-50 bg-black/35 supports-backdrop-filter:backdrop-blur-[2px] data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0';
 
-/* 手机从底部升起，桌面居中缩放进场 */
+/* 居中的卡片：位置与限高在 index.css 的 .panel（跟随可见视口、安全区），这里是外形与进退场 */
 const sheet = cn(
-  'fixed inset-x-0 bottom-0 z-50 flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-[22px] bg-popover text-popover-foreground outline-none',
-  'shadow-[0_-12px_40px_-12px_rgba(13,21,38,.28)] ring-1 ring-foreground/8 supports-[height:100dvh]:max-h-[92dvh]',
-  'data-open:animate-in data-open:slide-in-from-bottom-10 data-closed:animate-out data-closed:slide-out-to-bottom-10',
-  'sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl',
-  'sm:shadow-[0_24px_64px_-24px_rgba(13,21,38,.35)] sm:data-open:slide-in-from-bottom-0 sm:data-open:zoom-in-95 sm:data-closed:slide-out-to-bottom-0 sm:data-closed:zoom-out-95',
+  'panel fixed left-1/2 z-50 flex w-[calc(100%-24px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] bg-popover text-popover-foreground outline-none',
+  'shadow-[0_24px_64px_-24px_rgba(13,21,38,.35)] ring-1 ring-foreground/8 sm:rounded-2xl',
+  'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-96 data-open:slide-in-from-bottom-2',
+  'data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-96',
 );
 
-/* 手机上顶边一道小把手，提示这是可以收起的一层 */
-function Grabber() {
-  return <span aria-hidden className="mx-auto mt-2.5 block h-1 w-9 shrink-0 rounded-full bg-foreground/15 sm:hidden" />;
+/* 弹窗开着时跟踪可见视口（软键盘），见 lib/visual-viewport */
+function TrackViewport() {
+  useVisualViewport(true);
+  return null;
 }
 
 function CloseX({ className }: { className?: string }) {
@@ -69,8 +74,8 @@ export function ReadingDialog({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay data-slot="panel-overlay" className={overlay} />
         <DialogPrimitive.Content data-slot="reading-content" aria-describedby={undefined} className={cn(sheet, 'sm:max-h-[min(86vh,780px)] sm:max-w-[640px]', className)}>
-          <Grabber />
-          <header className="relative shrink-0 border-b border-border px-6 pt-5 pb-5 sm:px-8 sm:pt-7">
+          <TrackViewport />
+          <header className="relative shrink-0 border-b border-border px-6 pt-6 pb-5 sm:px-8 sm:pt-7">
             {meta && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 pr-8 text-[12px] text-muted-foreground">{meta}</div>}
             <DialogPrimitive.Title className="mt-2.5 pr-8 text-[20px] leading-[1.35] font-medium tracking-[-0.02em] text-balance sm:text-[22px]">
               {title}
@@ -81,7 +86,7 @@ export function ReadingDialog({
             <div className="max-w-[62ch]">{children}</div>
           </div>
           {footer && (
-            <footer className="shrink-0 border-t border-border px-6 pt-3.5 pb-[max(14px,env(safe-area-inset-bottom))] sm:px-8">
+            <footer className="shrink-0 border-t border-border px-6 py-3.5 sm:px-8">
               {footer}
             </footer>
           )}
@@ -102,9 +107,12 @@ const TONE: Record<Tone, { disc: string; button: string }> = {
 };
 
 export function ConfirmDialog({
-  trigger, tone = 'warning', icon, title, description, consequences, confirmLabel, cancelLabel, pending, onConfirm,
+  trigger, open, onOpenChange, tone = 'warning', icon, title, description, consequences, confirmLabel, cancelLabel, pending, error, onConfirm,
 }: {
-  trigger: ReactNode;
+  /** 打开它的按钮；不给时由 open / onOpenChange 控制（从下拉菜单里打开的确认） */
+  trigger?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (o: boolean) => void;
   tone?: Tone;
   icon: ReactNode;
   title: ReactNode;
@@ -114,22 +122,42 @@ export function ConfirmDialog({
   confirmLabel: ReactNode;
   cancelLabel?: ReactNode;
   pending?: boolean;
-  onConfirm: () => void;
+  /** 上一次确认失败的原因：留在弹窗里显示（不在遮罩外弹 toast） */
+  error?: ReactNode;
+  /**
+   * 确认。返回 Promise 时弹窗等它完成：成功才关，抛错就留着（调用方把原因放进 error）——
+   * 「重置中」这类进行中的状态因此看得见，失败也不会出现在弹窗关掉之后。
+   */
+  onConfirm: () => void | Promise<unknown>;
 }) {
   const tr = useT();
   const t = TONE[tone];
+  const [inner, setInner] = useState(false);
+  const isOpen = open ?? inner;
+  const setOpen = (o: boolean) => {
+    if (pending && !o) return;
+    if (open === undefined) setInner(o);
+    onOpenChange?.(o);
+  };
+  const confirm = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await onConfirm();
+      setOpen(false);
+    } catch { /* 留在弹窗里，原因由调用方经 error 给出 */ }
+  };
   return (
-    <AlertPrimitive.Root>
-      <AlertPrimitive.Trigger asChild>{trigger}</AlertPrimitive.Trigger>
+    <AlertPrimitive.Root open={isOpen} onOpenChange={setOpen}>
+      {trigger && <AlertPrimitive.Trigger asChild>{trigger}</AlertPrimitive.Trigger>}
       <AlertPrimitive.Portal>
         <AlertPrimitive.Overlay data-slot="panel-overlay" className={overlay} />
         <AlertPrimitive.Content
           data-slot="confirm-content"
           {...(description ? {} : { 'aria-describedby': undefined })}
-          className={cn(sheet, 'px-6 pb-[max(24px,env(safe-area-inset-bottom))] sm:max-w-[420px] sm:px-7 sm:pb-7')}
+          className={cn(sheet, 'overflow-y-auto px-6 pb-6 sm:max-w-[420px] sm:px-7 sm:pb-7')}
         >
-          <Grabber />
-          <div className="flex items-start gap-4 pt-5 sm:pt-7">
+          <TrackViewport />
+          <div className="flex items-start gap-4 pt-6 sm:pt-7">
             <span className={cn('grid size-10 shrink-0 place-items-center rounded-full [&_svg]:size-5', t.disc)}>{icon}</span>
             <div className="min-w-0 pt-1">
               <AlertPrimitive.Title className="text-[16.5px] leading-[1.45] font-medium tracking-[-0.01em] text-balance">{title}</AlertPrimitive.Title>
@@ -148,12 +176,13 @@ export function ConfirmDialog({
               ))}
             </ul>
           )}
+          {error && <p role="alert" className="state-in mt-4 text-[13px] leading-[1.6] text-danger">{error}</p>}
           <div className="mt-6 grid grid-cols-2 gap-2.5">
             <AlertPrimitive.Cancel asChild>
-              <Button variant="outline" className="h-10">{cancelLabel ?? tr('取消')}</Button>
+              <Button variant="outline" className="h-10" disabled={pending}>{cancelLabel ?? tr('取消')}</Button>
             </AlertPrimitive.Cancel>
             <AlertPrimitive.Action asChild>
-              <Button className={cn('h-10', t.button)} disabled={pending} onClick={onConfirm}>{confirmLabel}</Button>
+              <Button className={cn('h-10', t.button)} disabled={pending} onClick={confirm}>{confirmLabel}</Button>
             </AlertPrimitive.Action>
           </div>
         </AlertPrimitive.Content>
@@ -197,8 +226,8 @@ export function FlowDialog({
           })}
           className={cn(sheet, 'sm:max-h-[min(88vh,820px)] sm:max-w-[560px]', className)}
         >
-          <Grabber />
-          <header className="relative flex shrink-0 items-start gap-3.5 px-6 pt-5 pb-4 sm:px-7 sm:pt-6">
+          <TrackViewport />
+          <header className="relative flex shrink-0 items-start gap-3.5 px-6 pt-6 pb-4 sm:px-7">
             {icon && <span className={cn('grid size-9 shrink-0 place-items-center rounded-xl [&_svg]:size-[18px]', TONE[tone].disc)}>{icon}</span>}
             <div className="min-w-0 pr-8">
               <DialogPrimitive.Title className="text-[17px] leading-[1.4] font-medium tracking-[-0.015em]">{title}</DialogPrimitive.Title>
@@ -222,9 +251,10 @@ export function FlowDialog({
  */
 export function FlowFooter({ summary, children }: { summary?: ReactNode; children: ReactNode }) {
   return (
-    <div className="sticky bottom-0 -mx-6 mt-auto flex items-center gap-4 border-t border-border bg-popover/95 px-6 pt-3.5 pb-[max(14px,env(safe-area-inset-bottom))] backdrop-blur supports-backdrop-filter:bg-popover/85 sm:-mx-7 sm:px-7 sm:pb-4">
-      <div className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-muted-foreground">{summary}</div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+    <div className="sticky bottom-0 -mx-6 mt-auto flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-border bg-popover/95 px-6 py-3.5 backdrop-blur supports-backdrop-filter:bg-popover/85 sm:-mx-7 sm:px-7 sm:pb-4">
+      <div className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-muted-foreground empty:hidden">{summary}</div>
+      {/* 手机上按钮等宽铺满（和确认弹窗同一手感）；桌面靠右 */}
+      <div className="grid flex-1 auto-cols-fr grid-flow-col gap-2 sm:flex sm:flex-none sm:shrink-0 sm:items-center [&>button]:h-10 sm:[&>button]:h-9">{children}</div>
     </div>
   );
 }
@@ -243,5 +273,51 @@ export function FlowStep({ n, title, aside, children }: { n: number; title: Reac
       </div>
       {children}
     </section>
+  );
+}
+
+/* ───────────────────────── 结果 ───────────────────────── */
+
+/**
+ * 一件事做完之后的结果：付款成功、订单超时。窄、居中、上面一个大图标（由调用方给，带自己的动效），
+ * 下面标题、说明、小结与按钮。可以关闭（Esc、遮罩、右上角）——结果已经发生，关掉不会丢任何东西。
+ */
+export function ResultDialog({
+  open, onOpenChange, mark, title, description, children, actions,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  /** 大图标（components/pay-result 的对勾 / 时钟） */
+  mark: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  /** 小结：金额、套餐、到期 */
+  children?: ReactNode;
+  /** 底部按钮，等宽并排 */
+  actions: ReactNode;
+}) {
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay data-slot="panel-overlay" className={overlay} />
+        <DialogPrimitive.Content
+          data-slot="result-content"
+          {...(description ? {} : { 'aria-describedby': undefined })}
+          className={cn(sheet, 'overflow-y-auto px-6 pt-8 pb-6 text-center sm:max-w-[400px] sm:px-8 sm:pb-7')}
+        >
+          <TrackViewport />
+          <div className="mx-auto">{mark}</div>
+          <DialogPrimitive.Title className="mt-5 text-[19px] leading-[1.4] font-medium tracking-[-0.015em] text-balance">{title}</DialogPrimitive.Title>
+          {description && (
+            <DialogPrimitive.Description className="mx-auto mt-1.5 max-w-[34ch] text-[13.5px] leading-[1.7] text-pretty text-muted-foreground">
+              {description}
+            </DialogPrimitive.Description>
+          )}
+          {children}
+          <div className="mt-6 grid grid-cols-2 gap-2.5">{actions}</div>
+          <CloseX />
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

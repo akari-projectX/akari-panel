@@ -100,9 +100,10 @@ export default function Shop() {
       openOrder.reload();
       shop.reload();
       if (order.status === 'paid') {
-        /* 余额 / 优惠 / 折算全额抵扣：面板当场付清并开通 */
-        toast.success(tr('支付成功，套餐已生效'));
+        /* 余额 / 优惠 / 折算全额抵扣（含免费订单）：面板当场付清并开通。订单页带着 state.paid 打开付款结果弹窗 */
         await refreshAuth();
+        nav(R.order(order.id), { state: { paid: true } });
+        return;
       } else if (order.pay_url && safeUrl(order.pay_url)) {
         /* 跳转类支付：去收银台；回来后订单页会查状态 */
         window.location.href = order.pay_url;
@@ -343,7 +344,7 @@ export default function Shop() {
 
               {offer && (
                 <FlowStep n={++n} title={tr('优惠码')} aside={tr('选填')}>
-                  <form
+                  <form noValidate
                     onSubmit={(e) => { e.preventDefault(); applyCoupon(); }}
                     className="flex gap-2.5"
                   >

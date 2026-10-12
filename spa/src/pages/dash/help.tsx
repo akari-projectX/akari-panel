@@ -153,7 +153,7 @@ function ListView() {
         extra={
           subUrl && (
             <Button variant="outline" className="h-9" onClick={handleCopySubscribe}>
-              {copied === 'sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+              {copied === 'sub' ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
               {copied === 'sub' ? tr('已复制') : tr('复制订阅地址')}
             </Button>
           )
@@ -162,7 +162,7 @@ function ListView() {
 
       {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
       <div {...enter({ delay: 0.05 })} className="mt-8 space-y-4">
-        <form onSubmit={handleSearchSubmit} role="search" className="relative">
+        <form noValidate onSubmit={handleSearchSubmit} role="search" className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
@@ -475,7 +475,7 @@ function ArticleView({ id }: { id: string }) {
           </div>
           {subUrl && (
             <Button variant="outline" className="h-9" onClick={handleCopySub}>
-              {copied === 'art-sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+              {copied === 'art-sub' ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
               {copied === 'art-sub' ? tr('已复制') : tr('复制订阅链接')}
             </Button>
           )}

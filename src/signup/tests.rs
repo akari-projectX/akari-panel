@@ -343,7 +343,7 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
         v,
         json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
                 "email_verify": false, "passkey_register": false, "passkey_rp": "panel.example",
-                "site_name": "Akari", "timezone": "Asia/Shanghai" })
+                "site_name": "Akari", "timezone": "Asia/Shanghai", "mail": false })
     );
 
     // Enabled for one feature only: the other stays rejected.
@@ -1991,8 +1991,11 @@ async fn unverified_account_verifies_later() {
         )
         .await;
     assert_eq!(r.json()["code"], "account.mail_off");
+    // The portal learns it beforehand (hides "change email").
+    assert_eq!(c.get("/test/auth/options").await.json()["mail"], false);
     // Reset is not for unverified addresses (no mail is queued).
     enable_mail(&db).await;
+    assert_eq!(c.get("/test/auth/options").await.json()["mail"], true);
     set_signup(&db, "reset_enabled = true").await;
     let r = c
         .post(

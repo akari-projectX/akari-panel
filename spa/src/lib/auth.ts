@@ -37,6 +37,11 @@ export type AuthCtxValue = {
   /** 退出（结束这个账户的所有会话） */
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
+  /**
+   * 用户主动切换界面语言时调用：把账户的邮件语言改成同一门（面板按账户的 locale 发邮件）。
+   * 只在主动切换时同步——打开页面时不同步，否则在另一台存着别的语言偏好的设备上打开一次，邮件语言就被悄悄改掉。
+   */
+  setMailLocale: (l: 'zh' | 'en') => void;
 };
 
 export const AuthCtx = createContext<AuthCtxValue | null>(null);

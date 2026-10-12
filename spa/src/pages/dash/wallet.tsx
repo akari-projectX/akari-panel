@@ -73,7 +73,7 @@ function Mono({ value, label }: { value: string; label: string }) {
         onClick={() => void copy(value, value)}
         className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
       >
-        {copied === value ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+        {copied === value ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
       </button>
     </span>
   );
@@ -201,12 +201,12 @@ export default function Wallet() {
         <StatRow
           items={[
             {
-              k: tr('账户余额'), v: formatMoney(b?.balance_cents),
+              k: tr('账户余额'), v: b?.balance_cents ?? 0, fmt: formatMoney,
               x: tr('下单时可以选择抵扣'),
             },
-            { k: tr('可提现'), v: formatMoney(withdrawable), x: min > 0 ? tp('最低提现 {v}', { v: formatMoney(min) }) : tr('佣金过了冻结期即可提现') },
+            { k: tr('可提现'), v: withdrawable, fmt: formatMoney, x: min > 0 ? tp('最低提现 {v}', { v: formatMoney(min) }) : tr('佣金过了冻结期即可提现') },
             ...(full ? [{
-              k: tr('审核中的提现'), v: formatMoney(pendingW.reduce((n, w) => n + w.amount_cents, 0)),
+              k: tr('审核中的提现'), v: pendingW.reduce((n, w) => n + w.amount_cents, 0), fmt: formatMoney,
               x: pendingW.length ? tp('{n} 笔待审核', { n: pendingW.length }) : tr('没有待审核的申请'),
             }] : []),
           ]}

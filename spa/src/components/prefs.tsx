@@ -1,12 +1,13 @@
 import { flushSync } from 'react-dom';
-import { Moon, Sun } from 'lucide-react';
+import { Monitor, Moon, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { LOCALES, localeReady, preloadEN, useLocale, type Locale } from '@/i18n';
 import { crossfade } from '@/lib/motion';
 import { warmHanFont } from '@/lib/han-font';
 import { cn } from '@/lib/utils';
-import { useTheme } from '@/lib/theme';
+import { useTheme, type ThemeMode } from '@/lib/theme';
+import { useAuth } from '@/lib/auth';
 
 /*
  * 明暗与语言的切换都走 crossfade：整页新旧两帧交叉淡化，而不是所有颜色、文字在同一帧硬切。
@@ -14,10 +15,13 @@ import { useTheme } from '@/lib/theme';
  * flushSync 让 React 那一侧（图标、依赖 resolvedTheme 的组件）同步跟上。
  */
 function useApplyTheme() {
-  const { resolvedTheme, setTheme } = useTheme();
-  return (next: 'light' | 'dark') => {
-    if (next === resolvedTheme) return;
-    crossfade(() => flushSync(() => setTheme(next)));
+  const { theme, resolvedTheme, setTheme } = useTheme();
+  return (next: ThemeMode) => {
+    if (next === theme) return;
+    /* 跟随系统且系统恰好就是这一边：明暗不变，不必淡化 */
+    const same = (next === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : next) === resolvedTheme;
+    if (same) setTheme(next);
+    else crossfade(() => flushSync(() => setTheme(next)));
   };
 }
 
@@ -34,8 +38,11 @@ function useToggleTheme() {
  */
 function useSwitchLocale() {
   const { locale, setLocale } = useLocale();
+  const { setMailLocale } = useAuth();
   return (l: Locale) => {
     if (l === locale) return;
+    /* 主动切换语言：邮件语言跟过去（只在这里，打开页面时不同步） */
+    setMailLocale(l === 'en' ? 'en' : 'zh');
     const ready = Promise.all([localeReady(l), warmHanFont(l)]);
     Promise.race([ready, new Promise((r) => setTimeout(r, 1000))])
       .then(() => crossfade(() => flushSync(() => setLocale(l))));
@@ -127,21 +134,22 @@ export function LocaleSwitch({ className }: { className?: string }) {
 }
 
 /**
- * 页头卡片里的明暗开关：和语言开关同一个外形，两段各放一个图标。
- * 这里不是「切换」而是直接选：看得见现在是哪一边，点另一边才会动。
+ * 明暗开关：和语言开关同一个外形。浅色 / 深色 / 跟随系统三段（默认跟随系统，lib/theme）。
+ * 这里不是「切换」而是直接选：看得见现在选的是哪一段，点另一段才会动。
  */
 export function ThemeSwitch({ className }: { className?: string }) {
-  const { resolvedTheme } = useTheme();
+  const { theme } = useTheme();
   const apply = useApplyTheme();
   const { t } = useLocale();
   const opts = [
     { id: 'light', label: '浅色', Icon: Sun },
     { id: 'dark', label: '深色', Icon: Moon },
+    { id: 'system', label: '跟随系统', Icon: Monitor },
   ] as const;
   return (
     <div role="group" aria-label={t('切换明暗模式')} className={cn('flex items-center rounded-full border border-border p-[3px]', className)}>
       {opts.map(({ id, label, Icon }) => {
-        const on = resolvedTheme === id;
+        const on = theme === id;
         return (
           <button
             key={id}

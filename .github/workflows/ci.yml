@@ -158,8 +158,46 @@ jobs:
       - run: npm run check:i18n
       - run: npm test
       # Build + dist checks (CSP-safe index, assets/ only), no console code in
-      # the bundle (check-bundles), bundle-size budget.
+      # the bundle (check-bundles). No size budget (user ruling 2026-10-07):
+      # sizes are reported by the spa-size job, never gated.
       - run: npm run build
+
+  spa-size:
+    # Report only, never blocks (not a required check; continue-on-error):
+    # portal bundle sizes (gzip) per chunk with the delta against the base
+    # branch, written to the job summary. The yardstick for experience is
+    # the e2e job's performance report (spa/e2e/perf.spec.ts).
+    name: spa size report (non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: head
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: head/spa/package-lock.json
+      - name: base build
+        if: ${{ github.event_name == 'pull_request' }}
+        working-directory: base/spa
+        # The base may predate the report script: use the head's copy.
+        run: |
+          npm ci && npx vite build >/dev/null
+          node ../../head/spa/scripts/bundle-report.mjs --json "$RUNNER_TEMP/base.json" >/dev/null
+      - name: head build + report
+        working-directory: head/spa
+        run: |
+          npm ci && npx vite build >/dev/null
+          node scripts/bundle-report.mjs --base "$RUNNER_TEMP/base.json" --markdown "$RUNNER_TEMP/size.md"
+          cat "$RUNNER_TEMP/size.md" >>"$GITHUB_STEP_SUMMARY"
 
   admin:
     # W33-b: the admin app (admin/: sign-in page + console), built apart
@@ -317,9 +355,24 @@ jobs:
       - run: sudo systemctl stop postgresql || true
       - run: cd spa && npm ci && npx playwright install --with-deps chromium
       - run: cd admin && npm ci
+      # E2E_PERF_OUT: the portal performance report (report only, see
+      # scripts/e2e-portal.sh); its summary goes to the job summary below.
       - run: make e2e
         # Leave time for the uploads below when a run hangs.
         timeout-minutes: 50
+        env:
+          E2E_PERF_OUT: ${{ runner.temp }}/perf
+      - if: always()
+        run: cat "$RUNNER_TEMP/perf/summary.md" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      # Screenshots the portal e2e takes as PR evidence (e.g. the payment
+      # result dialog, desktop + phone).
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portal-screens
+          path: spa/test-results/screens
+          if-no-files-found: ignore
+          retention-days: 7
       # Admin screenshot set (admin/e2e/zz-screens.spec.ts) for design review.
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
