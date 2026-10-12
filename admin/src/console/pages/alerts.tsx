@@ -6,27 +6,20 @@ import { useEffect, useState } from "react";
 import { get, post, put, qs } from "../../shared/api";
 import { ago, dateTime } from "../../shared/format";
 import { useLang, useTr } from "../../shared/i18n";
-import { useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  PageHeader,
-  SecretInput,
-  Select,
-  Skeleton,
-  Switch,
-  Tabs,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { FormError, useErrText, useRun } from "../kit";
+import { FormError, useErrText } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
 import { alertKindName } from "./node-dialogs";
-import { useServers } from "./nodes";
+import { useServers } from "../servers";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Field, Input, SecretInput, Select, Switch } from "../../shared/ui/form";
+import { PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { Tabs } from "../../shared/ui/tabs";
+import { useToast } from "../../shared/ui/toast";
 
 type Alert = {
   id: number;
@@ -127,7 +120,7 @@ function AlertList() {
   const kind = query.get("kind") ?? "";
   const server = query.get("server") ?? "";
   const servers = useServers();
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useInfiniteQuery({
     queryKey: ["alerts", status, kind, server],
     queryFn: ({ pageParam }) =>
@@ -271,7 +264,7 @@ function AlertSettings() {
       setEmails(q.data.email_to.join(", "));
     }
   }, [q.data, f]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   const num = (v: string) => (v.trim() ? Number(v) : null);
   const save = async () => {
@@ -522,7 +515,7 @@ function AlertSettings() {
 
 function Deliveries() {
   const tr = useTr();
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useQuery({
     queryKey: ["alerts", "notifications"],
     queryFn: () => get<Notification[]>("/alerts/notifications"),

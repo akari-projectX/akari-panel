@@ -6,23 +6,18 @@
 import { useEffect, useState } from "react";
 import { put } from "../../shared/api";
 import { useTr, type Tr } from "../../shared/i18n";
-import { useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Checkbox,
-  Field,
-  Input,
-  Select,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
-import { Mono, useErrText, useRun } from "../kit";
+import { Mono, useErrText } from "../kit";
+import { useAction } from "../data";
 import { useSettings, type Rule } from "./settings";
 import { useAccess } from "./settings-access";
+import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Checkbox, Field, Input, Select, Switch } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 const RULE_TYPES = ["geosite", "geoip", "domain", "domain_suffix", "domain_keyword", "ip_cidr"];
 const ACTIONS = ["direct", "proxy", "reject"];
@@ -175,7 +170,7 @@ function RoutingRules() {
   useEffect(() => {
     if (d && !rules) setRules(d.subscription.rules.effective);
   }, [d, rules]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!d || !rules) return <Skeleton className="h-64" />;
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
@@ -246,21 +241,21 @@ function RoutingRules() {
             <Button
               size="icon-sm"
               variant="ghost"
-              icon="arrowUp"
+              icon={ArrowUp}
               aria-label={tr("上移", "Up")}
               onClick={() => move(i, -1)}
             />
             <Button
               size="icon-sm"
               variant="ghost"
-              icon="arrowDown"
+              icon={ArrowDown}
               aria-label={tr("下移", "Down")}
               onClick={() => move(i, 1)}
             />
             <Button
               size="icon-sm"
               variant="ghost"
-              icon="trash"
+              icon={Trash2}
               aria-label={tr("删除规则", "Remove rule")}
               onClick={() => setRules(rules.filter((_, j) => j !== i))}
             />
@@ -268,7 +263,7 @@ function RoutingRules() {
         ))}
         <Button
           size="sm"
-          icon="plus"
+          icon={Plus}
           disabled={rules.length >= 64}
           onClick={() => setRules([...rules, { type: "geosite", value: "", action: "proxy" }])}
         >
@@ -319,7 +314,7 @@ function RoutingRules() {
 function Switches() {
   const tr = useTr();
   const s = useSettings();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const d = s.data;
   if (!d) return null;
   const formats = d.subscription.formats.effective;
@@ -383,7 +378,7 @@ function NameRate() {
   const tr = useTr();
   const s = useSettings();
   const confirm = useConfirm();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const d = s.data;
   if (!d) return null;
   const on = d.subscription.name_rate;

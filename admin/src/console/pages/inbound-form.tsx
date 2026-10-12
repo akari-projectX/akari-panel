@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { get, post } from "../../shared/api";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { Button, Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/primitives";
 import { useErrText } from "../kit";
 import {
   fieldDefault,
@@ -18,6 +17,8 @@ import {
   transportTemplateNetworks,
   transportTemplateProtocols,
 } from "../protocol-form";
+import { Button } from "../../shared/ui/button";
+import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
 
 export type TemplateKind =
   | "vless_reality"

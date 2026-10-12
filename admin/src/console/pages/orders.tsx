@@ -7,26 +7,21 @@ import { apiBase } from "../../shared/base";
 import { get, post, qs } from "../../shared/api";
 import { bytes, centsToYuanText, dateTime, daysBefore, parseYuan, siteToday, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Dialog, Drawer, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Checkbox,
-  Field,
-  Input,
-  KV,
-  PageHeader,
-  Select,
-  Skeleton,
-  type Tone,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { FormError, Mono, SectionTitle, useDebounced, useRun } from "../kit";
+import { FormError, Mono, SectionTitle, useDebounced } from "../kit";
+import { useAction } from "../data";
 import { setQuery, useRoute } from "../router";
 import { periodLabel } from "../terms";
 import type { PlanPrice } from "../types";
 import { findUsers, type UserRow } from "./users";
+import { Download, Plus, TriangleAlert } from "lucide-react";
+import { Badge, type Tone } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select } from "../../shared/ui/form";
+import { Callout, KV, PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type RefundEffect =
   | { kind: "none"; why: string }
@@ -255,10 +250,10 @@ export function OrdersPage() {
         title={tr("订单", "Orders")}
         actions={
           <>
-            <Button size="sm" icon="download" onClick={() => setExporting(true)}>
+            <Button size="sm" icon={Download} onClick={() => setExporting(true)}>
               {tr("导出 CSV", "Export CSV")}
             </Button>
-            <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ new: "1" }, false)}>
+            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ new: "1" }, false)}>
               {tr("新建人工订单", "New manual order")}
             </Button>
           </>
@@ -488,7 +483,7 @@ function OrderDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 function FulfilDialog({ order, onClose, onDone }: { order: Order; onClose: () => void; onDone: () => void }) {
   const tr = useTr();
   const [reason, setReason] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const retry = order.status === "paid";
   const submit = async () => {
     const r = await run(() => post(`/orders/${order.id}/fulfil`, { reason: reason.trim() }), {
@@ -545,7 +540,7 @@ function RefundDialog({ order, onClose, onDone }: { order: Order; onClose: () =>
   const [reason, setReason] = useState("");
   const [typed, setTyped] = useState("");
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const tail = order.out_trade_no.slice(-6);
   const submit = async () => {
     if (!p.data) return;
@@ -588,7 +583,7 @@ function RefundDialog({ order, onClose, onDone }: { order: Order; onClose: () =>
       open
       wide
       tone="danger"
-      icon="alert"
+      icon={TriangleAlert}
       onClose={onClose}
       title={tr(`退款 ${order.out_trade_no}`, `Refund ${order.out_trade_no}`)}
       onSubmit={submit}
@@ -715,7 +710,7 @@ export function ManualOrderDialog({ onClose, user: preset }: { onClose: () => vo
   const [period, setPeriod] = useState("");
   const [gift, setGift] = useState(false);
   const [reason, setReason] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const plan = prices.data?.plans.find((p) => p.plan_id === planId);
   const submit = async () => {
     if (!user || !planId || !period || !reason.trim()) return;

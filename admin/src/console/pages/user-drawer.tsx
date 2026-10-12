@@ -8,30 +8,40 @@ import { useState } from "react";
 import { del, get, patch, post, put } from "../../shared/api";
 import { bytes, dateOnly, dateTime, daysBefore, parseYuan, pct, rateText, siteToday, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { LineChart } from "../../shared/ui/line-chart";
-import { Dialog, Drawer, MenuItem, RowMenu, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  Field,
-  Input,
-  KV,
-  Progress,
-  Segmented,
-  Select,
-  Skeleton,
-  usageTone,
-} from "../../shared/ui/primitives";
+import { TrendChart, timeLabels } from "../../shared/ui/charts";
 import { QrCode } from "../../shared/ui/qr-code";
-import { CopyButton, FormError, Mono, SectionTitle, useRun } from "../kit";
+import { CopyButton, FormError, Mono, SectionTitle } from "../kit";
+import { useAction } from "../data";
 import { resetLabel, periodLabel } from "../terms";
 import { useMe } from "../session";
 import type { PlanView } from "../types";
 import { EMPTY_TERM, TermFields, termBody, type TermForm } from "./term-fields";
 import { userStatus, type UserRow } from "./users";
+import {
+  Ban,
+  Calendar,
+  KeyRound,
+  Layers,
+  LinkIcon,
+  LogOut,
+  Mail,
+  RefreshCw,
+  Star,
+  Trash2,
+  Users,
+  Wallet,
+} from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Field, Input, Segmented, Select } from "../../shared/ui/form";
+import { Callout, KV } from "../../shared/ui/layout";
+import { MenuItem, RowMenu } from "../../shared/ui/menu";
+import { Meter, usageTone } from "../../shared/ui/meter";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type Subscription = {
   user_plan_id: string;
@@ -119,7 +129,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
   const me = useMe();
   const confirm = useConfirm();
   const toast = useToast();
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useQuery({ queryKey: ["users", "detail", id], queryFn: () => get<Detail>(`/users/${id}`) });
   const [dialog, setDialog] = useState<null | "plan" | "renew" | "ban" | "password" | "balance" | "sub">(null);
   const u = q.data;
@@ -220,11 +230,11 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
           <RowMenu label={tr("更多操作", "More actions")}>
             {(close) => (
               <>
-                <MenuItem icon="key" disabled={ownerOnly} onClick={() => (close(), setDialog("password"))}>
+                <MenuItem icon={KeyRound} disabled={ownerOnly} onClick={() => (close(), setDialog("password"))}>
                   {tr("设置新密码", "Set a new password")}
                 </MenuItem>
                 <MenuItem
-                  icon="logout"
+                  icon={LogOut}
                   disabled={ownerOnly}
                   onClick={() => {
                     close();
@@ -243,7 +253,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                 </MenuItem>
                 {!u.email_verified && !u.email_pending && (
                   <MenuItem
-                    icon="mail"
+                    icon={Mail}
                     disabled={ownerOnly}
                     onClick={() => {
                       close();
@@ -259,7 +269,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                 )}
                 {me.is_owner && u.id !== me.id && (
                   <MenuItem
-                    icon="users"
+                    icon={Users}
                     onClick={() => {
                       close();
                       const to = isAdmin ? "user" : "admin";
@@ -286,7 +296,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                 )}
                 {me.is_owner && isAdmin && u.enabled && u.id !== me.id && (
                   <MenuItem
-                    icon="star"
+                    icon={Star}
                     onClick={() => {
                       close();
                       void act(
@@ -307,7 +317,7 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                   </MenuItem>
                 )}
                 {!u.is_owner && u.id !== me.id && (
-                  <MenuItem icon="trash" danger disabled={ownerOnly} onClick={() => (close(), void deleteUser())}>
+                  <MenuItem icon={Trash2} danger disabled={ownerOnly} onClick={() => (close(), void deleteUser())}>
                     {tr("删除账户", "Delete account")}
                   </MenuItem>
                 )}
@@ -390,12 +400,12 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
             <div className="mt-3 flex flex-wrap gap-2">
               {!isAdmin && (
                 <>
-                  <Button size="sm" icon="link" onClick={() => setDialog("sub")}>
+                  <Button size="sm" icon={LinkIcon} onClick={() => setDialog("sub")}>
                     {tr("订阅链接", "Subscription link")}
                   </Button>
                   <Button
                     size="sm"
-                    icon="refresh"
+                    icon={RefreshCw}
                     onClick={() =>
                       void act(
                         {
@@ -419,14 +429,14 @@ export function UserDrawer({ id, plans, onClose }: { id: string; plans: PlanView
                 <Button
                   size="sm"
                   variant="destructive-soft"
-                  icon="ban"
+                  icon={Ban}
                   disabled={ownerOnly}
                   onClick={() => setDialog("ban")}
                 >
                   {tr("封禁", "Ban")}
                 </Button>
               )}
-              <Button size="sm" icon="wallet" onClick={() => setDialog("balance")}>
+              <Button size="sm" icon={Wallet} onClick={() => setDialog("balance")}>
                 {tr("调整余额", "Adjust balance")}
               </Button>
             </div>
@@ -528,7 +538,7 @@ function SubscriptionCard({
                 </span>
               </div>
               {s.traffic_total_bytes !== null && (
-                <Progress
+                <Meter
                   className="mt-1"
                   value={pct(s.traffic_used_bytes, s.traffic_total_bytes)}
                   tone={usageTone(pct(s.traffic_used_bytes, s.traffic_total_bytes))}
@@ -538,7 +548,7 @@ function SubscriptionCard({
             <div className="mt-4 flex flex-wrap gap-2">
               <Button
                 size="sm"
-                icon="refresh"
+                icon={RefreshCw}
                 onClick={() =>
                   void act(
                     {
@@ -556,10 +566,10 @@ function SubscriptionCard({
               >
                 {tr("重置流量", "Reset traffic")}
               </Button>
-              <Button size="sm" icon="calendar" onClick={onRenew}>
+              <Button size="sm" icon={Calendar} onClick={onRenew}>
                 {tr("续期 / 延长", "Renew / extend")}
               </Button>
-              <Button size="sm" icon="layers" onClick={onAssign}>
+              <Button size="sm" icon={Layers} onClick={onAssign}>
                 {tr("更换套餐", "Change plan")}
               </Button>
               <Button
@@ -605,7 +615,7 @@ function AssignPlanDialog({
   const tr = useTr();
   const [form, setForm] = useState<TermForm>({ ...EMPTY_TERM, planId: current?.plan_id ?? "" });
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const b = termBody(form, tr);
     if (typeof b === "string") return setError(new Error(b));
@@ -666,7 +676,7 @@ function RenewDialog({
   });
   const [days, setDays] = useState("30");
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     let body: Record<string, unknown>;
     if (mode === "extend") {
@@ -745,7 +755,7 @@ function BanDialog({
   const tr = useTr();
   const [reason, setReason] = useState("");
   const [kind, setKind] = useState("abuse");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const presets: Record<string, string> = {
     abuse: tr("违反服务条款（滥用）", "Terms of service violation (abuse)"),
     share: tr("账号共享 / 转售", "Account sharing / resale"),
@@ -768,7 +778,7 @@ function BanDialog({
     <Dialog
       open
       tone="danger"
-      icon="ban"
+      icon={Ban}
       onClose={onClose}
       title={tr(`封禁 ${email}`, `Ban ${email}`)}
       description={tr(
@@ -805,7 +815,7 @@ function BanDialog({
 function PasswordDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const [pw, setPw] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const r = await run(() => patch(`/users/${id}`, { password: pw }), {
       ok: tr("密码已修改，该账户的会话已结束", "Password set; the account's sessions ended"),
@@ -850,7 +860,7 @@ export function AdjustBalanceDialog({
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const c = parseYuan(amount);
     if (c === null || c <= 0)
@@ -1114,28 +1124,26 @@ export function UserTraffic({ id }: { id: string }) {
       >
         {tr("流量明细", "Traffic history")}
       </SectionTitle>
-      <LineChart
+      <TrendChart
         title={tr("每日流量（站点时区）", "Daily traffic (site days)")}
         times={all.map((d) => `${d}T12:00:00Z`)}
+        {...timeLabels(all.map((d) => `${d}T12:00:00Z`))}
         format={bytes}
         series={[
           {
             label: tr("下载", "Down"),
             values: all.map((d) => by.get(d)?.down_bytes ?? 0),
-            stroke: "stroke-sky-500",
-            swatch: "bg-sky-500",
+            slot: 1,
           },
           {
             label: tr("上传", "Up"),
             values: all.map((d) => by.get(d)?.up_bytes ?? 0),
-            stroke: "stroke-emerald-500",
-            swatch: "bg-emerald-500",
+            slot: 3,
           },
           {
             label: tr("计费", "Billed"),
             values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
-            stroke: "stroke-amber-500",
-            swatch: "bg-amber-500",
+            slot: 4,
           },
         ]}
       />
@@ -1175,7 +1183,7 @@ export function CreateUserDialog({ plans, onClose }: { plans: PlanView[]; onClos
   const [term, setTerm] = useState<TermForm>(EMPTY_TERM);
   const [error, setError] = useState<unknown>(null);
   const [created, setCreated] = useState<{ email: string; sub_url: string | null } | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     let plan: Record<string, unknown> | undefined;
     if (role === "user" && term.planId) {

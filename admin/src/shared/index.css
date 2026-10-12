@@ -1,126 +1,233 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "../assets/fonts/fonts.css";
 
 /*
- * Design tokens (W33-a). Same names as akari-panel spa/src/index.css
- * (background/foreground/card/primary/muted/border/destructive/ring) so
- * W33-b can lift this file as-is, plus the status colours, the sidebar
- * surface and an elevation scale the console needs.
+ * 后台设计令牌（2026-10 改版，SPRINT admin-redesign-1012：类 macOS、Inter + Noto Sans SC、主色门户蓝 #2563eb）。
+ * 色名沿用门户 spa/src/index.css 的 shadcn 命名；后台另有窗口底（--window）、细分隔线（--separator）、
+ * 材质（--glass-*）、遮罩（--scrim）、同心圆角、四级阴影与 macOS 字号层级（text-caption … text-title1）。
  *
- * Dark mode: `.dark` on <html> (toggled by the top bar, persisted in
- * localStorage, initial value from prefers-color-scheme).
+ * 动效变量（--ease-* / --dur-*）的名字和数值与门户 spa/src/index.css 完全一致：scripts/check-tokens.mjs
+ * 在 `npm run check` 时逐个比对数值（只比对、不共享源码，R23），门户改了这里跟着改。
+ *
+ * 深色：<html> 上的 `.dark`（顶栏切换，存 localStorage，初始值跟随系统）。
  */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
+  --font-sans:
+    "Inter Akari", "Noto Sans SC Akari", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-window: var(--window);
   --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
+  --color-card-foreground: var(--foreground);
   --color-popover: var(--popover);
+  --color-popover-foreground: var(--foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-subtle: var(--subtle);
+  --color-faint: var(--faint);
+  --color-subtle: var(--window);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--foreground);
   --color-border: var(--border);
+  --color-separator: var(--separator);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-  --color-destructive-soft: var(--destructive-soft);
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
   --color-warning: var(--warning);
   --color-warning-soft: var(--warning-soft);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: #fff;
+  --color-destructive-soft: var(--destructive-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-chart-6: var(--chart-6);
+  --color-chart-7: var(--chart-7);
+  --color-chart-8: var(--chart-8);
 
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-  --radius-xl: 1rem;
+  /* 同心圆角：外层 = 内层 + 内边距 */
+  --radius-xs: 5px;
+  --radius-sm: 7px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 22px;
 
-  --shadow-card: 0 1px 2px 0 oklch(0 0 0 / 0.04), 0 1px 3px 0 oklch(0 0 0 / 0.06);
-  --shadow-pop: 0 10px 30px -10px oklch(0 0 0 / 0.25), 0 4px 10px -4px oklch(0 0 0 / 0.12);
+  /* 字号层级（macOS 命名，后台密度） */
+  --text-caption: 11px;
+  --text-caption--line-height: 14px;
+  --text-footnote: 12px;
+  --text-footnote--line-height: 16px;
+  --text-body: 13px;
+  --text-body--line-height: 18px;
+  --text-callout: 14px;
+  --text-callout--line-height: 20px;
+  --text-headline: 15px;
+  --text-headline--line-height: 20px;
+  --text-title3: 17px;
+  --text-title3--line-height: 22px;
+  --text-title2: 22px;
+  --text-title2--line-height: 28px;
+  --text-title1: 28px;
+  --text-title1--line-height: 34px;
 
-  --font-sans:
-    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-    "Noto Sans CJK SC", sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  --shadow-card: var(--shadow-card-v);
+  --shadow-raised: var(--shadow-raised-v);
+  --shadow-pop: var(--shadow-pop-v);
+  --shadow-dialog: var(--shadow-dialog-v);
+
+  --default-transition-duration: var(--dur-hover);
+  --default-transition-timing-function: var(--ease-out);
 }
 
 :root {
-  --background: oklch(0.985 0.002 260);
-  --foreground: oklch(0.21 0.02 262);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.02 262);
-  --popover: oklch(1 0 0);
-  --primary: oklch(0.52 0.17 264);
-  --primary-foreground: oklch(0.985 0 0);
-  --primary-soft: oklch(0.95 0.03 264);
-  --muted: oklch(0.965 0.004 262);
-  --muted-foreground: oklch(0.5 0.02 262);
-  --subtle: oklch(0.975 0.003 262);
-  --border: oklch(0.915 0.006 262);
-  --input: oklch(0.88 0.008 262);
-  --ring: oklch(0.55 0.16 264);
-  --destructive: oklch(0.56 0.2 25);
-  --destructive-foreground: oklch(0.985 0 0);
-  --destructive-soft: oklch(0.96 0.025 25);
-  --success: oklch(0.56 0.14 155);
-  --success-soft: oklch(0.96 0.035 155);
-  --warning: oklch(0.62 0.15 70);
-  --warning-soft: oklch(0.965 0.045 85);
-  --info: oklch(0.56 0.12 230);
-  --info-soft: oklch(0.96 0.025 230);
-  --sidebar: oklch(0.975 0.004 262);
-  --sidebar-foreground: oklch(0.32 0.02 262);
-  --sidebar-accent: oklch(0.93 0.012 262);
-  --chart-1: oklch(0.55 0.17 264);
-  --chart-2: oklch(0.65 0.14 175);
-  --chart-3: oklch(0.7 0.15 70);
-  --chart-4: oklch(0.62 0.18 330);
+  /* 动效：与门户 spa/src/index.css 同名同值（scripts/check-tokens.mjs） */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-hover: 0.2s;
+  --dur-fast: 0.26s;
+  --dur-base: 0.42s;
+  --dur-exit: 0.14s;
+  /* 后台独有：开关的回弹 */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* 浅色：石墨灰底 + 白色内容面 */
+  --background: #f3f4f7;
+  --window: #f7f8fa;
+  --foreground: #12151c;
+  --card: #ffffff;
+  --popover: rgb(255 255 255 / 0.95);
+  --muted: #eef0f4;
+  --secondary: #e9ebf0;
+  --accent: rgb(18 21 28 / 0.05);
+  --muted-foreground: #5c6473;
+  --faint: #737b8a;
+  --border: rgb(18 21 28 / 0.09);
+  --separator: rgb(18 21 28 / 0.06);
+  --input: rgb(18 21 28 / 0.16);
+
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --primary-soft: rgb(37 99 235 / 0.1);
+  --ring: rgb(37 99 235 / 0.45);
+
+  --success: #15803d;
+  --success-soft: rgb(22 163 74 / 0.12);
+  --warning: #b45309;
+  --warning-soft: rgb(234 138 0 / 0.14);
+  --destructive: #dc2626;
+  --destructive-soft: rgb(220 38 38 / 0.1);
+  --info: #0e7490;
+  --info-soft: rgb(8 145 178 / 0.11);
+
+  /* 数据可视化：分类色 8 槽、固定顺序，颜色跟着实体走（直连 1 号、中转 2 号）；浅色底 #fff 校验过 */
+  --chart-1: #2563eb;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+  --chart-7: #4a3aa7;
+  --chart-8: #e34948;
+  --chart-grid: rgb(18 21 28 / 0.07);
+  --chart-axis: #737b8a;
+
+  /* 材质（毛玻璃，只用在侧栏、工具栏、标签栏、菜单与命令面板这些固定大面上） */
+  --glass-sidebar: rgb(236 238 243 / 0.72);
+  --glass-toolbar: rgb(247 248 250 / 0.78);
+  --glass-edge: rgb(255 255 255 / 0.7);
+  --scrim: rgb(15 18 25 / 0.28);
+
+  --shadow-card-v: 0 0 0 0.5px rgb(18 21 28 / 0.07), 0 1px 2px rgb(18 21 28 / 0.04);
+  --shadow-raised-v:
+    0 0 0 0.5px rgb(18 21 28 / 0.08), 0 2px 6px -1px rgb(18 21 28 / 0.08), 0 8px 24px -8px rgb(18 21 28 / 0.08);
+  --shadow-pop-v: 0 0 0 0.5px rgb(18 21 28 / 0.1), 0 10px 30px -6px rgb(18 21 28 / 0.2), 0 2px 6px rgb(18 21 28 / 0.06);
+  --shadow-dialog-v:
+    0 0 0 0.5px rgb(18 21 28 / 0.1), 0 24px 64px -12px rgb(18 21 28 / 0.32), 0 6px 16px -4px rgb(18 21 28 / 0.1);
 }
 
 .dark {
-  --background: oklch(0.16 0.012 262);
-  --foreground: oklch(0.94 0.006 262);
-  --card: oklch(0.2 0.014 262);
-  --card-foreground: oklch(0.94 0.006 262);
-  --popover: oklch(0.22 0.014 262);
-  --primary: oklch(0.68 0.15 264);
-  --primary-foreground: oklch(0.16 0.012 262);
-  --primary-soft: oklch(0.3 0.06 264);
-  --muted: oklch(0.25 0.014 262);
-  --muted-foreground: oklch(0.7 0.015 262);
-  --subtle: oklch(0.22 0.013 262);
-  --border: oklch(0.3 0.014 262);
-  --input: oklch(0.36 0.016 262);
-  --ring: oklch(0.7 0.14 264);
-  --destructive: oklch(0.66 0.19 25);
-  --destructive-foreground: oklch(0.16 0.012 262);
-  --destructive-soft: oklch(0.3 0.07 25);
-  --success: oklch(0.72 0.14 155);
-  --success-soft: oklch(0.29 0.05 155);
-  --warning: oklch(0.78 0.14 75);
-  --warning-soft: oklch(0.31 0.06 75);
-  --info: oklch(0.72 0.11 230);
-  --info-soft: oklch(0.29 0.05 230);
-  --sidebar: oklch(0.18 0.013 262);
-  --sidebar-foreground: oklch(0.82 0.01 262);
-  --sidebar-accent: oklch(0.26 0.016 262);
-  --chart-1: oklch(0.7 0.15 264);
-  --chart-2: oklch(0.74 0.13 175);
-  --chart-3: oklch(0.8 0.14 75);
-  --chart-4: oklch(0.72 0.17 330);
+  --background: #0b0c10;
+  --window: #121318;
+  --foreground: #eef0f5;
+  --card: #1a1b21;
+  --popover: rgb(32 33 40 / 0.94);
+  --muted: #22242b;
+  --secondary: #272a32;
+  --accent: rgb(255 255 255 / 0.06);
+  --muted-foreground: #9aa1ae;
+  --faint: #7d8492;
+  --border: rgb(255 255 255 / 0.08);
+  --separator: rgb(255 255 255 / 0.06);
+  --input: rgb(255 255 255 / 0.15);
+
+  --primary: #4a9dff;
+  --primary-foreground: #06101f;
+  --primary-soft: rgb(74 157 255 / 0.16);
+  --ring: rgb(74 157 255 / 0.5);
+
+  --success: #4ade80;
+  --success-soft: rgb(74 222 128 / 0.13);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 0.14);
+  --destructive: #f87171;
+  --destructive-soft: rgb(248 113 113 / 0.14);
+  --info: #22d3ee;
+  --info-soft: rgb(34 211 238 / 0.12);
+
+  /* 深色单独选色（深色底 #1a1b21 校验过），不是自动反转 */
+  --chart-1: #3b8cf5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
+  --chart-5: #d55181;
+  --chart-6: #008300;
+  --chart-7: #9085e9;
+  --chart-8: #e66767;
+  --chart-grid: rgb(255 255 255 / 0.07);
+  --chart-axis: #7d8492;
+
+  --glass-sidebar: rgb(28 29 35 / 0.66);
+  --glass-toolbar: rgb(18 19 24 / 0.72);
+  --glass-edge: rgb(255 255 255 / 0.06);
+  --scrim: rgb(0 0 0 / 0.5);
+
+  --shadow-card-v: 0 0 0 0.5px rgb(255 255 255 / 0.07), inset 0 0.5px 0 rgb(255 255 255 / 0.05);
+  --shadow-raised-v:
+    0 0 0 0.5px rgb(255 255 255 / 0.08), inset 0 0.5px 0 rgb(255 255 255 / 0.06), 0 8px 24px -8px rgb(0 0 0 / 0.5);
+  --shadow-pop-v:
+    0 0 0 0.5px rgb(255 255 255 / 0.1), inset 0 0.5px 0 rgb(255 255 255 / 0.08), 0 16px 40px -8px rgb(0 0 0 / 0.6);
+  --shadow-dialog-v:
+    0 0 0 0.5px rgb(255 255 255 / 0.1), inset 0 0.5px 0 rgb(255 255 255 / 0.08), 0 32px 80px -16px rgb(0 0 0 / 0.75);
+}
+
+/* 系统「降低透明度」：材质换成实色 */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-sidebar: #eceef3;
+    --glass-toolbar: #f7f8fa;
+    --popover: #ffffff;
+  }
+  .dark {
+    --glass-sidebar: #1c1d23;
+    --glass-toolbar: #121318;
+    --popover: #202128;
+  }
 }
 
 html {
@@ -130,18 +237,76 @@ html.dark {
   color-scheme: dark;
 }
 
-body {
-  @apply bg-background text-foreground antialiased;
-  font-family: var(--font-sans);
-  font-feature-settings: "tnum" 1;
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    @apply font-sans antialiased;
+    /* Inter：单层 a（cv11）、开放数字（ss01）；表格与金额用等宽数字 */
+    font-feature-settings: "cv11", "ss01";
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-body text-foreground;
+  }
+  ::selection {
+    background: var(--primary-soft);
+  }
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
 }
 
-:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+.tnum {
+  font-variant-numeric: tabular-nums;
 }
 
-/* Skeleton shimmer (respects reduced motion). */
+/* 毛玻璃材质 */
+.glass {
+  backdrop-filter: saturate(180%) blur(24px);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* 弹出层：打开 --dur-hover 快起慢收、关闭 --dur-exit 快速离开（与门户同一口径） */
+[data-slot$="-content"],
+[data-slot$="-overlay"] {
+  --tw-duration: var(--dur-hover);
+  --tw-ease: var(--ease-out);
+}
+:is([data-slot$="-content"], [data-slot$="-overlay"])[data-state="closed"] {
+  --tw-duration: var(--dur-exit);
+  --tw-ease: var(--ease-in);
+}
+
+/* 切页：上浮 6px 淡入 */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+.page-in {
+  animation: page-in var(--dur-fast) var(--ease-out) backwards;
+}
+@keyframes akari-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+.anim-in {
+  animation: akari-in var(--dur-hover) var(--ease-out) backwards;
+}
+
+/* 骨架闪烁 */
 @keyframes akari-shimmer {
   0% {
     background-position: -200% 0;
@@ -151,47 +316,48 @@ body {
   }
 }
 .skeleton {
-  background: linear-gradient(90deg, var(--muted) 25%, var(--subtle) 37%, var(--muted) 63%);
+  background: linear-gradient(90deg, var(--muted) 25%, var(--window) 37%, var(--muted) 63%);
   background-size: 400% 100%;
   animation: akari-shimmer 1.4s ease infinite;
 }
+
 @media (prefers-reduced-motion: reduce) {
-  .skeleton {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
-@keyframes akari-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.anim-in {
-  animation: akari-in 140ms ease-out;
-}
-@keyframes akari-drawer {
-  from {
-    transform: translateX(16px);
-    opacity: 0.6;
-  }
-  to {
-    transform: none;
-    opacity: 1;
-  }
-}
-.anim-drawer {
-  animation: akari-drawer 160ms ease-out;
-}
-
-/* Thin scrollbars inside the shell. */
+/* 细滚动条 */
 .scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: var(--input) transparent;
+}
+
+/* 触屏输入框 16px（iOS 聚焦不放大；与门户一致） */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* 小控件的可点区域不小于 44px（复选框、开关、芯片关闭钮）：伪元素扩大命中区，不改布局 */
+.hit-44 {
+  position: relative;
+}
+.hit-44::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  translate: -50% -50%;
 }
 
 /* Server-sanitized Markdown HTML (announcements, help articles, previews). */

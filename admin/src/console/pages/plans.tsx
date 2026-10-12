@@ -6,32 +6,25 @@ import { useMemo, useState } from "react";
 import { del, patch, post } from "../../shared/api";
 import { bytes, centsToYuanText, parseYuan, yuan } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
-import { Icon } from "../../shared/ui/icons";
-import { Dialog, Drawer, MenuItem, RowMenu, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  Checkbox,
-  EmptyState,
-  ErrorState,
-  Field,
-  Input,
-  PageHeader,
-  Select,
-  Skeleton,
-  Switch,
-  Tabs,
-  Textarea,
-} from "../../shared/ui/primitives";
-import { FormError, SectionTitle, useRun } from "../kit";
+import { FormError, SectionTitle } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
 import { PERIODS, periodLabel, resetLabel } from "../terms";
 import type { NodeGroup, PlanView, ServerView } from "../types";
-import { useGroups, useServers } from "./nodes";
+import { useGroups, useServers } from "../servers";
 import { usePlans } from "./users";
+import { Layers, Pause, Play, Plus, Route, Settings, Trash2, TriangleAlert, Zap } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select, Switch, Textarea } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { MenuItem, RowMenu } from "../../shared/ui/menu";
+import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
+import { Tabs } from "../../shared/ui/tabs";
+import { useToast } from "../../shared/ui/toast";
 
 const GiB = 1024 ** 3;
 
@@ -67,11 +60,11 @@ export function PlansPage() {
         )}
         actions={
           tab === "plans" ? (
-            <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ open: "new" }, false)}>
+            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
               {tr("新建套餐", "New plan")}
             </Button>
           ) : (
-            <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ group: "new" }, false)}>
+            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ group: "new" }, false)}>
               {tr("新建节点组", "New node group")}
             </Button>
           )
@@ -98,7 +91,7 @@ function PlanList({ open }: { open: string | null }) {
   const groups = useGroups();
   const confirm = useConfirm();
   const toast = useToast();
-  const [run] = useRun();
+  const [run] = useAction();
   const groupName = new Map((groups.data ?? []).map((g) => [g.id, g]));
   const servers = useServers();
   const idx = useEntranceIndex(servers.data);
@@ -122,7 +115,7 @@ function PlanList({ open }: { open: string | null }) {
       {list.length === 0 ? (
         <Card>
           <EmptyState
-            icon="layers"
+            icon={Layers}
             title={tr("还没有套餐", "No plans yet")}
             action={
               <Button variant="primary" onClick={() => setQuery({ open: "new" }, false)}>
@@ -162,11 +155,11 @@ function PlanList({ open }: { open: string | null }) {
                       <RowMenu label={tr(`套餐 ${p.name} 的操作`, `Actions of ${p.name}`)}>
                         {(close) => (
                           <>
-                            <MenuItem icon="settings" onClick={() => (close(), setQuery({ open: p.id }, false))}>
+                            <MenuItem icon={Settings} onClick={() => (close(), setQuery({ open: p.id }, false))}>
                               {tr("编辑", "Edit")}
                             </MenuItem>
                             <MenuItem
-                              icon={p.enabled ? "pause" : "play"}
+                              icon={p.enabled ? Pause : Play}
                               onClick={async () => {
                                 close();
                                 const ok = await confirm({
@@ -191,7 +184,7 @@ function PlanList({ open }: { open: string | null }) {
                               {p.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}
                             </MenuItem>
                             <MenuItem
-                              icon="trash"
+                              icon={Trash2}
                               danger
                               onClick={async () => {
                                 close();
@@ -310,7 +303,7 @@ function PlanDrawer({
     subscribers: number;
     over_quota: number;
   } | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const ents = [...new Set(f.groups.flatMap((g) => groups.find((x) => x.id === g)?.entrance_ids ?? []))];
 
   const body = (): Record<string, unknown> | string => {
@@ -536,7 +529,11 @@ function PlanDrawer({
             const e = idx.get(id);
             return (
               <li key={id} className="flex items-center gap-1.5">
-                <Icon name={e?.relay ? "route" : "zap"} size={12} className="text-muted-foreground" />
+                {e?.relay ? (
+                  <Route size={12} className="text-muted-foreground" />
+                ) : (
+                  <Zap size={12} className="text-muted-foreground" />
+                )}
                 {e ? `${e.server} / ${e.label}` : id}
                 {e?.hidden && <Badge tone="danger">{tr("已隐藏", "hidden")}</Badge>}
                 {e && <span className="text-xs text-muted-foreground">{e.rate}x</span>}
@@ -552,7 +549,7 @@ function PlanDrawer({
         <Dialog
           open
           tone="warning"
-          icon="alert"
+          icon={TriangleAlert}
           onClose={() => setImpact(null)}
           title={tr("套餐条款变更", "Plan terms changed")}
           description={tr(
@@ -619,7 +616,7 @@ function GroupList({ open }: { open: string | null }) {
       {groups.data.length === 0 ? (
         <Card>
           <EmptyState
-            icon="layers"
+            icon={Layers}
             title={tr("还没有节点组", "No node groups yet")}
             action={
               <Button variant="primary" onClick={() => setQuery({ group: "new" }, false)}>
@@ -652,7 +649,11 @@ function GroupList({ open }: { open: string | null }) {
                       const e = idx.get(id);
                       return (
                         <li key={id} className="flex items-center gap-1.5">
-                          <Icon name={e?.relay ? "route" : "zap"} size={12} className="text-muted-foreground" />
+                          {e?.relay ? (
+                            <Route size={12} className="text-muted-foreground" />
+                          ) : (
+                            <Zap size={12} className="text-muted-foreground" />
+                          )}
                           {e ? `${e.server} / ${e.label}` : id}
                           {e && <span className="text-xs text-muted-foreground">{e.rate}x</span>}
                           {e?.hidden && <Badge tone="danger">{tr("已隐藏", "hidden")}</Badge>}
@@ -695,7 +696,7 @@ function GroupDialog({
   const [name, setName] = useState(group?.name ?? "");
   const [description, setDescription] = useState(group?.description ?? "");
   const [ids, setIds] = useState<string[]>(group?.entrance_ids ?? []);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const b = { name: name.trim(), description, entrance_ids: ids };
     const r = await run(() => (group ? patch(`/node-groups/${group.id}`, b) : post("/node-groups", b)), {
@@ -764,7 +765,11 @@ function GroupDialog({
                       label={`${n.name} · ${e.name}`}
                       onChange={(on) => setIds(on ? [...ids, e.id] : ids.filter((x) => x !== e.id))}
                     />
-                    <Icon name={e.kind === "relay" ? "route" : "zap"} size={12} className="text-muted-foreground" />
+                    {e.kind === "relay" ? (
+                      <Route size={12} className="text-muted-foreground" />
+                    ) : (
+                      <Zap size={12} className="text-muted-foreground" />
+                    )}
                     {n.display_name || n.name} · {e.name}
                     <span className="text-xs text-muted-foreground">{e.rate}x</span>
                   </label>

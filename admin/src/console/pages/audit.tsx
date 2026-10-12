@@ -5,9 +5,11 @@ import { useState } from "react";
 import { get, qs } from "../../shared/api";
 import { dateTime } from "../../shared/format";
 import { useLang, useTr, type Lang, type Tr } from "../../shared/i18n";
-import { Button, Input, PageHeader } from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
 import { useDebounced } from "../kit";
+import { Button } from "../../shared/ui/button";
+import { Input } from "../../shared/ui/form";
+import { PageHeader } from "../../shared/ui/layout";
 
 type Entry = {
   id: number;

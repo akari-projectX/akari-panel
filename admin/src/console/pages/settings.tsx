@@ -9,23 +9,8 @@ import { get, post, put } from "../../shared/api";
 import { adminBase } from "../../shared/base";
 import { dateTime } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Icon } from "../../shared/ui/icons";
-import { useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  PageHeader,
-  Select,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
-import { FormError, useErrText, useRun } from "../kit";
+import { FormError, useErrText } from "../kit";
+import { useAction } from "../data";
 import { navigate, useRoute } from "../router";
 import { SecurityTab } from "./settings-access";
 import { MailTab, TemplatesTab } from "./settings-mail";
@@ -33,6 +18,15 @@ import { BlockRulesTab, BrandingTab, CleanupTab, NodesTab } from "./settings-mis
 import { PaymentsTab } from "./settings-payments";
 import { SignupTab } from "./settings-signup";
 import { SubscriptionTab } from "./settings-sub";
+import { Plus, Star, Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Field, Input, Select, Switch } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 export type DomainEntry = { domain: string; display: string; preferred: boolean };
 export type SettingsView = {
@@ -220,7 +214,7 @@ function SiteTab() {
   const [perUser, setPerUser] = useState<boolean | null>(null);
   const [trust, setTrust] = useState<string | null>(null);
   const [checks, setChecks] = useState<Record<string, string>>({});
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const d = s.data;
   useEffect(() => {
     if (d && !lists)
@@ -380,7 +374,7 @@ function SiteTab() {
             onClick={() => setLists({ ...lists, [kind]: [v, ...lists[kind].filter((_, j) => j !== i)] })}
             className={i === 0 ? "text-warning" : "text-muted-foreground hover:text-warning"}
           >
-            <Icon name="star" size={16} fill={i === 0 ? "currentColor" : "none"} />
+            <Star size={16} fill={i === 0 ? "currentColor" : "none"} />
           </button>
           <Input
             aria-label={`${KIND_NAME(kind, tr)} ${i + 1}`}
@@ -394,7 +388,7 @@ function SiteTab() {
           <Button
             size="sm"
             variant="ghost"
-            icon="trash"
+            icon={Trash2}
             aria-label={tr("移除", "Remove")}
             disabled={i === 0 && lists[kind].length > 1}
             title={
@@ -411,7 +405,7 @@ function SiteTab() {
           )}
         </div>
       ))}
-      <Button size="sm" icon="plus" onClick={() => setLists({ ...lists, [kind]: [...lists[kind], ""] })}>
+      <Button size="sm" icon={Plus} onClick={() => setLists({ ...lists, [kind]: [...lists[kind], ""] })}>
         {tr("添加", "Add")}
       </Button>
     </div>

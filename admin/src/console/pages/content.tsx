@@ -7,25 +7,21 @@ import { useEffect, useState } from "react";
 import { del, get, post, put } from "../../shared/api";
 import { dateTime, fromLocalInput, toLocalInput } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Drawer, MenuItem, RowMenu, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardHeader,
-  Field,
-  Input,
-  PageHeader,
-  Segmented,
-  Select,
-  Switch,
-  Tabs,
-  Textarea,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { useDebounced, useRun } from "../kit";
+import { useDebounced } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
+import { Mail, Plus, Settings, Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Drawer } from "../../shared/ui/dialog";
+import { Field, Input, Segmented, Select, Switch, Textarea } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { MenuItem, RowMenu } from "../../shared/ui/menu";
+import { Tabs } from "../../shared/ui/tabs";
+import { useToast } from "../../shared/ui/toast";
 
 type Announcement = {
   id: string;
@@ -175,7 +171,7 @@ function Announcements() {
   return (
     <>
       <div className="mb-3 flex justify-end">
-        <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ open: "new" }, false)}>
+        <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
           {tr("新建公告", "New announcement")}
         </Button>
       </div>
@@ -217,7 +213,7 @@ function AnnouncementEditor({ a, onClose }: { a: Announcement | null; onClose: (
     audience: a?.audience ?? "all",
   });
   const [lang, setLang] = useState<"zh" | "en">("zh");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const body = () => ({
     title_zh: f.title_zh,
     title_en: f.title_en.trim() || null,
@@ -273,7 +269,7 @@ function AnnouncementEditor({ a, onClose }: { a: Announcement | null; onClose: (
             </Button>
           )}
           {a && (
-            <Button icon="mail" onClick={mail}>
+            <Button icon={Mail} onClick={mail}>
               {tr("邮件通知", "Mail it")}
             </Button>
           )}
@@ -388,7 +384,7 @@ function KnowledgeBase() {
       )}
       <Categories cats={cats.data ?? []} />
       <div className="mb-3 mt-4 flex justify-end">
-        <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ open: "new" }, false)}>
+        <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
           {tr("新建文章", "New article")}
         </Button>
       </div>
@@ -417,7 +413,7 @@ function KnowledgeBase() {
 function Categories({ cats }: { cats: Category[] }) {
   const tr = useTr();
   const confirm = useConfirm();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const [name, setName] = useState("");
   const [edit, setEdit] = useState<{ id: string; name_zh: string; name_en: string; sort: string } | null>(null);
   const add = async () => {
@@ -487,7 +483,7 @@ function Categories({ cats }: { cats: Category[] }) {
                     {(close) => (
                       <>
                         <MenuItem
-                          icon="settings"
+                          icon={Settings}
                           onClick={() => (
                             close(),
                             setEdit({ id: c.id, name_zh: c.name_zh, name_en: c.name_en ?? "", sort: String(c.sort) })
@@ -496,7 +492,7 @@ function Categories({ cats }: { cats: Category[] }) {
                           {tr("改名 / 排序", "Rename / sort")}
                         </MenuItem>
                         <MenuItem
-                          icon="trash"
+                          icon={Trash2}
                           danger
                           onClick={async () => {
                             close();
@@ -560,7 +556,7 @@ function ArticleEditor({ a, cats, onClose }: { a: Article | null; cats: Category
     if (full.data) setF((x) => ({ ...x, body_zh: full.data.body_zh, body_en: full.data.body_en ?? "" }));
   }, [full.data]);
   const [lang, setLang] = useState<"zh" | "en">("zh");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const save = async () => {
     const b = {
       category_id: f.category_id,

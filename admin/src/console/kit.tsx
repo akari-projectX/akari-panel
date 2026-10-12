@@ -1,51 +1,15 @@
-// Small page helpers shared by the console's views.
-import { useQueryClient, type QueryKey } from "@tanstack/react-query";
+// Small page helpers shared by the console's views (writes go through
+// data.ts `useAction`).
+import { Copy, type LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { cn } from "../shared/cn";
 import { errorCode, errorText } from "../shared/errors";
-import { useLang, useTr } from "../shared/i18n";
-import { useConfirm, useToast } from "../shared/ui/overlays";
-import { Icon } from "../shared/ui/icons";
-import { Badge, Button, type Tone } from "../shared/ui/primitives";
 import { copyText } from "../shared/format";
-
-/**
- * Run a mutation with feedback: success toast (and invalidation), or the
- * server error as an error toast. Resolves to the result, or undefined on
- * failure.
- */
-export function useRun() {
-  const toast = useToast();
-  const lang = useLang();
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const run = useCallback(
-    async <T,>(
-      fn: () => Promise<T>,
-      opts: { ok?: string; okDetail?: string; invalidate?: QueryKey[]; errorPrefix?: string } = {},
-    ): Promise<T | undefined> => {
-      setBusy(true);
-      try {
-        const r = await fn();
-        // Awaited: forms that re-initialise from the query after a save read the fresh values.
-        await Promise.all((opts.invalidate ?? []).map((k) => qc.invalidateQueries({ queryKey: k })));
-        if (opts.ok) toast({ tone: "success", title: opts.ok, description: opts.okDetail });
-        return r;
-      } catch (e) {
-        const text = errorText(e, lang);
-        toast({
-          tone: "error",
-          title: opts.errorPrefix ? `${opts.errorPrefix}：${text}` : text,
-          description: errorCode(e) || undefined,
-        });
-        return undefined;
-      } finally {
-        setBusy(false);
-      }
-    },
-    [toast, lang, qc],
-  );
-  return [run, busy] as const;
-}
+import { useLang, useTr } from "../shared/i18n";
+import { Badge, type Tone } from "../shared/ui/badge";
+import { Button } from "../shared/ui/button";
+import { useConfirm } from "../shared/ui/confirm";
+import { useToast } from "../shared/ui/toast";
 
 /** Error text in the current language. */
 export function useErrText() {
@@ -53,12 +17,13 @@ export function useErrText() {
   return useCallback((e: unknown) => errorText(e, lang), [lang]);
 }
 
+/** A server error shown in place (mapped text + code). */
 export function FormError({ error }: { error: unknown }) {
   const t = useErrText();
   if (!error) return null;
   return (
-    <p role="alert" className="text-[13px] text-destructive">
-      {t(error)} <span className="font-mono text-[11px] opacity-70">{errorCode(error)}</span>
+    <p role="alert" className="text-body text-destructive">
+      {t(error)} <span className="font-mono text-caption opacity-70">{errorCode(error)}</span>
     </p>
   );
 }
@@ -79,7 +44,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
     <Button
       size="sm"
       variant="ghost"
-      icon="copy"
+      icon={Copy}
       onClick={async () =>
         toast(
           (await copyText(text))
@@ -94,7 +59,7 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
 }
 
 export function Mono({ children }: { children: ReactNode }) {
-  return <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">{children}</code>;
+  return <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-footnote break-all">{children}</code>;
 }
 
 export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
@@ -105,50 +70,37 @@ export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNod
   );
 }
 
-/** Section title inside a drawer. */
-export function SectionTitle({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
-  return (
-    <div className="mb-2 mt-5 flex items-center justify-between gap-2 first:mt-0">
-      <h3 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">{children}</h3>
-      {actions}
-    </div>
-  );
-}
-
+/** A KPI card: label, big number, one line under it. */
 export function Stat({
   label,
   value,
   hint,
   tone,
-  icon,
+  icon: Icon,
 }: {
   label: ReactNode;
   value: ReactNode;
   hint?: ReactNode;
   tone?: "danger" | "warning" | "success";
-  icon?: import("../shared/ui/icons").IconName;
+  icon?: LucideIcon;
 }) {
   return (
-    <div className="rounded-lg border border-border bg-card p-4 shadow-card">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        {icon && <Icon name={icon} size={14} />}
+    <div className="rounded-xl bg-card p-4 shadow-card">
+      <div className="flex items-center gap-2 text-footnote text-muted-foreground">
+        {Icon && <Icon className="size-3.5" aria-hidden="true" />}
         {label}
       </div>
       <div
-        className={
-          "mt-1.5 text-2xl font-semibold tabular-nums " +
-          (tone === "danger"
-            ? "text-destructive"
-            : tone === "warning"
-              ? "text-warning"
-              : tone === "success"
-                ? "text-success"
-                : "")
-        }
+        className={cn(
+          "tnum mt-1.5 text-title2 font-semibold tracking-[-0.02em]",
+          tone === "danger" && "text-destructive",
+          tone === "warning" && "text-warning",
+          tone === "success" && "text-success",
+        )}
       >
         {value}
       </div>
-      {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
+      {hint && <div className="mt-1 text-footnote text-muted-foreground">{hint}</div>}
     </div>
   );
 }
@@ -167,3 +119,4 @@ export function useConfirmFree() {
       tone: "warning",
     });
 }
+export { SectionTitle } from "../shared/ui/layout";

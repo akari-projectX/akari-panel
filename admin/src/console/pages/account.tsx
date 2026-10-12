@@ -8,22 +8,17 @@ import { loadPage, loginBase } from "../../shared/base";
 import { dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
 import { createCredential, passkeysSupported } from "../../shared/passkey";
-import { useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  KV,
-  PageHeader,
-  Switch,
-} from "../../shared/ui/primitives";
-import { useErrText, useRun } from "../kit";
+import { useErrText } from "../kit";
+import { useAction } from "../data";
 import { useMe } from "../session";
+import { Fingerprint, LogOut } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Field, Input, Switch } from "../../shared/ui/form";
+import { Callout, KV, PageHeader } from "../../shared/ui/layout";
+import { useToast } from "../../shared/ui/toast";
 
 type Passkeys = {
   available: boolean;
@@ -63,7 +58,7 @@ export function AccountPage() {
             />
             <Button
               className="mt-4"
-              icon="logout"
+              icon={LogOut}
               variant="destructive-soft"
               onClick={async () => {
                 await logout().catch(() => undefined);
@@ -87,7 +82,7 @@ function PasswordCard() {
   const tr = useTr();
   const [cur, setCur] = useState("");
   const [next, setNext] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   return (
     <Card>
       <CardHeader
@@ -136,7 +131,7 @@ function PasskeysCard() {
   const q = useQuery({ queryKey: ["me", "passkeys"], queryFn: () => get<Passkeys>("/me/passkeys") });
   const [name, setName] = useState("");
   const [rename, setRename] = useState<{ id: string; name: string } | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const d = q.data;
   const add = async () => {
     try {
@@ -245,7 +240,7 @@ function PasskeysCard() {
             <Field label={tr("新通行密钥名称", "New passkey name")}>
               <Input className="w-56" value={name} onChange={(e) => setName(e.target.value)} placeholder="MacBook" />
             </Field>
-            <Button icon="fingerprint" onClick={add} disabled={!passkeysSupported() || d.passkeys.length >= d.max}>
+            <Button icon={Fingerprint} onClick={add} disabled={!passkeysSupported() || d.passkeys.length >= d.max}>
               {tr("添加通行密钥", "Add passkey")}
             </Button>
           </div>

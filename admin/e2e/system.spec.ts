@@ -64,7 +64,7 @@ test("ALR-01 ALR-02 ALR-03 ALR-04 ALR-05: alert center, acknowledge, settings, c
   await expect(page.getByText("已保存；留空 = 不修改")).toBeVisible();
   // ALR-04: a channel test (the stand-in answers 501: the failure is reported).
   await page.getByRole("button", { name: "发送测试" }).nth(1).click();
-  await expect(page.locator("[data-toast]").filter({ hasNotText: "告警设置已保存" }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasNotText: "告警设置已保存" }).first()).toBeVisible();
   // Turn the webhook off again (the evaluator would deliver to it).
   await page.getByRole("switch", { name: "Webhook" }).click();
   await page.getByRole("button", { name: "保存告警设置" }).click();

@@ -8,27 +8,19 @@ import { useEffect, useMemo, useState } from "react";
 import { del, get, post, put, qs } from "../../shared/api";
 import { dateTime } from "../../shared/format";
 import { useLang, useTr } from "../../shared/i18n";
-import { useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  SecretInput,
-  Segmented,
-  Select,
-  Skeleton,
-  Switch,
-  Textarea,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { FormError, useDebounced, useErrText, useRun } from "../kit";
+import { FormError, useDebounced, useErrText } from "../kit";
+import { useAction } from "../data";
 import { setQuery, useRoute } from "../router";
 import { useMe } from "../session";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Field, Input, SecretInput, Segmented, Select, Switch, Textarea } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type Mail = {
   version: number;
@@ -90,7 +82,7 @@ function MailCard() {
   useEffect(() => {
     if (q.data) setF(q.data);
   }, [q.data]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   const save = () =>
     run(
@@ -245,7 +237,7 @@ function Diagnose() {
   const toast = useToast();
   const [to, setTo] = useState(me.email);
   const [report, setReport] = useState<{ ok: boolean; steps: Step[] } | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const steps: Record<string, [string, string]> = {
     config: ["配置", "Config"],
     dns: ["解析域名", "DNS"],
@@ -337,7 +329,7 @@ function OutboxCard() {
   const tr = useTr();
   const { query } = useRoute();
   const status = query.get("outbox") ?? "dead";
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useInfiniteQuery({
     queryKey: ["outbox", status],
     queryFn: ({ pageParam }) => get<Outbox[]>(`/mail/outbox${qs({ status, before: pageParam, limit: 50 })}`),
@@ -476,7 +468,7 @@ export function TemplatesTab() {
       }),
     enabled: !!cur && !!ds && !!db && (mode === "auto" || !!dh),
   });
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!list.data) return list.error ? <FormError error={list.error} /> : <Skeleton className="h-96" />;
   if (!cur) return null;
   const allowed = cur.placeholders.map((p) => p.name);

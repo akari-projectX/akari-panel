@@ -7,27 +7,19 @@ import { useEffect, useState } from "react";
 import { get, post, put, qs } from "../../shared/api";
 import { centsToYuanText, dateTime, parseYuan, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Dialog } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Checkbox,
-  Field,
-  Input,
-  PageHeader,
-  Select,
-  Skeleton,
-  Switch,
-  Tabs,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { CopyButton, FormError, Mono, useDebounced, useRun } from "../kit";
+import { CopyButton, FormError, Mono, useDebounced } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
 import { AdjustBalanceDialog } from "./user-drawer";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Dialog } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select, Switch } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { Tabs } from "../../shared/ui/tabs";
 
 type Withdrawal = {
   id: string;
@@ -274,7 +266,7 @@ function DecideDialog({
   const [usdt, setUsdt] = useState(rate ? (w.amount_cents / rate).toFixed(2) : "");
   const [txid, setTxid] = useState("");
   const [note, setNote] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const r = await run(
       () =>
@@ -509,7 +501,7 @@ function InviteSettings() {
       });
   }, [q.data, f]);
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   const save = async () => {
     const min = parseYuan(f.min || "0");

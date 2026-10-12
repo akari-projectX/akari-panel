@@ -6,23 +6,20 @@ import { useState } from "react";
 import { ApiError, get, post } from "../../shared/api";
 import { dateTime, parseYuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Dialog, Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardHeader,
-  Field,
-  Input,
-  Progress,
-  Segmented,
-  Select,
-  Textarea,
-} from "../../shared/ui/primitives";
-import { FormError, useErrText, useRun } from "../kit";
+import { FormError, useErrText } from "../kit";
+import { useAction } from "../data";
 import type { PlanView } from "../types";
 import { EMPTY_TERM, TermFields, termBody, type TermForm } from "./term-fields";
+import { Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Field, Input, Segmented, Select, Textarea } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Meter } from "../../shared/ui/meter";
+import { useToast } from "../../shared/ui/toast";
 
 export type UserFilter = {
   q?: string;
@@ -87,7 +84,7 @@ export function BatchDialog({
 }) {
   const tr = useTr();
   const confirm = useConfirm();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const [kind, setKind] = useState<Kind>("extend_expiry");
   const [days, setDays] = useState("30");
   const [term, setTerm] = useState<TermForm>(EMPTY_TERM);
@@ -308,7 +305,7 @@ export function BatchJobs() {
                 <Badge tone={jobTone(j.status)}>{j.status}</Badge>
                 <span className="text-xs text-muted-foreground">{dateTime(j.created_at)}</span>
                 <span className="ml-auto flex min-w-48 items-center gap-2 text-xs tabular-nums text-muted-foreground">
-                  <Progress value={j.total ? (finished / j.total) * 100 : 100} className="w-24" />
+                  <Meter value={j.total ? (finished / j.total) * 100 : 100} className="w-24" />
                   {tr(
                     `${finished}/${j.total} · 失败 ${j.failed} · 跳过 ${j.skipped}`,
                     `${finished}/${j.total} · ${j.failed} failed · ${j.skipped} skipped`,
@@ -327,7 +324,7 @@ export function BatchJobs() {
 function JobDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const errText = useErrText();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const q = useQuery({
     queryKey: ["batch-jobs", id],
     queryFn: () => get<{ job: Job; items: Item[] }>(`/users/batch/${id}`),
@@ -406,7 +403,7 @@ export function BulkDeleteDialog({
 }) {
   const tr = useTr();
   const toast = useToast();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const [typed, setTyped] = useState("");
   const p = useQuery({
     queryKey: ["delete-preview", selection],
@@ -433,7 +430,7 @@ export function BulkDeleteDialog({
       wide
       onClose={onClose}
       tone="danger"
-      icon="trash"
+      icon={Trash2}
       title={tr("批量删除账户", "Delete accounts")}
       description={label}
       onSubmit={submit}

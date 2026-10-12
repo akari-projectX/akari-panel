@@ -8,25 +8,19 @@ import { apiBase } from "../../shared/base";
 import { get, qs } from "../../shared/api";
 import { bytes, dateOnly, dateTime, pct, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Popover } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Field,
-  Input,
-  PageHeader,
-  Progress,
-  Select,
-  Switch,
-  usageTone,
-  type Tone,
-} from "../../shared/ui/primitives";
 import { DataTable, FilterChip, Pager, type Column } from "../../shared/ui/table";
 import { useDebounced } from "../kit";
 import { setQuery, useRoute } from "../router";
 import type { PlanView } from "../types";
 import { BatchDialog, BatchJobs, BulkDeleteDialog, type Selection, type UserFilter } from "./user-batch";
 import { CreateUserDialog, UserDrawer } from "./user-drawer";
+import { ListFilter, Plus, Trash2 } from "lucide-react";
+import { Badge, type Tone } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Field, Input, Select, Switch } from "../../shared/ui/form";
+import { PageHeader } from "../../shared/ui/layout";
+import { Popover } from "../../shared/ui/menu";
+import { Meter, usageTone } from "../../shared/ui/meter";
 
 export type UserRow = {
   id: string;
@@ -172,7 +166,7 @@ export function UsersPage() {
               {bytes(u.traffic_used_bytes)}
               {u.traffic_limit_bytes !== null && ` / ${bytes(u.traffic_limit_bytes)}`}
             </div>
-            {u.traffic_limit_bytes !== null && <Progress value={p} tone={usageTone(p)} className="mt-1" />}
+            {u.traffic_limit_bytes !== null && <Meter value={p} tone={usageTone(p)} className="mt-1" />}
           </div>
         );
       },
@@ -244,7 +238,7 @@ export function UsersPage() {
             >
               {tr("导出 CSV", "Export CSV")}
             </a>
-            <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ new: "1" }, false)}>
+            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ new: "1" }, false)}>
               {tr("新建用户", "New user")}
             </Button>
           </>
@@ -312,55 +306,60 @@ export function UsersPage() {
               <option value="-traffic">{tr("已用流量（多→少）", "Most traffic")}</option>
               <option value="expires">{tr("到期（近→远）", "Expiring soonest")}</option>
             </Select>
-            <div className="relative">
-              <Button size="sm" variant="secondary" icon="filter" onClick={() => setMore((v) => !v)}>
-                {tr("更多筛选", "More filters")}
-              </Button>
-              <Popover open={more} onClose={() => setMore(false)} align="left" className="w-72 p-3">
-                <div className="space-y-3">
-                  <Field label={tr("角色", "Role")}>
-                    <Select value={f.role} onChange={(e) => set({ role: e.target.value || null })}>
-                      <option value="">{tr("全部", "Any")}</option>
-                      <option value="user">{tr("用户", "User")}</option>
-                      <option value="admin">{tr("管理员", "Admin")}</option>
-                    </Select>
-                  </Field>
-                  <div className="flex items-center justify-between gap-3 text-[13px]">
-                    <span>
-                      {tr("从未使用", "Never used")}
-                      <span className="block text-xs text-muted-foreground">
-                        {tr(
-                          "从无套餐、付款、流量、余额与工单（D10）",
-                          "No plan, payment, traffic, balance or ticket ever (D10)",
-                        )}
-                      </span>
+            <Popover
+              open={more}
+              onOpenChange={setMore}
+              align="start"
+              className="w-72 p-3"
+              trigger={
+                <Button size="sm" variant="secondary" icon={ListFilter}>
+                  {tr("更多筛选", "More filters")}
+                </Button>
+              }
+            >
+              <div className="space-y-3">
+                <Field label={tr("角色", "Role")}>
+                  <Select value={f.role} onChange={(e) => set({ role: e.target.value || null })}>
+                    <option value="">{tr("全部", "Any")}</option>
+                    <option value="user">{tr("用户", "User")}</option>
+                    <option value="admin">{tr("管理员", "Admin")}</option>
+                  </Select>
+                </Field>
+                <div className="flex items-center justify-between gap-3 text-[13px]">
+                  <span>
+                    {tr("从未使用", "Never used")}
+                    <span className="block text-xs text-muted-foreground">
+                      {tr(
+                        "从无套餐、付款、流量、余额与工单（D10）",
+                        "No plan, payment, traffic, balance or ticket ever (D10)",
+                      )}
                     </span>
-                    <Switch
-                      checked={f.never_used ?? false}
-                      label={tr("从未使用", "Never used")}
-                      onChange={(v) => set({ never_used: v ? "1" : null })}
-                    />
-                  </div>
-                  <Field label={tr("注册早于（站点时区的日）", "Signed up before (site day)")}>
-                    <Input
-                      type="date"
-                      value={f.registered_before}
-                      onChange={(e) => set({ registered_before: e.target.value || null })}
-                    />
-                  </Field>
-                  <Field
-                    label={tr("最后登录早于", "Last sign-in before")}
-                    hint={tr("从未登录的也算", "Never signed in counts")}
-                  >
-                    <Input
-                      type="date"
-                      value={f.last_login_before}
-                      onChange={(e) => set({ last_login_before: e.target.value || null })}
-                    />
-                  </Field>
+                  </span>
+                  <Switch
+                    checked={f.never_used ?? false}
+                    label={tr("从未使用", "Never used")}
+                    onChange={(v) => set({ never_used: v ? "1" : null })}
+                  />
                 </div>
-              </Popover>
-            </div>
+                <Field label={tr("注册早于（站点时区的日）", "Signed up before (site day)")}>
+                  <Input
+                    type="date"
+                    value={f.registered_before}
+                    onChange={(e) => set({ registered_before: e.target.value || null })}
+                  />
+                </Field>
+                <Field
+                  label={tr("最后登录早于", "Last sign-in before")}
+                  hint={tr("从未登录的也算", "Never signed in counts")}
+                >
+                  <Input
+                    type="date"
+                    value={f.last_login_before}
+                    onChange={(e) => set({ last_login_before: e.target.value || null })}
+                  />
+                </Field>
+              </div>
+            </Popover>
             {chips.map((c) => (
               <FilterChip key={c.label} label={c.label} value={c.value} onClear={() => set(c.clear)} />
             ))}
@@ -403,7 +402,7 @@ export function UsersPage() {
             <Button
               size="sm"
               variant="destructive-soft"
-              icon="trash"
+              icon={Trash2}
               onClick={() =>
                 setBulkDelete({
                   selection: { ids: [...selected] },

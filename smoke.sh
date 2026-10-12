@@ -4550,7 +4550,31 @@ for a in $(grep -o '"/assets/[^"]*\.\(js\|css\)' "$SERVED/app/index.html" | tr -
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/app/$(basename "$a")"
 done
 curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/console/index.html"
-for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/console/$(basename "$a")"; done
+# 2026-10 redesign: the console is one chunk per page, the chunks and fonts
+# referred to relatively ("./x.js", url(./x.woff2)). Fetch every file the
+# entry reaches, transitively, under the secret prefix with the admin
+# session: each must be served (200); check-bundles then checks them all.
+todo=""
+for a in "$AJS" "$ACSS"; do
+  curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/console/$(basename "$a")"
+  todo="$todo $SERVED/admin/console/$(basename "$a")"
+done
+while [ -n "$todo" ]; do
+  next=""
+  # shellcheck disable=SC2086
+  for c in $(cat $todo | grep -ao '\./[A-Za-z0-9_.-]*\.\(js\|css\|woff2\)' | sed 's#.*/##' | sort -u); do
+    f="$SERVED/admin/console/$c"
+    [ -e "$f" ] && continue
+    [ "$(curl -s --noproxy '*' -b "$AJAR" -o "$f" -w '%{http_code}' "$BASE/admin/assets/$c")" = "200" ] \
+      || { echo "FAIL: console chunk $c not served under the prefix"; exit 1; }
+    case "$c" in *.woff2) ;; *) next="$next $f" ;; esac
+  done
+  todo="$next"
+done
+[ "$(ls "$SERVED"/admin/console/*.js | wc -l)" -gt 10 ] || { echo "FAIL: console page chunks not found"; exit 1; }
+# Chunks are admin-only like the entry: no session = the canonical rejection.
+ACHUNK=$(ls "$SERVED"/admin/console/*.js | sed -n 2p | sed 's#.*/##')
+[ "$(fp "$BASE/admin/assets/$ACHUNK")" = "$REJ" ] || { echo "FAIL: console chunk served without a session"; exit 1; }
 curl -s --noproxy '*' "$BASE/app" >"$SERVED/admin/login/login.html"
 for a in $(grep -o "/$PREFIX/app/assets/[^\"]*\.\(js\|css\)" "$SERVED/admin/login/login.html"); do
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/admin/login/$(basename "$a")"

@@ -7,23 +7,19 @@ import { useEffect, useState } from "react";
 import { get, post, put } from "../../shared/api";
 import { loadPage } from "../../shared/base";
 import { useTr } from "../../shared/i18n";
-import { useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  Skeleton,
-  Switch,
-  Textarea,
-} from "../../shared/ui/primitives";
-import { CopyButton, FormError, Mono, useErrText, useRun } from "../kit";
+import { CopyButton, FormError, Mono, useErrText } from "../kit";
+import { useAction } from "../data";
 import { useMe } from "../session";
 import { useSettings } from "./settings";
+import { Eye, EyeOff } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Field, Input, Switch, Textarea } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type Access = {
   version: number;
@@ -97,7 +93,7 @@ function AccessCard() {
   const [shown, setShown] = useState(false);
   const [custom, setCustom] = useState("");
   const [allow, setAllow] = useState<string | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const a = q.data;
   if (!a) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-48" />;
   const url = a.admin_url ?? `${location.origin}/${a.admin_prefix}/admin`;
@@ -172,7 +168,7 @@ function AccessCard() {
       <CardBody className="space-y-4 text-[13px]">
         <div className="flex flex-wrap items-center gap-2">
           <Mono>{shown ? url : masked}</Mono>
-          <Button size="sm" variant="ghost" icon={shown ? "eyeOff" : "eye"} onClick={() => setShown((v) => !v)}>
+          <Button size="sm" variant="ghost" icon={shown ? EyeOff : Eye} onClick={() => setShown((v) => !v)}>
             {shown ? tr("隐藏", "Hide") : tr("显示", "Show")}
           </Button>
           <CopyButton text={url} />
@@ -233,7 +229,7 @@ function AccessCard() {
 function PasskeyPolicy() {
   const tr = useTr();
   const q = useAuthSettings();
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const a = q.data;
   if (!a) return <Skeleton className="h-32" />;
   const set = (patch: Partial<AuthSettings>) =>
@@ -294,7 +290,7 @@ function SecurityValues() {
         keys: (d.security.extra_release_keys ?? []).join("\n"),
       });
   }, [d, f]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!d || !f) return <Skeleton className="h-48" />;
   const lines = (t: string) =>
     t

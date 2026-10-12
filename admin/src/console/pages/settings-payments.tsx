@@ -8,22 +8,18 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { del, get, post, put } from "../../shared/api";
 import { useTr } from "../../shared/i18n";
-import { Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardHeader,
-  Field,
-  Input,
-  secretInputProps,
-  Select,
-  Skeleton,
-  Switch,
-  Textarea,
-} from "../../shared/ui/primitives";
-import { CopyButton, FormError, Mono, useErrText, useRun } from "../kit";
+import { CopyButton, FormError, Mono, useErrText } from "../kit";
+import { useAction } from "../data";
+import { Plus } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Drawer } from "../../shared/ui/dialog";
+import { Field, Input, Select, Switch, Textarea, secretInputProps } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type FieldSpec = {
   name: string;
@@ -67,7 +63,7 @@ export function PaymentsTab() {
   });
   const [editing, setEditing] = useState<{ kind: Kind; method: Method | null } | null>(null);
   const [newKind, setNewKind] = useState("");
-  const [run] = useRun();
+  const [run] = useAction();
   if (!q.data) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-48" />;
   const d = q.data;
   const kindOf = (id: string) => d.kinds.find((k) => k.id === id);
@@ -102,7 +98,7 @@ export function PaymentsTab() {
               </Select>
               <Button
                 size="sm"
-                icon="plus"
+                icon={Plus}
                 disabled={!newKind}
                 onClick={() => {
                   const k = kindOf(newKind);
@@ -246,7 +242,7 @@ function MethodDrawer({ kind, method, onClose }: { kind: Kind; method: Method | 
     }
     return v;
   });
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const cfg = method?.config ?? {};
   const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
   const save = async () => {

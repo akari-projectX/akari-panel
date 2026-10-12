@@ -15,7 +15,7 @@ test("ACC-01 ACC-02 ACC-04: account details, password change, sign out", async (
   await page.getByLabel("当前密码").fill("wrong-pass-1");
   await page.getByLabel("新密码（至少 8 位）").fill("account-pass-2");
   await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.locator("[data-toast]").filter({ hasNotText: "密码已修改" }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasNotText: "密码已修改" }).first()).toBeVisible();
   await page.getByLabel("当前密码").fill("account-pass-1");
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "密码已修改");

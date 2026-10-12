@@ -21,6 +21,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Called after every successful write (any method but GET/HEAD) with the
+ * method and the path below `/api/v1` or `/auth` — the console's mutation
+ * layer refetches what the write may have changed (console/data.ts).
+ */
+type WriteListener = (method: string, path: string) => void;
+let onWrite: WriteListener | null = null;
+export function setWriteListener(f: WriteListener | null): void {
+  onWrite = f;
+}
+
 /** Called when a request answers 401 (the session ended). */
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(f: (() => void) | null): void {
@@ -43,7 +54,16 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
     if (res.status === 401 && onUnauthorized) onUnauthorized();
     throw new ApiError(res.status, body.error ?? res.statusText, body);
   }
-  if (res.status === 204) return null as T; // never undefined: `useRun` reads undefined as "failed"
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (onWrite && method !== "GET" && method !== "HEAD") {
+    const path = url.startsWith(apiBase)
+      ? url.slice(apiBase.length)
+      : url.startsWith(authBase)
+        ? url.slice(authBase.length)
+        : url;
+    onWrite(method, path.split("?")[0]);
+  }
+  if (res.status === 204) return null as T; // never undefined: `useAction` reads undefined as "failed"
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
 }

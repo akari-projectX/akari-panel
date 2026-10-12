@@ -6,11 +6,17 @@ import { useState } from "react";
 import { get, post } from "../../shared/api";
 import { ago, bytes, dateTime, duration, pct } from "../../shared/format";
 import { useLang, useTr } from "../../shared/i18n";
-import { LineChart } from "../../shared/ui/line-chart";
-import { Drawer } from "../../shared/ui/overlays";
-import { Badge, Button, KV, Segmented, Skeleton } from "../../shared/ui/primitives";
-import { FormError, SectionTitle, useRun } from "../kit";
+import { TrendChart, timeLabels } from "../../shared/ui/charts";
+import { FormError, SectionTitle } from "../kit";
+import { useAction } from "../data";
 import type { Heartbeat } from "../types";
+import { Zap } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Drawer } from "../../shared/ui/dialog";
+import { Segmented } from "../../shared/ui/form";
+import { KV } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
 
 type Latency = { source: string; target: string; delay_ms: number | null; error: string | null; measured_at: string };
 type Status = {
@@ -40,7 +46,7 @@ export function ServerDrawer({ id, onClose }: { id: string; onClose: () => void 
   const tr = useTr();
   const lang = useLang();
   const [range, setRange] = useState<(typeof RANGES)[number]>("24h");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const st = useQuery({
     queryKey: ["servers", id, "status"],
     queryFn: () => get<Status>(`/servers/${id}/status`),
@@ -115,7 +121,7 @@ export function ServerDrawer({ id, onClose }: { id: string; onClose: () => void 
             actions={
               <Button
                 size="sm"
-                icon="zap"
+                icon={Zap}
                 loading={busy}
                 onClick={() =>
                   void run(() => post(`/servers/${id}/probe`), {
@@ -166,52 +172,51 @@ export function ServerDrawer({ id, onClose }: { id: string; onClose: () => void 
             <Skeleton className="h-40" />
           ) : (
             <div className="space-y-4">
-              <LineChart
+              <TrendChart
                 title="CPU %"
                 times={times}
+                {...timeLabels(times)}
                 max={100}
                 format={(v) => `${v.toFixed(0)}%`}
-                series={[
-                  { label: "CPU", values: pts.map((p) => p.cpu), stroke: "stroke-sky-500", swatch: "bg-sky-500" },
-                ]}
+                series={[{ label: "CPU", values: pts.map((p) => p.cpu), slot: 1 }]}
               />
-              <LineChart
+              <TrendChart
                 title={tr("内存", "Memory")}
                 times={times}
+                {...timeLabels(times)}
                 format={bytes}
                 series={[
                   {
                     label: tr("已用", "used"),
                     values: pts.map((p) => p.mem_used),
-                    stroke: "stroke-violet-500",
-                    swatch: "bg-violet-500",
+                    slot: 7,
                   },
                 ]}
               />
-              <LineChart
+              <TrendChart
                 title={tr("网络", "Network")}
                 times={times}
+                {...timeLabels(times)}
                 format={(v) => `${bytes(v)}/s`}
                 series={[
-                  { label: "↓", values: pts.map((p) => p.rx_bps), stroke: "stroke-sky-500", swatch: "bg-sky-500" },
+                  { label: "↓", values: pts.map((p) => p.rx_bps), slot: 1 },
                   {
                     label: "↑",
                     values: pts.map((p) => p.tx_bps),
-                    stroke: "stroke-emerald-500",
-                    swatch: "bg-emerald-500",
+                    slot: 3,
                   },
                 ]}
               />
-              <LineChart
+              <TrendChart
                 title={tr("在线用户", "Online users")}
                 times={times}
+                {...timeLabels(times)}
                 format={(v) => v.toFixed(0)}
                 series={[
                   {
                     label: tr("用户", "users"),
                     values: pts.map((p) => p.users),
-                    stroke: "stroke-amber-500",
-                    swatch: "bg-amber-500",
+                    slot: 4,
                   },
                 ]}
               />

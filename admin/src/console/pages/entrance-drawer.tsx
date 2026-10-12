@@ -7,10 +7,9 @@ import { useState } from "react";
 import { del, get, patch, post, put } from "../../shared/api";
 import { ago, bytes, dateTime, daysBefore, rateText, siteToday } from "../../shared/format";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { LineChart } from "../../shared/ui/line-chart";
-import { Dialog, Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
-import { Badge, Button, Callout, Field, Input, KV, Switch, Textarea } from "../../shared/ui/primitives";
-import { FormError, SectionTitle, useConfirmFree, useRun } from "../kit";
+import { TrendChart, timeLabels } from "../../shared/ui/charts";
+import { FormError, SectionTitle, useConfirmFree } from "../kit";
+import { useAction } from "../data";
 import { entryAsEgress } from "../egress";
 import { heatmap, hhmm, overlaps, parseHhmm, parseRate, rateAt, type Rule } from "../rates";
 import { useSite } from "../session";
@@ -18,6 +17,14 @@ import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
 import { GroupPicker, splitTags, TagsField } from "./node-dialogs";
 import { entranceState, healthText } from "./nodes";
 import { useSettings } from "./settings";
+import { Plus, Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Field, Input, Switch, Textarea } from "../../shared/ui/form";
+import { Callout, KV } from "../../shared/ui/layout";
+import { useToast } from "../../shared/ui/toast";
 
 const WEEKDAYS: [string, string][] = [
   ["一", "Mon"],
@@ -159,8 +166,8 @@ export function EntranceDrawer({
     })),
   );
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
-  const [runRules, busyRules] = useRun();
+  const [run, busy] = useAction();
+  const [runRules, busyRules] = useAction();
   const parsed = rules.map(toRule);
   const valid = parsed.filter((r): r is Rule => r !== null);
   const ov = overlaps(valid);
@@ -274,7 +281,7 @@ export function EntranceDrawer({
       }
       footer={
         relay ? (
-          <Button variant="destructive-soft" icon="trash" onClick={remove}>
+          <Button variant="destructive-soft" icon={Trash2} onClick={remove}>
             {tr("删除中转入口", "Delete relay")}
           </Button>
         ) : undefined
@@ -382,7 +389,7 @@ export function EntranceDrawer({
         actions={
           <Button
             size="sm"
-            icon="plus"
+            icon={Plus}
             onClick={() => setRules([...rules, { weekdays: [1, 2, 3, 4, 5], start: "20:00", end: "24:00", rate: "2" }])}
             disabled={rules.length >= 24}
           >
@@ -460,7 +467,7 @@ export function EntranceDrawer({
                 <Button
                   size="sm"
                   variant="ghost"
-                  icon="trash"
+                  icon={Trash2}
                   aria-label={tr("删除规则", "Remove rule")}
                   onClick={() => setRules(rules.filter((_, j) => j !== i))}
                 />
@@ -572,22 +579,21 @@ function EntranceHistory({ id }: { id: string }) {
   return (
     <>
       <SectionTitle>{tr("入口流量（近 30 天）", "Entrance traffic (30 days)")}</SectionTitle>
-      <LineChart
+      <TrendChart
         title={tr("每日原始 / 计费（站点时区）", "Daily raw / billed (site days)")}
         times={all.map((d) => `${d}T12:00:00Z`)}
+        {...timeLabels(all.map((d) => `${d}T12:00:00Z`))}
         format={bytes}
         series={[
           {
             label: tr("原始", "Raw"),
             values: all.map((d) => (by.get(d)?.up_bytes ?? 0) + (by.get(d)?.down_bytes ?? 0)),
-            stroke: "stroke-sky-500",
-            swatch: "bg-sky-500",
+            slot: 1,
           },
           {
             label: tr("计费", "Billed"),
             values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
-            stroke: "stroke-amber-500",
-            swatch: "bg-amber-500",
+            slot: 4,
           },
         ]}
       />
@@ -643,7 +649,7 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
     groups: [] as string[],
   });
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const confirmFree = useConfirmFree();
   const submit = async () => {
     const rate = parseRate(f.rate);

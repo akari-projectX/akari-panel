@@ -49,7 +49,7 @@ test("SET-01 SET-02 SET-03 SET-04 SET-05 SET-25: site name and time zone, domain
   await toast(page, "站点设置已保存");
   await page.getByLabel("站点时区（IANA 名称）").fill("Not/AZone");
   await page.getByRole("button", { name: "保存", exact: true }).first().click();
-  await expect(page.locator("[data-toast]").filter({ hasText: /时区/ }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasText: /时区/ }).first()).toBeVisible();
   await page.getByLabel("站点名称").fill("");
   await page.getByLabel("站点时区（IANA 名称）").fill("");
   await page.getByRole("button", { name: "保存", exact: true }).first().click();
@@ -129,7 +129,7 @@ test("SET-06 SET-07 SET-08 SET-09: console address and prefix rotation, the IP a
   await allow.fill("203.0.113.7");
   await page.getByRole("button", { name: "保存白名单" }).click();
   await confirmDialog(page);
-  await expect(page.locator("[data-toast]").filter({ hasNotText: "白名单已保存" }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").filter({ hasNotText: "白名单已保存" }).first()).toBeVisible();
   await allow.fill(`${mine}\n203.0.113.7`);
   await page.getByRole("button", { name: "保存白名单" }).click();
   await expect(dialog(page)).toContainText("akari settings unset admin-allow");
@@ -357,7 +357,7 @@ test("SET-19: payment methods — add from key files, test, disable, edit, delet
   await expect(item).toContainText("已停用");
   // Test the connection (nobody listens on the gateway: reported, not thrown).
   await item.getByRole("button", { name: "测试连接" }).click();
-  await expect(page.locator("[data-toast]").first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").first()).toBeVisible();
   // Edit: secrets left empty are kept; the app public key and notify URL shown.
   await item.getByRole("button", { name: "编辑" }).click();
   const e = dialog(page);

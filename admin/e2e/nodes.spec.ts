@@ -79,7 +79,7 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   await expect(d.getByText("还没有测速结果。")).toBeVisible();
   await expect(d.getByText("历史")).toBeVisible();
   await d.getByRole("button", { name: "立即测速" }).click();
-  await expect(page.locator("[data-toast]").first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]").first()).toBeVisible();
   await page.keyboard.press("Escape");
   // NOD-07: delete (type the name).
   await menu(page, `服务器 ${name} 的操作`, "删除服务器");
@@ -259,7 +259,7 @@ test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance'
   await rate.fill("10");
   await d.getByRole("button", { name: "保存入口" }).click();
   await toast(page, "入口已保存");
-  await expect(page.locator("[data-toast]", { hasText: "不追溯" }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]", { hasText: "不追溯" }).first()).toBeVisible();
   await d2.getByLabel("排序").fill("7");
   await d2.getByRole("button", { name: "保存入口" }).click();
   await toast(other, "入口已被修改（可能是其他管理员），请关闭后重新打开再保存");

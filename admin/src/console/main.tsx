@@ -1,19 +1,20 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { RouterProvider } from "react-router";
 import "../shared/index.css";
 import { LangProvider } from "../shared/i18n";
 import { applyTheme, initialTheme } from "../shared/theme";
-import { Providers } from "../shared/ui/overlays";
-import { ConsoleApp } from "./app";
+import { ConfirmProvider } from "../shared/ui/confirm";
+import { Toaster } from "../shared/ui/toast";
+import { invalidateOnWrite, makeQueryClient } from "./data";
+import { makeRouter } from "./routes";
 
 applyTheme(initialTheme());
 
-const client = new QueryClient({
-  defaultOptions: {
-    queries: { retry: false, refetchOnWindowFocus: false, staleTime: 5_000 },
-  },
-});
+const client = makeQueryClient();
+invalidateOnWrite(client);
+const router = makeRouter();
 
 const root = document.getElementById("root");
 if (root)
@@ -21,9 +22,10 @@ if (root)
     <StrictMode>
       <QueryClientProvider client={client}>
         <LangProvider>
-          <Providers>
-            <ConsoleApp />
-          </Providers>
+          <ConfirmProvider>
+            <RouterProvider router={router} />
+            <Toaster />
+          </ConfirmProvider>
         </LangProvider>
       </QueryClientProvider>
     </StrictMode>,

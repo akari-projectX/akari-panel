@@ -7,26 +7,20 @@ import { useEffect, useRef, useState } from "react";
 import { get, patch, post, put } from "../../shared/api";
 import { bytes, dateTime, daysBefore, downloadText, siteToday } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { LineChart } from "../../shared/ui/line-chart";
-import { Dialog, Drawer } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Checkbox,
-  Field,
-  Input,
-  KV,
-  Segmented,
-  Select,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
-import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText, useRun } from "../kit";
+import { TrendChart, timeLabels } from "../../shared/ui/charts";
+import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText } from "../kit";
+import { useAction } from "../data";
 import { parseRate } from "../rates";
 import { setQuery, useRoute } from "../router";
 import type { NodeGroup, ServerView } from "../types";
 import { JsonInbound, TemplateFields, newTemplateForm, parseInbound, toSpec, type TemplateForm } from "./inbound-form";
+import { Download } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Segmented, Select, Switch } from "../../shared/ui/form";
+import { Callout, KV } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
 
 type InstallView = {
   url: string;
@@ -127,7 +121,7 @@ function BootstrapBody({ e }: { e: Enrollment }) {
       <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px]">{e.bootstrap}</pre>
       <div className="flex gap-2">
         <CopyButton text={e.bootstrap} />
-        <Button size="sm" icon="download" onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}>
+        <Button size="sm" icon={Download} onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}>
           {tr("下载", "Download")}
         </Button>
       </div>
@@ -201,7 +195,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [install, setInstall] = useState(true);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const r = await run(
       () =>
@@ -289,7 +283,7 @@ export function CreateNodeDialog({
   const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
   const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: "", groups: [] });
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const confirmFree = useConfirmFree();
   const submit = async () => {
     const body: Record<string, unknown> = { name: name.trim(), region: region.trim() || undefined };
@@ -532,7 +526,7 @@ export function ServerEditDialog({ server, onClose }: { server: ServerView; onCl
     server.traffic_max_rate_bytes_per_sec ? String(Math.round(server.traffic_max_rate_bytes_per_sec / 125000)) : "",
   );
   const [check, setCheck] = useState<string | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const nodeId = server.nodes[0]?.id;
   const checkDomain = async () => {
     setCheck(tr("检查中…", "Checking…"));
@@ -638,7 +632,7 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
   const [mode, setMode] = useState<"both" | "up" | "down">(q.mode);
   const [gib, setGib] = useState(q.bytes ? String(Math.round(q.bytes / GiB)) : "");
   const [day, setDay] = useState(q.reset_day ? String(q.reset_day) : "1");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const newBytes = gib.trim() ? Number(gib) * GiB : null;
   const submit = async () => {
     const r = await run(
@@ -774,7 +768,7 @@ export function AlertRulesDialog({ server, onClose }: { server: ServerView; onCl
   useEffect(() => {
     if (q.data && !form) setForm(q.data);
   }, [q.data, form]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const label: Record<(typeof NUM_KEYS)[number], string> = {
     offline_secs: tr("离线多少秒告警", "Offline seconds"),
     cpu_percent: tr("CPU %", "CPU %"),
@@ -926,7 +920,7 @@ function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
     sort: String(n.sort),
     visible: n.visible,
   });
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const save = async () => {
     const r = await run(
       () =>
@@ -982,7 +976,7 @@ function NodeInbound({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
   const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm(String((n.inbound?.port as number | undefined) ?? 443)));
   const [json, setJson] = useState(JSON.stringify(n.inbound ?? {}, null, 2));
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const save = async () => {
     setError(null);
     let inbound: Record<string, unknown>;
@@ -1112,28 +1106,26 @@ function NodeTraffic({ id }: { id: string }) {
   return (
     <>
       <SectionTitle>{tr("节点流量（近 30 天）", "Node traffic (30 days)")}</SectionTitle>
-      <LineChart
+      <TrendChart
         title={tr("每日流量", "Daily traffic")}
         times={all.map((d) => `${d}T12:00:00Z`)}
+        {...timeLabels(all.map((d) => `${d}T12:00:00Z`))}
         format={bytes}
         series={[
           {
             label: tr("下载", "Down"),
             values: all.map((d) => by.get(d)?.down_bytes ?? 0),
-            stroke: "stroke-sky-500",
-            swatch: "bg-sky-500",
+            slot: 1,
           },
           {
             label: tr("上传", "Up"),
             values: all.map((d) => by.get(d)?.up_bytes ?? 0),
-            stroke: "stroke-emerald-500",
-            swatch: "bg-emerald-500",
+            slot: 3,
           },
           {
             label: tr("计费", "Billed"),
             values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
-            stroke: "stroke-amber-500",
-            swatch: "bg-amber-500",
+            slot: 4,
           },
         ]}
       />

@@ -3,33 +3,16 @@
 // multipliers, node groups). Each server card shows the machine state, the
 // D5 traffic quota and its warnings; the drawers and dialogs live in
 // node-dialogs.tsx, server-drawer.tsx and entrance-drawer.tsx.
-import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { del, get, patch, put } from "../../shared/api";
+import { del, patch, put } from "../../shared/api";
 import { ago, bytes, dateOnly, pct, rateText } from "../../shared/format";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { Icon } from "../../shared/ui/icons";
-import { MenuItem, RowMenu, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  Dot,
-  EmptyState,
-  ErrorState,
-  Input,
-  PageHeader,
-  Progress,
-  Skeleton,
-  Switch,
-  usageTone,
-  type Tone,
-} from "../../shared/ui/primitives";
-import { Stat, useRun } from "../kit";
+import { Stat } from "../kit";
+import { useAction } from "../data";
 import { overlaps } from "../rates";
 import { setQuery, useRoute } from "../router";
-import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
+import type { EntranceView, ServerNode, ServerView } from "../types";
+import { serverState, useGroups, useServers } from "../servers";
 import { EntranceDrawer, RelayDialog } from "./entrance-drawer";
 import {
   AlertRulesDialog,
@@ -43,21 +26,37 @@ import {
 } from "./node-dialogs";
 import { ServerDrawer } from "./server-drawer";
 import { UpdateBadge } from "./updates";
-
-export function useServers() {
-  return useQuery({ queryKey: ["servers"], queryFn: () => get<ServerView[]>("/servers"), refetchInterval: 10_000 });
-}
-export function useGroups() {
-  return useQuery({ queryKey: ["node-groups"], queryFn: () => get<NodeGroup[]>("/node-groups") });
-}
-
-export function serverState(s: ServerView, tr: Tr): [string, Tone] {
-  if (s.deleting_at) return [tr("删除中", "Deleting"), "neutral"];
-  if (!s.enrolled) return [tr("待安装", "Not installed"), "info"];
-  if (s.traffic_quota.exceeded_at) return [tr("超额停用", "Over quota"), "danger"];
-  if (s.online) return [tr("在线", "Online"), "success"];
-  return [tr("离线", "Offline"), "danger"];
-}
+import {
+  Activity,
+  Bell,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Download,
+  EyeOff,
+  FileText,
+  Gauge,
+  Layers,
+  Pause,
+  Play,
+  Plus,
+  Route,
+  Server,
+  Settings,
+  Trash2,
+  TriangleAlert,
+  Zap,
+} from "lucide-react";
+import { Badge, Dot, type Tone } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Input, Switch } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { MenuItem, RowMenu } from "../../shared/ui/menu";
+import { Meter, usageTone } from "../../shared/ui/meter";
+import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 export function entranceState(e: EntranceView, tr: Tr): [string, Tone] {
   if (!e.enabled) return [tr("已停用", "Disabled"), "neutral"];
@@ -123,10 +122,10 @@ export function NodesPage() {
         actions={
           <>
             <UpdateBadge />
-            <Button size="sm" icon="server" onClick={() => setQuery({ new: "server" }, false)}>
+            <Button size="sm" icon={Server} onClick={() => setQuery({ new: "server" }, false)}>
               {tr("添加服务器", "Add server")}
             </Button>
-            <Button size="sm" variant="primary" icon="plus" onClick={() => setQuery({ new: "node" }, false)}>
+            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ new: "node" }, false)}>
               {tr("添加节点", "Add node")}
             </Button>
           </>
@@ -138,12 +137,12 @@ export function NodesPage() {
         ) : (
           <>
             <Stat
-              icon="server"
+              icon={Server}
               label={tr("服务器在线", "Servers online")}
               value={`${list.filter((s) => s.online).length} / ${list.length}`}
             />
             <Stat
-              icon="layers"
+              icon={Layers}
               label={tr("落地节点", "Landing nodes")}
               value={nodes.length}
               hint={tr(
@@ -152,7 +151,7 @@ export function NodesPage() {
               )}
             />
             <Stat
-              icon="route"
+              icon={Route}
               label={tr("入口", "Entrances")}
               value={entrances.length}
               hint={tr(
@@ -161,7 +160,7 @@ export function NodesPage() {
               )}
             />
             <Stat
-              icon="eyeOff"
+              icon={EyeOff}
               label={tr("探测失败已隐藏", "Hidden (probe failed)")}
               value={entrances.filter((e) => e.hidden_since).length}
               tone={entrances.some((e) => e.hidden_since) ? "danger" : undefined}
@@ -187,14 +186,14 @@ export function NodesPage() {
       {servers.isSuccess && list.length === 0 && (
         <Card>
           <EmptyState
-            icon="server"
+            icon={Server}
             title={tr("还没有服务器", "No servers yet")}
             description={tr(
               "添加一台服务器，复制一行安装命令到机器上执行，然后在上面添加节点。",
               "Add a server, run the one-line install command on it, then add nodes.",
             )}
             action={
-              <Button variant="primary" icon="plus" onClick={() => setQuery({ new: "node" }, false)}>
+              <Button variant="primary" icon={Plus} onClick={() => setQuery({ new: "node" }, false)}>
                 {tr("添加节点", "Add node")}
               </Button>
             }
@@ -338,38 +337,38 @@ function ServerCard({
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <Button size="sm" onClick={() => onDialog({ kind: "quota", server: s })} icon="gauge">
+            <Button size="sm" onClick={() => onDialog({ kind: "quota", server: s })} icon={Gauge}>
               {tr("流量额度", "Quota")}
             </Button>
             <RowMenu label={tr(`服务器 ${s.name} 的操作`, `Actions of ${s.name}`)}>
               {(close) => (
                 <>
-                  <MenuItem icon="activity" onClick={() => (close(), setQuery({ open: `server:${s.id}` }, false))}>
+                  <MenuItem icon={Activity} onClick={() => (close(), setQuery({ open: `server:${s.id}` }, false))}>
                     {tr("状态与测速", "Status and latency")}
                   </MenuItem>
-                  <MenuItem icon="settings" onClick={() => (close(), onDialog({ kind: "edit", server: s }))}>
+                  <MenuItem icon={Settings} onClick={() => (close(), onDialog({ kind: "edit", server: s }))}>
                     {tr("编辑服务器", "Edit server")}
                   </MenuItem>
-                  <MenuItem icon="bell" onClick={() => (close(), onDialog({ kind: "alerts", server: s }))}>
+                  <MenuItem icon={Bell} onClick={() => (close(), onDialog({ kind: "alerts", server: s }))}>
                     {tr("告警规则", "Alert rules")}
                   </MenuItem>
                   <MenuItem
-                    icon="download"
+                    icon={Download}
                     onClick={() => (close(), onDialog({ kind: "install", shown: { server: s, mode: "install" } }))}
                   >
                     {s.enrolled ? tr("重装命令", "Reinstall command") : tr("安装命令", "Install command")}
                   </MenuItem>
                   <MenuItem
-                    icon="file"
+                    icon={FileText}
                     onClick={() => (close(), onDialog({ kind: "install", shown: { server: s, mode: "bootstrap" } }))}
                   >
                     {tr("手动引导文件", "Manual bootstrap file")}
                   </MenuItem>
-                  <MenuItem icon="plus" onClick={() => (close(), setQuery({ new: "node", server: s.id }, false))}>
+                  <MenuItem icon={Plus} onClick={() => (close(), setQuery({ new: "node", server: s.id }, false))}>
                     {tr("在此服务器上添加节点", "Add a node here")}
                   </MenuItem>
                   <MenuItem
-                    icon="trash"
+                    icon={Trash2}
                     danger
                     disabled={!!s.deleting_at}
                     onClick={() => (close(), void removeServer())}
@@ -385,7 +384,7 @@ function ServerCard({
           {qp !== null && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="w-24 shrink-0">{tr("流量额度", "Quota")}</span>
-              <Progress value={qp} tone={q.exceeded_at ? "danger" : usageTone(qp)} className="flex-1" />
+              <Meter value={qp} tone={q.exceeded_at ? "danger" : usageTone(qp)} className="flex-1" />
               <span className="tabular-nums">
                 {bytes(q.used_bytes)} / {bytes(q.bytes)} ·{" "}
                 {q.mode === "both" ? tr("双向", "both") : q.mode === "up" ? tr("仅上行", "up") : tr("仅下行", "down")}
@@ -452,7 +451,7 @@ function NodeRow({
   const tr = useTr();
   const lang = useLang();
   const confirm = useConfirm();
-  const [run] = useRun();
+  const [run] = useAction();
   const [expanded, setExpanded] = useState(true);
   const toggleBlock = async (on: boolean) => {
     const ok = await confirm({
@@ -507,7 +506,7 @@ function NodeRow({
           onClick={() => setExpanded((v) => !v)}
           className="text-muted-foreground"
         >
-          <Icon name={expanded ? "chevronDown" : "chevronRight"} size={14} />
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
         <button
           type="button"
@@ -535,16 +534,16 @@ function NodeRow({
         <RowMenu label={tr(`节点 ${n.name} 的操作`, `Actions of ${n.name}`)}>
           {(close) => (
             <>
-              <MenuItem icon="settings" onClick={() => (close(), setQuery({ open: `node:${n.id}` }, false))}>
+              <MenuItem icon={Settings} onClick={() => (close(), setQuery({ open: `node:${n.id}` }, false))}>
                 {tr("编辑节点与入站", "Edit node and inbound")}
               </MenuItem>
-              <MenuItem icon="route" onClick={() => (close(), onRelay())}>
+              <MenuItem icon={Route} onClick={() => (close(), onRelay())}>
                 {tr("添加中转入口", "Add relay entrance")}
               </MenuItem>
-              <MenuItem icon={n.enabled ? "pause" : "play"} onClick={() => (close(), void toggleEnabled())}>
+              <MenuItem icon={n.enabled ? Pause : Play} onClick={() => (close(), void toggleEnabled())}>
                 {n.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}
               </MenuItem>
-              <MenuItem icon="trash" danger onClick={() => (close(), void remove())}>
+              <MenuItem icon={Trash2} danger onClick={() => (close(), void remove())}>
                 {tr("删除节点", "Delete node")}
               </MenuItem>
             </>
@@ -578,11 +577,11 @@ function NodeRow({
                   >
                     <td className="py-1.5">
                       <span className="flex items-center gap-1.5">
-                        <Icon
-                          name={e.kind === "direct" ? "zap" : "route"}
-                          size={13}
-                          className="text-muted-foreground"
-                        />
+                        {e.kind === "direct" ? (
+                          <Zap size={13} className="text-muted-foreground" />
+                        ) : (
+                          <Route size={13} className="text-muted-foreground" />
+                        )}
                         {e.name}
                         {e.kind === "relay" && <Badge tone="info">{tr("中转", "relay")}</Badge>}
                         {e.tags.map((t) => (
@@ -611,13 +610,12 @@ function NodeRow({
                         )}
                         {e.rate_rules.length > 0 && (
                           <Badge tone="outline">
-                            <Icon name="clock" size={11} />
+                            <Clock size={11} />
                             {e.rate_rules.length}
                           </Badge>
                         )}
                         {ov && (
-                          <Icon
-                            name="alert"
+                          <TriangleAlert
                             size={13}
                             className="text-warning"
                             aria-label={tr("时段重叠", "Overlapping windows")}

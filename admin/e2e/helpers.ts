@@ -145,7 +145,7 @@ export function dialog(page: Page, name?: string | RegExp): Locator {
 
 /** Wait for a toast with `text`. */
 export async function toast(page: Page, text: string | RegExp): Promise<void> {
-  await expect(page.locator("[data-toast]", { hasText: text }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]", { hasText: text }).first()).toBeVisible();
 }
 
 /** Confirm the open confirmation (typing the phrase when asked). */

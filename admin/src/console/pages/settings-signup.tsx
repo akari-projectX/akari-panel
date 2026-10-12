@@ -6,22 +6,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { get, put } from "../../shared/api";
 import { useTr } from "../../shared/i18n";
-import {
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  SecretInput,
-  Select,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
-import { FormError, useRun } from "../kit";
+import { FormError } from "../kit";
+import { useAction } from "../data";
 import { usePlans } from "./users";
 import { authBody, useAuthSettings, type AuthSettings } from "./settings-access";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Field, Input, SecretInput, Select, Switch } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
 
 type Signup = {
   version: number;
@@ -58,7 +51,7 @@ function SignupCard() {
   useEffect(() => {
     if (q.data && !f) setF({ ...q.data, domains: q.data.email_domains.join(", ") });
   }, [q.data, f]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   const save = () =>
     run(
@@ -182,7 +175,7 @@ function BotCard() {
   useEffect(() => {
     if (q.data) setF(q.data);
   }, [q.data]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return <Skeleton className="h-48" />;
   const save = () =>
     run(() => put("/settings/auth", authBody(f, secret.trim() ? { turnstile_secret: secret.trim() } : {})), {

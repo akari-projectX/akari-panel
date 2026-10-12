@@ -7,27 +7,23 @@ import { apiBase } from "../../shared/base";
 import { del, get, patch, post } from "../../shared/api";
 import { dateTime, fromLocalInput, parseYuan, toLocalInput, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Dialog, Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Card,
-  CardHeader,
-  Checkbox,
-  Field,
-  Input,
-  KV,
-  PageHeader,
-  Segmented,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { FormError, SectionTitle, useRun } from "../kit";
+import { FormError, SectionTitle } from "../kit";
+import { useAction } from "../data";
 import { setQuery, useRoute } from "../router";
 import { PERIODS, periodLabel } from "../terms";
 import type { PlanView } from "../types";
 import { usePlans } from "./users";
+import { Plus } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Segmented, Switch } from "../../shared/ui/form";
+import { KV, PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type Coupon = {
   id: string;
@@ -260,7 +256,7 @@ export function CouponsPage() {
       <PageHeader
         title={tr("优惠券", "Coupons")}
         actions={
-          <Button size="sm" variant="primary" icon="plus" onClick={() => setCreating(true)}>
+          <Button size="sm" variant="primary" icon={Plus} onClick={() => setCreating(true)}>
             {tr("新建优惠券", "New coupon")}
           </Button>
         }
@@ -291,7 +287,7 @@ function CreateCoupon({ plans, onClose }: { plans: PlanView[]; onClose: () => vo
   const [name, setName] = useState("");
   const [t, setT] = useState<Terms>(EMPTY_TERMS);
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const b = termsBody(t, tr);
     if (typeof b === "string") return setError(new Error(b));
@@ -343,7 +339,7 @@ function CouponDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   });
   const c = q.data?.coupon;
   const [edit, setEdit] = useState<{ name: string; maxUses: string; perUser: string; ends: string } | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   useEffect(() => {
     if (c && !edit)
       setEdit({
@@ -475,7 +471,7 @@ function CouponDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 function Batches({ plans }: { plans: PlanView[] }) {
   const tr = useTr();
   const confirm = useConfirm();
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useQuery({ queryKey: ["coupon-batches"], queryFn: () => get<Batch[]>("/coupon-batches") });
   const [creating, setCreating] = useState(false);
   return (
@@ -483,7 +479,7 @@ function Batches({ plans }: { plans: PlanView[] }) {
       <CardHeader
         title={tr("优惠码批次", "Code batches")}
         actions={
-          <Button size="sm" icon="plus" onClick={() => setCreating(true)}>
+          <Button size="sm" icon={Plus} onClick={() => setCreating(true)}>
             {tr("批量生成优惠码", "Generate codes")}
           </Button>
         }
@@ -551,7 +547,7 @@ function BatchDialog({ plans, onClose }: { plans: PlanView[]; onClose: () => voi
   const [length, setLength] = useState("10");
   const [t, setT] = useState<Terms>({ ...EMPTY_TERMS, maxUses: "1" });
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const b = termsBody(t, tr);
     if (typeof b === "string") return setError(new Error(b));

@@ -225,7 +225,7 @@ test("CNT-01 CNT-02 CNT-03 CNT-04 CNT-05 CNT-06: announcements (preview, mail), 
     page
       .getByRole("alert")
       .filter({ hasText: /邮件发送尚未配置|已加入发送队列/ })
-      .or(page.locator("[data-toast]", { hasText: "已加入发送队列" })),
+      .or(page.locator("[data-sonner-toast]", { hasText: "已加入发送队列" })),
   ).toBeVisible();
   await page.keyboard.press("Escape");
   if (await dialog(page, "编辑公告").isVisible()) await page.keyboard.press("Escape");

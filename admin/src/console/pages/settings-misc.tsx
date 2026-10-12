@@ -6,24 +6,20 @@ import { del, get, patch, post, put, putBinary } from "../../shared/api";
 import { prefixBase } from "../../shared/base";
 import { dateTime, daysBefore, siteToday } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Dialog, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Field,
-  Input,
-  Select,
-  Skeleton,
-  Switch,
-  Textarea,
-} from "../../shared/ui/primitives";
-import { FormError, useErrText, useRun } from "../kit";
+import { FormError, useErrText } from "../kit";
+import { useAction } from "../data";
 import { navigate } from "../router";
 import { useSettings } from "./settings";
+import { Plus, Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog } from "../../shared/ui/dialog";
+import { Field, Input, Select, Switch, Textarea } from "../../shared/ui/form";
+import { Callout } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 export function NodesTab() {
   const tr = useTr();
@@ -55,7 +51,7 @@ export function NodesTab() {
         tcp: d.probe.panel_tcp.value === null ? "" : String(d.probe.panel_tcp.value),
       });
   }, [d, ops, probe]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!d || !ops || !probe) return <Skeleton className="h-96" />;
   const saveOps = () =>
     run(
@@ -234,7 +230,7 @@ export function BlockRulesTab() {
     queryFn: () => get<{ lists_version: string; nodes_enabled: number; rules: BlockRule[] }>("/block-rules"),
   });
   const [editing, setEditing] = useState<BlockRule | "new" | null>(null);
-  const [run] = useRun();
+  const [run] = useAction();
   if (!q.data) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   return (
     <Card>
@@ -245,7 +241,7 @@ export function BlockRulesTab() {
           `Only per-node block counts, never user browsing. Per-node switch (Nodes page), off by default; on for ${q.data.nodes_enabled} nodes. Rule edits apply live.`,
         )}
         actions={
-          <Button size="sm" icon="plus" onClick={() => setEditing("new")}>
+          <Button size="sm" icon={Plus} onClick={() => setEditing("new")}>
             {tr("新建自定义规则", "New custom rule")}
           </Button>
         }
@@ -307,7 +303,7 @@ function RuleDialog({ rule, onClose }: { rule: BlockRule | null; onClose: () => 
   const [kind, setKind] = useState(rule?.kind ?? "domain");
   const [name, setName] = useState(rule?.name ?? "");
   const [pattern, setPattern] = useState(rule?.pattern ?? "");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const submit = async () => {
     const r = await run(
       () =>
@@ -375,7 +371,7 @@ export function CleanupTab() {
   useEffect(() => {
     if (q.data) setF(q.data);
   }, [q.data]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-48" />;
   const before = daysBefore(siteToday(), f.after_days);
   return (
@@ -487,7 +483,7 @@ export function BrandingTab() {
   useEffect(() => {
     if (q.data) setF(q.data);
   }, [q.data]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   if (!f) return q.error ? <FormError error={q.error} /> : <Skeleton className="h-64" />;
   const image = (name: "logo" | "favicon", url: string | null, label: string) => (
     <div className="flex flex-wrap items-center gap-3">
@@ -587,7 +583,7 @@ export function BrandingTab() {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  icon="trash"
+                  icon={Trash2}
                   aria-label={tr("删除", "Remove")}
                   onClick={() => setF({ ...f, footer_links: f.footer_links.filter((_, j) => j !== i) })}
                 />
@@ -595,7 +591,7 @@ export function BrandingTab() {
             ))}
             <Button
               size="sm"
-              icon="plus"
+              icon={Plus}
               onClick={() => setF({ ...f, footer_links: [...f.footer_links, { label: "", url: "" }] })}
             >
               {tr("添加链接", "Add link")}
@@ -651,7 +647,7 @@ export function BrandingTab() {
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  icon="trash"
+                  icon={Trash2}
                   aria-label={tr("删除", "Remove")}
                   onClick={() => setF({ ...f, client_downloads: f.client_downloads.filter((_, j) => j !== i) })}
                 />
@@ -659,7 +655,7 @@ export function BrandingTab() {
             ))}
             <Button
               size="sm"
-              icon="plus"
+              icon={Plus}
               onClick={() =>
                 setF({ ...f, client_downloads: [...f.client_downloads, { platform: "windows", label: null, url: "" }] })
               }

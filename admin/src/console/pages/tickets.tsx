@@ -5,24 +5,17 @@ import { useEffect, useState } from "react";
 import { get, post, put, qs } from "../../shared/api";
 import { dateTime } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Drawer } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Checkbox,
-  Field,
-  Input,
-  KV,
-  PageHeader,
-  Select,
-  Skeleton,
-  Textarea,
-  type Tone,
-} from "../../shared/ui/primitives";
 import { DataTable, Pager, type Column } from "../../shared/ui/table";
-import { FormError, useDebounced, useRun } from "../kit";
+import { FormError, useDebounced } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
 import { useMe } from "../session";
+import { Badge, type Tone } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
+import { KV, PageHeader } from "../../shared/ui/layout";
+import { Skeleton } from "../../shared/ui/states";
 
 type Ticket = {
   id: string;
@@ -278,7 +271,7 @@ function TicketDrawer({
     queryFn: () => get<Ticket & { user_enabled: boolean; thread: Message[] }>(`/tickets/${id}`),
   });
   const [body, setBody] = useState("");
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const t = q.data;
   const reply = async (close: boolean) => {
     const r = await run(() => post(`/tickets/${id}/replies`, { message: body.trim(), close }), {

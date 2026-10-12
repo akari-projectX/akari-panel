@@ -6,21 +6,15 @@ import { useQuery } from "@tanstack/react-query";
 import { get } from "../../shared/api";
 import { ago, bytes, dateTime, duration, pct } from "../../shared/format";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { Ring } from "../../shared/ui/charts";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  ErrorState,
-  KV,
-  PageHeader,
-  Skeleton,
-  usageTone,
-} from "../../shared/ui/primitives";
+import { Ring } from "../../shared/ui/ring";
 import { navigate } from "../router";
+import { RefreshCw } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Callout, KV, PageHeader } from "../../shared/ui/layout";
+import { usageTone } from "../../shared/ui/meter";
+import { ErrorState, Skeleton } from "../../shared/ui/states";
 
 type Host = {
   hostname: string | null;
@@ -130,7 +124,7 @@ export function StatusPage() {
       title={tr("系统状态", "System status")}
       description={s && tr(`更新于 ${dateTime(s.generated_at)}`, `Updated ${dateTime(s.generated_at)}`)}
       actions={
-        <Button size="sm" icon="refresh" onClick={() => void q.refetch()}>
+        <Button size="sm" icon={RefreshCw} onClick={() => void q.refetch()}>
           {tr("刷新", "Refresh")}
         </Button>
       }

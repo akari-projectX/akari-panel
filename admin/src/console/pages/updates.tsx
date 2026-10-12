@@ -7,28 +7,22 @@ import { useEffect, useState } from "react";
 import { ApiError, del, get, post, put, putBinary } from "../../shared/api";
 import { bytes, dateTime } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Drawer, useConfirm, useToast } from "../../shared/ui/overlays";
-import {
-  Badge,
-  Button,
-  Callout,
-  Card,
-  CardBody,
-  CardHeader,
-  Checkbox,
-  Field,
-  Input,
-  PageHeader,
-  Progress,
-  Select,
-  Skeleton,
-  Switch,
-  type Tone,
-} from "../../shared/ui/primitives";
 import { DataTable, type Column } from "../../shared/ui/table";
-import { FormError, useErrText, useRun } from "../kit";
+import { FormError, useErrText } from "../kit";
+import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
-import { useServers } from "./nodes";
+import { useServers } from "../servers";
+import { Plus, RefreshCw, Trash2, Upload } from "lucide-react";
+import { Badge, type Tone } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Drawer } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select, Switch } from "../../shared/ui/form";
+import { Callout, PageHeader } from "../../shared/ui/layout";
+import { Meter } from "../../shared/ui/meter";
+import { Skeleton } from "../../shared/ui/states";
+import { useToast } from "../../shared/ui/toast";
 
 type Release = {
   id: string;
@@ -154,7 +148,7 @@ function UpdateCheck() {
   const s = useUpdateStatus();
   const [source, setSource] = useState<string | null>(null);
   const [auto, setAuto] = useState<boolean | null>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const qc = useQueryClient();
   const d = s.data;
   // A finished check may have stored releases: re-read the list.
@@ -171,7 +165,7 @@ function UpdateCheck() {
         actions={
           <Button
             size="sm"
-            icon="refresh"
+            icon={RefreshCw}
             loading={d.checking || busy}
             disabled={!d.keys_configured}
             onClick={() =>
@@ -288,7 +282,7 @@ function Releases() {
   const [sig, setSig] = useState<File | null>(null);
   const [binary, setBinary] = useState<File | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const upload = async () => {
     if (!manifest || !sig || !binary) return;
     setError(null);
@@ -346,7 +340,7 @@ function Releases() {
         <Button
           size="sm"
           variant="destructive-soft"
-          icon="trash"
+          icon={Trash2}
           aria-label={tr(`删除 ${r.version} ${r.arch}`, `Delete ${r.version} ${r.arch}`)}
           onClick={async () => {
             const ok = await confirm({
@@ -375,7 +369,7 @@ function Releases() {
           </Field>
         </div>
         <div className="mt-3 flex items-center gap-3">
-          <Button size="sm" icon="upload" loading={busy} disabled={!manifest || !sig || !binary} onClick={upload}>
+          <Button size="sm" icon={Upload} loading={busy} disabled={!manifest || !sig || !binary} onClick={upload}>
             {tr("上传", "Upload")}
           </Button>
           <FormError error={error} />
@@ -411,13 +405,13 @@ function Rollouts({ open }: { open: string | null }) {
     },
     {
       key: "progress",
-      header: tr("进度", "Progress"),
+      header: tr("进度", "Meter"),
       cell: (r) => {
         const total = Object.values(r.counts).reduce((a, b) => a + b, 0);
         const done = (r.counts.healthy ?? 0) + (r.counts.skipped ?? 0);
         return (
           <span className="flex items-center gap-2 text-xs">
-            <Progress value={total ? (done / total) * 100 : 0} className="w-24" />
+            <Meter value={total ? (done / total) * 100 : 0} className="w-24" />
             {tr(`${done}/${total} · 失败 ${r.counts.failed ?? 0}`, `${done}/${total} · ${r.counts.failed ?? 0} failed`)}
           </span>
         );
@@ -431,7 +425,7 @@ function Rollouts({ open }: { open: string | null }) {
       <CardHeader
         title={tr("灰度更新", "Rollouts")}
         actions={
-          <Button size="sm" variant="primary" icon="plus" onClick={() => setCreating(true)}>
+          <Button size="sm" variant="primary" icon={Plus} onClick={() => setCreating(true)}>
             {tr("新建灰度", "New rollout")}
           </Button>
         }
@@ -462,7 +456,7 @@ function CreateRollout({ onClose }: { onClose: () => void }) {
   const [timeout, setTimeoutS] = useState("600");
   const [ratio, setRatio] = useState("0.2");
   const [subset, setSubset] = useState<string[]>([]);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
   const first = versions[0] ?? "";
   useEffect(() => {
     if (!version && first) setVersion(first);
@@ -557,7 +551,7 @@ function CreateRollout({ onClose }: { onClose: () => void }) {
 function RolloutDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const confirm = useConfirm();
-  const [run] = useRun();
+  const [run] = useAction();
   const q = useQuery({
     queryKey: ["rollouts", id],
     queryFn: () => get<Rollout & { servers: RolloutServer[] }>(`/rollouts/${id}`),

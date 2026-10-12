@@ -1,9 +1,9 @@
 // D12: plan + term (catalog period kind without the reset pack, days where
 // the kind takes them). Mirrors plans::Term / AssignPlanReq.
 import { useTr, type Tr } from "../../shared/i18n";
-import { Field, Input, Select } from "../../shared/ui/primitives";
 import { TERMS, periodLabel } from "../terms";
 import type { PlanView } from "../types";
+import { Field, Input, Select } from "../../shared/ui/form";
 
 export type TermForm = { planId: string; period: string; days: string };
 export const EMPTY_TERM: TermForm = { planId: "", period: "month", days: "" };
