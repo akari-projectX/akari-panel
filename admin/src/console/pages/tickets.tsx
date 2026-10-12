@@ -12,7 +12,7 @@
 // through the queue.
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Inbox, LifeBuoy, ListFilter, MailCheck } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { get, qs } from "../../shared/api";
 import { cn } from "../../shared/cn";
@@ -25,6 +25,7 @@ import { Popover } from "../../shared/ui/menu";
 import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
 import { FilterChip } from "../../shared/ui/table";
 import { Avatar, SearchField } from "../components/kit";
+import { useMediaQuery } from "../components/support-content";
 import { useDebounced } from "../kit";
 import { navigate, useQS, useRoute } from "../router";
 import { TicketThread } from "./ticket-thread";
@@ -118,19 +119,6 @@ export function waitText(iso: string, tr: Tr): string {
   if (h < 24) return m % 60 ? tr(`${h} 小时 ${m % 60} 分`, `${h}h ${m % 60}m`) : tr(`${h} 小时`, `${h}h`);
   const d = Math.floor(h / 24);
   return h % 24 ? tr(`${d} 天 ${h % 24} 小时`, `${d}d ${h % 24}h`) : tr(`${d} 天`, `${d}d`);
-}
-
-/** A media query as state. */
-export function useMediaQuery(query: string): boolean {
-  return useSyncExternalStore(
-    (cb) => {
-      const m = window.matchMedia(query);
-      m.addEventListener("change", cb);
-      return () => m.removeEventListener("change", cb);
-    },
-    () => window.matchMedia(query).matches,
-    () => true,
-  );
 }
 
 /** The queue's URL state → the API query. */
