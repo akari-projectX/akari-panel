@@ -12,6 +12,7 @@ import {
   apiJson,
   confirmDialog,
   dialog,
+  expectFits,
   openConsole,
   sql,
   toast,
@@ -225,7 +226,8 @@ test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in
   const d = dialog(page, "封禁用户");
   await expect(d.getByText("enabled", { exact: true })).toBeVisible();
   await expect(d.locator(".line-through").first()).toBeVisible();
-  await d.getByRole("button", { name: "关闭", exact: true }).first().click({ force: true });
+  await expectFits(page, "the audit entry dialog");
+  await d.getByRole("button", { name: "关闭", exact: true }).first().click();
   // The filters survive a reload (they are in the URL).
   await page.reload();
   await expect(page.getByRole("button", { name: /^动作：/ })).toContainText("封禁用户");

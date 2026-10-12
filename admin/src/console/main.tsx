@@ -40,6 +40,9 @@ void PAGES[first]?.().catch(() => {});
 if (first === "dashboard") {
   prefetch(["dashboard"], "/dashboard");
   prefetch(["servers"], "/servers");
+  // The fleet card's update line (dashboard.tsx `Fleet`, update-status.tsx).
+  prefetch(["agent-updates"], "/agent-updates");
+  prefetch(["rollouts"], "/rollouts");
 }
 const router = makeRouter();
 

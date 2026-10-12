@@ -183,7 +183,10 @@ function AccessForm({ a }: { a: Access }) {
   return (
     <>
       {!owner && <OwnerNotice />}
-      <Card className="grid gap-3 p-4">
+      {/* grid-cols-1 (minmax(0, 1fr)): the shown address truncates instead of
+          widening the card (an implicit grid column grows to the address's
+          min-content width, and a phone then zooms the whole page out). */}
+      <Card className="grid grid-cols-1 gap-3 p-4">
         <div className="text-footnote font-medium text-muted-foreground">{tr("后台地址", "Console address")}</div>
         <div className="flex flex-wrap items-center gap-2">
           <code className="min-w-0 flex-1 basis-60 truncate rounded-md bg-window px-3 py-2 font-mono text-callout ring-1 ring-border ring-inset">

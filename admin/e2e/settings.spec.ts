@@ -19,6 +19,7 @@ import {
   apiJson,
   confirmDialog,
   dialog,
+  expectFits,
   isMobile,
   openConsole,
   toast,
@@ -292,8 +293,10 @@ test("SET-06 SET-07: console address card (masked) and prefix rotation (random o
   await openConsole(page, "/settings/access");
   // SET-06: masked, shown on demand.
   await expect(page.getByText(`${CONSOLE.slice(0, CONSOLE.indexOf(PREFIX))}${PREFIX.slice(0, 3)}`)).toBeVisible();
-  await page.getByRole("button", { name: "显示" }).click({ force: true });
+  await page.getByRole("button", { name: "显示" }).click();
   await expect(page.getByText(CONSOLE, { exact: true })).toBeVisible();
+  // The whole address still fits a phone (a wider page zooms out and taps miss).
+  await expectFits(page, "the console address shown");
   // Rotate to a custom prefix (danger zone), then back to the original one.
   const temp = `e2e${PREFIX.slice(0, 20)}x`;
   for (const [from, to] of [
@@ -473,7 +476,7 @@ test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), 
     if ((await box.isChecked()) !== notify) await box.click();
     await d.getByRole("button", { name: "轮换…" }).click();
     await expect(page.getByRole("alertdialog")).toContainText("所有用户的旧订阅链接立即失效");
-    await confirmDialog(page, "旧链接全部失效");
+    await confirmDialog(page, "旧链接全部失效", "轮换订阅路径");
     const done = dialog(page, "订阅路径已轮换");
     await expect(done).toContainText(`/${path}/<token>`);
     if (notify) await expect(done).toContainText("邮件通知任务已创建（用户 → 批量任务）");

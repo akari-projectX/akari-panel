@@ -17,8 +17,12 @@ const tab = (page: Page, name: string | RegExp) =>
 const box = (scope: ReturnType<typeof dialog> | Page, name: RegExp) => scope.getByRole("textbox", { name });
 
 async function menu(page: Page, label: string, item: string) {
+  // A menu closed a moment ago is still fading out (Radix keeps it mounted
+  // until the animation ends): open the next one after it has gone, as a
+  // person would, so the item found is the new menu's and not the old one's.
+  await expect(page.getByRole("menu")).toHaveCount(0);
   await page.getByRole("button", { name: label, exact: true }).click();
-  await page.getByRole("menuitem", { name: item }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: item }).click();
 }
 
 async function openServer(page: Page, name: string) {

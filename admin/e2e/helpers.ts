@@ -85,26 +85,48 @@ export async function openConsole(page: Page, path = ""): Promise<void> {
   await page.context().addCookies(state.cookies);
   await page.goto(`${CONSOLE}${path}`);
   await expect(page.getByRole("button", { name: /账户菜单|Account menu/ })).toBeVisible();
-  await reportOverflow(page, path);
+  await expectFits(page, path);
 }
 
-/** Diagnostics: a page wider than the viewport (a phone then zooms out and taps miss). Logged, not failed. */
-export async function reportOverflow(page: Page, label: string): Promise<void> {
-  const r = await page.evaluate(() => {
-    const vw = window.innerWidth;
-    if (document.documentElement.scrollWidth <= vw + 1) return null;
-    let worst = "";
-    let right = vw;
-    for (const el of Array.from(document.querySelectorAll("body *"))) {
+/**
+ * A phone page must not be wider than the screen: Chrome on Android then
+ * zooms the whole page out (the layout viewport grows to the content, e.g.
+ * 412 → 510 px), fixed bars and dialogs follow the wider viewport and taps
+ * land beside their targets. Checked once the page's data is in (and at the
+ * points a spec names); the screen width is the project's configured one,
+ * not `innerWidth` (that grows with the zoom-out). Desktop is not checked.
+ * Soft, so one run lists every page that overflows; names the innermost
+ * elements that stick out.
+ */
+export async function expectFits(page: Page, label: string): Promise<void> {
+  const vw = page.viewportSize()?.width ?? 0;
+  if (!vw || vw >= 640) return;
+  await page
+    .locator("main[data-ready]")
+    .waitFor({ timeout: 15_000 })
+    .catch(() => {});
+  const r = await page.evaluate((vw) => {
+    const sw = document.documentElement.scrollWidth;
+    if (sw <= vw + 1) return null;
+    const out = (el: Element) => {
       const b = el.getBoundingClientRect();
-      if (b.right > right + 1 && b.width > 0) {
-        right = b.right;
-        worst = `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 80)} "${(el.textContent ?? "").slice(0, 40)}"`;
-      }
+      return b.width > 0 && b.right + scrollX > vw + 1;
+    };
+    const worst: string[] = [];
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      if (!out(el) || Array.from(el.children).some(out)) continue;
+      const b = el.getBoundingClientRect();
+      worst.push(
+        `${el.tagName.toLowerCase()}.${String(el.getAttribute("class") ?? "").slice(0, 70)} ` +
+          `[${Math.round(b.left + scrollX)}–${Math.round(b.right + scrollX)}] "${(el.textContent ?? "").slice(0, 40)}"`,
+      );
+      if (worst.length >= 4) break;
     }
-    return { vw, sw: document.documentElement.scrollWidth, worst };
-  });
-  if (r) console.log(`OVERFLOW ${label}: scrollWidth ${r.sw} > ${r.vw}: ${r.worst}`);
+    return { sw, worst };
+  }, vw);
+  expect
+    .soft(r, `${label}: the page is wider than the ${vw}px screen${r ? ` (${r.sw}px): ${r.worst.join(" | ")}` : ""}`)
+    .toBeNull();
 }
 
 /** Forget the cached admin session (after something ended every admin session). */
