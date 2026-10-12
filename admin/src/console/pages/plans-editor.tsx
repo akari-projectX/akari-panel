@@ -359,7 +359,7 @@ export function PlanEditor({
           )}
           <div className="ml-auto flex items-center gap-2">
             {tried && <FixCount n={errKeys.length} />}
-            <Button variant="ghost" onClick={onClose} className="max-sm:hidden">
+            <Button variant="ghost" onClick={onClose}>
               {tr("取消", "Cancel")}
             </Button>
             <Button type="submit" variant="primary" loading={busy || previewing} disabled={tried && errKeys.length > 0}>
