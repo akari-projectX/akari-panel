@@ -1,29 +1,45 @@
-// 系统设置 → 订阅 (SET-10…12): the site-wide subscription path (D11: the
-// old one dies at once; optional mail to every user), the routing template
-// of the Clash / sing-box subscriptions (W30), rule-list URLs, and the
-// format / one-click import switches (PR ② §5), multipliers in line names
-// (SET-26, next07).
-import { useEffect, useState } from "react";
+// 系统设置 → 订阅：订阅链接与格式 (SET-10 path, SET-12 formats and import
+// buttons, SET-26 multipliers in line names) and 分流规则 (SET-11). Turning
+// a format off and multipliers on are confirmed on save; a new subscription
+// path is a danger-zone action (every old link dies; typed confirmation;
+// optional mail to every user).
+import { useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, Plus, Shuffle, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { put } from "../../shared/api";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Mono, useErrText } from "../kit";
-import { useAction } from "../data";
-import { useSettings, type Rule } from "./settings";
-import { useAccess } from "./settings-access";
-import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Group } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
-import { Checkbox, Field, Input, Select, Switch } from "../../shared/ui/form";
+import { Dialog } from "../../shared/ui/dialog";
+import { Checkbox, Field, Input, Select } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
-import { Skeleton } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
+import { useAction } from "../data";
+import { Mono } from "../kit";
+import { fresh, useAccess, useSettings, type Rule, type SettingsView } from "./settings-data";
+import { DangerZone, FieldRow, InfoRow, Loaded, SwitchRow, urlError, useDraft, useSavePart } from "./settings-kit";
 
 const RULE_TYPES = ["geosite", "geoip", "domain", "domain_suffix", "domain_keyword", "ip_cidr"];
 const ACTIONS = ["direct", "proxy", "reject"];
 const FORMATS = ["clash", "sing-box", "links"];
 const CLIENTS = ["clash", "stash", "shadowrocket", "sing-box", "hiddify"];
 
+function ruleTypeName(t: string, tr: Tr) {
+  return (
+    (
+      {
+        geosite: tr("GeoSite 分类", "GeoSite category"),
+        geoip: tr("GeoIP 国家/地区", "GeoIP country"),
+        domain: tr("完整域名", "Full domain"),
+        domain_suffix: tr("域名后缀", "Domain suffix"),
+        domain_keyword: tr("域名关键字", "Domain keyword"),
+        ip_cidr: tr("IP 段", "IP range"),
+      } as Record<string, string>
+    )[t] ?? t
+  );
+}
 function actionName(a: string, tr: Tr) {
   return (
     (
@@ -59,119 +75,294 @@ function clientName(c: string) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 订阅链接与格式
+// ---------------------------------------------------------------------------
+
+export function SubscriptionSection() {
+  const s = useSettings();
+  return <Loaded q={s}>{(d) => <SubscriptionForm d={d} />}</Loaded>;
+}
+
+function SubscriptionForm({ d }: { d: SettingsView }) {
+  const tr = useTr();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [run] = useAction();
+  const f = useDraft({
+    formats: d.subscription.formats.effective,
+    clients: d.subscription.import_clients.effective,
+    name_rate: d.subscription.name_rate,
+  });
+  const v = f.value!;
+  const toggle = (k: "formats" | "clients", id: string, on: boolean) =>
+    f.set(k, on ? [...v[k].filter((x) => x !== id), id] : v[k].filter((x) => x !== id));
+  useSavePart({
+    count: f.edited.length,
+    errors: 0,
+    discard: f.reset,
+    save: async () => {
+      const off = d.subscription.formats.effective.filter((x) => !v.formats.includes(x));
+      if (off.length) {
+        const ok = await confirm({
+          title: tr(
+            `关闭订阅格式 ${off.map((x) => formatName(x, tr)).join("、")}？`,
+            `Turn off ${off.map((x) => formatName(x, tr)).join(", ")}?`,
+          ),
+          impact: tr(
+            "使用这种格式的客户端下次刷新订阅时会失败（统一 404）",
+            "Clients on this format fail on their next refresh (the uniform 404)",
+          ),
+          tone: "warning",
+          confirmLabel: tr("关闭并保存", "Turn off and save"),
+        });
+        if (!ok) return false;
+      }
+      if (v.name_rate && !d.subscription.name_rate) {
+        const ok = await confirm({
+          title: tr("在订阅线路名里显示倍率？", "Show multipliers in subscription line names?"),
+          description: tr(
+            "之后每次修改入口的基础倍率都会改变该线路的名字；客户端刷新订阅后会丢失用户选中的线路，可能回落到第一条（直连）。时段倍率不会显示。",
+            "Every change of an entrance's base multiplier then renames its line; after a subscription refresh clients lose the user's selected line and may fall back to the first (direct). Time-window multipliers are never shown.",
+          ),
+          tone: "warning",
+          confirmLabel: tr("开启并保存", "Turn on and save"),
+        });
+        if (!ok) return false;
+      }
+      const cur = fresh(qc, ["settings"], d);
+      const r = await run(
+        () =>
+          put("/settings/subscription", {
+            version: cur.version,
+            ...(f.isEdited("formats") ? { formats: FORMATS.filter((x) => v.formats.includes(x)) } : {}),
+            ...(f.isEdited("clients") ? { import_clients: CLIENTS.filter((x) => v.clients.includes(x)) } : {}),
+            ...(f.isEdited("name_rate") ? { name_rate: v.name_rate } : {}),
+          }),
+        { ok: tr("订阅设置已保存", "Subscription settings saved") },
+      );
+      if (r === undefined) return false;
+      f.reset();
+      return true;
+    },
+  });
+  return (
+    <>
+      <Group
+        title={tr("订阅格式", "Subscription formats")}
+        footer={tr(
+          "关闭的格式一律返回统一的 404；以后新增的格式在自定义过的站点上默认关闭。",
+          "A disabled format answers the uniform 404; new formats start off on customised sites.",
+        )}
+      >
+        {FORMATS.map((x) => (
+          <SwitchRow
+            key={x}
+            label={formatName(x, tr)}
+            name={tr(`订阅格式 ${formatName(x, tr)}`, `Format ${formatName(x, tr)}`)}
+            checked={v.formats.includes(x)}
+            onChange={(on) => toggle("formats", x, on)}
+          />
+        ))}
+      </Group>
+      <Group
+        title={tr("门户一键导入按钮", "Portal one-click import buttons")}
+        footer={tr("门户订阅页显示哪些客户端的导入按钮。", "Which clients get an import button on the portal.")}
+      >
+        {CLIENTS.map((x) => (
+          <SwitchRow
+            key={x}
+            label={clientName(x)}
+            name={tr(`一键导入 ${clientName(x)}`, `Import ${clientName(x)}`)}
+            checked={v.clients.includes(x)}
+            onChange={(on) => toggle("clients", x, on)}
+          />
+        ))}
+      </Group>
+      <Group
+        title={tr("线路名", "Line names")}
+        footer={tr(
+          "默认关闭：线路名不随倍率变化，客户端记住的选择不会丢。开启后只显示入口的基础倍率（1x 不显示），不显示时段倍率。",
+          "Off by default: names never change with the multiplier, so clients keep the selection. When on, names show the entrance's base multiplier (not 1x), never a time-window one.",
+        )}
+      >
+        <SwitchRow
+          label={tr("订阅线路名显示倍率", "Multipliers in line names")}
+          checked={v.name_rate}
+          onChange={(x) => f.set("name_rate", x)}
+        >
+          {d.subscription.name_rate && (
+            <Callout tone="warning">
+              {tr(
+                "已开启：修改入口倍率会改变线路名，用户刷新订阅后客户端可能切换到其他线路。",
+                "On: changing an entrance's multiplier renames its line; after a refresh clients may switch to another line.",
+              )}
+            </Callout>
+          )}
+        </SwitchRow>
+      </Group>
+      <SubPath />
+    </>
+  );
+}
+
 function randomPath(): string {
   const b = new Uint8Array(12);
   crypto.getRandomValues(b);
   return Array.from(b, (x) => "abcdefghijkmnpqrstuvwxyz23456789"[x % 32]).join("");
 }
 
-export function SubscriptionTab() {
+/** SET-10: the site-wide subscription path; a change kills every old link at once. */
+function SubPath() {
+  const tr = useTr();
+  const q = useAccess();
+  const [open, setOpen] = useState(false);
   return (
-    <div className="space-y-4">
-      <SubPath />
-      <RoutingRules />
-      <Switches />
-      <NameRate />
-    </div>
+    <DangerZone>
+      <InfoRow
+        label={tr("订阅路径", "Subscription path")}
+        description={
+          <>
+            {tr("全站共用的随机路径，当前：", "One random path for the site, now: ")}
+            {q.data ? <Mono>{`/${q.data.sub_path}/<token>`}</Mono> : "…"}
+            <br />
+            {tr("更换后所有用户的旧订阅链接立即失效。", "Changing it kills every user's old link at once.")}
+          </>
+        }
+      >
+        <Button size="sm" variant="destructive-soft" disabled={!q.data} onClick={() => setOpen(true)}>
+          {tr("更换订阅路径…", "Change the path…")}
+        </Button>
+      </InfoRow>
+      {open && q.data && (
+        <SubPathDialog current={q.data.sub_path} version={q.data.version} onClose={() => setOpen(false)} />
+      )}
+    </DangerZone>
   );
 }
 
-function SubPath() {
+function SubPathDialog({ current, version, onClose }: { current: string; version: number; onClose: () => void }) {
   const tr = useTr();
   const confirm = useConfirm();
   const toast = useToast();
-  const errText = useErrText();
-  const q = useAccess();
   const [path, setPath] = useState("");
   const [notify, setNotify] = useState(true);
-  const a = q.data;
-  if (!a) return <Skeleton className="h-32" />;
-  const apply = async () => {
+  const [shown, setShown] = useState(false);
+  const p = path.trim();
+  const error = !/^[A-Za-z0-9_-]{4,64}$/.test(p)
+    ? tr("4–64 位字母、数字、- 或 _", "4–64 of A–Z a–z 0–9 - _")
+    : p === current
+      ? tr("与当前路径相同", "Same as the current path")
+      : undefined;
+  const submit = async () => {
+    setShown(true);
+    if (error) return;
     const box: { job?: unknown } = {};
     const ok = await confirm({
       title: tr("应用新的订阅路径？", "Apply the new subscription path?"),
       impact: tr("所有用户的旧订阅链接立即失效", "Every user's old subscription link stops working at once"),
-      description: tr(`/${a.sub_path}/… → /${path.trim()}/…`, `/${a.sub_path}/… → /${path.trim()}/…`),
+      description: `/${current}/… → /${p}/…`,
       details: notify ? (
-        <p className="text-[13px] text-muted-foreground">
-          {tr("将邮件通知所有用户新链接。", "Every user will be mailed the new link.")}
+        <p className="text-body text-muted-foreground">
+          {tr("将邮件通知所有用户新链接（已验证邮箱）。", "Every user (verified address) will be mailed the new link.")}
         </p>
       ) : undefined,
       typeToConfirm: tr("旧链接全部失效", "old links stop"),
+      confirmLabel: tr("确认更换", "Change"),
       action: async () => {
         const r = await put<{ notify_job: unknown }>("/settings/access/sub-path", {
-          version: a.version,
-          sub_path: path.trim(),
+          version,
+          sub_path: p,
           confirm: true,
           notify_users: notify,
         });
         box.job = r.notify_job;
       },
     });
-    if (ok) {
-      toast({
-        tone: "success",
-        title: tr("订阅路径已更新（写入审计）", "Subscription path changed (audited)"),
-        description: box.job
-          ? tr("邮件通知任务已创建（用户 → 批量任务）", "Notice job created (Users → batch jobs)")
-          : undefined,
-      });
-      setPath("");
-      void q.refetch();
-    }
+    if (!ok) return;
+    toast({
+      tone: "success",
+      title: tr("订阅路径已更新（写入审计）", "Subscription path changed (audited)"),
+      description: box.job
+        ? tr("邮件通知任务已创建（用户 → 批量任务）", "Notice job created (Users → batch jobs)")
+        : undefined,
+    });
+    onClose();
   };
   return (
-    <Card>
-      <CardHeader
-        title={tr("订阅路径（D11）", "Subscription path (D11)")}
-        description={tr(
-          "全站共用的随机路径；修改后旧路径立即失效。",
-          "One random path for the site; a change kills the old path at once.",
-        )}
-      />
-      <CardBody className="space-y-3 text-[13px]">
-        <p>
-          {tr("当前：", "Current: ")}
-          <Mono>/{a.sub_path}/&lt;token&gt;</Mono>
-        </p>
-        <div className="flex flex-wrap items-end gap-2">
-          <Field label={tr("新路径（4–64 位字母、数字、- 或 _）", "New path (4–64 of A-Z a-z 0-9 - _)")}>
-            <Input className="w-64" value={path} onChange={(e) => setPath(e.target.value)} />
-          </Field>
-          <Button onClick={() => setPath(randomPath())}>{tr("随机生成", "Random")}</Button>
-          <label className="flex items-center gap-2 pb-2">
-            <Checkbox
-              checked={notify}
-              onChange={setNotify}
-              label={tr("邮件通知所有用户新链接", "Mail every user the new link")}
-            />
-            {tr("邮件通知所有用户新链接（已验证邮箱）", "Mail every user (verified address) the new link")}
-          </label>
-          <Button
-            variant="destructive-soft"
-            disabled={path.trim().length < 4}
-            onClick={() => void apply().catch((e) => toast({ tone: "error", title: errText(e) }))}
-          >
+    <Dialog
+      open
+      size="sm"
+      tone="danger"
+      onClose={onClose}
+      title={tr("更换订阅路径", "Change the subscription path")}
+      description={tr(`当前：/${current}/<token>`, `Current: /${current}/<token>`)}
+      onSubmit={() => void submit()}
+      footer={
+        <>
+          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <Button type="submit" variant="destructive">
             {tr("应用新路径", "Apply")}
           </Button>
-        </div>
-      </CardBody>
-    </Card>
+        </>
+      }
+    >
+      <div className="grid gap-4">
+        <Field
+          label={tr("新路径（4–64 位字母、数字、- 或 _）", "New path (4–64 of A-Z a-z 0-9 - _)")}
+          error={shown ? error : undefined}
+        >
+          <div className="flex gap-2">
+            <Input
+              data-autofocus
+              className="font-mono"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              onBlur={() => setShown(true)}
+            />
+            <Button icon={Shuffle} onClick={() => setPath(randomPath())}>
+              {tr("随机生成", "Random")}
+            </Button>
+          </div>
+        </Field>
+        <label className="flex items-center gap-2.5 text-body">
+          <Checkbox
+            checked={notify}
+            onChange={setNotify}
+            label={tr("邮件通知所有用户新链接", "Mail every user the new link")}
+          />
+          {tr("邮件通知所有用户新链接（已验证邮箱）", "Mail every user (verified address) the new link")}
+        </label>
+      </div>
+    </Dialog>
   );
 }
 
-function RoutingRules() {
-  const tr = useTr();
+// ---------------------------------------------------------------------------
+// 分流规则
+// ---------------------------------------------------------------------------
+
+export function RoutingSection() {
   const s = useSettings();
-  const d = s.data;
-  const [rules, setRules] = useState<Rule[] | null>(null);
-  const [clash, setClash] = useState<string | null>(null);
-  const [singbox, setSingbox] = useState<string | null>(null);
-  useEffect(() => {
-    if (d && !rules) setRules(d.subscription.rules.effective);
-  }, [d, rules]);
-  const [run, busy] = useAction();
-  if (!d || !rules) return <Skeleton className="h-64" />;
+  return <Loaded q={s}>{(d) => <RoutingForm d={d} />}</Loaded>;
+}
+
+function RoutingForm({ d }: { d: SettingsView }) {
+  const tr = useTr();
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [run] = useAction();
+  const f = useDraft({
+    rules: d.subscription.rules.effective,
+    clash: d.subscription.rule_set_clash_url.value ?? "",
+    singbox: d.subscription.rule_set_singbox_url.value ?? "",
+  });
+  const v = f.value!;
+  const rules = v.rules;
+  const ruleErrors = rules.map((r) => (r.value.trim() ? undefined : tr("请填写值", "Enter a value")));
+  const clashError = urlError(v.clash.replace(/\{(kind|name)\}/g, "x"), tr);
+  const singboxError = urlError(v.singbox.replace(/\{(kind|name)\}/g, "x"), tr);
+  const setRules = (n: Rule[]) => f.set("rules", n);
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= rules.length) return;
@@ -179,255 +370,169 @@ function RoutingRules() {
     [n[i], n[j]] = [n[j], n[i]];
     setRules(n);
   };
-  const save = (body: Record<string, unknown>) =>
-    run(() => put("/settings/subscription", { version: d.version, ...body }), {
-      ok: tr("订阅设置已保存", "Subscription settings saved"),
-      invalidate: [["settings"]],
-    }).then((r) => {
-      if (r !== undefined) {
-        setRules(null);
-        setClash(null);
-        setSingbox(null);
-      }
-    });
+  useSavePart({
+    count: f.edited.length,
+    errors: ruleErrors.filter(Boolean).length + (clashError ? 1 : 0) + (singboxError ? 1 : 0),
+    discard: f.reset,
+    save: async () => {
+      const cur = fresh(qc, ["settings"], d);
+      const r = await run(
+        () =>
+          put("/settings/subscription", {
+            version: cur.version,
+            rules: rules.map((x) => ({ ...x, value: x.value.trim() })),
+            rule_set_clash_url: v.clash.trim() || null,
+            rule_set_singbox_url: v.singbox.trim() || null,
+          }),
+        { ok: tr("分流规则已保存", "Routing saved") },
+      );
+      if (r === undefined) return false;
+      f.reset();
+      return true;
+    },
+  });
   return (
-    <Card>
-      <CardHeader
-        title={tr("分流规则模板（W30）", "Routing template (W30)")}
-        description={tr(
-          "Clash 用 rule-providers，sing-box 用 rule_set；按顺序匹配，其余走代理。",
-          "Clash uses rule-providers, sing-box rule_set; in order, everything else via the proxy.",
+    <>
+      <Group
+        title={tr("规则（按顺序匹配，其余走代理）", "Rules (matched in order; the rest goes via the proxy)")}
+        footer={tr(
+          "Clash 用 rule-providers，sing-box 用 rule_set。最多 64 条。",
+          "Clash uses rule-providers, sing-box rule_set. Up to 64 rules.",
         )}
-        actions={
-          <Button size="sm" variant="ghost" onClick={() => setRules(d.subscription.rules.default)}>
-            {tr("恢复默认", "Default")}
-          </Button>
-        }
-      />
-      <CardBody className="space-y-2">
+      >
         {rules.map((r, i) => (
-          <div key={i} data-rule={i} className="flex flex-wrap items-center gap-2">
-            <span className="w-6 text-xs text-muted-foreground">{i + 1}</span>
-            <Select
-              aria-label={tr("类型", "Type")}
-              className="w-40 [&_select]:h-8"
-              value={r.type}
-              onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, type: e.target.value } : x)))}
-            >
-              {RULE_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
-            <Input
-              aria-label={tr("值", "Value")}
-              className="h-8 w-44"
-              value={r.value}
-              onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
-            />
-            <Select
-              aria-label={tr("动作", "Action")}
-              className="w-28 [&_select]:h-8"
-              value={r.action}
-              onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, action: e.target.value } : x)))}
-            >
-              {ACTIONS.map((a) => (
-                <option key={a} value={a}>
-                  {actionName(a, tr)}
-                </option>
-              ))}
-            </Select>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              icon={ArrowUp}
-              aria-label={tr("上移", "Up")}
-              onClick={() => move(i, -1)}
-            />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              icon={ArrowDown}
-              aria-label={tr("下移", "Down")}
-              onClick={() => move(i, 1)}
-            />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              icon={Trash2}
-              aria-label={tr("删除规则", "Remove rule")}
-              onClick={() => setRules(rules.filter((_, j) => j !== i))}
-            />
+          <div key={i} data-rule={i} className="px-4 py-2">
+            <div className="grid grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-2 sm:grid-cols-[1.5rem_minmax(0,11rem)_minmax(0,1fr)_minmax(0,7rem)_auto]">
+              <span className="tnum text-footnote text-faint">{i + 1}</span>
+              <Select
+                aria-label={tr("类型", "Type")}
+                value={r.type}
+                onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, type: e.target.value } : x)))}
+              >
+                {RULE_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {ruleTypeName(t, tr)}
+                  </option>
+                ))}
+              </Select>
+              <div className="col-span-2 col-start-2 row-start-2 sm:col-span-1 sm:col-start-auto sm:row-start-auto">
+                <Input
+                  aria-label={tr("值", "Value")}
+                  aria-invalid={ruleErrors[i] ? true : undefined}
+                  className="font-mono"
+                  value={r.value}
+                  onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                />
+              </div>
+              <Select
+                aria-label={tr("动作", "Action")}
+                className="col-start-2 row-start-3 sm:col-start-auto sm:row-start-auto"
+                value={r.action}
+                onChange={(e) => setRules(rules.map((x, j) => (j === i ? { ...x, action: e.target.value } : x)))}
+              >
+                {ACTIONS.map((a) => (
+                  <option key={a} value={a}>
+                    {actionName(a, tr)}
+                  </option>
+                ))}
+              </Select>
+              <div className="col-start-3 row-start-1 flex gap-0.5 sm:col-start-auto sm:row-start-auto">
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  icon={ArrowUp}
+                  aria-label={tr("上移", "Up")}
+                  disabled={i === 0}
+                  onClick={() => move(i, -1)}
+                />
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  icon={ArrowDown}
+                  aria-label={tr("下移", "Down")}
+                  disabled={i === rules.length - 1}
+                  onClick={() => move(i, 1)}
+                />
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  icon={Trash2}
+                  aria-label={tr("删除规则", "Remove rule")}
+                  onClick={() => setRules(rules.filter((_, j) => j !== i))}
+                />
+              </div>
+            </div>
+            {ruleErrors[i] && <p className="mt-1 pl-8 text-footnote text-destructive">{ruleErrors[i]}</p>}
           </div>
         ))}
-        <Button
-          size="sm"
-          icon={Plus}
-          disabled={rules.length >= 64}
-          onClick={() => setRules([...rules, { type: "geosite", value: "", action: "proxy" }])}
-        >
-          {tr("添加规则", "Add rule")}
-        </Button>
-        <div className="grid gap-3 pt-3 sm:grid-cols-2">
-          <Field
-            label={tr(
-              "Clash 规则集 URL 模板（{kind} {name}，留空 = 默认）",
-              "Clash rule-set URL template ({kind} {name}; empty = default)",
-            )}
+        <div className="px-4 py-2.5">
+          <Button
+            size="sm"
+            variant="soft"
+            icon={Plus}
+            disabled={rules.length >= 64}
+            onClick={() => setRules([...rules, { type: "geosite", value: "", action: "proxy" }])}
           >
-            <Input
-              value={clash ?? d.subscription.rule_set_clash_url.value ?? ""}
-              placeholder={d.subscription.rule_set_clash_url.default}
-              onChange={(e) => setClash(e.target.value)}
-            />
-          </Field>
-          <Field
-            label={tr("sing-box 规则集 URL 模板（留空 = 默认）", "sing-box rule-set URL template (empty = default)")}
-          >
-            <Input
-              value={singbox ?? d.subscription.rule_set_singbox_url.value ?? ""}
-              placeholder={d.subscription.rule_set_singbox_url.default}
-              onChange={(e) => setSingbox(e.target.value)}
-            />
-          </Field>
+            {tr("添加规则", "Add rule")}
+          </Button>
         </div>
-        <Button
-          size="sm"
-          variant="primary"
-          loading={busy}
-          onClick={() =>
-            void save({
-              rules,
-              ...(clash !== null ? { rule_set_clash_url: clash.trim() || null } : {}),
-              ...(singbox !== null ? { rule_set_singbox_url: singbox.trim() || null } : {}),
-            })
-          }
+      </Group>
+      <Group
+        title={tr("规则集地址", "Rule-set URLs")}
+        footer={tr(
+          "模板里的 {kind} 与 {name} 会被替换；留空 = 默认地址。",
+          "{kind} and {name} are filled in; empty = the default.",
+        )}
+      >
+        <FieldRow
+          label={tr("Clash 规则集 URL 模板", "Clash rule-set URL template")}
+          description={<span className="font-mono break-all">{d.subscription.rule_set_clash_url.default}</span>}
+          error={clashError}
+          stack
         >
-          {tr("保存分流规则", "Save routing")}
-        </Button>
-      </CardBody>
-    </Card>
-  );
-}
-
-function Switches() {
-  const tr = useTr();
-  const s = useSettings();
-  const [run, busy] = useAction();
-  const d = s.data;
-  if (!d) return null;
-  const formats = d.subscription.formats.effective;
-  const clients = d.subscription.import_clients.effective;
-  const set = (body: Record<string, unknown>) =>
-    void run(() => put("/settings/subscription", { version: d.version, ...body }), {
-      ok: tr("已保存", "Saved"),
-      invalidate: [["settings"]],
-    });
-  return (
-    <Card>
-      <CardHeader
-        title={tr("格式与一键导入", "Formats and one-click import")}
-        description={tr(
-          "关闭的格式一律返回统一 404；新格式对自定义过的站点默认关闭。",
-          "A disabled format answers the uniform 404; new formats start off on customised sites.",
-        )}
-      />
-      <CardBody className="space-y-4 text-[13px]">
-        <fieldset>
-          <legend className="mb-1.5 font-medium">{tr("订阅格式", "Subscription formats")}</legend>
-          <div className="flex flex-wrap gap-3">
-            {FORMATS.map((f) => (
-              <label key={f} className="flex items-center gap-1.5">
-                <Checkbox
-                  checked={formats.includes(f)}
-                  disabled={busy}
-                  label={formatName(f, tr)}
-                  onChange={(on) => set({ formats: on ? [...formats, f] : formats.filter((x) => x !== f) })}
-                />
-                {formatName(f, tr)}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend className="mb-1.5 font-medium">{tr("门户一键导入按钮", "Portal one-click import buttons")}</legend>
-          <div className="flex flex-wrap gap-3">
-            {CLIENTS.map((c) => (
-              <label key={c} className="flex items-center gap-1.5">
-                <Checkbox
-                  checked={clients.includes(c)}
-                  disabled={busy}
-                  label={clientName(c)}
-                  onChange={(on) => set({ import_clients: on ? [...clients, c] : clients.filter((x) => x !== c) })}
-                />
-                {clientName(c)}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-      </CardBody>
-    </Card>
-  );
-}
-
-// SET-26: off by default. Clients remember the selected line by its name;
-// a name that changes with the multiplier makes them fall back to the first
-// line (the direct entrance) after a refresh.
-function NameRate() {
-  const tr = useTr();
-  const s = useSettings();
-  const confirm = useConfirm();
-  const [run, busy] = useAction();
-  const d = s.data;
-  if (!d) return null;
-  const on = d.subscription.name_rate;
-  const set = async (v: boolean) => {
-    if (
-      v &&
-      !(await confirm({
-        title: tr("在订阅线路名里显示倍率？", "Show multipliers in subscription line names?"),
-        description: tr(
-          "之后每次修改入口的基础倍率都会改变该线路的名字；客户端刷新订阅后会丢失用户选中的线路，可能回落到第一条（直连）。时段倍率不会显示。",
-          "Every change of an entrance's base multiplier then renames its line; after a subscription refresh clients lose the user's selected line and may fall back to the first (direct). Time-window multipliers are never shown.",
-        ),
-        tone: "warning",
-      }))
-    )
-      return;
-    void run(() => put("/settings/subscription", { version: d.version, name_rate: v }), {
-      ok: tr("已保存", "Saved"),
-      invalidate: [["settings"]],
-    });
-  };
-  return (
-    <Card>
-      <CardHeader
-        title={tr("订阅线路名显示倍率", "Multipliers in subscription line names")}
-        description={tr(
-          "默认关闭：线路名不随倍率变化，客户端记住的选择不会丢。开启后只显示入口的基础倍率（1x 不显示），不显示时段倍率。",
-          "Off by default: line names never change with the multiplier, so clients keep the user's selection. When on, names show the entrance's base multiplier (not 1x), never a time-window one.",
-        )}
-      />
-      <CardBody className="space-y-3 text-[13px]">
-        <label className="flex items-center gap-2">
-          <Switch
-            checked={on}
-            disabled={busy}
-            label={tr("订阅线路名显示倍率", "Multipliers in line names")}
-            onChange={(v) => void set(v)}
-          />
-          {tr("订阅线路名显示倍率", "Multipliers in line names")}
-        </label>
-        {on && (
-          <Callout tone="warning">
-            {tr(
-              "已开启：修改入口倍率会改变线路名，用户刷新订阅后客户端可能切换到其他线路。",
-              "On: changing an entrance's multiplier renames its line; after a refresh clients may switch to another line.",
-            )}
-          </Callout>
-        )}
-      </CardBody>
-    </Card>
+          {(a) => (
+            <Input {...a} className="font-mono" value={v.clash} onChange={(e) => f.set("clash", e.target.value)} />
+          )}
+        </FieldRow>
+        <FieldRow
+          label={tr("sing-box 规则集 URL 模板", "sing-box rule-set URL template")}
+          description={<span className="font-mono break-all">{d.subscription.rule_set_singbox_url.default}</span>}
+          error={singboxError}
+          stack
+        >
+          {(a) => (
+            <Input {...a} className="font-mono" value={v.singbox} onChange={(e) => f.set("singbox", e.target.value)} />
+          )}
+        </FieldRow>
+      </Group>
+      <DangerZone>
+        <InfoRow
+          label={tr("恢复默认规则", "Restore the default rules")}
+          description={tr(
+            `换回内置的 ${d.subscription.rules.default.length} 条规则（广告拦截、国内直连、国外代理），在保存栏保存后生效。`,
+            `Back to the ${d.subscription.rules.default.length} built-in rules (ads blocked, domestic direct, the rest proxied); applies once saved.`,
+          )}
+        >
+          {f.isEdited("rules") && <Badge tone="info">{tr("未保存", "Unsaved")}</Badge>}
+          <Button
+            size="sm"
+            variant="destructive-soft"
+            onClick={() =>
+              void confirm({
+                title: tr("恢复默认分流规则？", "Restore the default routing rules?"),
+                description: tr(
+                  "当前的规则会被替换（保存前可以放弃）。",
+                  "The current rules are replaced (you can still discard before saving).",
+                ),
+                tone: "warning",
+                confirmLabel: tr("恢复默认", "Restore"),
+              }).then((ok) => ok && setRules(d.subscription.rules.default))
+            }
+          >
+            {tr("恢复默认", "Restore defaults")}
+          </Button>
+        </InfoRow>
+      </DangerZone>
+    </>
   );
 }

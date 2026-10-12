@@ -199,7 +199,7 @@ export function MailTemplatesPage() {
   const list = useQuery({ queryKey: ["mail-templates"], queryFn: () => get<Template[]>("/settings/mail-templates") });
   const back = (
     <Link
-      to="/settings/mail"
+      to="/settings/templates"
       className="hit-44 inline-flex items-center text-footnote text-muted-foreground hover:text-foreground max-lg:text-callout max-lg:text-primary"
     >
       <ChevronLeft className="size-4" aria-hidden="true" />

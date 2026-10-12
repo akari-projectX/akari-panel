@@ -193,7 +193,7 @@
 |---|---|---|---|
 | ALR-01 | 告警列表：正在告警/已恢复、服务器、种类筛选（在 URL 里，无匹配时"没有匹配的记录"）、按种类计数（点击筛选）、加载更早；点一行打开告警详情弹窗（带"查看服务器"链接） | `GET /alerts` | 实现 |
 | ALR-02 | 确认告警：逐行（各自的加载状态）与勾选批量确认 | `POST /alerts/{id}/ack` | 实现 |
-| ALR-03 | 告警设置：各阈值（留空 = 关闭）、Telegram（Bot token 只写、chat、API 地址）、签名 webhook（密钥只写、随机生成）、邮件收件人——2026-10 移到 系统设置 → 通知 → 告警通道与阈值（`/settings/alert-channels`；告警页只留链接） | `GET/PUT /alerts/settings` | 实现 |
+| ALR-03 | 告警设置：各阈值（留空 = 关闭）、Telegram（Bot token 只写、chat、API 地址）、签名 webhook（密钥只写、随机生成）、邮件收件人——2026-10 移到 系统设置 → 通知 → 告警通道与阈值（`/settings/alerts`；告警页只留链接） | `GET/PUT /alerts/settings` | 实现 |
 | ALR-04 | 各通道发送测试（随 ALR-03 移到 告警通道与阈值） | `POST /alerts/test` | 实现 |
 | ALR-05 | 通知记录（最近 100 条；通道、事件、状态中文；通道/状态筛选与分页）+ 逐行重试（各自的加载状态） | `GET /alerts/notifications`、`POST …/{id}/retry` | 实现 |
 
@@ -214,33 +214,37 @@
 
 ## 15. 系统设置
 
+> 2026-10 改版（proposal §3.2）：按领域分组的分区，每个分区一个地址 `/settings/<分区>`（`/settings` = 概览）。分组：通用（`site` 站点与品牌、`domains` 域名与证书）· 用户与登录（`signup` 注册与邀请、`login` 登录与人机验证、`cleanup` 账号清理）· 订阅（`subscription` 订阅链接与格式、`routing` 分流规则）· 节点（`install` 安装与证书、`probe` 测速与健康检查、`block` 出站拦截规则、`updates` 更新源与验签）· 收款与返利（`payments` 支付方式、`commission` 邀请返利）· 通知（`mail` 发信通道、`templates` 邮件模板、`notices` 通知种类、`alerts` 告警通道与阈值）· 管理与安全（`access` 后台入口、`retention` 数据保留、我的账户与通行密钥 = 链接到 `/account`）。桌面：左侧分组导航（搜索分区名、说明与旧名称；🔒 = 仅所有者可修改）；手机：分组列表 → 分区，左上角"‹ 系统设置"返回。每个分区只有一种保存方式：底部保存栏"N 项未保存的修改 · 放弃 · 保存（⌘S / Ctrl+S）"，有字段错误时不可保存并提示"N 处需要修正"；有未保存修改时切换分区或离开页面先询问；危险的修改放在红框"危险操作"区并在保存时确认；资源列表（支付方式、拦截规则集、域名条目）在弹窗里编辑。旧地址重定向：`security`→`access`、`branding`→`site`、`nodes`→`install`、`block-rules`/`audit-rules`→`block`；`/settings/mail?outbox=…` → `/status?mail=…`。
+
 | 编号 | 功能 | 接口 | 来源 | 处理 |
 |---|---|---|---|---|
-| SET-01 | 站点：站点名称、**站点时区**（IANA 名称，说明影响范围） | `PUT /settings/site` | Q3 | 实现 |
-| SET-02 | 域名（D8）：主域名/订阅域名/节点通信域名三个列表、每类首选、DNS 检测、信任 Cloudflare、节点域名为 CF 时需强制、当前地址会被拒绝时需确认 | `GET/PUT /settings`、`POST /settings/dns-check` | D8/R22 | 实现 |
-| SET-03 | 删除域名前列出影响（门户与后台、链接、待付订单、安装链接、订阅链接、节点），输入域名确认；首选不能直接删 | `POST /settings/domains/impact` | D8 | 实现 |
+| SET-01 | 站点与品牌：站点名称、**站点时区**（可搜索的时区选择器，说明影响范围；修改时确认"之后的日界按新时区计算"） | `PUT /settings/site` | Q3 | 实现 |
+| SET-02 | 域名与证书：主域名/订阅域名/节点通信域名三个列表（在弹窗里添加并即时校验域名格式）、每类首选（设为首选）、DNS 检测、信任 Cloudflare、节点域名为 CF 时需强制、当前地址会被拒绝时需确认；保存栏保存 | `GET/PUT /settings`、`POST /settings/dns-check` | D8/R22 | 实现 |
+| SET-03 | 删除域名（保存时）列出影响（门户与后台、链接、待付订单、安装链接、订阅链接、节点），输入域名确认；首选不能直接删 | `POST /settings/domains/impact` | D8 | 实现 |
 | SET-04 | 每个用户随机分配订阅域名（默认关） | `PUT /settings` `{sub_domain_per_user}` | D8 + 裁决① | 实现 |
-| SET-05 | 节点通信证书域名表 + 移除（列出仍在用的服务器） | `POST /settings/server-names/remove` | R22 | 实现 |
-| SET-06 | 后台地址（默认打码、可显示、复制）；轮换前缀（随机或自定义，显示新旧地址，输入"轮换"确认；仅所有者） | `GET /settings/access`、`POST …/admin-prefix` | D4/R47 | 实现 |
-| SET-07 | 后台 IP 白名单（显示"你的地址"，不含自己时拒绝，附命令行恢复；仅所有者） | `PUT /settings/access/admin-allow` | D4/R47 | 实现 |
-| SET-08 | 登录策略：仅通行密钥（管理员/用户分开）、密码登录后引导绑定 | `GET/PUT /settings/auth` | D7 | 实现 |
-| SET-09 | 安全：审计/流量明细保留天数、Cloudflare 网段、额外信任的发布公钥 + 内置官方公钥（只读） | `PUT /settings/security` | W25 | 实现 |
-| SET-10 | 订阅路径：修改（随机生成）、确认"旧链接全部失效"（输入确认）、可选邮件通知所有用户（默认勾选），显示通知任务 | `PUT /settings/access/sub-path` | D11 + 裁决⑥ | 实现 |
-| SET-11 | 分流规则模板：规则表（geosite/geoip/域名/后缀/关键字/IP 段 × 直连/代理/拒绝）、增删、排序、恢复默认、规则集 URL 模板 | `PUT /settings/subscription` | W30 | 实现 |
-| SET-12 | 订阅格式开关（Clash/mihomo、sing-box、通用链接）与门户一键导入按钮开关（Clash、Stash、Shadowrocket、sing-box、Hiddify） | 同上 | PR② §5 | 实现 |
-| SET-13 | 注册：开放注册、需要验证邮箱、需要邀请码（独立开关）、邮箱域名白名单、每人邀请码数量、试用套餐/天数、找回密码 | `GET/PUT /settings/signup` | D1/W15 | 实现 |
-| SET-14 | 人机验证：Turnstile 站点密钥 / 密钥（只写）、按表单开关（登录/注册/找回）、蜜罐、最短提交时间；警告显示 | `GET/PUT /settings/auth` | W27 | 实现 |
-| SET-15 | 邮件发送：SMTP（主机、端口、465 隐式 TLS / 587 STARTTLS / 不加密、账号、密码只写）或 Resend（API key 只写）、发件人、通知开关（退款通知等） | `GET/PUT /settings/mail` | W31 | 实现 |
-| SET-16 | 测试发信诊断：逐步显示（配置 → DNS → TCP → TLS → 问候 → 认证 → 发送），失败步骤标红并给出中英说明；直接发送测试邮件 | `POST /settings/mail/diagnose`、`/mail/test` | W31 | 实现 |
+| SET-05 | 节点通信证书域名表 + 移除（列出仍在用的服务器，立即生效） | `POST /settings/server-names/remove` | R22 | 实现 |
+| SET-06 | 后台入口：后台地址（默认打码、可显示、复制）；危险操作区轮换前缀（弹窗：随机或自定义，输入"轮换"确认，显示新地址）；仅所有者，其他管理员只读并显示"仅所有者可修改" | `GET /settings/access`、`POST …/admin-prefix` | D4/R47 | 实现 |
+| SET-07 | 后台 IP 白名单（显示"你的地址"，不含自己时字段下提前提示、后端拒绝，保存时确认并附命令行恢复；仅所有者） | `PUT /settings/access/admin-allow` | D4/R47 | 实现 |
+| SET-08 | 登录与人机验证 → 登录方式：密码登录后引导绑定、用户只用通行密钥；"管理员只用通行密钥"在危险操作区，保存时确认并写明恢复办法 `akari admin reset-login` | `GET/PUT /settings/auth` | D7 | 实现 |
+| SET-09 | 安全值分到各分区：Cloudflare 网段（域名与证书，弹窗编辑）、审计/流量明细保留天数（数据保留，范围校验，缩短时确认）、额外信任的发布公钥 + 内置官方公钥只读（更新源与验签，弹窗添加，增删在保存时确认） | `PUT /settings/security` | W25 | 实现 |
+| SET-10 | 订阅路径（订阅链接与格式 → 危险操作）：弹窗修改（随机生成）、确认"旧链接全部失效"（输入确认）、可选邮件通知所有用户（默认勾选），显示通知任务 | `PUT /settings/access/sub-path` | D11 + 裁决⑥ | 实现 |
+| SET-11 | 分流规则：规则表（GeoSite/GeoIP/域名/后缀/关键字/IP 段 × 直连/代理/拒绝）、增删、排序、空值即时提示、规则集 URL 模板；恢复默认在危险操作区 | `PUT /settings/subscription` | W30 | 实现 |
+| SET-12 | 订阅格式开关（Clash/mihomo、sing-box、通用链接）与门户一键导入按钮开关（Clash、Stash、Shadowrocket、sing-box、Hiddify）；关闭格式在保存时确认 | 同上 | PR② §5 | 实现 |
+| SET-13 | 注册与邀请：开放注册、需要验证邮箱、需要邀请码（独立开关）、单次邀请码、邮箱域名白名单、每人邀请码数量（0–100 即时校验）、试用套餐/天数、找回密码 | `GET/PUT /settings/signup` | D1/W15 | 实现 |
+| SET-14 | 登录与人机验证 → 人机验证：Turnstile 站点密钥 / 密钥（只写）、按表单开关（登录/注册/找回）、蜜罐、最短提交时间（0–60 即时校验）；警告显示 | `GET/PUT /settings/auth` | W27 | 实现 |
+| SET-15 | 发信通道：SMTP（主机、端口 1–65535 校验、465 隐式 TLS / 587 STARTTLS / 不加密、账号、密码只写）或 Resend（API key 只写）、发件人；通知种类（独立分区）：回执、到期前 N 天（0–30）、已到期、流量、退款 | `GET/PUT /settings/mail` | W31 | 实现 |
+| SET-16 | 测试发信诊断（使用已保存的配置）：逐步显示（配置 → DNS → TCP → TLS → 问候 → 认证 → 发送），失败步骤标红并给出中英说明；直接发送测试邮件 | `POST /settings/mail/diagnose`、`/mail/test` | W31 | 实现 |
 | SET-18 | 邮件模板（独立全宽页 `/settings/mail-templates`，CodeMirror 6 按需加载）：模板列表（按用途分组、已自定义蓝点、搜索；手机为选择器）× 中/英、主题与正文编辑、变量芯片插入到光标处（`*` = 必需）、未知/缺少必需变量即时检查（带行号，未知变量红色波浪线）、服务端渲染预览（400ms 防抖、iframe 沙箱、HTML/纯文本、桌面/手机宽度、模拟深色）、错误条（有错误时不能保存）、恢复默认（确认）、发送测试（当前草稿）、未保存时切换模板/语言/离开页面先确认、⌘S/Ctrl+S 保存；手机用「编辑 / 预览 / 变量」标签；**HTML 源码**：自动排版/源码切换（首次切换由起点填充）、载入起点、源码校验（脚本/表单/事件属性被拒，服务端错误带行列）、HTML 部分/纯文本部分分别编辑 | `/settings/mail-templates*`（含 `POST …/test-draft`） | Ops | 实现 |
-| SET-19 | 支付方式：列表（类型、启用/不可用/停用、沙箱、排序）、添加（按类型 schema 生成表单，密钥可从文件读）、编辑（密钥留空不改）、测试连接、启停（确认）、删除（仅未被订单使用）、应用公钥复制、异步通知地址、"允许原路退款"开关 | `/settings/payments*` | W24/R40 | 实现 |
-| SET-20 | 节点通信：安装命令公钥钉扎、备用下载地址/不使用备用、ACME 目录/邮箱、撤权方式（按用户 / 重建） | `PUT /settings/nodes` | W25 | 实现 |
-| SET-21 | 测速：间隔、测速地址（1–4 个）、面板 TCP 测速开关 | `PUT /settings/probe` | W11 | 实现 |
-| SET-22 | 审计规则（W29）：内置规则集与自定义规则集（域名/IP/协议）新建、编辑、开关、删除，近 7 天拦截次数，说明不记录访问明细 | `/block-rules*` | W29 | 实现 |
-| SET-23 | 账号清理（D10）：自动清理（默认关）、天数 N、删除前邮件提醒与等待天数；上次运行结果、当前符合条件的数量并可跳到用户列表筛选 | `GET/PUT /settings/cleanup` | D10 | 实现 |
-| SET-24 | 品牌：Logo / favicon 上传与删除、页脚文字与链接、服务条款/隐私链接、客户端下载链接 | `/settings/branding*` | Ops | 实现 |
-| SET-25 | panel.toml 中已废弃的键横幅（`obsolete_config_keys`） | `GET /settings` | W25 | 实现 |
-| SET-26 | 订阅线路名显示倍率（默认关；开启前确认"改倍率会改线路名、客户端可能切换线路"，开启时入口抽屉的倍率框也提示；只显示基础倍率，不显示时段倍率） | `PUT /settings/subscription` `{name_rate}` | next07 | 实现 |
+| SET-19 | 支付方式：渠道列表（类型、启用/不可用/停用、沙箱）、"添加"先选类型再在弹窗里编辑（按类型 schema 生成表单，密钥可从文件读，数字即时校验）、编辑（密钥留空不改）、测试连接、用箭头排序与启停（保存栏，停用时确认）、删除（危险操作区，仅未被订单使用，输入名称确认）、应用公钥复制、支付通知地址、"允许原路退款"开关；新建/删除/密钥只有所有者，其他管理员只读 | `/settings/payments*` | W24/R40/R47 | 实现 |
+| SET-20 | 安装与证书：安装命令公钥钉扎、备用下载地址/不使用备用、ACME 目录/邮箱、撤权方式（按用户 / 重建，附说明）；格式即时校验 | `PUT /settings/nodes` | W25 | 实现 |
+| SET-21 | 测速与健康检查：间隔（10–10080 分钟）、测速地址（1–4 个）、面板 TCP 测速（说明它决定中转入口健康检查；关闭时确认中转入口不再被自动隐藏） | `PUT /settings/probe` | W11 | 实现 |
+| SET-22 | 出站拦截规则（原"审计规则"，W29）：内置规则集与自定义规则集（域名/IP/协议）在弹窗里新建、编辑、删除（输入名称确认），开关与排序走保存栏，近 7 天拦截次数，说明不记录访问明细 | `/block-rules*` | W29 | 实现 |
+| SET-23 | 账号清理（D10）：天数 N、删除前邮件提醒与等待天数（范围校验）；按**正在编辑的**天数实时估算符合条件的数量并可跳到用户列表筛选；上次运行结果；"自动清理"在危险操作区，开启时确认"首次运行将删除约 N 个账户"并要求输入确认 | `GET/PUT /settings/cleanup`、`GET /users?never_used=…`（估算） | D10 | 实现 |
+| SET-24 | 站点与品牌：Logo / favicon 上传与删除（立即生效）、页脚文字与链接、服务条款/隐私链接、客户端下载链接（链接即时校验） | `/settings/branding*` | Ops | 实现 |
+| SET-25 | 概览顶部"需要注意"：panel.toml 中已废弃的键（`obsolete_config_keys`）与域名警告 | `GET /settings` | W25 | 实现 |
+| SET-26 | 订阅线路名显示倍率（默认关；开启时保存前确认"改倍率会改线路名、客户端可能切换线路"，开启时入口弹窗的倍率框也提示；只显示基础倍率，不显示时段倍率） | `PUT /settings/subscription` `{name_rate}` | next07 | 实现 |
+| SET-27 | 通行密钥中心域名（域名与证书）：RP ID、关联来源与注册域数量；更换在危险操作区（弹窗输入，保存时确认：全部通行密钥失效、你自己的通行密钥数量、恢复办法，输入新域名确认） | `PUT /settings/passkey-domain` | 迁移 1105 | 实现 |
+| SET-28 | 允许用通行密钥注册（注册与邀请；默认关；通行密钥不可用时提示） | `PUT /settings/signup` `{passkey_register}` | 迁移 1105 | 实现 |
 
 ## 16. 我的账户
 
@@ -314,6 +318,7 @@
 | `/agent-releases*`、`/agent-updates*`、`/rollouts*` | UPD-* |
 | `GET /audit` | AUD-* |
 | `GET/PUT /settings`、`PUT /settings/site`、`POST /settings/dns-check`、`/domains/impact`、`/server-names/remove` | SET-01…05、25 |
+| `PUT /settings/passkey-domain` | SET-27 |
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |
 | `GET/PUT /settings/auth` | SET-08、14 |
 | `PUT /settings/security`、`/settings/nodes`、`/settings/probe`、`/settings/subscription` | SET-09、20、21、11、12、26 |

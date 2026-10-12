@@ -1,5 +1,5 @@
 // INVENTORY SH-05 SET-14 follow-up (next-01, "人机验证未通过"): Turnstile with Cloudflare's always-pass test
-// keys and a 2 s minimum submit time. The console card saves without touching the stored secret;
+// keys and a 2 s minimum submit time. The console section saves (bottom save bar) without touching the stored secret;
 // the sign-in page then logs in on the first attempt; a single-use widget token is never sent
 // twice (after a refused non-admin account, a wrong password, a success).
 import { expect, test, type Page } from "@playwright/test";
@@ -71,11 +71,11 @@ function tokens(page: Page): string[] {
   return sent;
 }
 
-test("SET-14 SH-05: saving the bot-protection card (minimum time 2 s) keeps the stored secret; an admin then signs in at the first attempt", async ({
+test("SET-14 SH-05: saving the sign-in section (minimum time 2 s) keeps the stored secret; an admin then signs in at the first attempt", async ({
   page,
   browser,
 }) => {
-  await openConsole(page, "/settings/signup");
+  await openConsole(page, "/settings/login");
   const secretField = page.getByLabel("Turnstile 密钥（只写）");
   await expect(secretField).toHaveAttribute("autocomplete", "new-password");
   await expect(secretField).toHaveAttribute("data-1p-ignore", "true");
@@ -88,10 +88,10 @@ test("SET-14 SH-05: saving the bot-protection card (minimum time 2 s) keeps the 
   for (const v of ["0", "2"]) {
     await min.fill(v);
     const saved = page.waitForResponse((r) => r.url().endsWith("/settings/auth") && r.request().method() === "PUT");
-    await page.getByRole("button", { name: "保存", exact: true }).last().click();
+    await page.getByRole("region", { name: "保存栏" }).getByRole("button", { name: "保存", exact: true }).click();
     const res = await saved;
     expect(res.status(), await res.text()).toBe(200);
-    await toast(page, "人机验证设置已保存");
+    await toast(page, "登录与人机验证设置已保存");
   }
   expect(puts).toHaveLength(2);
   for (const b of puts) expect(b).not.toContain("turnstile_secret");

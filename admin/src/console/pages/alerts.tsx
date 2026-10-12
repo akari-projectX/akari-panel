@@ -94,7 +94,7 @@ export function AlertsPage() {
   const tr = useTr();
   const { sub } = useRoute();
   // The old settings tab lives in the settings now.
-  if (sub[0] === "settings") return <Navigate to="/settings/alert-channels" replace />;
+  if (sub[0] === "settings") return <Navigate to="/settings/alerts" replace />;
   const tab = sub[0] === "notifications" ? "notifications" : "alerts";
   return (
     <>
@@ -106,7 +106,7 @@ export function AlertsPage() {
         )}
         actions={
           <Button size="sm" variant="ghost" icon={Settings2} asChild>
-            <Link to="/settings/alert-channels">{tr("告警通道与阈值", "Channels and thresholds")}</Link>
+            <Link to="/settings/alerts">{tr("告警通道与阈值", "Channels and thresholds")}</Link>
           </Button>
         }
       />
