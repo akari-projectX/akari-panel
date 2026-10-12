@@ -64,7 +64,7 @@ export function ConsoleApp() {
     return () => link.remove();
   }, [branding.data?.favicon_url]);
 
-  if (me.isError && !(me.error instanceof ApiError && me.error.status === 401))
+  if (me.isError && !me.data && !(me.error instanceof ApiError && me.error.status === 401))
     return <ErrorState error={me.error} onRetry={() => void me.refetch()} />;
   if (!me.data || me.data.role !== "admin" || !settings.data) return <BootSkeleton label={tr("加载中", "Loading")} />;
 

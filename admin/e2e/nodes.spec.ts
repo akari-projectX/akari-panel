@@ -202,10 +202,11 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await toast(page, "出站拦截已开启");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(card.getByText("出站拦截 开")).toBeVisible();
-  // NOD-12 / NOD-13 / NOD-20: the node dialog (with a day of traffic history).
+  // NOD-12 / NOD-13 / NOD-20: the node dialog (with a day of traffic history; yesterday, so a
+  // run around the site's midnight still finds it inside the 30 days).
   sql(
     `INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes) ` +
-      `SELECT u.id, akari_site_day(now()), n.id, e.id, 1048576, 2097152, 3145728 FROM users u, nodes n JOIN entrances e ON e.node_id = n.id ` +
+      `SELECT u.id, akari_site_day(now()) - 1, n.id, e.id, 1048576, 2097152, 3145728 FROM users u, nodes n JOIN entrances e ON e.node_id = n.id ` +
       `WHERE u.email = '${USER}' AND n.name = '${node}'`,
   );
   await card.getByRole("button", { name: `编辑节点 ${node}` }).click();
