@@ -33,7 +33,7 @@ import {
   lines,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 // ---------------------------------------------------------------------------
 // 站点与品牌

@@ -27,7 +27,7 @@ import {
   numText,
   useDraft,
   useSavePart,
-} from "./settings-kit";
+} from "../components/settings-kit";
 
 // ---------------------------------------------------------------------------
 // 后台入口
