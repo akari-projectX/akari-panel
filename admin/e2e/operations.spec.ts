@@ -5,7 +5,7 @@ import { ORIGIN, apiAs, apiJson, confirmDialog, dialog, openConsole, openRow, ro
 
 test.describe.configure({ mode: "serial" });
 
-test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search, dialog, edit, disable, delete", async ({
+test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers, ticket preview), search and status in the URL, detail (usage / settings), disable, delete", async ({
   page,
 }, info) => {
   const code = uniq(info, "SAVE10")
@@ -14,67 +14,90 @@ test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search,
   await openConsole(page, "/coupons");
   await page.getByRole("button", { name: "新建优惠券" }).first().click();
   const c = dialog(page, "新建优惠券");
-  await c.getByLabel(/优惠码/).fill(code);
-  await c.getByLabel("备注名称").fill("e2e coupon");
-  await c.getByLabel("减免比例（%）").fill("10");
+  // The code is upper-cased as it is typed.
+  await c.getByLabel("代码").fill(code.toLowerCase());
+  await expect(c.getByLabel("代码")).toHaveValue(code);
+  await c.getByLabel("名称").fill("e2e coupon");
+  await c.getByLabel("减免比例").fill("10");
+  await expect(c.getByText("= 9 折")).toBeVisible();
   // A bad number is refused in place (never saved as "unlimited").
-  await c.getByLabel("总次数（空 = 不限）").fill("5x");
-  await c.getByRole("button", { name: "创建" }).click();
+  await c.getByLabel("总次数").fill("5x");
+  await c.getByRole("button", { name: "创建优惠券" }).click();
   await expect(c.getByText("请输入整数")).toBeVisible();
-  await c.getByLabel("总次数（空 = 不限）").fill("5");
-  await c.getByRole("checkbox", { name: "月付", exact: true }).click();
-  await c.getByRole("button", { name: "创建" }).click();
-  await toast(page, "优惠券已创建");
-  // Search (in the URL) finds it; the list refreshed without a reload.
-  await page.getByLabel("搜索优惠码或名称").fill(code);
+  await expect(c.getByText("1 处需要修正")).toBeVisible();
+  await c.getByLabel("总次数").fill("5");
+  await c.getByRole("group", { name: "适用周期" }).last().getByRole("button", { name: "月付", exact: true }).click();
+  // The ticket preview follows the form.
+  await expect(c.getByRole("img", { name: "优惠券预览" })).toContainText(code);
+  await c.getByRole("button", { name: "创建优惠券" }).click();
+  await toast(page, `已创建 ${code}`);
+  await expect(c).toBeHidden();
+  // Search (in the URL) finds it; the list refreshed without a reload; the rule reads as a sentence.
+  await page.getByLabel("搜索代码或名称").fill(code);
   await expect(page).toHaveURL(/q=/);
-  await expect(row(page, code)).toContainText("10% 折扣");
+  await expect(row(page, code)).toContainText("9 折");
+  await expect(row(page, code)).toContainText("仅月付");
   await expect(row(page, code)).toContainText("0 / 5");
-  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: /^停用/ }).click();
+  await expect(row(page, code)).toContainText("近 7 天无核销");
+  const states = page.getByRole("group", { name: "优惠券状态" });
+  await states.getByRole("button", { name: /^已停用/ }).click();
+  await expect(page).toHaveURL(/status=disabled/);
   await expect(page.getByText("没有符合条件的优惠券")).toBeVisible();
-  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: /^全部/ }).click();
+  await states.getByRole("button", { name: /^全部/ }).click();
   await openRow(page, code);
-  const d = dialog(page);
-  await expect(d.getByText("还没有人使用。")).toBeVisible();
-  await expect(d.getByText("月付")).toBeVisible();
-  await d.getByLabel("总次数（空 = 不限）").fill("9");
+  const d = page.getByRole("dialog").filter({ hasText: "使用情况" });
+  await expect(d.getByText("还没有人用过这张优惠券。")).toBeVisible();
+  await expect(d.getByText("共优惠")).toBeVisible();
+  // Settings: the limit is checked in place, saved, and the list follows.
+  await d.getByRole("tab", { name: "设置" }).click();
+  await d.getByLabel("总次数").fill("abc");
+  await expect(d.getByText("请输入整数")).toBeVisible();
+  await expect(d.getByRole("button", { name: "保存" })).toBeDisabled();
+  await d.getByLabel("总次数").fill("9");
   await d.getByRole("button", { name: "保存" }).click();
   await toast(page, "已保存");
   await expect(row(page, code)).toContainText("0 / 9");
   await d.getByRole("button", { name: "停用", exact: true }).click();
-  await confirmDialog(page);
-  await toast(page, "已保存");
-  await expect(row(page, code)).toContainText("停用");
-  // Delete asks for the code.
-  await d.getByRole("button", { name: "删除" }).click();
-  await expect(page.getByRole("alertdialog").getByRole("button", { name: "删除" })).toBeDisabled();
+  await confirmDialog(page, undefined, "停用");
+  await toast(page, "已停用");
+  await expect(row(page, code)).toContainText("已停用");
+  // Delete asks for the code (never used, so it is allowed).
+  await d.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(page.getByRole("alertdialog").getByRole("button", { name: "删除优惠券" })).toBeDisabled();
   await confirmDialog(page, code);
-  await toast(page, "已删除");
+  await toast(page, `已删除 ${code}`);
+  await expect(d).toBeHidden();
   await expect(row(page, code)).toHaveCount(0);
 });
 
-test("CPN-05: code batches — generate, CSV, revoke (type the batch name)", async ({ page }, info) => {
+test("CPN-05: code batches — generate (checked numbers, examples), CSV, void (type the batch name)", async ({
+  page,
+}, info) => {
   const name = uniq(info, "batch");
-  await openConsole(page, "/coupons");
-  await page.getByRole("button", { name: "批量生成优惠码" }).first().click();
+  await openConsole(page, "/coupons/batches");
+  await page.getByRole("button", { name: "批量生成" }).first().click();
   const b = dialog(page, "批量生成优惠码");
-  await b.getByLabel("批次名称").fill(name);
-  await b.getByLabel("前缀（可选）").fill("E2E");
-  await b.getByLabel("数量（1–5000）").fill("0");
-  await b.getByRole("button", { name: "生成" }).click();
-  await expect(b.getByText("范围 1–5000")).toBeVisible();
-  await b.getByLabel("数量（1–5000）").fill("3");
-  await b.getByRole("button", { name: "固定金额（元）" }).click();
-  await b.getByLabel("减免金额（元）").fill("2");
-  await b.getByRole("button", { name: "生成" }).click();
-  await toast(page, "已生成");
+  await b.getByLabel("批次名").fill(name);
+  await b.getByLabel("前缀").fill("e2e");
+  await expect(b.getByLabel("前缀")).toHaveValue("E2E");
+  await b.getByLabel("数量").fill("0");
+  await b.getByRole("button", { name: /^生成/ }).click();
+  await expect(b.getByText("不能小于 1")).toBeVisible();
+  await b.getByLabel("数量").fill("3");
+  await b.getByRole("button", { name: "固定金额" }).click();
+  await b.getByLabel("减免金额").fill("2");
+  await b.getByRole("button", { name: "生成 3 个码" }).click();
+  await toast(page, "已生成 3 个码");
   const item = row(page, name);
-  await expect(item).toContainText("3 个码");
+  await expect(item).toContainText("/ 3 个已用");
+  await expect(item).toContainText("立减 ¥2.00");
   const dl = page.waitForEvent("download");
   await item.getByRole("button", { name: "导出 CSV" }).click();
   expect((await dl).suggestedFilename()).toMatch(/\.csv$/);
-  await item.getByRole("button", { name: "作废" }).click();
-  await confirmDialog(page, name, "作废");
+  await item.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("menuitem", { name: "作废整批" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("立即失效");
+  await confirmDialog(page, name, "作废整批");
   await toast(page, "已作废");
   await expect(row(page, name)).toContainText("已作废");
 });

@@ -1,1080 +1,487 @@
-// 优惠券 (CPN-*): coupons (list with search / status / pages, create, the
-// coupon dialog with redemptions and edit, enable / disable, delete) and
-// generated code batches (generate, CSV, revoke). Numbers stay text while
-// edited and are checked field by field (audit §5.6: a bad number is never
-// sent, so it can never be saved as "unlimited").
+// 优惠券 (CPN-*), v2 (proposal-v2 §3 优惠券 / 批量码): page tabs 优惠券 /
+// 批量码 (/coupons, /coupons/batches). Each coupon row reads as one sentence
+// (code pill + name, the rule sentence, a usage bar with "近 7 天 +N", the
+// validity, the status); search and the status segment (with counts) live in
+// the URL; ⋯ = copy, disable/enable, delete (disabled once used). Batches:
+// one row per batch (state, code pattern, codes used, terms, CSV, ⋯ void).
+// Dialogs (new / detail / generate) are in coupons-dialogs.tsx.
 import { useQuery } from "@tanstack/react-query";
-import { Ban, CircleCheck, CircleDashed, Download, Plus, SearchX, TicketPercent, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { del, get, patch, post } from "../../shared/api";
-import { dateTime, fromLocalInput, parseYuan, toLocalInput, yuan } from "../../shared/format";
+import { Ban, Copy, Download, Ellipsis, Layers3, Plus, Power, PowerOff, SearchX, Ticket, Trash2 } from "lucide-react";
+import { useMemo } from "react";
+import { get } from "../../shared/api";
+import { cn } from "../../shared/cn";
+import { copyText, dateOnly, pct } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { CardHeader } from "../../shared/ui/card";
-import { useConfirm } from "../../shared/ui/confirm";
-import { Dialog } from "../../shared/ui/dialog";
-import { Checkbox, Field, Input, Segmented, SwitchField } from "../../shared/ui/form";
-import { KV, PageHeader, SectionTitle } from "../../shared/ui/layout";
-import { EmptyState, ErrorState, LoadingBlock } from "../../shared/ui/states";
-import { Pager } from "../../shared/ui/table";
+import { Card } from "../../shared/ui/card";
+import { Segmented } from "../../shared/ui/form";
+import { PageHeader } from "../../shared/ui/layout";
+import { Menu, MenuItem, MenuSeparator } from "../../shared/ui/menu";
+import { Meter } from "../../shared/ui/meter";
+import { EmptyState, ErrorState, SkeletonRows } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
 import { useAction } from "../data";
-import { useDebounced } from "../kit";
-import { setQuery, useRoute } from "../router";
-import { useCrumb } from "../session";
-import { PERIODS, periodLabel } from "../terms";
+import { useQS, useRoute } from "../router";
+import { CodePill, batchLabel, ruleParts, windowText, type Batch, type Coupon } from "../components/commerce-coupons";
+import { PageTabs, SearchField } from "../components/kit";
+import { CouponStatus, couponState, type CouponState } from "../components/status";
 import type { PlanView } from "../types";
 import { downloadFile } from "./download";
-import { LedgerTable, ScrollX, SearchField, When, shortTime, useColumns } from "./ledger";
+import { BatchDialog, CouponDetail, CouponEditor, useBatchActions, useCouponActions } from "./coupons-dialogs";
 import { usePlans } from "./users";
 
-type Coupon = {
-  id: string;
-  code: string;
-  name: string;
-  kind: "percent" | "fixed";
-  value: number;
-  plan_ids: string[] | null;
-  periods: string[] | null;
-  min_amount_cents: number;
-  starts_at: string | null;
-  ends_at: string | null;
-  max_uses: number | null;
-  per_user_limit: number | null;
-  new_users_only: boolean;
-  enabled: boolean;
-  used: number;
-  redeemed: number;
-  created_at: string;
-};
-type Redemption = {
-  order_id: string;
-  out_trade_no: string;
-  user_label: string;
-  user_email: string | null;
-  status: string;
-  discount_cents: number;
-  order_status: string;
-  created_at: string;
-};
-type Batch = {
-  id: string;
-  name: string;
-  prefix: string;
-  count: number;
-  created_at: string;
-  revoked_at: string | null;
-  codes: number;
-  used: number;
-  redeemed: number;
-  actor_label: string;
-};
+const STATES: CouponState[] = ["live", "scheduled", "exhausted", "disabled", "expired"];
+const ORDER: Record<CouponState, number> = { live: 0, scheduled: 1, exhausted: 2, disabled: 3, expired: 4 };
+type SF = "all" | CouponState;
 
-/** The server lists at most this many coupons (newest first). */
-const LIST_CAP = 1000;
-/** Uses limits: 1..this, or empty = unlimited (coupons.rs MAX_LIMIT). */
-const MAX_LIMIT = 100_000_000;
-
-export function couponValue(c: { kind: string; value: number }, tr: Tr): string {
-  return c.kind === "percent"
-    ? tr(`${c.value}% 折扣`, `${c.value}% off`)
-    : tr(`减 ${yuan(c.value)}`, `${yuan(c.value)} off`);
-}
-
-function redemptionText(s: string, tr: Tr): [string, "success" | "info" | "neutral"] {
-  return (
-    (
-      {
-        reserved: [tr("已预占（待付款）", "Held (awaiting payment)"), "info"],
-        redeemed: [tr("已核销", "Redeemed"), "success"],
-        released: [tr("已释放", "Released"), "neutral"],
-      } as Record<string, [string, "success" | "info" | "neutral"]>
-    )[s] ?? [tr("其他", "Other"), "neutral"]
-  );
-}
-
-/** A whole number in [min, max]; "" = null when `empty` is allowed. */
-function intOf(s: string, min: number, max: number, empty: boolean, tr: Tr): number | null | string {
-  const t = s.trim();
-  if (!t) return empty ? null : tr("必填", "Required");
-  if (!/^\d+$/.test(t)) return tr("请输入整数", "Enter a whole number");
-  const n = Number(t);
-  if (n < min || n > max) return tr(`范围 ${min}–${max}`, `Range ${min}–${max}`);
-  return n;
-}
-
-type Terms = {
-  kind: "percent" | "fixed";
-  value: string;
-  planIds: string[];
-  periods: string[];
-  min: string;
-  starts: string;
-  ends: string;
-  maxUses: string;
-  perUser: string;
-  newOnly: boolean;
-};
-type TermKey = "value" | "min" | "maxUses" | "perUser" | "ends";
-const EMPTY_TERMS: Terms = {
-  kind: "percent",
-  value: "",
-  planIds: [],
-  periods: [],
-  min: "",
-  starts: "",
-  ends: "",
-  maxUses: "",
-  perUser: "",
-  newOnly: false,
-};
-
-/** Field errors of the terms, and the request body when there are none. */
-function checkTerms(t: Terms, tr: Tr): { errors: Partial<Record<TermKey, string>>; body?: Record<string, unknown> } {
-  const errors: Partial<Record<TermKey, string>> = {};
-  let value: number | null = null;
-  if (t.kind === "percent") {
-    const v = intOf(t.value, 1, 100, false, tr);
-    if (typeof v === "string") errors.value = tr("比例须为 1–100 的整数", "Percent must be a whole number 1–100");
-    else value = v;
-  } else {
-    value = parseYuan(t.value);
-    if (!value) errors.value = tr("金额无效（元，大于 0，最多两位小数）", "Invalid amount (yuan, > 0, 2 decimals)");
-  }
-  const min = t.min.trim() ? parseYuan(t.min) : 0;
-  if (min === null) errors.min = tr("金额无效（元，最多两位小数）", "Invalid amount (yuan, 2 decimals)");
-  const maxUses = intOf(t.maxUses, 1, MAX_LIMIT, true, tr);
-  if (typeof maxUses === "string") errors.maxUses = maxUses;
-  const perUser = intOf(t.perUser, 1, MAX_LIMIT, true, tr);
-  if (typeof perUser === "string") errors.perUser = perUser;
-  if (t.starts && t.ends && t.ends <= t.starts) errors.ends = tr("失效时间要晚于生效时间", "Must be after the start");
-  if (Object.keys(errors).length) return { errors };
-  return {
-    errors,
-    body: {
-      kind: t.kind,
-      value,
-      plan_ids: t.planIds.length ? t.planIds : undefined,
-      periods: t.periods.length ? t.periods : undefined,
-      min_amount_cents: min,
-      starts_at: t.starts ? fromLocalInput(t.starts) : undefined,
-      ends_at: t.ends ? fromLocalInput(t.ends) : undefined,
-      max_uses: maxUses,
-      per_user_limit: perUser ?? undefined,
-      new_users_only: t.newOnly,
-    },
-  };
-}
-
-/** Which fields show their error: after a blur, or all after a submit. */
-function useShown() {
-  const [shown, setShown] = useState<Set<string>>(new Set());
-  const [all, setAll] = useState(false);
-  return {
-    show: (k: string) => setShown((s) => (s.has(k) ? s : new Set(s).add(k))),
-    showAll: () => setAll(true),
-    on: (k: string) => all || shown.has(k),
-  };
-}
-
-function TermsFields({
-  t,
-  set,
-  plans,
-  batch,
-  errors,
-  shown,
-}: {
-  t: Terms;
-  set: (t: Terms) => void;
-  plans: PlanView[];
-  batch?: boolean;
-  errors: Partial<Record<TermKey, string>>;
-  shown: ReturnType<typeof useShown>;
-}) {
-  const tr = useTr();
-  const err = (k: TermKey) => (shown.on(k) ? errors[k] : undefined);
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      <Field group label={tr("优惠类型", "Kind")}>
-        <Segmented
-          label={tr("优惠类型", "Kind")}
-          value={t.kind}
-          onChange={(k) => set({ ...t, kind: k })}
-          options={[
-            { value: "percent", label: tr("按比例（%）", "Percent") },
-            { value: "fixed", label: tr("固定金额（元）", "Fixed (yuan)") },
-          ]}
-        />
-      </Field>
-      <Field
-        label={t.kind === "percent" ? tr("减免比例（%）", "Percent off") : tr("减免金额（元）", "Amount off (yuan)")}
-        error={err("value")}
-      >
-        <Input
-          inputMode="decimal"
-          value={t.value}
-          onChange={(e) => set({ ...t, value: e.target.value })}
-          onBlur={() => shown.show("value")}
-        />
-      </Field>
-      <Field
-        label={tr("最低消费（元，原价）", "Minimum (yuan, list price)")}
-        hint={tr("空 = 不限", "Empty = none")}
-        error={err("min")}
-      >
-        <Input
-          inputMode="decimal"
-          value={t.min}
-          onChange={(e) => set({ ...t, min: e.target.value })}
-          onBlur={() => shown.show("min")}
-        />
-      </Field>
-      <Field
-        label={
-          batch
-            ? tr("每码次数（空 = 不限，默认 1）", "Uses per code (empty = unlimited)")
-            : tr("总次数（空 = 不限）", "Total uses (empty = unlimited)")
-        }
-        error={err("maxUses")}
-      >
-        <Input
-          inputMode="numeric"
-          value={t.maxUses}
-          onChange={(e) => set({ ...t, maxUses: e.target.value })}
-          onBlur={() => shown.show("maxUses")}
-        />
-      </Field>
-      <Field label={tr("每人次数（空 = 不限）", "Per user (empty = unlimited)")} error={err("perUser")}>
-        <Input
-          inputMode="numeric"
-          value={t.perUser}
-          onChange={(e) => set({ ...t, perUser: e.target.value })}
-          onBlur={() => shown.show("perUser")}
-        />
-      </Field>
-      <div className="flex items-end">
-        <SwitchField
-          className="w-full"
-          checked={t.newOnly}
-          onChange={(v) => set({ ...t, newOnly: v })}
-          label={tr("仅新用户（首单）", "New users only (first order)")}
-        />
-      </div>
-      <Field label={tr("生效时间（站点时区）", "Starts (site time zone)")} hint={tr("空 = 立即", "Empty = now")}>
-        <Input type="datetime-local" value={t.starts} onChange={(e) => set({ ...t, starts: e.target.value })} />
-      </Field>
-      <Field
-        label={tr("失效时间（站点时区）", "Ends (site time zone)")}
-        hint={tr("空 = 长期有效", "Empty = no end")}
-        error={err("ends")}
-      >
-        <Input
-          type="datetime-local"
-          value={t.ends}
-          onChange={(e) => set({ ...t, ends: e.target.value })}
-          onBlur={() => shown.show("ends")}
-        />
-      </Field>
-      <Field group className="sm:col-span-2" label={tr("适用套餐（不选 = 全部）", "Plans (none = all)")}>
-        <div className="flex flex-wrap gap-x-4 gap-y-2">
-          {plans.length === 0 && <span className="text-footnote text-faint">{tr("还没有套餐", "No plans yet")}</span>}
-          {plans.map((p) => (
-            <label key={p.id} className="flex items-center gap-2 text-body">
-              <Checkbox
-                checked={t.planIds.includes(p.id)}
-                label={p.name}
-                onChange={(on) =>
-                  set({ ...t, planIds: on ? [...t.planIds, p.id] : t.planIds.filter((x) => x !== p.id) })
-                }
-              />
-              {p.name}
-            </label>
-          ))}
-        </div>
-      </Field>
-      <Field group className="sm:col-span-2" label={tr("适用周期（不选 = 全部）", "Terms (none = all)")}>
-        <div className="flex flex-wrap gap-x-4 gap-y-2">
-          {PERIODS.map((p) => (
-            <label key={p} className="flex items-center gap-2 text-body">
-              <Checkbox
-                checked={t.periods.includes(p)}
-                label={periodLabel(p, tr)}
-                onChange={(on) => set({ ...t, periods: on ? [...t.periods, p] : t.periods.filter((x) => x !== p) })}
-              />
-              {periodLabel(p, tr)}
-            </label>
-          ))}
-        </div>
-      </Field>
-    </div>
-  );
-}
-
-type StatusF = "" | "on" | "off";
+const num = (n: number) => n.toLocaleString("en");
 
 export function CouponsPage() {
   const tr = useTr();
-  const { query } = useRoute();
+  const { sub } = useRoute();
+  const [query, patch] = useQS();
+  const isBatch = sub[0] === "batches";
   const open = query.get("open");
-  const q = query.get("q") ?? "";
-  const status = (["on", "off"].includes(query.get("status") ?? "") ? query.get("status") : "") as StatusF;
-  const [term, setTerm] = useState(q);
-  const dq = useDebounced(term.trim(), 250);
-  const applied = useRef(dq);
-  useEffect(() => {
-    if (dq === applied.current) return;
-    applied.current = dq;
-    setQuery({ q: dq || null });
-  }, [dq]);
   const plans = usePlans();
   const list = useQuery({ queryKey: ["coupons"], queryFn: () => get<Coupon[]>("/coupons") });
-  const [creating, setCreating] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const [limit, setLimit] = useState(20);
+  const batches = useQuery({ queryKey: ["coupon-batches"], queryFn: () => get<Batch[]>("/coupon-batches") });
   const all = useMemo(() => list.data ?? [], [list.data]);
-  const rows = useMemo(() => {
-    const needle = q.toLowerCase();
-    return all.filter(
-      (c) =>
-        (!status || (status === "on") === c.enabled) &&
-        (!needle || c.code.toLowerCase().includes(needle) || c.name.toLowerCase().includes(needle)),
-    );
-  }, [all, q, status]);
-  const at = offset < rows.length ? offset : 0;
-  const page = rows.slice(at, at + limit);
-  const filtered = !!(q || status);
-  const clear = () => {
-    setTerm("");
-    setQuery({ q: null, status: null });
-  };
-  const onCount = all.filter((c) => c.enabled).length;
-  const redeemed = all.reduce((n, c) => n + c.redeemed, 0);
-  const statusChip = (c: Coupon) =>
-    c.enabled ? (
-      <Badge tone="success">
-        <CircleCheck aria-hidden="true" />
-        {tr("启用", "On")}
-      </Badge>
-    ) : (
-      <Badge tone="outline">
-        <CircleDashed aria-hidden="true" />
-        {tr("停用", "Off")}
-      </Badge>
-    );
-  const windowText = (c: Coupon) =>
-    c.starts_at || c.ends_at ? `${dateTime(c.starts_at)} → ${dateTime(c.ends_at)}` : tr("长期", "Always");
-  const [columns, chooser] = useColumns<Coupon>("coupons", [
-    {
-      key: "code",
-      header: tr("优惠码", "Code"),
-      className: "whitespace-nowrap",
-      cell: (c) => <span className="font-mono text-footnote font-medium">{c.code}</span>,
-    },
-    {
-      key: "name",
-      header: tr("名称", "Name"),
-      className: "max-w-56 truncate",
-      cell: (c) => c.name || <span className="text-faint">—</span>,
-    },
-    {
-      key: "uses",
-      header: tr("已用 / 总次数", "Used / max"),
-      className: "whitespace-nowrap",
-      cell: (c) => <span className="tnum">{`${c.used} / ${c.max_uses ?? "∞"}`}</span>,
-    },
-    {
-      key: "window",
-      header: tr("有效期", "Valid"),
-      optional: true,
-      className: "whitespace-nowrap text-muted-foreground",
-      cell: windowText,
-    },
-    { key: "status", header: tr("状态", "Status"), cell: statusChip },
-    {
-      key: "value",
-      header: tr("面值", "Value"),
-      align: "right",
-      className: "whitespace-nowrap",
-      cell: (c) => <span className="font-semibold">{couponValue(c, tr)}</span>,
-    },
-  ]);
-  const newCoupon = (
-    <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-      {tr("新建优惠券", "New coupon")}
-    </Button>
-  );
+  const live = all.filter((c) => couponState(c) === "live").length;
+  const week = all.reduce((n, c) => n + c.redeemed_7d, 0);
+  const bs = batches.data ?? [];
+  const activeB = bs.filter((b) => !b.revoked_at);
+  const close = () => patch({ open: null, tab: null });
   return (
     <>
       <PageHeader
         title={tr("优惠券", "Coupons")}
         description={
-          list.data && all.length > 0 ? (
+          isBatch ? (
+            batches.data ? (
+              <span className="tnum">
+                {tr(
+                  `${activeB.length} 批有效 · 共 ${num(activeB.reduce((n, b) => n + b.codes, 0))} 个码，已用 ${num(activeB.reduce((n, b) => n + b.codes_used, 0))} 个`,
+                  `${activeB.length} active batches · ${num(activeB.reduce((n, b) => n + b.codes, 0))} codes, ${num(activeB.reduce((n, b) => n + b.codes_used, 0))} used`,
+                )}
+              </span>
+            ) : (
+              tr("批量生成的一次性兑换码。", "Generated one-off codes.")
+            )
+          ) : list.data ? (
             <span className="tnum">
-              {tr(
-                `共 ${all.length} 张 · 启用 ${onCount} 张 · 已核销 ${redeemed} 次`,
-                `${all.length} coupons · ${onCount} on · redeemed ${redeemed} times`,
-              )}
+              <b className="font-semibold text-foreground">{live}</b>
+              {tr(" 张生效中 · 近 7 天核销 ", " live · ")}
+              <b className="font-semibold text-foreground">{num(week)}</b>
+              {tr(" 次", " redeemed in the last 7 days")}
             </span>
           ) : (
-            tr("单个优惠码与批量生成的码。", "Single coupon codes and generated batches.")
+            tr("用户在结账时输入代码享受折扣。", "Codes buyers enter at checkout.")
           )
         }
-        actions={newCoupon}
-      />
-      <LedgerTable
-        label={tr("优惠券", "Coupons")}
-        rows={page}
-        columns={columns}
-        loading={list.isPending}
-        error={list.error}
-        onRetry={() => void list.refetch()}
-        onRowClick={(c) => setQuery({ open: c.id }, false)}
-        activeId={open}
-        phone={(c) => ({
-          title: <span className="font-mono">{c.code}</span>,
-          sub: c.name || undefined,
-          meta: tr(
-            `已用 ${c.used} / ${c.max_uses ?? "∞"} · ${windowText(c)}`,
-            `used ${c.used} / ${c.max_uses ?? "∞"} · ${windowText(c)}`,
-          ),
-          amount: couponValue(c, tr),
-          status: statusChip(c),
-        })}
-        empty={
-          filtered ? (
-            <EmptyState
-              icon={SearchX}
-              title={tr("没有符合条件的优惠券", "No coupons match")}
-              description={
-                q
-                  ? tr(
-                      `没有优惠码或名称包含「${q}」的${status === "on" ? "启用中" : status === "off" ? "已停用" : ""}优惠券。检查拼写，或清除筛选。`,
-                      `No ${status === "on" ? "enabled " : status === "off" ? "disabled " : ""}coupon whose code or name contains “${q}”. Check the spelling, or clear the filters.`,
-                    )
-                  : status === "on"
-                    ? tr("没有启用中的优惠券。清除筛选查看全部。", "No coupon is on. Clear the filter to see all.")
-                    : tr("没有已停用的优惠券。清除筛选查看全部。", "No coupon is off. Clear the filter to see all.")
-              }
-              action={
-                <>
-                  <Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>
-                  {newCoupon}
-                </>
-              }
-            />
+        actions={
+          isBatch ? (
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+              {tr("批量生成", "Generate codes")}
+            </Button>
           ) : (
-            <EmptyState
-              icon={TicketPercent}
-              title={tr("还没有优惠券", "No coupons yet")}
-              description={tr(
-                "新建一个优惠码，或在下方批量生成一批码。",
-                "Create a coupon code, or generate a batch below.",
-              )}
-              action={newCoupon}
-            />
-          )
-        }
-        toolbar={
-          <>
-            <SearchField
-              aria-label={tr("搜索优惠码或名称", "Search code or name")}
-              placeholder={tr("搜索优惠码或名称", "Search code or name")}
-              value={term}
-              onChange={(e) => {
-                setTerm(e.target.value);
-                setOffset(0);
-              }}
-            />
-            <ScrollX>
-              <Segmented
-                label={tr("优惠券状态", "Coupon status")}
-                value={status}
-                onChange={(v) => {
-                  setOffset(0);
-                  setQuery({ status: v || null });
-                }}
-                options={[
-                  { value: "", label: tr("全部", "All"), count: list.data ? all.length : undefined },
-                  { value: "on", label: tr("启用", "On"), count: list.data ? onCount : undefined },
-                  { value: "off", label: tr("停用", "Off"), count: list.data ? all.length - onCount : undefined },
-                ]}
-              />
-            </ScrollX>
-            {chooser}
-          </>
-        }
-        footer={
-          rows.length > 0 && (
-            <Pager
-              total={rows.length}
-              offset={at}
-              limit={limit}
-              onOffset={setOffset}
-              onLimit={(l) => {
-                setLimit(l);
-                setOffset(0);
-              }}
-              totalLabel={
-                all.length >= LIST_CAP
-                  ? tr(
-                      `${rows.length} 张（只取最新 ${LIST_CAP} 张优惠券）`,
-                      `${rows.length} (newest ${LIST_CAP} coupons only)`,
-                    )
-                  : tr(`共 ${rows.length} 张`, `${rows.length} in total`)
-              }
-            />
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+              {tr("新建优惠券", "New coupon")}
+            </Button>
           )
         }
       />
-      <div className="mt-6">
-        <Batches plans={plans.data ?? []} />
-      </div>
-      {creating && <CreateCoupon plans={plans.data ?? []} onClose={() => setCreating(false)} />}
-      {open && <CouponDialog id={open} plans={plans.data ?? []} onClose={() => setQuery({ open: null })} />}
+      <PageTabs
+        label={tr("优惠券页面", "Coupon pages")}
+        items={[
+          { to: "/coupons", label: tr("优惠券", "Coupons"), count: list.data ? all.length : undefined, end: true },
+          { to: "/coupons/batches", label: tr("批量码", "Batches"), count: batches.data ? bs.length : undefined },
+        ]}
+      />
+      {isBatch ? (
+        <BatchList q={batches} plans={plans.data} onNew={() => patch({ open: "new" })} />
+      ) : (
+        <CouponList q={list} plans={plans.data} />
+      )}
+      {!isBatch && open === "new" && <CouponEditor coupons={all} plans={plans.data ?? []} onClose={close} />}
+      {!isBatch && open && open !== "new" && <CouponDetail id={open} plans={plans.data} onClose={close} />}
+      {isBatch && open === "new" && <BatchDialog plans={plans.data ?? []} onClose={close} />}
     </>
   );
 }
 
-function CreateCoupon({ plans, onClose }: { plans: PlanView[]; onClose: () => void }) {
+/* ---------- Coupons ---------- */
+
+function CouponList({ q, plans }: { q: ReturnType<typeof useQuery<Coupon[]>>; plans: PlanView[] | undefined }) {
   const tr = useTr();
-  const [code, setCode] = useState("");
-  const [name, setName] = useState("");
-  const [t, setT] = useState<Terms>(EMPTY_TERMS);
-  const shown = useShown();
-  const [run, busy] = useAction();
-  const checked = checkTerms(t, tr);
-  const codeErr = /^[A-Za-z0-9_-]{3,32}$/.test(code.trim())
-    ? undefined
-    : tr("3–32 位字母、数字、- 或 _", "3–32 of A-Z 0-9 - _");
-  const submit = async () => {
-    shown.showAll();
-    if (codeErr || !checked.body) return;
-    const r = await run(
-      () => post("/coupons", { code: code.trim(), name: name.trim() || undefined, ...checked.body }),
-      {
-        ok: tr("优惠券已创建", "Coupon created"),
-      },
-    );
-    if (r !== undefined) onClose();
+  const [query, patch] = useQS();
+  const term = query.get("q") ?? "";
+  const raw = query.get("status") ?? "";
+  const sf: SF = (STATES as string[]).includes(raw) ? (raw as CouponState) : "all";
+  const all = useMemo(() => q.data ?? [], [q.data]);
+  const needle = term.trim().toLowerCase();
+  const rows = useMemo(
+    () =>
+      all
+        .map((c) => ({ c, s: couponState(c) }))
+        .filter(
+          ({ c, s }) =>
+            (sf === "all" || s === sf) &&
+            (!needle || c.code.toLowerCase().includes(needle) || c.name.toLowerCase().includes(needle)),
+        )
+        .sort((a, b) => ORDER[a.s] - ORDER[b.s] || b.c.redeemed_7d - a.c.redeemed_7d),
+    [all, sf, needle],
+  );
+  const cnt = (s: CouponState) => all.filter((c) => couponState(c) === s).length;
+  const labels: Record<SF, string> = {
+    all: tr("全部", "All"),
+    live: tr("生效中", "Live"),
+    scheduled: tr("未开始", "Scheduled"),
+    exhausted: tr("已用完", "Used up"),
+    disabled: tr("已停用", "Disabled"),
+    expired: tr("已过期", "Expired"),
   };
+  const clear = () => patch({ q: null, status: null });
   return (
-    <Dialog
-      open
-      size="lg"
-      onClose={onClose}
-      title={tr("新建优惠券", "New coupon")}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("创建", "Create")}
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field
-            label={tr("优惠码（3–32 位字母、数字、- 或 _）", "Code (3–32 of A-Z 0-9 - _)")}
-            error={shown.on("code") ? codeErr : undefined}
-          >
-            <Input
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              onBlur={() => shown.show("code")}
-              autoComplete="off"
-              spellCheck={false}
-              data-autofocus
-            />
-          </Field>
-          <Field label={tr("备注名称", "Name")}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} />
-          </Field>
+    <Card>
+      <div className="flex flex-wrap items-center gap-2 border-b border-separator p-3">
+        <SearchBox value={term} onChange={(v) => patch({ q: v || null }, true)} />
+        <div className="-mx-1 max-w-full overflow-x-auto px-1 [scrollbar-width:none]">
+          <Segmented
+            label={tr("优惠券状态", "Coupon status")}
+            value={sf}
+            onChange={(v) => patch({ status: v === "all" ? null : v })}
+            options={(["all", ...STATES] as SF[]).map((v) => ({
+              value: v,
+              label: labels[v],
+              count: q.data ? (v === "all" ? all.length : cnt(v)) : undefined,
+            }))}
+          />
         </div>
-        <TermsFields t={t} set={setT} plans={plans} errors={checked.errors} shown={shown} />
       </div>
-    </Dialog>
+      <div className="grid grid-cols-[minmax(0,1.6fr)_200px_130px_84px_32px] gap-x-4 border-b border-separator px-4 py-1.5 text-footnote font-medium text-muted-foreground max-md:hidden">
+        <span>{tr("优惠码与规则", "Code and rules")}</span>
+        <span>{tr("使用", "Usage")}</span>
+        <span>{tr("有效期", "Validity")}</span>
+        <span>{tr("状态", "Status")}</span>
+        <span />
+      </div>
+      {q.isPending ? (
+        <SkeletonRows rows={6} height={60} avatar={false} />
+      ) : q.isError ? (
+        <ErrorState
+          title={tr("优惠券加载失败", "Failed to load the coupons")}
+          error={q.error}
+          raw={q.error instanceof Error ? q.error.message : undefined}
+          onRetry={() => void q.refetch()}
+        />
+      ) : rows.length === 0 ? (
+        all.length === 0 ? (
+          <EmptyState
+            icon={Ticket}
+            title={tr("还没有优惠券", "No coupons yet")}
+            description={tr(
+              "优惠券让用户在下单时输入代码享受折扣，可以限定套餐、周期、新用户和次数。",
+              "Buyers enter a coupon code at checkout for a discount; limit it by plan, period, new customers and uses.",
+            )}
+            action={
+              <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+                {tr("新建优惠券", "New coupon")}
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            icon={SearchX}
+            title={tr("没有符合条件的优惠券", "No coupons match")}
+            description={
+              needle
+                ? tr(
+                    `没有代码或名称包含「${term.trim()}」的优惠券。`,
+                    `No coupon whose code or name contains “${term.trim()}”.`,
+                  )
+                : tr("当前状态下没有优惠券。", "No coupon is in this state.")
+            }
+            action={<Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>}
+          />
+        )
+      ) : (
+        <div className="divide-y divide-separator">
+          {rows.map(({ c, s }) => (
+            <CouponRow key={c.id} c={c} s={s} plans={plans} onOpen={() => patch({ open: c.id, tab: null })} />
+          ))}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="border-t border-separator px-4 py-2.5 text-footnote text-muted-foreground">
+          {all.length >= 1000
+            ? tr(`${rows.length} 张（只取最新 1000 张）`, `${rows.length} (newest 1000 only)`)
+            : tr(`共 ${rows.length} 张`, `${rows.length} in total`)}
+        </div>
+      )}
+    </Card>
   );
 }
 
-type Edit = { name: string; maxUses: string; perUser: string; ends: string };
-const editOf = (c: Coupon): Edit => ({
-  name: c.name,
-  maxUses: c.max_uses === null ? "" : String(c.max_uses),
-  perUser: c.per_user_limit === null ? "" : String(c.per_user_limit),
-  ends: toLocalInput(c.ends_at),
-});
-
-function CouponDialog({ id, plans, onClose }: { id: string; plans: PlanView[]; onClose: () => void }) {
+function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const tr = useTr();
-  const q = useQuery({
-    queryKey: ["coupon", id],
-    queryFn: () => get<{ coupon: Coupon; redemptions: Redemption[] }>(`/coupons/${id}`),
-  });
-  const c = q.data?.coupon;
-  useCrumb(c?.code);
-  return c ? (
-    <CouponEditor key={c.id} c={c} redemptions={q.data?.redemptions ?? []} plans={plans} onClose={onClose} />
-  ) : (
-    <Dialog open size="lg" onClose={onClose} title={tr("优惠券", "Coupon")}>
-      {q.isError ? <ErrorState compact error={q.error} onRetry={() => void q.refetch()} /> : <LoadingBlock rows={8} />}
-    </Dialog>
+  return (
+    <div className="min-w-52 flex-1 max-sm:basis-full">
+      <SearchField value={value} onChange={onChange} label={tr("搜索代码或名称", "Search code or name")} />
+    </div>
   );
 }
 
-function CouponEditor({
+function CouponRow({
   c,
-  redemptions,
+  s,
   plans,
-  onClose,
+  onOpen,
 }: {
   c: Coupon;
-  redemptions: Redemption[];
-  plans: PlanView[];
-  onClose: () => void;
+  s: CouponState;
+  plans: PlanView[] | undefined;
+  onOpen: () => void;
 }) {
   const tr = useTr();
-  const confirm = useConfirm();
   const toast = useToast();
-  const [edit, setEdit] = useState<Edit>(() => editOf(c));
-  const saved = editOf(c);
-  const dirty = JSON.stringify(edit) !== JSON.stringify(saved);
-  const shown = useShown();
-  const [run, busy] = useAction();
-  const maxUses = intOf(edit.maxUses, Math.max(1, c.used), MAX_LIMIT, true, tr);
-  const perUser = intOf(edit.perUser, 1, MAX_LIMIT, true, tr);
-  const endsErr = edit.ends && c.starts_at && edit.ends <= toLocalInput(c.starts_at);
-  const errors = {
-    maxUses:
-      typeof maxUses === "string"
-        ? /^\d+$/.test(edit.maxUses.trim()) && Number(edit.maxUses.trim()) < c.used
-          ? tr(`不能少于已用的 ${c.used} 次`, `Not below the ${c.used} uses already counted`)
-          : maxUses
-        : undefined,
-    perUser: typeof perUser === "string" ? perUser : undefined,
-    ends: endsErr ? tr("失效时间要晚于生效时间", "Must be after the start") : undefined,
-  };
-  const inUse = c.used > 0 || redemptions.length > 0;
-  const save = async () => {
-    shown.showAll();
-    if (errors.maxUses || errors.perUser || errors.ends) return;
-    await run(
-      () =>
-        patch(`/coupons/${c.id}`, {
-          name: edit.name.trim(),
-          max_uses: maxUses,
-          per_user_limit: perUser,
-          ends_at: edit.ends ? fromLocalInput(edit.ends) : null,
-        }),
-      { ok: tr("已保存", "Saved") },
-    );
-  };
-  const toggle = async () => {
-    const ok = await confirm({
-      title: c.enabled ? tr(`停用 ${c.code}？`, `Disable ${c.code}?`) : tr(`启用 ${c.code}？`, `Enable ${c.code}?`),
-      description: c.enabled
-        ? tr(
-            "停用后用户不能再使用这个优惠码；已下的订单不受影响。",
-            "Users can no longer apply it; existing orders stay.",
-          )
-        : tr("启用后用户可以在下单时使用这个优惠码。", "Users can apply it at checkout again."),
-      tone: c.enabled ? "warning" : "default",
-      action: () => patch(`/coupons/${c.id}`, { enabled: !c.enabled }),
-    });
-    if (ok) toast({ tone: "success", title: tr("已保存", "Saved") });
-  };
-  const remove = async () => {
-    const ok = await confirm({
-      title: tr(`删除 ${c.code}？`, `Delete ${c.code}?`),
-      description: tr(
-        "删除后不能恢复。只有从未被订单使用过的优惠券可以删除。",
-        "This cannot be undone. Only never-used coupons can be deleted.",
-      ),
-      typeToConfirm: c.code,
-      confirmLabel: tr("删除", "Delete"),
-      action: () => del(`/coupons/${c.id}`),
-    });
-    if (ok) {
-      toast({ tone: "success", title: tr("已删除", "Deleted") });
-      onClose();
-    }
-  };
-  const planNames = c.plan_ids?.map(
-    (pid) => plans.find((p) => p.id === pid)?.name ?? tr("已删除的套餐", "Deleted plan"),
-  );
+  const { toggle, remove } = useCouponActions();
+  const w = windowText(c, s, tr);
+  const dim = s === "expired" || s === "disabled";
+  const used = c.used > 0 || c.redeemed > 0;
   return (
-    <Dialog
-      open
-      size="lg"
-      onClose={onClose}
-      dirty={dirty}
-      title={<span className="font-mono">{c.code}</span>}
-      description={
-        <span className="flex flex-wrap items-center gap-1.5">
-          {couponValue(c, tr)}
-          <Badge tone={c.enabled ? "success" : "neutral"} dot>
-            {c.enabled ? tr("启用", "On") : tr("停用", "Off")}
-          </Badge>
-        </span>
-      }
-      onSubmit={save}
-      footer={
-        <>
-          <div className="mr-auto flex flex-wrap items-center gap-2">
-            <Button
-              variant="destructive-soft"
-              icon={Trash2}
-              onClick={remove}
-              disabled={inUse}
-              aria-describedby={inUse ? "coupon-delete-why" : undefined}
-            >
-              {tr("删除", "Delete")}
-            </Button>
-            {inUse && (
-              <span id="coupon-delete-why" className="text-footnote text-muted-foreground">
-                {tr("已被订单使用，不能删除，可以停用", "Used by orders: disable it instead")}
-              </span>
-            )}
-          </div>
-          <Button onClick={toggle}>{c.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!dirty}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
+    <div
+      data-row={c.id}
+      className={cn(
+        "group relative grid items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-accent md:grid-cols-[minmax(0,1.6fr)_200px_130px_84px_32px] md:py-2.5",
+        dim && "[&_.dimmable]:opacity-60",
+      )}
     >
-      <div className="grid gap-4">
-        <KV
-          items={[
-            [tr("最低消费", "Minimum"), c.min_amount_cents ? yuan(c.min_amount_cents) : tr("不限", "None")],
-            [tr("生效", "Starts"), c.starts_at ? dateTime(c.starts_at) : tr("立即", "Now")],
-            [tr("仅新用户", "New users only"), c.new_users_only ? tr("是", "Yes") : tr("否", "No")],
-            [tr("已用", "Used"), tr(`${c.used} 次（已核销 ${c.redeemed}）`, `${c.used} (${c.redeemed} redeemed)`)],
-            [tr("适用套餐", "Plans"), planNames?.join("、") || tr("全部", "All")],
-            [tr("适用周期", "Terms"), c.periods?.map((p) => periodLabel(p, tr)).join("、") || tr("全部", "All")],
-          ]}
-        />
-        <section>
-          <SectionTitle>{tr("修改", "Edit")}</SectionTitle>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={tr("备注名称", "Name")}>
-              <Input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} maxLength={100} />
-            </Field>
-            <Field
-              label={tr("总次数（空 = 不限）", "Total uses (empty = unlimited)")}
-              error={shown.on("maxUses") ? errors.maxUses : undefined}
-            >
-              <Input
-                inputMode="numeric"
-                value={edit.maxUses}
-                onChange={(e) => setEdit({ ...edit, maxUses: e.target.value })}
-                onBlur={() => shown.show("maxUses")}
-              />
-            </Field>
-            <Field
-              label={tr("每人次数（空 = 不限）", "Per user (empty = unlimited)")}
-              error={shown.on("perUser") ? errors.perUser : undefined}
-            >
-              <Input
-                inputMode="numeric"
-                value={edit.perUser}
-                onChange={(e) => setEdit({ ...edit, perUser: e.target.value })}
-                onBlur={() => shown.show("perUser")}
-              />
-            </Field>
-            <Field
-              label={tr("失效时间（站点时区）", "Ends (site time zone)")}
-              hint={tr("空 = 长期有效", "Empty = no end")}
-              error={shown.on("ends") ? errors.ends : undefined}
-            >
-              <Input
-                type="datetime-local"
-                value={edit.ends}
-                onChange={(e) => setEdit({ ...edit, ends: e.target.value })}
-                onBlur={() => shown.show("ends")}
-              />
-            </Field>
-          </div>
-        </section>
-        <section>
-          <SectionTitle>{tr("使用记录", "Redemptions")}</SectionTitle>
-          {redemptions.length === 0 ? (
-            <p className="text-body text-muted-foreground">{tr("还没有人使用。", "Not used yet.")}</p>
-          ) : (
-            <ul className="divide-y divide-separator rounded-lg text-body ring-1 ring-border ring-inset">
-              {redemptions.map((r) => {
-                const [text, tone] = redemptionText(r.status, tr);
-                return (
-                  <li key={r.order_id} className="flex flex-wrap items-center gap-2 px-3 py-2">
-                    <span className="font-mono text-footnote">{r.out_trade_no}</span>
-                    <span className="min-w-0 truncate">{r.user_email ?? r.user_label}</span>
-                    <Badge tone={tone}>{text}</Badge>
-                    <span className="tnum ml-auto">-{yuan(r.discount_cents)}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="absolute inset-0 focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+        aria-label={tr(`打开 ${c.code}`, `Open ${c.code}`)}
+      />
+      <div className="dimmable pointer-events-none relative min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <CodePill code={c.code} />
+          <span className="truncate text-body font-medium">{c.name}</span>
+          <span className="ml-auto md:hidden">
+            <CouponStatus state={s} />
+          </span>
+        </div>
+        <div className="mt-1 truncate text-body text-muted-foreground">{ruleParts(c, plans, tr).join(" · ")}</div>
       </div>
-    </Dialog>
+      <div className="dimmable pointer-events-none relative">
+        <div className="flex items-baseline justify-between gap-2 text-footnote">
+          <span className="tnum">
+            <b className="font-semibold text-foreground">{num(c.used)}</b>
+            <span className="text-muted-foreground">
+              {" "}
+              / {c.max_uses == null ? tr("不限", "unlimited") : num(c.max_uses)}
+            </span>
+          </span>
+          {c.redeemed_7d > 0 ? (
+            <span className="tnum text-success">{tr(`近 7 天 +${c.redeemed_7d}`, `7 days +${c.redeemed_7d}`)}</span>
+          ) : (
+            <span className="text-faint">{tr("近 7 天无核销", "None in 7 days")}</span>
+          )}
+        </div>
+        {c.max_uses == null ? (
+          <div className="mt-1 text-caption text-faint">{tr("总次数不限", "No total limit")}</div>
+        ) : (
+          <Meter className="mt-1" value={pct(c.used, c.max_uses)} label={tr("使用比例", "Share used")} />
+        )}
+      </div>
+      <div className="dimmable pointer-events-none relative max-md:flex max-md:items-baseline max-md:gap-2 max-md:pr-10">
+        <div className={cn("text-body font-medium", w.warn && "text-warning")}>{w.t}</div>
+        <div className="tnum text-footnote text-faint">{w.sub}</div>
+      </div>
+      <div className="relative max-md:hidden">
+        <CouponStatus state={s} />
+      </div>
+      <div className="relative max-md:absolute max-md:right-2 max-md:bottom-2">
+        <Menu
+          label={tr(`${c.code} 的操作`, `Actions for ${c.code}`)}
+          trigger={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              icon={Ellipsis}
+              aria-label={tr("更多操作", "More actions")}
+              className="opacity-60 group-hover:opacity-100 focus-visible:opacity-100"
+            />
+          }
+        >
+          <MenuItem
+            icon={Copy}
+            onClick={async () => {
+              if (await copyText(c.code)) toast({ tone: "success", title: tr(`已复制 ${c.code}`, `Copied ${c.code}`) });
+              else toast({ tone: "error", title: tr("复制失败，请手动复制", "Copy failed; copy it by hand") });
+            }}
+          >
+            {tr("复制代码", "Copy code")}
+          </MenuItem>
+          <MenuItem icon={c.enabled ? PowerOff : Power} onClick={() => void toggle(c)}>
+            {c.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}
+          </MenuItem>
+          <MenuSeparator />
+          <MenuItem icon={Trash2} danger disabled={used} onClick={() => void remove(c)}>
+            <span className="flex-1">{tr("删除", "Delete")}</span>
+            {used && <span className="text-caption">{tr("已使用", "Used")}</span>}
+          </MenuItem>
+        </Menu>
+      </div>
+    </div>
   );
 }
 
-const batchLabel = (b: Batch, tr: Tr) => b.name || b.prefix || tr("未命名批次", "Unnamed batch");
+/* ---------- Batches ---------- */
 
-function Batches({ plans }: { plans: PlanView[] }) {
-  const tr = useTr();
-  const q = useQuery({ queryKey: ["coupon-batches"], queryFn: () => get<Batch[]>("/coupon-batches") });
-  const [creating, setCreating] = useState(false);
-  const [offset, setOffset] = useState(0);
-  const rows = q.data ?? [];
-  const LIMIT = 10;
-  const at = offset < rows.length ? offset : 0;
-  const revokedChip = (b: Batch) =>
-    b.revoked_at ? (
-      <Badge tone="danger">
+function batchState(b: Batch, tr: Tr) {
+  if (b.revoked_at)
+    return (
+      <Badge tone="neutral">
         <Ban aria-hidden="true" />
         {tr("已作废", "Revoked")}
       </Badge>
-    ) : (
-      <Badge tone="success">
-        <CircleCheck aria-hidden="true" />
-        {tr("可用", "Active")}
-      </Badge>
     );
-  const counts = (b: Batch) =>
-    tr(
-      `${b.codes} 个码 · 已用 ${b.used} · 核销 ${b.redeemed}`,
-      `${b.codes} codes · ${b.used} used · ${b.redeemed} redeemed`,
-    );
-  const [columns, chooser] = useColumns<Batch>("coupon-batches", [
-    {
-      key: "name",
-      header: tr("批次", "Batch"),
-      className: "max-w-64 truncate font-medium",
-      cell: (b) => batchLabel(b, tr),
-    },
-    { key: "codes", header: tr("码", "Codes"), className: "tnum whitespace-nowrap", cell: counts },
-    { key: "status", header: tr("状态", "Status"), cell: revokedChip },
-    {
-      key: "created",
-      header: tr("生成时间", "Created"),
-      className: "whitespace-nowrap text-muted-foreground",
-      cell: (b) => <When iso={b.created_at} />,
-    },
-    {
-      key: "actor",
-      header: tr("操作人", "By"),
-      optional: true,
-      className: "text-muted-foreground",
-      cell: (b) => b.actor_label,
-    },
-    {
-      key: "act",
-      header: <span className="sr-only">{tr("操作", "Actions")}</span>,
-      align: "right",
-      cell: (b) => <BatchActions b={b} />,
-    },
-  ]);
+  if (b.template.ends_at && Date.parse(b.template.ends_at) <= Date.now())
+    return <Badge tone="outline">{tr("已过期", "Expired")}</Badge>;
+  if (b.codes > 0 && b.codes_used >= b.codes) return <Badge tone="warning">{tr("已用完", "Used up")}</Badge>;
   return (
-    <section>
-      <CardHeader
-        className="px-1"
-        title={tr("优惠码批次", "Code batches")}
-        description={tr(
-          "一次生成一批一次性的码（例如活动发放）；码在这里导出，不出现在上面的列表里。",
-          "Generate many one-off codes at once (e.g. for a campaign); export them here — they are not in the list above.",
-        )}
-        actions={
-          <Button size="sm" icon={Plus} onClick={() => setCreating(true)}>
-            {tr("批量生成优惠码", "Generate codes")}
-          </Button>
-        }
-      />
-      <div className="mt-1">
-        <LedgerTable
-          label={tr("优惠码批次", "Code batches")}
-          rows={rows.slice(at, at + LIMIT)}
-          columns={columns}
-          loading={q.isPending}
-          error={q.error}
-          onRetry={() => void q.refetch()}
-          toolbar={chooser ? <div className="ml-auto">{chooser}</div> : undefined}
-          phone={(b) => ({
-            title: <span className="truncate">{batchLabel(b, tr)}</span>,
-            sub: counts(b),
-            meta: shortTime(b.created_at, tr),
-            status: revokedChip(b),
-            actions: <BatchActions b={b} />,
-          })}
-          empty={
-            <EmptyState
-              icon={TicketPercent}
-              title={tr("还没有批次", "No batches yet")}
-              description={tr(
-                "需要大量一次性优惠码时，用「批量生成优惠码」。",
-                "Use “Generate codes” for many one-off codes.",
-              )}
-              action={
-                <Button icon={Plus} onClick={() => setCreating(true)}>
-                  {tr("批量生成优惠码", "Generate codes")}
-                </Button>
-              }
-            />
-          }
-          footer={rows.length > LIMIT && <Pager total={rows.length} offset={at} limit={LIMIT} onOffset={setOffset} />}
-        />
-      </div>
-      {creating && <BatchDialog plans={plans} onClose={() => setCreating(false)} />}
-    </section>
+    <Badge tone="success" dot>
+      {tr("有效", "Active")}
+    </Badge>
   );
 }
 
-/** Export and revoke of one batch (each button has its own busy state). */
-function BatchActions({ b }: { b: Batch }) {
+function BatchList({
+  q,
+  plans,
+  onNew,
+}: {
+  q: ReturnType<typeof useQuery<Batch[]>>;
+  plans: PlanView[] | undefined;
+  onNew: () => void;
+}) {
   const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
-  const [download, downloading] = useAction();
-  const label = batchLabel(b, tr);
+  const rows = q.data ?? [];
   return (
-    <span className="inline-flex flex-wrap justify-end gap-1.5">
-      <Button
-        size="sm"
-        variant="outline"
-        icon={Download}
-        loading={downloading}
-        onClick={() =>
-          void download(() =>
-            downloadFile(`/coupon-batches/${b.id}/export.csv`, `akari-coupon-batch-${b.id.slice(0, 8)}.csv`),
-          )
-        }
-      >
-        {tr("导出 CSV", "Export CSV")}
-      </Button>
-      {!b.revoked_at && (
+    <Card>
+      {q.isPending ? (
+        <SkeletonRows rows={4} height={72} avatar={false} />
+      ) : q.isError ? (
+        <ErrorState
+          title={tr("批量码加载失败", "Failed to load the batches")}
+          error={q.error}
+          raw={q.error instanceof Error ? q.error.message : undefined}
+          onRetry={() => void q.refetch()}
+        />
+      ) : rows.length === 0 ? (
+        <EmptyState
+          icon={Layers3}
+          title={tr("还没有批量码", "No code batches yet")}
+          description={tr(
+            "一次生成成百上千个一次性兑换码，适合渠道投放、线下卡片和合作伙伴发放。",
+            "Generate hundreds of one-off codes at once — for channels, printed cards and partners.",
+          )}
+          action={
+            <Button variant="primary" icon={Plus} onClick={onNew}>
+              {tr("批量生成", "Generate codes")}
+            </Button>
+          }
+        />
+      ) : (
+        <div className="divide-y divide-separator">
+          {rows.map((b) => (
+            <BatchRow key={b.id} b={b} plans={plans} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function BatchRow({ b, plans }: { b: Batch; plans: PlanView[] | undefined }) {
+  const tr = useTr();
+  const [download, downloading] = useAction();
+  const { revoke } = useBatchActions();
+  const t = b.template;
+  const label = batchLabel(b, tr);
+  const share = pct(b.codes_used, b.codes);
+  const perCode =
+    t.max_uses == null ? tr("每码不限次", "unlimited per code") : tr(`每码 ${t.max_uses} 次`, `${t.max_uses} per code`);
+  const until = b.revoked_at
+    ? tr(`已于 ${dateOnly(b.revoked_at)} 作废`, `revoked ${dateOnly(b.revoked_at)}`)
+    : t.ends_at
+      ? tr(`至 ${dateOnly(t.ends_at)}`, `until ${dateOnly(t.ends_at)}`)
+      : tr("长期有效", "no end date");
+  return (
+    <div
+      data-row={b.id}
+      className={cn(
+        "grid items-center gap-x-4 gap-y-2 px-4 py-3 md:grid-cols-[minmax(0,1.5fr)_200px_minmax(0,1fr)_auto]",
+        b.revoked_at && "[&>.dim]:opacity-55",
+      )}
+    >
+      <div className="dim min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-body font-semibold">{label}</span>
+          {batchState(b, tr)}
+        </div>
+        <div className="mt-1 flex min-w-0 items-center gap-2 text-footnote text-muted-foreground">
+          <CodePill code={`${b.prefix}${"X".repeat(t.length || 10)}`} className="text-caption" />
+          <span className="truncate">
+            {dateOnly(b.created_at)} · {b.actor_label}
+          </span>
+        </div>
+      </div>
+      <div className="dim">
+        <div className="flex items-baseline justify-between text-footnote">
+          <span className="tnum">
+            <b className="font-semibold">{num(b.codes_used)}</b>
+            <span className="text-muted-foreground">
+              {" "}
+              / {num(b.codes)} {tr("个已用", "used")}
+            </span>
+          </span>
+          <span className="tnum text-faint">{share}%</span>
+        </div>
+        <Meter className="mt-1" value={share} label={tr("已用的码", "Codes used")} />
+      </div>
+      <div className="dim min-w-0 text-body text-muted-foreground">
+        <div className="truncate">{ruleParts(t, plans, tr).join(" · ")}</div>
+        <div className="truncate text-footnote text-faint">
+          {perCode} · {until}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 max-md:justify-end">
         <Button
           size="sm"
-          variant="destructive-soft"
-          onClick={async () => {
-            const ok = await confirm({
-              title: tr(`作废批次「${label}」？`, `Revoke the batch "${label}"?`),
-              description: tr(
-                "整批码会被停用，用户不能再使用；已下的订单不受影响。不能撤销。",
-                "Every code is disabled; existing orders stay. This cannot be undone.",
-              ),
-              impacts: [
-                { label: tr("停用的码", "Codes disabled"), value: b.codes },
-                { label: tr("已使用", "Already used"), value: b.used },
-              ],
-              typeToConfirm: label,
-              confirmLabel: tr("作废", "Revoke"),
-              action: () => post(`/coupon-batches/${b.id}/revoke`),
-            });
-            if (ok) toast({ tone: "success", title: tr("已作废", "Revoked") });
-          }}
+          variant="outline"
+          icon={Download}
+          loading={downloading}
+          onClick={() =>
+            void download(() =>
+              downloadFile(`/coupon-batches/${b.id}/export.csv`, `akari-coupon-batch-${b.id.slice(0, 8)}.csv`),
+            )
+          }
         >
-          {tr("作废", "Revoke")}
+          {tr("导出 CSV", "Export CSV")}
         </Button>
-      )}
-    </span>
-  );
-}
-
-function BatchDialog({ plans, onClose }: { plans: PlanView[]; onClose: () => void }) {
-  const tr = useTr();
-  const [name, setName] = useState("");
-  const [prefix, setPrefix] = useState("");
-  const [count, setCount] = useState("100");
-  const [length, setLength] = useState("10");
-  const [t, setT] = useState<Terms>({ ...EMPTY_TERMS, maxUses: "1" });
-  const shown = useShown();
-  const [run, busy] = useAction();
-  const checked = checkTerms(t, tr);
-  const n = intOf(count, 1, 5000, false, tr);
-  const len = intOf(length, 6, 16, false, tr);
-  const prefixErr = /^[A-Za-z0-9_-]{0,16}$/.test(prefix.trim())
-    ? undefined
-    : tr("最多 16 位字母、数字、- 或 _", "At most 16 of A-Z 0-9 - _");
-  const submit = async () => {
-    shown.showAll();
-    if (!checked.body || typeof n === "string" || typeof len === "string" || prefixErr) return;
-    const r = await run(
-      () =>
-        post("/coupon-batches", {
-          ...checked.body,
-          name: name.trim() || undefined,
-          prefix: prefix.trim() || undefined,
-          count: n,
-          length: len,
-        }),
-      { ok: tr("已生成", "Generated") },
-    );
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      size="lg"
-      onClose={onClose}
-      title={tr("批量生成优惠码", "Generate codes")}
-      description={tr(
-        "每个码 = 前缀 + 随机字符；条款对整批相同。",
-        "Each code = prefix + random characters; one set of terms.",
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("生成", "Generate")}
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4">
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label={tr("批次名称", "Batch name")} className="sm:col-span-2">
-            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} data-autofocus />
-          </Field>
-          <Field
-            label={tr("前缀（可选）", "Prefix (optional)")}
-            className="sm:col-span-2"
-            error={shown.on("prefix") ? prefixErr : undefined}
-          >
-            <Input value={prefix} onChange={(e) => setPrefix(e.target.value)} onBlur={() => shown.show("prefix")} />
-          </Field>
-          <Field
-            label={tr("数量（1–5000）", "Count (1–5000)")}
-            className="sm:col-span-2"
-            error={shown.on("count") && typeof n === "string" ? n : undefined}
-          >
-            <Input
-              inputMode="numeric"
-              value={count}
-              onChange={(e) => setCount(e.target.value)}
-              onBlur={() => shown.show("count")}
-            />
-          </Field>
-          <Field
-            label={tr("随机长度（6–16）", "Random length (6–16)")}
-            className="sm:col-span-2"
-            error={shown.on("length") && typeof len === "string" ? len : undefined}
-          >
-            <Input
-              inputMode="numeric"
-              value={length}
-              onChange={(e) => setLength(e.target.value)}
-              onBlur={() => shown.show("length")}
-            />
-          </Field>
-        </div>
-        <TermsFields t={t} set={setT} plans={plans} batch errors={checked.errors} shown={shown} />
+        <Menu
+          label={tr(`${label} 的操作`, `Actions for ${label}`)}
+          trigger={
+            <Button variant="ghost" size="icon-sm" icon={Ellipsis} aria-label={tr("更多操作", "More actions")} />
+          }
+        >
+          <MenuItem icon={Trash2} danger disabled={!!b.revoked_at} onClick={() => void revoke(b)}>
+            {tr("作废整批", "Revoke batch")}
+          </MenuItem>
+        </Menu>
       </div>
-    </Dialog>
+    </div>
   );
 }
