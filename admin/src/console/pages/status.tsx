@@ -1,20 +1,24 @@
-// 系统状态 (ST-*, W31): panel instances (host CPU / memory / load / disk,
-// process RSS, version, agent sessions), PostgreSQL, Valkey, the reverse
-// proxy, and the background jobs (last run, lag, stale, last error,
-// backlog); dead letters link to the mail test.
+// 系统状态 (ST-*, W31; audit §5.3): panel instances (host CPU / memory /
+// load / disk, process RSS, version, agent sessions), PostgreSQL, Valkey,
+// the reverse proxy, the background jobs (last run, lag, stale, last error,
+// backlog) and the mail queue (SET-17, moved here from the mail settings).
+// A failed poll keeps the last answer on screen and says so; probe errors
+// are explained in words with the server's text folded away.
 import { useQuery } from "@tanstack/react-query";
+import { MailWarning, RefreshCw, Send } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { get } from "../../shared/api";
 import { ago, bytes, dateTime, duration, pct } from "../../shared/format";
-import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { Ring } from "../../shared/ui/ring";
-import { navigate } from "../router";
-import { RefreshCw } from "lucide-react";
+import { useLang, useTr, type Lang, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, CardBody, CardHeader } from "../../shared/ui/card";
 import { Callout, KV, PageHeader } from "../../shared/ui/layout";
 import { usageTone } from "../../shared/ui/meter";
+import { Ring } from "../../shared/ui/ring";
 import { ErrorState, Skeleton } from "../../shared/ui/states";
+import { setQuery } from "../router";
+import { MailQueue, TestMailDialog } from "./mail-queue";
 
 type Host = {
   hostname: string | null;
@@ -101,6 +105,64 @@ function jobName(j: string, tr: Tr) {
   );
 }
 
+/** A probe's or job's raw error (English, from a driver) → one line in words. */
+export function explainError(raw: string, tr: Tr): string {
+  const s = raw.toLowerCase();
+  if (/timed? ?out|timeout|deadline/.test(s)) return tr("检查超时：对方没有及时回答", "Timed out: no answer in time");
+  if (s.includes("connection refused"))
+    return tr("连接被拒绝：服务没有在监听", "Connection refused: nothing listening");
+  if (s.includes("invalid main domain")) return tr("主域名无效", "The main domain is invalid");
+  if (s.includes("invalid host name")) return tr("主机名无效", "Invalid host name");
+  if (s.includes("not an http answer")) return tr("对方的回答不是 HTTP", "The answer was not HTTP");
+  if (/certificate|tls|handshake|x509/.test(s)) return tr("TLS 握手或证书出错", "TLS handshake or certificate error");
+  if (/dns|resolve|lookup|name or service/.test(s)) return tr("域名解析失败", "DNS lookup failed");
+  if (/auth|password|permission|denied/.test(s)) return tr("认证或权限被拒绝", "Authentication or permission refused");
+  if (/pool|too many (clients|connections)/.test(s)) return tr("连接数已满", "Out of connections");
+  if (/reset|broken pipe|closed/.test(s)) return tr("连接被对方断开", "The connection was closed");
+  return tr("检查失败", "Check failed");
+}
+
+/** Mapped error line + the server's text in a folded detail. */
+function RawError({ summary, raw, at }: { summary: ReactNode; raw: string; at?: string | null }) {
+  const tr = useTr();
+  return (
+    <div className="grid gap-1 text-body">
+      <p className="font-medium text-destructive">
+        {summary}
+        {at && <span className="ml-1.5 font-normal text-muted-foreground">{dateTime(at)}</span>}
+      </p>
+      <details className="text-footnote text-muted-foreground">
+        <summary className="cursor-pointer select-none hover:text-foreground">{tr("原始信息", "Details")}</summary>
+        <code className="mt-1 block rounded-md bg-window px-2 py-1.5 font-mono break-all">{raw}</code>
+      </details>
+    </div>
+  );
+}
+
+/** Backlog keys → words. */
+function backlogText(k: string, v: number | null, tr: Tr, lang: Lang): string {
+  const n = v === null ? "—" : String(v);
+  switch (k) {
+    case "pending":
+      return tr(`待发送 ${n}`, `${n} pending`);
+    case "due":
+      return tr(`已到发送时间 ${n}`, `${n} due`);
+    case "oldest_due_secs":
+      return tr(
+        `最早的已等待 ${v === null ? "—" : duration(v, lang)}`,
+        `oldest waiting ${v === null ? "—" : duration(v, lang)}`,
+      );
+    case "dead":
+      return tr(`发送失败 ${n}`, `${n} failed`);
+    case "pending_orders":
+      return tr(`待付款订单 ${n}`, `${n} unpaid orders`);
+    case "pending_deliveries":
+      return tr(`待发送告警通知 ${n}`, `${n} alert deliveries pending`);
+    default:
+      return `${k}: ${n}`;
+  }
+}
+
 function Health({ ok, label }: { ok: boolean; label?: string }) {
   const tr = useTr();
   return (
@@ -118,19 +180,37 @@ export function StatusPage() {
     queryFn: () => get<Status>("/system/status"),
     refetchInterval: 10_000,
   });
+  const [refreshing, setRefreshing] = useState(false);
+  const [testing, setTesting] = useState(false);
   const s = q.data;
   const header = (
     <PageHeader
       title={tr("系统状态", "System status")}
       description={s && tr(`更新于 ${dateTime(s.generated_at)}`, `Updated ${dateTime(s.generated_at)}`)}
       actions={
-        <Button size="sm" icon={RefreshCw} onClick={() => void q.refetch()}>
-          {tr("刷新", "Refresh")}
-        </Button>
+        <>
+          {q.isError && s && (
+            <Badge tone="warning" role="status">
+              {tr("刷新失败，显示的是上次的数据", "Refresh failed; showing the last data")}
+            </Badge>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            icon={RefreshCw}
+            loading={refreshing}
+            onClick={() => {
+              setRefreshing(true);
+              void q.refetch().finally(() => setRefreshing(false));
+            }}
+          >
+            {tr("刷新", "Refresh")}
+          </Button>
+        </>
       }
     />
   );
-  if (q.isError)
+  if (q.isError && !s)
     return (
       <>
         {header}
@@ -143,9 +223,9 @@ export function StatusPage() {
     return (
       <>
         {header}
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2" role="status" aria-label={tr("加载中", "Loading")}>
           {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-40" />
+            <Skeleton key={i} className="h-40 rounded-xl" />
           ))}
         </div>
       </>
@@ -154,18 +234,41 @@ export function StatusPage() {
   const dead = mail?.backlog?.dead ?? 0;
   const live = s.instances.filter((i) => i.alive);
   const exited = s.instances.filter((i) => !i.alive);
+  const probe = (name: string, err: string | null) =>
+    err ? (
+      <div className="mb-3">
+        <RawError summary={`${name}：${explainError(err, tr)}`} raw={err} />
+      </div>
+    ) : null;
   return (
     <>
       {header}
       {dead ? (
         <div className="mb-4">
-          <Callout tone="warning" title={tr(`${dead} 封邮件发送失败（死信）`, `${dead} mails failed (dead letters)`)}>
-            <div className="mt-1 flex gap-2">
-              <Button size="sm" onClick={() => navigate("/settings/mail?outbox=dead")}>
-                {tr("查看失败邮件", "Failed mail")}
-              </Button>
-              <Button size="sm" onClick={() => navigate("/settings/mail")}>
+          <Callout
+            tone="warning"
+            title={tr(`${dead} 封邮件发送失败（重试 8 次后放弃）`, `${dead} mails failed (gave up after 8 attempts)`)}
+          >
+            <p className="text-footnote text-muted-foreground">
+              {tr(
+                "先测试发信找出原因（发信设置、服务商拒绝等），修好后在下面的邮件队列里重试。",
+                "Run a test mail to find the cause (settings, provider refusal…), then retry in the mail queue below.",
+              )}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" icon={Send} onClick={() => setTesting(true)}>
                 {tr("测试发信", "Test mail")}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={MailWarning}
+                onClick={() => {
+                  setQuery({ mail: "dead" });
+                  document.getElementById("mail-queue")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                }}
+              >
+                {tr("查看失败邮件", "Failed mail")}
               </Button>
             </div>
           </Callout>
@@ -173,19 +276,27 @@ export function StatusPage() {
       ) : null}
       {s.instances_error && (
         <div className="mb-4">
-          <Callout tone="danger">{s.instances_error}</Callout>
+          <Callout
+            tone="danger"
+            title={tr(
+              "读不到其他实例的心跳（Valkey 不可用）：下面只显示当前实例",
+              "Cannot read the other instances' heartbeats (Valkey down): this instance only",
+            )}
+          >
+            <RawError summary={explainError(s.instances_error, tr)} raw={s.instances_error} />
+          </Callout>
         </div>
       )}
       {exited.length > 0 && (
         <div className="mb-4">
           <Callout tone="info" title={tr(`${exited.length} 个已退出的实例`, `${exited.length} exited instance(s)`)}>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-footnote text-muted-foreground">
               {tr(
                 "重启或升级前的面板进程；不计入后台任务统计，10 分钟后（同一主机有新实例时立即）自动移除。",
                 "Panel processes from before a restart or upgrade; not counted in the job stats, removed after 10 minutes (at once when a new instance runs on the same host).",
               )}
             </p>
-            <ul className="mt-1 text-xs">
+            <ul className="mt-1 text-footnote">
               {exited.map((i) => (
                 <li key={i.id}>
                   {i.host.hostname ?? i.id.slice(0, 8)} · v{i.version} · {tr("最后心跳", "last heartbeat")}{" "}
@@ -201,12 +312,17 @@ export function StatusPage() {
           const h = i.host;
           const mem = h.mem_total_bytes ? pct(h.mem_used_bytes ?? 0, h.mem_total_bytes) : null;
           const disk = h.disk_total_bytes ? pct(h.disk_used_bytes ?? 0, h.disk_total_bytes) : null;
+          const rings: [string, number | null][] = [
+            ["CPU", h.cpu_percent == null ? null : Math.round(h.cpu_percent)],
+            [tr("内存", "Memory"), mem],
+            [tr("磁盘", "Disk"), disk],
+          ];
           return (
             <Card key={i.id}>
               <CardHeader
                 title={
-                  <span className="flex items-center gap-2">
-                    {h.hostname ?? i.id.slice(0, 8)}
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="break-all">{h.hostname ?? i.id.slice(0, 8)}</span>
                     {i.this && <Badge tone="primary">{tr("当前实例", "This instance")}</Badge>}
                   </span>
                 }
@@ -225,20 +341,12 @@ export function StatusPage() {
                   </div>
                 )}
                 <div className="flex flex-wrap items-center justify-around gap-4">
-                  {[
-                    ["CPU", h.cpu_percent == null ? null : Math.round(h.cpu_percent)],
-                    [tr("内存", "Memory"), mem],
-                    [tr("磁盘", "Disk"), disk],
-                  ].map(([label, v]) => (
-                    <div key={String(label)} className="flex flex-col items-center gap-1 text-xs text-muted-foreground">
+                  {rings.map(([label, v]) => (
+                    <div key={label} className="flex flex-col items-center gap-1 text-footnote text-muted-foreground">
                       {v === null ? (
                         <span className="flex h-14 items-center">{tr("未知", "unknown")}</span>
                       ) : (
-                        <Ring
-                          value={v as number}
-                          tone={usageTone(v as number) === "primary" ? "primary" : usageTone(v as number)}
-                          label={`${label} ${v}%`}
-                        />
+                        <Ring value={v} tone={usageTone(v)} label={`${label} ${v}%`} />
                       )}
                       {label}
                     </div>
@@ -274,14 +382,17 @@ export function StatusPage() {
         <Card>
           <CardHeader title="PostgreSQL" actions={<Health ok={s.postgres.ok} />} />
           <CardBody>
-            {s.postgres.error && <p className="mb-2 text-[13px] text-destructive">{s.postgres.error}</p>}
+            {probe("PostgreSQL", s.postgres.error)}
             <KV
               items={[
                 [tr("版本", "Version"), s.postgres.version ?? "—"],
                 [tr("延迟", "Latency"), s.postgres.latency_ms != null ? `${s.postgres.latency_ms} ms` : "—"],
                 [tr("连接", "Connections"), `${s.postgres.connections ?? "?"} / ${s.postgres.max_connections ?? "?"}`],
                 [tr("数据库大小", "Database size"), bytes(s.postgres.database_bytes)],
-                [tr("只读副本", "Replica"), s.postgres.in_recovery ? tr("是", "yes") : tr("否", "no")],
+                [
+                  tr("只读副本", "Replica"),
+                  s.postgres.in_recovery == null ? "—" : s.postgres.in_recovery ? tr("是", "yes") : tr("否", "no"),
+                ],
               ]}
             />
           </CardBody>
@@ -289,7 +400,7 @@ export function StatusPage() {
         <Card>
           <CardHeader title="Valkey" actions={<Health ok={s.valkey.ok} />} />
           <CardBody>
-            {s.valkey.error && <p className="mb-2 text-[13px] text-destructive">{s.valkey.error}</p>}
+            {probe("Valkey", s.valkey.error)}
             <KV
               items={[
                 [tr("版本", "Version"), s.valkey.version ?? "—"],
@@ -312,7 +423,7 @@ export function StatusPage() {
             }
           />
           <CardBody>
-            {s.caddy.error && <p className="mb-2 text-[13px] text-destructive">{s.caddy.error}</p>}
+            {probe(tr("反向代理", "Proxy"), s.caddy.error)}
             <KV
               items={[
                 [tr("主机", "Host"), s.caddy.host ?? "—"],
@@ -325,36 +436,56 @@ export function StatusPage() {
         </Card>
       </div>
       <Card className="mt-4">
-        <CardHeader title={tr("后台任务", "Background jobs")} />
-        <ul className="divide-y divide-border">
-          {s.jobs.map((j) => (
-            <li key={j.job} className="flex flex-wrap items-center gap-3 px-4 py-3 text-[13px] sm:px-5">
-              <span className="w-36 font-medium">{jobName(j.job, tr)}</span>
-              <Health
-                ok={!j.stale && !(j.last_error_at && (!j.last_ok_at || j.last_error_at > j.last_ok_at))}
-                label={j.stale ? tr("停滞", "Stale") : undefined}
-              />
-              <span className="text-xs text-muted-foreground">
-                {tr("上次运行", "last run")} {ago(j.last_run_at, lang)} · {tr("上次成功", "last ok")}{" "}
-                {ago(j.last_ok_at, lang)}
-                {j.lag_secs != null && tr(` · 延迟 ${j.lag_secs} 秒`, ` · lag ${j.lag_secs}s`)}
-              </span>
-              {j.backlog && (
-                <span className="text-xs text-muted-foreground">
-                  {Object.entries(j.backlog)
-                    .map(([k, v]) => `${k}: ${v ?? "—"}`)
-                    .join(" · ")}
-                </span>
-              )}
-              {j.last_error && (
-                <span className="w-full text-xs text-destructive">
-                  {j.last_error} ({dateTime(j.last_error_at)})
-                </span>
-              )}
-            </li>
-          ))}
+        <CardHeader
+          title={tr("后台任务", "Background jobs")}
+          description={tr("各面板实例上的周期任务（合计）", "Periodic jobs across the panel instances")}
+        />
+        <ul className="divide-y divide-separator">
+          {s.jobs.map((j) => {
+            const failing = !!(j.last_error_at && (!j.last_ok_at || j.last_error_at > j.last_ok_at));
+            return (
+              <li key={j.job} className="grid gap-1.5 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-body font-medium">{jobName(j.job, tr)}</span>
+                  <Health
+                    ok={!j.stale && !failing}
+                    label={j.stale ? tr("停滞", "Stale") : failing ? tr("上次运行出错", "Last run failed") : undefined}
+                  />
+                </div>
+                <div className="text-footnote text-muted-foreground">
+                  {tr("上次运行", "last run")} {ago(j.last_run_at, lang)} · {tr("上次成功", "last ok")}{" "}
+                  {ago(j.last_ok_at, lang)}
+                  {j.lag_secs != null &&
+                    tr(` · 距上次成功 ${duration(j.lag_secs, lang)}`, ` · lag ${duration(j.lag_secs, lang)}`)}
+                </div>
+                {j.backlog && Object.keys(j.backlog).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {Object.entries(j.backlog).map(([k, v]) => (
+                      <Badge key={k} tone={k === "dead" && v ? "danger" : "neutral"}>
+                        {backlogText(k, v, tr, lang)}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+                {j.last_error && (
+                  <RawError
+                    summary={tr(
+                      `最近一次出错：${explainError(j.last_error, tr)}`,
+                      `Last error: ${explainError(j.last_error, tr)}`,
+                    )}
+                    raw={j.last_error}
+                    at={j.last_error_at}
+                  />
+                )}
+              </li>
+            );
+          })}
         </ul>
       </Card>
+      <div className="mt-4">
+        <MailQueue deadCount={dead} onTest={() => setTesting(true)} />
+      </div>
+      {testing && <TestMailDialog onClose={() => setTesting(false)} />}
     </>
   );
 }

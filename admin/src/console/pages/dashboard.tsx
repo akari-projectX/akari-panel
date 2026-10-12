@@ -33,7 +33,7 @@ import { navigate } from "../router";
 import { useServers } from "../servers";
 import type { ServerView } from "../types";
 import { OrderStatus } from "./orders";
-import { UpdateBadge } from "./updates";
+import { UpdateBadge } from "./update-status";
 
 type Window = {
   /** Net: gross − refunds (docs/PAYMENTS.md "Revenue"). */
@@ -217,7 +217,7 @@ export function DashboardPage() {
         ],
         [Wallet, tr("待审核提现", "Pending withdrawals"), d.pending.withdrawals, "/finance?status=pending", "#0d9488"],
         [Bell, tr("正在告警", "Alerts firing"), d.pending.alerts_firing, "/alerts", "#ea580c"],
-        [Mail, tr("发送失败的邮件", "Failed mail"), d.pending.mail_failed, "/settings/mail?outbox=dead", "#64748b"],
+        [Mail, tr("发送失败的邮件", "Failed mail"), d.pending.mail_failed, "/status?mail=dead", "#64748b"],
       ]
     : [];
   const todoTotal = todos.reduce((a, t) => a + t[2], 0);

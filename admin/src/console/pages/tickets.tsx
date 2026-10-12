@@ -1,21 +1,27 @@
-// 工单 (TKT-*): the queue with filters and counters, the conversation
-// drawer (reply, reply and close, close / reopen, assignee).
+// 工单 (TKT-*; audit §5.8): the queue with filters in the URL and counters;
+// the conversation dialog polls for new replies and scrolls to the newest,
+// the reply box sits in the footer (Ctrl/⌘+Enter sends) next to reply /
+// reply and close / close (each with its own busy state); the assignee is
+// changed with an explicit "分配" (a focused select never submits).
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { Inbox, LifeBuoy, Lock, MessageSquareReply, RotateCcw, Send, UserCheck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router";
 import { get, post, put, qs } from "../../shared/api";
+import { cn } from "../../shared/cn";
 import { dateTime } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
-import { DataTable, Pager, type Column } from "../../shared/ui/table";
-import { FormError, useDebounced } from "../kit";
-import { useAction } from "../data";
-import { navigate, setQuery, useRoute } from "../router";
-import { useMe } from "../session";
 import { Badge, type Tone } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Drawer } from "../../shared/ui/dialog";
-import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
+import { Dialog } from "../../shared/ui/dialog";
+import { Checkbox, Input, Kbd, MOD_KEY, Select, Textarea } from "../../shared/ui/form";
 import { KV, PageHeader } from "../../shared/ui/layout";
-import { Skeleton } from "../../shared/ui/states";
+import { EmptyState, ErrorState, LoadingBlock } from "../../shared/ui/states";
+import { DataTable, Pager, type Column } from "../../shared/ui/table";
+import { useAction } from "../data";
+import { useDebounced } from "../kit";
+import { navigate, setQuery, useRoute } from "../router";
+import { useCrumb, useMe } from "../session";
 
 type Ticket = {
   id: string;
@@ -26,7 +32,9 @@ type Ticket = {
   priority: string;
   status: string;
   messages: number;
+  order_id: string | null;
   order_no: string | null;
+  node_id: string | null;
   node_name: string | null;
   assignee_id: string | null;
   assignee_email: string | null;
@@ -42,9 +50,12 @@ type Message = {
   body: string;
   created_at: string;
 };
+type Admin = { id: string; email: string };
 
 const CATEGORIES = ["general", "billing", "technical", "account", "other"];
 const PRIORITIES = ["low", "normal", "high", "urgent"];
+/** The server's fixed page size (tickets.rs PAGE). */
+const PER_PAGE = 50;
 
 function catName(c: string, tr: Tr) {
   return (
@@ -92,10 +103,10 @@ export function TicketsPage() {
     priority: query.get("priority") ?? "",
     assignee: query.get("assignee") ?? "",
     unread: query.get("unread") === "1",
-    page: Number(query.get("page") ?? 1) || 1,
+    page: Math.max(1, Number(query.get("page") ?? 1) || 1),
   };
   const [search, setSearch] = useState(query.get("q") ?? "");
-  const dq = useDebounced(search, 300);
+  const dq = useDebounced(search.trim(), 300);
   useEffect(() => {
     if (dq !== (query.get("q") ?? "")) setQuery({ q: dq || null, page: null });
   }, [dq, query]);
@@ -108,8 +119,10 @@ export function TicketsPage() {
     placeholderData: keepPreviousData,
     refetchInterval: 30_000,
   });
-  const admins = useQuery({ queryKey: ["admins"], queryFn: () => get<{ id: string; email: string }[]>("/admins") });
+  const admins = useQuery({ queryKey: ["admins"], queryFn: () => get<Admin[]>("/admins") });
   const open = sub[0];
+  const perPage = list.data?.per_page ?? PER_PAGE;
+  const filtered = f.status !== "active" || !!(f.category || f.priority || f.assignee || f.unread || dq);
   const columns: Column<Ticket>[] = [
     {
       key: "subject",
@@ -117,13 +130,15 @@ export function TicketsPage() {
       fixed: true,
       mobile: "title",
       cell: (t) => (
-        <span className="flex items-center gap-1.5">
-          {t.unread && <span className="h-2 w-2 rounded-full bg-primary" aria-label={tr("未读", "unread")} />}
-          <span className={t.unread ? "font-semibold" : ""}>{t.subject}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {t.unread && (
+            <span className="size-2 shrink-0 rounded-full bg-primary" role="img" aria-label={tr("未读", "unread")} />
+          )}
+          <span className={cn("break-words", t.unread && "font-semibold")}>{t.subject}</span>
         </span>
       ),
     },
-    { key: "user", header: tr("用户", "User"), cell: (t) => t.user_email },
+    { key: "user", header: tr("用户", "User"), cell: (t) => <span className="break-all">{t.user_email}</span> },
     {
       key: "status",
       header: tr("状态", "Status"),
@@ -150,11 +165,12 @@ export function TicketsPage() {
       <PageHeader
         title={tr("工单", "Tickets")}
         description={
-          list.data &&
-          tr(
-            `待回复 ${list.data.open} · 未读 ${list.data.unread}`,
-            `${list.data.open} awaiting reply · ${list.data.unread} unread`,
-          )
+          list.data
+            ? tr(
+                `待回复 ${list.data.open} · 未读 ${list.data.unread}`,
+                `${list.data.open} awaiting reply · ${list.data.unread} unread`,
+              )
+            : tr("用户的求助与回复", "Users' requests and replies")
         }
       />
       <DataTable
@@ -167,13 +183,35 @@ export function TicketsPage() {
         onRetry={() => void list.refetch()}
         activeId={open}
         onRowClick={(t) => navigate(`/tickets/${t.id}${location.search}`)}
+        filtered={filtered}
+        onClearFilters={() => {
+          setSearch("");
+          setQuery({ status: null, category: null, priority: null, assignee: null, unread: null, q: null, page: null });
+        }}
+        empty={
+          filtered ? undefined : (
+            <EmptyState
+              icon={Inbox}
+              title={tr("没有未关闭的工单", "No open tickets")}
+              description={tr("用户在门户提交的工单会出现在这里。", "Tickets users open in the portal show up here.")}
+            />
+          )
+        }
         toolbar={
           <>
+            <Input
+              type="search"
+              aria-label={tr("搜索工单", "Search tickets")}
+              placeholder={tr("搜索标题或邮箱…", "Search subject or email…")}
+              className="w-full sm:w-56"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
             <Select
               aria-label={tr("状态", "Status")}
-              className="w-32 [&_select]:h-8"
+              className="min-w-28 flex-1 sm:flex-none"
               value={f.status}
-              onChange={(e) => set({ status: e.target.value })}
+              onChange={(e) => set({ status: e.target.value === "active" ? null : e.target.value })}
             >
               <option value="active">{tr("未关闭", "Not closed")}</option>
               <option value="open">{tr("待回复", "Awaiting reply")}</option>
@@ -182,7 +220,7 @@ export function TicketsPage() {
             </Select>
             <Select
               aria-label={tr("分类", "Category")}
-              className="w-28 [&_select]:h-8"
+              className="min-w-28 flex-1 sm:flex-none"
               value={f.category}
               onChange={(e) => set({ category: e.target.value || null })}
             >
@@ -195,7 +233,7 @@ export function TicketsPage() {
             </Select>
             <Select
               aria-label={tr("优先级", "Priority")}
-              className="w-28 [&_select]:h-8"
+              className="min-w-28 flex-1 sm:flex-none"
               value={f.priority}
               onChange={(e) => set({ priority: e.target.value || null })}
             >
@@ -208,7 +246,7 @@ export function TicketsPage() {
             </Select>
             <Select
               aria-label={tr("负责人", "Assignee")}
-              className="w-36 [&_select]:h-8"
+              className="min-w-32 flex-1 sm:flex-none"
               value={f.assignee}
               onChange={(e) => set({ assignee: e.target.value || null })}
             >
@@ -221,7 +259,7 @@ export function TicketsPage() {
                 </option>
               ))}
             </Select>
-            <label className="flex items-center gap-1.5 text-[13px]">
+            <label className="flex min-h-8 items-center gap-2 px-1 text-body pointer-coarse:min-h-10">
               <Checkbox
                 checked={f.unread}
                 onChange={(v) => set({ unread: v ? "1" : null })}
@@ -229,71 +267,66 @@ export function TicketsPage() {
               />
               {tr("只看未读", "Unread only")}
             </label>
-            <Input
-              type="search"
-              aria-label={tr("搜索工单", "Search tickets")}
-              placeholder={tr("搜索标题或邮箱…", "Search subject or email…")}
-              className="h-8 w-full sm:w-52"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
           </>
         }
         footer={
           <Pager
             total={list.data?.total ?? 0}
-            offset={(f.page - 1) * 50}
-            limit={50}
-            onOffset={(o) => setQuery({ page: o ? String(o / 50 + 1) : null })}
+            offset={(f.page - 1) * perPage}
+            limit={perPage}
+            onOffset={(o) => setQuery({ page: o ? String(o / perPage + 1) : null })}
           />
         }
       />
       {open && (
-        <TicketDrawer id={open} admins={admins.data ?? []} onClose={() => navigate(`/tickets${location.search}`)} />
+        <TicketDialog id={open} admins={admins.data ?? []} onClose={() => navigate(`/tickets${location.search}`)} />
       )}
     </>
   );
 }
 
-function TicketDrawer({
-  id,
-  admins,
-  onClose,
-}: {
-  id: string;
-  admins: { id: string; email: string }[];
-  onClose: () => void;
-}) {
+function TicketDialog({ id, admins, onClose }: { id: string; admins: Admin[]; onClose: () => void }) {
   const tr = useTr();
   const me = useMe();
   const q = useQuery({
-    queryKey: ["tickets", "detail", id],
+    queryKey: ["ticket", id],
     queryFn: () => get<Ticket & { user_enabled: boolean; thread: Message[] }>(`/tickets/${id}`),
+    refetchInterval: 15_000,
   });
-  const [body, setBody] = useState("");
-  const [run, busy] = useAction();
   const t = q.data;
-  const reply = async (close: boolean) => {
-    const r = await run(() => post(`/tickets/${id}/replies`, { message: body.trim(), close }), {
+  useCrumb(t?.subject);
+  const [body, setBody] = useState("");
+  const [assignee, setAssignee] = useState<string | null>(null);
+  const [reply, replyBusy] = useAction();
+  const [replyClose, replyCloseBusy] = useAction();
+  const [toggle, toggleBusy] = useAction();
+  const [assign, assignBusy] = useAction();
+  const end = useRef<HTMLDivElement>(null);
+  const count = t?.thread.length ?? 0;
+  // Newest message in view: on open and whenever a new one arrives.
+  useEffect(() => {
+    if (count) end.current?.scrollIntoView({ block: "end" });
+  }, [count]);
+  const text = body.trim();
+  const sending = replyBusy || replyCloseBusy;
+  const send = async (close: boolean) => {
+    if (!text || sending) return;
+    const r = await (close ? replyClose : reply)(() => post(`/tickets/${id}/replies`, { message: text, close }), {
       ok: close ? tr("已回复并关闭", "Replied and closed") : tr("已回复", "Replied"),
-      invalidate: [["tickets"], ["admin-badges"]],
     });
-    if (r !== undefined) {
-      setBody("");
-      void q.refetch();
-    }
+    if (r !== undefined) setBody("");
   };
-  const act = (path: string, ok: string) =>
-    run(() => post(`/tickets/${id}/${path}`), { ok, invalidate: [["tickets"], ["admin-badges"]] }).then(() =>
-      q.refetch(),
-    );
+  const chosen = assignee ?? t?.assignee_id ?? "";
+  const assigneeChanged = !!t && assignee !== null && assignee !== (t.assignee_id ?? "");
   return (
-    <Drawer
+    <Dialog
       open
       onClose={onClose}
-      width="sm:max-w-2xl"
+      size="lg"
+      icon={LifeBuoy}
       title={t?.subject ?? tr("工单", "Ticket")}
-      subtitle={
+      dirty={!!text || assigneeChanged}
+      description={
         t && (
           <span className="flex flex-wrap gap-1.5">
             <Badge tone={statusName(t.status, tr)[1]}>{statusName(t.status, tr)[0]}</Badge>
@@ -303,97 +336,166 @@ function TicketDrawer({
         )
       }
       footer={
-        t &&
-        (t.status === "closed" ? (
-          <Button onClick={() => void act("reopen", tr("已重新打开", "Reopened"))}>{tr("重新打开", "Reopen")}</Button>
-        ) : (
-          <Button variant="ghost" onClick={() => void act("close", tr("已关闭", "Closed"))}>
-            {tr("关闭工单", "Close ticket")}
-          </Button>
-        ))
+        t && (
+          <div className="grid w-full gap-2">
+            {t.status !== "closed" && (
+              <Textarea
+                aria-label={tr("回复", "Reply")}
+                placeholder={tr(`写回复…（${MOD_KEY}+Enter 发送）`, `Write a reply… (${MOD_KEY}+Enter sends)`)}
+                rows={3}
+                className="max-h-48 min-h-16 resize-y"
+                value={body}
+                maxLength={5000}
+                onChange={(e) => setBody(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    void send(false);
+                  }
+                }}
+              />
+            )}
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {t.status === "closed" ? (
+                <Button
+                  icon={RotateCcw}
+                  loading={toggleBusy}
+                  className="mr-auto"
+                  onClick={() => void toggle(() => post(`/tickets/${id}/reopen`), { ok: tr("已重新打开", "Reopened") })}
+                >
+                  {tr("重新打开", "Reopen")}
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="ghost"
+                    icon={Lock}
+                    loading={toggleBusy}
+                    disabled={sending}
+                    className="mr-auto"
+                    onClick={() => void toggle(() => post(`/tickets/${id}/close`), { ok: tr("已关闭", "Closed") })}
+                  >
+                    {tr("关闭工单", "Close ticket")}
+                  </Button>
+                  <span className="hidden text-footnote text-faint sm:inline">
+                    <Kbd>{MOD_KEY}</Kbd> <Kbd>Enter</Kbd>
+                  </span>
+                  <Button
+                    icon={MessageSquareReply}
+                    loading={replyCloseBusy}
+                    disabled={!text || replyBusy}
+                    onClick={() => void send(true)}
+                  >
+                    {tr("回复并关闭", "Reply and close")}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    icon={Send}
+                    loading={replyBusy}
+                    disabled={!text || replyCloseBusy}
+                    onClick={() => void send(false)}
+                  >
+                    {tr("回复", "Reply")}
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        )
       }
     >
-      {q.isPending && <Skeleton className="h-64" />}
-      <FormError error={q.error} />
-      {t && (
-        <>
+      {q.isPending ? (
+        <LoadingBlock rows={6} />
+      ) : q.isError && !t ? (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+      ) : t ? (
+        <div className="grid gap-4">
           <KV
             items={[
               [
                 tr("用户", "User"),
-                <button
-                  key="u"
-                  type="button"
-                  className="text-primary hover:underline"
-                  onClick={() => navigate(`/users?open=${t.user_id}`)}
-                >
+                <Link key="u" to={`/users?open=${t.user_id}`} className="break-all text-primary hover:underline">
                   {t.user_email}
                   {t.user_enabled ? "" : tr("（已停用/封禁）", " (disabled/banned)")}
-                </button>,
+                </Link>,
               ],
-              [tr("关联订单", "Order"), t.order_no ?? "—"],
-              [tr("关联节点", "Node"), t.node_name ?? "—"],
+              [
+                tr("关联订单", "Order"),
+                t.order_id ? (
+                  <Link key="o" to={`/orders?open=${t.order_id}`} className="font-mono text-primary hover:underline">
+                    {t.order_no ?? t.order_id.slice(0, 8)}
+                  </Link>
+                ) : (
+                  "—"
+                ),
+              ],
+              [
+                tr("关联节点", "Node"),
+                t.node_id ? (
+                  <Link key="n" to={`/nodes?open=node:${t.node_id}`} className="text-primary hover:underline">
+                    {t.node_name ?? tr("已删除的节点", "Deleted node")}
+                  </Link>
+                ) : (
+                  "—"
+                ),
+              ],
               [tr("创建", "Created"), dateTime(t.created_at)],
             ]}
           />
-          <Field label={tr("负责人", "Assignee")} className="mt-3">
-            <Select
-              value={t.assignee_id ?? ""}
-              onChange={(e) =>
-                void run(() => put(`/tickets/${id}/assignee`, { assignee_id: e.target.value || null }), {
+          <div className="flex flex-wrap items-end gap-2" data-nodirty>
+            <label className="grid min-w-0 flex-1 basis-56 gap-1.5">
+              <span className="text-footnote font-medium text-muted-foreground">{tr("负责人", "Assignee")}</span>
+              <Select value={chosen} onChange={(e) => setAssignee(e.target.value)}>
+                <option value="">{tr("未分配", "Unassigned")}</option>
+                {admins.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.email}
+                    {a.id === me.id ? tr("（我）", " (me)") : ""}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <Button
+              icon={UserCheck}
+              loading={assignBusy}
+              disabled={!assigneeChanged}
+              onClick={async () => {
+                const r = await assign(() => put(`/tickets/${id}/assignee`, { assignee_id: chosen || null }), {
                   ok: tr("已分配", "Assigned"),
-                  invalidate: [["tickets"]],
-                }).then(() => q.refetch())
-              }
+                });
+                if (r !== undefined) setAssignee(null);
+              }}
             >
-              <option value="">{tr("未分配", "Unassigned")}</option>
-              {admins.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.email}
-                  {a.id === me.id ? tr("（我）", " (me)") : ""}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <ol className="mt-4 space-y-3">
+              {tr("分配", "Assign")}
+            </Button>
+          </div>
+          <ol className="grid gap-3" aria-label={tr("会话", "Conversation")}>
             {t.thread.map((m) => (
               <li
                 key={m.id}
-                className={`rounded-lg border px-3 py-2 text-[13px] ${m.staff ? "ml-6 border-primary/30 bg-primary-soft/40" : "mr-6 border-border"}`}
+                className={cn(
+                  "rounded-xl px-3.5 py-2.5 text-body",
+                  m.staff ? "ml-6 bg-primary-soft sm:ml-12" : "mr-6 bg-window sm:mr-12",
+                )}
               >
-                <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-                  <span>
+                <div className="mb-1 flex flex-wrap justify-between gap-x-3 text-footnote text-muted-foreground">
+                  <span className="break-all">
                     {m.staff ? `${tr("客服", "Staff")} · ${m.author_email ?? m.author_label ?? ""}` : t.user_email}
                   </span>
                   <span>{dateTime(m.created_at)}</span>
                 </div>
-                <p className="whitespace-pre-wrap">{m.body}</p>
+                <p className="break-words whitespace-pre-wrap">{m.body}</p>
               </li>
             ))}
           </ol>
-          {t.status !== "closed" && (
-            <div className="mt-4 space-y-2">
-              <Field label={tr("回复", "Reply")}>
-                <Textarea
-                  rows={4}
-                  className="font-sans"
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  maxLength={5000}
-                />
-              </Field>
-              <div className="flex flex-wrap gap-2">
-                <Button variant="primary" loading={busy} disabled={!body.trim()} onClick={() => void reply(false)}>
-                  {tr("回复", "Reply")}
-                </Button>
-                <Button loading={busy} disabled={!body.trim()} onClick={() => void reply(true)}>
-                  {tr("回复并关闭", "Reply and close")}
-                </Button>
-              </div>
-            </div>
+          {q.isError && (
+            <p className="text-footnote text-warning" role="status">
+              {tr("刷新失败，显示的是上次的数据", "Refresh failed; showing the last data")}
+            </p>
           )}
-        </>
-      )}
-    </Drawer>
+          <div ref={end} />
+        </div>
+      ) : null}
+    </Dialog>
   );
 }
