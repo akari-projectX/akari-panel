@@ -4582,8 +4582,9 @@ for a in "$AJS" "$ACSS"; do
 done
 while [ -n "$todo" ]; do
   next=""
+  # "./x.js" imports and url(./x.woff2); `new URL(\`fonts-x.css\`, import.meta.url)` (the deferred fonts).
   # shellcheck disable=SC2086
-  for c in $(cat $todo | grep -ao '\./[A-Za-z0-9_.-]*\.\(js\|css\|woff2\)' | sed 's#.*/##' | sort -u); do
+  for c in $(cat $todo | grep -aoE '(\./|URL\(`)[A-Za-z0-9_.-]+\.(js|css|woff2)' | sed 's#.*[/`]##' | sort -u); do
     f="$SERVED/admin/console/$c"
     [ -e "$f" ] && continue
     [ "$(curl -s --noproxy '*' -b "$AJAR" -o "$f" -w '%{http_code}' "$BASE/admin/assets/$c")" = "200" ] \
@@ -4600,7 +4601,12 @@ curl -s --noproxy '*' "$BASE/app" >"$SERVED/admin/login/login.html"
 for a in $(grep -o "/$PREFIX/app/assets/[^\"]*\.\(js\|css\)" "$SERVED/admin/login/login.html"); do
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/admin/login/$(basename "$a")"
 done
-# The sign-in page's fonts (url(./x.woff2) in its CSS), public like its other assets.
+# The sign-in page's deferred fonts stylesheet (shared/fonts.ts), then its fonts (url(./x.woff2)), public like its other assets.
+for c in $(cat "$SERVED"/admin/login/*.js | grep -aoE 'URL\(`[A-Za-z0-9_.-]+\.css' | sed 's#.*`##' | sort -u); do
+  [ "$(curl -s --noproxy '*' -o "$SERVED/admin/login/$c" -w '%{http_code}' "$BASE/app/assets/$c")" = "200" ] \
+    || { echo "FAIL: sign-in fonts stylesheet $c not served under the prefix"; exit 1; }
+done
+ls "$SERVED"/admin/login/fonts-*.css >/dev/null 2>&1 || { echo "FAIL: sign-in fonts stylesheet not found"; exit 1; }
 for c in $(cat "$SERVED"/admin/login/*.css | grep -ao '\./[A-Za-z0-9_.-]*\.woff2' | sed 's#.*/##' | sort -u); do
   [ "$(curl -s --noproxy '*' -o "$SERVED/admin/login/$c" -w '%{http_code}' "$BASE/app/assets/$c")" = "200" ] \
     || { echo "FAIL: sign-in font $c not served under the prefix"; exit 1; }

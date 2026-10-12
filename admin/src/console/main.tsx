@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
 import "../shared/index.css";
+import { loadFontsAfterFirstScreen } from "../shared/fonts";
 import { LangProvider } from "../shared/i18n";
 import { applyTheme, initialTheme } from "../shared/theme";
 import { ConfirmProvider } from "../shared/ui/confirm";
@@ -14,6 +15,7 @@ import { PAGES } from "./pages";
 import { makeRouter } from "./routes";
 
 applyTheme(initialTheme());
+loadFontsAfterFirstScreen();
 
 const client = makeQueryClient();
 invalidateOnWrite(client);
