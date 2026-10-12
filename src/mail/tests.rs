@@ -383,6 +383,18 @@ async fn failures_retry_dead_letter_and_expire() {
     rec.fail.lock().unwrap().clear();
     assert_eq!(sender::deliver_due(&db.pool, &rec, 10).await.unwrap(), 1);
     assert_eq!(row(&db, transient).await.status, "sent");
+    // `all`: every status, newest first (the mail queue's 全部 view).
+    let all = c.get("/test/api/v1/mail/outbox?status=all").await.json();
+    let all = all.as_array().unwrap();
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_outbox")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(all.len() as i64, total.min(50));
+    assert!(all.iter().any(|r| r["status"] == "sent"));
+    assert!(all.iter().any(|r| r["status"] == "dead"));
+    let ids: Vec<i64> = all.iter().map(|r| r["id"].as_i64().unwrap()).collect();
+    assert!(ids.windows(2).all(|w| w[0] > w[1]), "newest first");
     assert_eq!(
         c.get("/test/api/v1/mail/outbox?status=bogus").await.status,
         StatusCode::BAD_REQUEST

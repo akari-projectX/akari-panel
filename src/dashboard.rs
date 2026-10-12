@@ -32,6 +32,12 @@
 //! by the entrance's kind (`traffic_entrance_daily` joined to `entrances`;
 //! entrances deleted since are `other_bytes`). `prev_today` is yesterday
 //! up to the same time of day. Both run in the same snapshot.
+//!
+//! `pending_detail` describes the pending queues (the oldest firing alert,
+//! the oldest paid-not-granted order, the pending withdrawals' sum, the
+//! longest-waiting open ticket, the newest dead letter's error), and
+//! `subscribers_7d` the active plans started in the last 7 days: the same
+//! snapshot, each one partial-index lookup or one pass already made.
 
 use axum::Json;
 use axum::extract::State;
@@ -117,6 +123,30 @@ pub struct Pending {
     pub alerts_firing: i64,
 }
 
+/// Details of the pending queues for the dashboard's "需要你处理" rows (same
+/// snapshot as `pending`; every part is one index-bounded lookup).
+#[derive(Serialize, Debug, Default, PartialEq, sqlx::FromRow)]
+pub struct PendingDetail {
+    /// The firing alert that started first: when, its kind, its server.
+    pub alert_oldest_at: Option<DateTime<Utc>>,
+    pub alert_oldest_kind: Option<String>,
+    pub alert_oldest_server: Option<String>,
+    /// Firing alerts nobody acknowledged yet.
+    pub alerts_unacked: i64,
+    /// The oldest paid order that could not be granted (same filter as
+    /// `orders_unfulfilled`): its id, number and fulfil error.
+    pub order_sample_id: Option<Uuid>,
+    pub order_sample_no: Option<String>,
+    pub order_sample_error: Option<String>,
+    /// Sum of the pending withdrawals.
+    pub withdrawals_cents: i64,
+    /// The open ticket waiting longest: since the user's last message (or
+    /// its creation).
+    pub ticket_oldest_at: Option<DateTime<Utc>>,
+    /// The newest dead letter's last error (the server's raw answer).
+    pub mail_last_error: Option<String>,
+}
+
 #[derive(Serialize, Debug, sqlx::FromRow)]
 pub struct LatestOrder {
     pub id: Uuid,
@@ -131,6 +161,12 @@ pub struct LatestOrder {
     pub paid_via: Option<String>,
     pub created_at: DateTime<Utc>,
     pub paid_at: Option<DateTime<Utc>>,
+    /// What the order does: new / renew / switch / reset.
+    pub action: String,
+    /// For the order's state chip (未开通 / 已退款 / 部分退款).
+    pub fulfilled_at: Option<DateTime<Utc>>,
+    pub refunded_at: Option<DateTime<Utc>>,
+    pub refund_cents: Option<i64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -149,12 +185,16 @@ pub struct Dashboard {
     pub users_total: i64,
     /// Users with an active plan.
     pub subscribers: i64,
+    /// Active plans that started in the last 7 site days (part of
+    /// `subscribers`).
+    pub subscribers_7d: i64,
     /// Sum of the online users the servers report (a user on two servers
     /// counts twice; only servers online now).
     pub online_users: i64,
     /// Q1: machines (agents), not nodes.
     pub servers: Servers,
     pub pending: Pending,
+    pub pending_detail: PendingDetail,
     pub latest_orders: Vec<LatestOrder>,
     /// W22 traffic history: the fleet per site day over the last
     /// `TRAFFIC_DAYS` days (days without traffic omitted) and the top nodes
@@ -260,7 +300,9 @@ const USERS_SQL: &str = "SELECT count(*) FILTER (WHERE created_at >= $1), \
      count(*) FILTER (WHERE created_at >= $2), count(*) FILTER (WHERE created_at >= $3), \
      count(*) FROM users WHERE role = 'user'";
 
-const SUBSCRIBERS_SQL: &str = "SELECT count(*) FROM user_plans WHERE status = 'active'";
+/// Active plans, and those created since $1 (the 7-day start), in one pass.
+const SUBSCRIBERS_SQL: &str = "SELECT count(*), count(*) FILTER (WHERE created_at >= $1) \
+     FROM user_plans WHERE status = 'active'";
 
 const PENDING_SQL: &str = "SELECT \
      (SELECT count(*) FROM tickets WHERE status = 'open') AS tickets_open, \
@@ -269,6 +311,26 @@ const PENDING_SQL: &str = "SELECT \
      (SELECT count(*) FROM orders WHERE status = 'paid' AND fulfilled_at IS NULL \
         AND fulfil_error IS NOT NULL AND refunded_at IS NULL) AS orders_unfulfilled, \
      (SELECT count(*) FROM server_alerts WHERE status = 'firing') AS alerts_firing";
+
+const PENDING_DETAIL_SQL: &str = "SELECT a.fired_at AS alert_oldest_at, \
+     a.kind AS alert_oldest_kind, a.name AS alert_oldest_server, \
+     (SELECT count(*) FROM server_alerts WHERE status = 'firing' AND acked_at IS NULL) \
+       AS alerts_unacked, \
+     o.id AS order_sample_id, o.out_trade_no AS order_sample_no, \
+     o.fulfil_error AS order_sample_error, \
+     (SELECT coalesce(sum(amount_cents), 0)::bigint FROM withdrawals WHERE status = 'pending') \
+       AS withdrawals_cents, \
+     (SELECT min(coalesce(last_user_at, created_at)) FROM tickets WHERE status = 'open') \
+       AS ticket_oldest_at, \
+     (SELECT last_error FROM mail_outbox WHERE status = 'dead' \
+       ORDER BY settled_at DESC NULLS LAST LIMIT 1) AS mail_last_error \
+     FROM (SELECT 1) one \
+     LEFT JOIN LATERAL (SELECT al.fired_at, al.kind, s.name FROM server_alerts al \
+       JOIN servers s ON s.id = al.server_id WHERE al.status = 'firing' \
+       ORDER BY al.fired_at, al.id LIMIT 1) a ON true \
+     LEFT JOIN LATERAL (SELECT id, out_trade_no, fulfil_error FROM orders \
+       WHERE status = 'paid' AND fulfilled_at IS NULL AND fulfil_error IS NOT NULL \
+       AND refunded_at IS NULL ORDER BY paid_at, id LIMIT 1) o ON true";
 
 /// How many latest orders the dashboard lists.
 pub const LATEST_ORDERS: i64 = 8;
@@ -325,10 +387,14 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
         .bind(d30)
         .fetch_one(&mut *tx)
         .await?;
-    let subscribers: i64 = sqlx::query_scalar(SUBSCRIBERS_SQL)
+    let (subscribers, subscribers_7d): (i64, i64) = sqlx::query_as(SUBSCRIBERS_SQL)
+        .bind(d7)
         .fetch_one(&mut *tx)
         .await?;
     let pending: Pending = sqlx::query_as(PENDING_SQL).fetch_one(&mut *tx).await?;
+    let pending_detail: PendingDetail = sqlx::query_as(PENDING_DETAIL_SQL)
+        .fetch_one(&mut *tx)
+        .await?;
     let rows: Vec<ServerRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT s.id, EXISTS (SELECT 1 FROM nodes n WHERE n.server_id = s.id AND n.enabled) \
          AS enabled, s.cert_serial IS NOT NULL AS enrolled, \
@@ -355,7 +421,8 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
         "SELECT id, out_trade_no, user_label, \
          (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, \
          plan_name, amount_cents, status, paid_via, \
-         created_at, paid_at FROM orders ORDER BY created_at DESC, id DESC LIMIT $1",
+         created_at, paid_at, action, fulfilled_at, refunded_at, refund_cents \
+         FROM orders ORDER BY created_at DESC, id DESC LIMIT $1",
     )
     .bind(LATEST_ORDERS)
     .fetch_all(&mut *tx)
@@ -403,9 +470,11 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
             d30: window((r30, m30, g30), n30, f30, s30),
             users_total,
             subscribers,
+            subscribers_7d,
             online_users: 0,
             servers,
             pending,
+            pending_detail,
             latest_orders: latest,
             traffic_days: Vec::new(),
             traffic_top_nodes: Vec::new(),

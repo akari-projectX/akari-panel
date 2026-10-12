@@ -2483,6 +2483,10 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
 [ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
   || { echo "FAIL: coupon not redeemed once"; exit 1; }
+# Admin redesign: the coupon views' read-only aggregates (近 7 天 / 共优惠, the redemption's plan).
+[ "$(code -b "$JAR" "$BASE/api/v1/coupons/$(psql_q "SELECT id FROM coupons WHERE code='SMOKE20'")")" = "200" ] \
+  && [ "$(last_json "'%s/%s/%s' % (d['coupon']['redeemed_7d'], d['coupon']['discount_cents_total'], d['redemptions'][0]['period'])")" = "1/200/month" ] \
+  || { echo "FAIL: coupon redeemed_7d / discount_cents_total"; cat /tmp/akari-smoke/last; exit 1; }
 # High-2: the switch credit is what was paid (800), never the list price (1000).
 [ "$(code -b "$WJAR" "$BASE/api/v1/me/shop")" = "200" ] && [ "$(last_json "d['credit_cents'] <= 800")" = "True" ] \
   || { echo "FAIL: the coupon's discount became switch credit"; cat /tmp/akari-smoke/last; exit 1; }
@@ -2738,6 +2742,9 @@ PY
 [ "$(api_json "$JAR" POST "$BASE/api/v1/coupon-batches" '{"name":"ops","prefix":"OPS-","count":20,"kind":"fixed","value":100}')" = "201" ] \
   && [ "$(last_json "d['count']")" = "20" ] || { echo "FAIL: coupon batch"; cat /tmp/akari-smoke/last; exit 1; }
 CB=$(last_json "d['id']")
+[ "$(code -b "$JAR" "$BASE/api/v1/coupon-batches")" = "200" ] \
+  && [ "$(last_json "[(b['codes'], b['codes_used']) for b in d if b['id'] == '$CB'] == [(20, 0)]")" = "True" ] \
+  || { echo "FAIL: coupon batch codes_used"; cat /tmp/akari-smoke/last; exit 1; }
 curl -s --noproxy '*' -b "$JAR" -o "$LOG/ops-coupons.csv" "$BASE/api/v1/coupon-batches/$CB/export.csv"
 OPS_CODE=$(python3 - "$LOG/ops-coupons.csv" <<'PY'
 import csv, io, re, sys
@@ -2828,6 +2835,14 @@ fi
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
+# Admin redesign: the ledger's one search box and its summary (per-status counts, per-day totals).
+[ "$(code -b "$JAR" "$BASE/api/v1/orders?q=%40$BUYER_MAIL")" = "200" ] && [ "$(last_json "len(d)")" = "3" ] \
+  || { echo "FAIL: admin orders search q=@email"; cat /tmp/akari-smoke/last; exit 1; }
+SMOKE_TODAY=$(psql_q "SELECT akari_site_day(now())"); SMOKE_YDAY=$(psql_q "SELECT akari_site_day(now()) - 1")
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/summary?q=%40$BUYER_MAIL&from=$SMOKE_YDAY&to=$SMOKE_TODAY")" = "200" ] \
+  && [ "$(last_json "d['counts']['all'] == 3 and sum(x['orders'] for x in d['days']) == 3")" = "True" ] \
+  || { echo "FAIL: admin orders summary"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/orders/summary")" = "403" ] || { echo "FAIL: user reached admin orders summary"; exit 1; }
 for a in order.create order.paid plan.price.set user.plan.set user.plan.renew; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
@@ -2839,6 +2854,9 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 # The daily series: 60 site days ending today, agreeing with the 30-day window; traffic by entrance kind.
 [ "$(last_json "len(d['series']) == 60 and d['series'][-1]['day'] == d['today_date'] and sum(x['gross_cents'] for x in d['series'][-30:]) == d['d30']['gross_cents'] and sum(x['revenue_cents'] for x in d['series'][-30:]) == d['d30']['revenue_cents'] and sum(x['orders'] for x in d['series'][-30:]) == d['d30']['orders'] and all(min(x['direct_bytes'], x['relay_bytes'], x['other_bytes']) >= 0 for x in d['series']) and 'signups' in d['prev_today']")" = "True" ] \
   || { echo "FAIL: dashboard series"; cat /tmp/akari-smoke/last; exit 1; }
+# The pending queues' details and the new subscriptions (same snapshot).
+[ "$(last_json "d['pending_detail']['withdrawals_cents'] >= 0 and d['pending_detail']['alerts_unacked'] <= d['pending']['alerts_firing'] and (d['pending_detail']['order_sample_id'] is None) == (d['pending']['orders_unfulfilled'] == 0) and 0 <= d['subscribers_7d'] <= d['subscribers']")" = "True" ] \
+  || { echo "FAIL: dashboard pending detail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
 
 echo "== W31: system status =="
@@ -2846,6 +2864,10 @@ echo "== W31: system status =="
   && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
+# The mail queue's 全部 view: every status, newest first.
+[ "$(code -b "$JAR" "$BASE/api/v1/mail/outbox?status=all&limit=200")" = "200" ] \
+  && [ "$(last_json "isinstance(d, list) and all(r['status'] in ('dead','pending','sent') for r in d) and [r['id'] for r in d] == sorted([r['id'] for r in d], reverse=True)")" = "True" ] \
+  || { echo "FAIL: mail outbox all"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
   && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == '$BUYER_MAIL'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
@@ -3263,6 +3285,8 @@ python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firin
   || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM server_alerts"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&server=$SERVER_ID")" = "200" ] \
   && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "isinstance(d['resolved_7d_by_kind'], dict) and all(v >= 1 for v in d['resolved_7d_by_kind'].values())")" = "True" ] \
+  || { echo "FAIL: alert history counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
 curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
   || { echo "FAIL: akari_node_alerts_firing"; exit 1; }

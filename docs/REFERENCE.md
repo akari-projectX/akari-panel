@@ -237,9 +237,9 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/settings/mail-templates/preview | admin | 运维：`{kind, locale, subject, body, html_source?}` 校验（与保存相同的错误与 `params`）后用示例值渲染 → `{subject, text, html}` |
 | POST | /api/v1/settings/mail-templates/{kind}/{locale}/test | admin | 运维：`{to}`：用**已保存**的模板（或默认）+ 示例值立即发送；应答同 `/settings/mail/test`（`{ok:true}`、400 `mail.to_invalid`/`mail.test_needs_host`、502 `mail.test_failed`），审计 `settings.mail.test`（`template` = 种类） |
 | POST | /api/v1/settings/mail-templates/test-draft | admin | 后台重设计（admin-redesign-1012）「发送当前草稿」：`{kind, locale, subject, body, html_source?, to}`（拒绝未知字段）：**未保存**的草稿按预览同样校验（400 带位置 `params`），用示例值渲染后走与上一行相同的发送路径（同样应答与审计）；不保存任何东西 |
-| GET | /api/v1/dashboard | admin | W21 仪表盘：一次只读聚合（REPEATABLE READ 快照，src/dashboard.rs）。`today` / `d7` / `d30` 窗口（站点日；`revenue_cents` = 净营收 = 渠道实收 `gross_cents` − 渠道退款 `refunds_cents`，退款计入退款当天，docs/PAYMENTS.md「Revenue」；`orders`、`signups`、`manual_cents`、`gift_cents`），`users_total`、`subscribers`、`online_users`、`servers`、`pending`、`latest_orders`、`traffic_days` / `traffic_top_nodes`（近 14 天）；仪表盘重设计：`series` = 最近 60 个站点日（每天一行、旧→新、今天最后；前 30 天供"与上一周期相比"）`[{day, revenue_cents, gross_cents, refunds_cents, orders, signups, direct_bytes, relay_bytes, other_bytes}]`（定义同窗口；流量 = 上行 + 下行原始字节，按入口类型拆分：`traffic_entrance_daily` 关联 `entrances.kind`，已删除入口计入 `other_bytes`），`prev_today` = 昨天 0 点到昨天此刻 `{revenue_cents, gross_cents, refunds_cents, orders, signups}` |
+| GET | /api/v1/dashboard | admin | W21 仪表盘：一次只读聚合（REPEATABLE READ 快照，src/dashboard.rs）。`today` / `d7` / `d30` 窗口（站点日；`revenue_cents` = 净营收 = 渠道实收 `gross_cents` − 渠道退款 `refunds_cents`，退款计入退款当天，docs/PAYMENTS.md「Revenue」；`orders`、`signups`、`manual_cents`、`gift_cents`），`users_total`、`subscribers`、`online_users`、`servers`、`pending`、`latest_orders`、`traffic_days` / `traffic_top_nodes`（近 14 天）；仪表盘重设计：`series` = 最近 60 个站点日（每天一行、旧→新、今天最后；前 30 天供"与上一周期相比"）`[{day, revenue_cents, gross_cents, refunds_cents, orders, signups, direct_bytes, relay_bytes, other_bytes}]`（定义同窗口；流量 = 上行 + 下行原始字节，按入口类型拆分：`traffic_entrance_daily` 关联 `entrances.kind`，已删除入口计入 `other_bytes`），`prev_today` = 昨天 0 点到昨天此刻 `{revenue_cents, gross_cents, refunds_cents, orders, signups}`；`latest_orders` 行另含 `action`（new/renew/switch/reset）、`fulfilled_at`、`refunded_at`、`refund_cents`（状态胶囊用）；`subscribers_7d` = 近 7 个站点日开始的有效订阅（`subscribers` 的一部分）；`pending_detail` = 待处理队列的细节（同一快照）`{alert_oldest_at, alert_oldest_kind, alert_oldest_server, alerts_unacked, order_sample_id, order_sample_no, order_sample_error, withdrawals_cents, ticket_oldest_at, mail_last_error}`（最早触发的告警、最早的已付款未开通订单、待审提现合计、等待最久的 open 工单（用户最后一条消息或创建时间）、最新死信的原始错误） |
 | GET | /api/v1/system/status | admin | W31 系统状态：每个面板实例（主机 CPU/内存/负载/磁盘、RSS、版本、agent 会话；Valkey 心跳）、PostgreSQL、Valkey、反向代理（Caddy，经主域名探测）、后台任务（结算、对账、邮件、告警：上次运行、耗时、滞后、过期、上次错误、积压）；缓存 5 秒 |
-| GET | /api/v1/mail/outbox | admin | W15：outbox 行 `?status=dead\|pending\|sent&before&limit`（不含正文） |
+| GET | /api/v1/mail/outbox | admin | W15：outbox 行 `?status=dead\|pending\|sent\|all&before&limit`（`all` = 全部状态，后台邮件队列「全部」；不含正文） |
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15：重新入队死信（不适用于已过期的验证码/链接） |
 | POST | /api/v1/me/password | user/admin | `{current_password, new_password}`：修改自己的密码（当前密码错误 = 400，计入登录限速；其他会话终止，当前会话继续） |
 | GET | /api/v1/audit | admin | 审计日志，`?limit&before&actor&action`（keyset，最新在前；`actor` = 精确匹配的 `actor_label`）。条目：`actor_id`、`actor_label`（Q4：非个人信息——`u-<id 的前 8 位十六进制>`、`cli`、`system`、`agent`、`anonymous`）、`actor_email`（账号当前的地址，非账号或已删除时为 null） |
@@ -294,7 +294,8 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | 取消待支付订单（先向支付宝查询并关闭） |
 | GET | /api/v1/plan-prices | admin | 每个套餐及其 `on_sale` 标记和价格，`payments_enabled` |
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` 替换该套餐的价格（W7 的周期类型） |
-| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&via&before&limit`（keyset；`via=manual` = 管理员创建/确认；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）和 `user_email`（当前地址，删除后为 null） |
+| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&refunded&via&q&before&limit`（keyset；`q` = 后台账本的单一搜索框：以 `@` 开头（或含 `@`）= 买家当前邮箱包含该串，否则 = 订单号/交易号包含该串，不区分大小写，`%`/`_` 按字面，最长 100 字符；`refunded=true|false` = 已退款/未退款；`via=manual` = 管理员创建/确认；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）、`user_email`（当前地址，删除后为 null）和 `action`（new/renew/switch/reset，后台账本的类型小标） |
+| GET | /api/v1/orders/summary | admin | 后台账本（改版）：`?status&email&out_trade_no&unfulfilled&refunded&via&q&from&to`（与列表同样的筛选与校验）→ `{counts: {all, pending, paid, unfulfilled, refunded, expired, cancelled}, days: [{day, orders, paid_cents, refund_cents}]}`。`counts` 忽略状态类筛选（每个分段显示自己的数量）；`days` = `from..to`（站点时区的日，两者同给或都不给，≤366 天）内按下单日分组、套用全部筛选：笔数、已付订单的渠道实收 `amount_cents`、这些订单的渠道退款 `refund_gateway_cents`（无论何时退的）。一个 REPEATABLE READ 只读事务内两条聚合查询 |
 | POST | /api/v1/orders/manual | admin | 运维：`{user_id, plan_id, period, gift?, reason}` → 经由唯一的支付路径产生一个已支付订单（`paid_via` manual；金额 = 来自 SQL 的该周期价格，赠送为 0，绝不取自客户端；履约失败 = 409 且不保留任何内容） |
 | GET | /api/v1/orders/export.csv | admin | 运维：订单 CSV `?from&to&status&via`（按站点时区的天：本地午夜；≤366，默认最近 30 天；有审计） |
 | GET | /api/v1/users/export.csv | admin | 运维：带列表筛选条件的用户 CSV `?q&plan_id&status&role&sort`（流式，UTF-8 BOM，防公式注入；有审计） |
@@ -303,7 +304,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/users/batch/preview | admin | 运维：`{selection: {ids} \| {filter}}` → `{total, admins, sample}` |
 | GET/POST | /api/v1/users/batch | admin | 运维：最近的任务 / 创建 `{selection, action: {kind: extend_expiry {days} (periodic subscriptions only)\|reset_traffic\|ban {reason}\|unban\|set_plan {plan_id, period, days?}\|cancel_plan\|add_balance\|send_email, …}}` → 202 + 任务（后台运行，每个用户经现有的 `apply_*` 执行一次，按用户审计） |
 | GET | /api/v1/users/batch/{id} | admin | 运维：任务进度 + 条目（失败/跳过的在前）；`POST …/cancel` 跳过仍待处理的部分 |
-| GET/POST | /api/v1/coupon-batches | admin | 运维：批次 / 生成 `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
+| GET/POST | /api/v1/coupon-batches | admin | 运维：批次（`codes`/`used`/`redeemed`，后台改版加 `codes_used` = 已被用过的码数）/ 生成 `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
 | POST | /api/v1/coupon-batches/{id}/revoke | admin | 运维：停用该批次的所有码（仅一次） |
 | GET | /api/v1/coupon-batches/{id}/export.csv | admin | 运维：该批次的码，CSV 格式（有审计） |
 | GET | /api/v1/orders/{id} | admin | 订单 + 支付事件 |
@@ -311,7 +312,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance, external_cents?, keep_plan?, original?, original_cents?}`：对已支付订单退款一次（余额部分退回；支付宝金额：① `original` = 经支付宝退款（`alipay.trade.refund`，全额或其中 `original_cents`，幂等的 `out_request_no`；确认时 200，结果未知时 202 `{pending}`——对账循环会查询并重试，被拒绝时 502 `order_admin.refund_gateway_failed`——不动任何资金；该支付方式的 `refund_original` 开关，默认开），② `to_balance`，③ 否则 `external_cents` = 在支付宝后台已退的金额，订单有支付宝金额时必填；记为 `refund_balance_cents` + `refund_external_cents` = `refund_cents`）；归还优惠券使用次数（低-2）；撤销待结算的佣金，追回已入账的佣金（中-4：立即从邀请人余额扣回，余下部分记为欠款，与后续佣金冲抵）；P1：撤销该订单对订阅的影响（新购 → 取消，续期 → 收回该期限，切换 → 恢复原套餐，重置包 → 仅退钱），除非带 `keep_plan` |
 | GET | /api/v1/orders/{id}/refund-preview | admin | P1：`{balance_part_cents, amount_cents, effect, original_available, original_request}`——此刻退款会产生的结果（`effect.kind` none/cancel/rollback/restore）；不可退款时 409 |
 | GET/POST | /api/v1/coupons | admin | W16：优惠券 / 创建 `{code, kind percent\|fixed, value, plan_ids?, periods?, min_amount_cents?, starts_at?, ends_at?, max_uses?, per_user_limit?, new_users_only?, enabled?}` |
-| GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16：优惠券 + 兑换记录 / 更新（code 不可改）/ 删除（仅限从未使用过的） |
+| GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16：优惠券 + 兑换记录（最近 200 条，带订单的 `plan_name`/`period`）/ 更新（code 不可改）/ 删除（仅限从未使用过的）。列表与详情的优惠券（后台改版，只读）带 `redeemed_7d`（近 7 天兑现次数，按兑现时刻；退款后不计）与 `discount_cents_total`（已兑现订单的优惠合计） |
 | GET | /api/v1/balances | admin | W16：有余额的客户（`{user_id, email, …}`），`?email` 可查找任何人；后台改版：行另带 `withdrawable_cents`（同 `/users/{id}/balance`）与最近一笔明细 `last_kind`/`last_amount_cents`/`last_at`（无明细为 null） |
 | GET/POST | /api/v1/users/{id}/balance | admin | W16：余额 + 流水 / 调整 `{amount_cents (signed), reason}`（不会低于 0） |
 | GET | /api/v1/commissions | admin | W16：佣金 `?status&email&limit`（`email` = 邀请人的）；行：`inviter_label`/`inviter_email`、`invitee_label`/`invitee_email` |
@@ -327,7 +328,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17：`{message, close?}` / 关闭 / 重开 |
 | PUT | /api/v1/tickets/{id}/assignee | admin | W17：`{assignee_id}`（已启用的管理员，或 null） |
 | GET | /api/v1/admins, /api/v1/admin-badges | admin | W17：可指派的管理员；控制台计数（未读工单、正在触发的告警） |
-| GET | /api/v1/alerts | admin | W17：告警中心 `?status=firing\|resolved&server&kind&before&limit` + 按 kind 统计的 `firing` 数量（Q1：告警按服务器归属：`server_id`、`server_name`） |
+| GET | /api/v1/alerts | admin | W17：告警中心 `?status=firing\|resolved&server&kind&before&limit` + 按 kind 统计的 `firing` 数量（Q1：告警按服务器归属：`server_id`、`server_name`）；`resolved_7d_by_kind` = 近 7 天已恢复的告警按 kind 计数（受 `server` 筛选，告警页历史胶囊） |
 | POST | /api/v1/alerts/{id}/ack | admin | W17：确认（仅审计一次） |
 | GET/PUT | /api/v1/alerts/settings | admin | W17：阈值和渠道（Telegram 机器人、签名 webhook、邮件）；密钥只写（`*_set` 标记），`version` 用于乐观并发（409） |
 | POST | /api/v1/alerts/test | admin | W17：`{channel}` 通过已保存的配置发送测试消息，`{ok, error?}` |

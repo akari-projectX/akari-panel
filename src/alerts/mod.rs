@@ -874,7 +874,8 @@ pub struct AlertRow {
 }
 
 /// GET /alerts (admin): newest first, keyset paging; `firing` = how many
-/// are firing now (for the nav badge), by kind.
+/// are firing now (for the nav badge), by kind; `resolved_7d_by_kind` =
+/// resolved in the last 7 days by kind (history chips, `server` applies).
 pub async fn list_alerts(
     State(state): State<AppState>,
     user: AuthUser,
@@ -916,10 +917,21 @@ pub async fn list_alerts(
     .fetch_all(state.pg())
     .await?;
     let total: i64 = firing.iter().map(|f| f.1).sum();
+    // History chips: alerts resolved in the last 7 days by kind (the
+    // `server` filter applies; server_alerts_resolved index).
+    let resolved: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT kind, count(*) FROM server_alerts WHERE status = 'resolved' \
+         AND resolved_at > now() - interval '7 days' AND ($1::uuid IS NULL OR server_id = $1) \
+         GROUP BY kind ORDER BY kind",
+    )
+    .bind(q.server)
+    .fetch_all(state.pg())
+    .await?;
     Ok(Json(json!({
         "alerts": rows,
         "firing": total,
         "firing_by_kind": firing.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+        "resolved_7d_by_kind": resolved.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
     })))
 }
 

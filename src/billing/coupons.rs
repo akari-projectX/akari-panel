@@ -333,6 +333,12 @@ pub struct CouponView {
     enabled: bool,
     used: i32,
     redeemed: i64,
+    /// Redemptions (paid orders) in the last 7 days: a redemption's
+    /// `updated_at` is when it became `redeemed` (`redeem`; a refund moves
+    /// it to `released`, so refunded ones drop out).
+    redeemed_7d: i64,
+    /// Sum of the discount of the redeemed (paid, not refunded) orders.
+    discount_cents_total: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -341,7 +347,12 @@ const COUPON_SQL: &str = "SELECT c.id, c.code, c.name, c.kind, c.value, c.plan_i
      c.min_amount_cents, c.starts_at, c.ends_at, c.max_uses, c.per_user_limit, \
      c.new_users_only, c.enabled, c.used, \
      (SELECT count(*) FROM coupon_redemptions r WHERE r.coupon_id = c.id \
-      AND r.status = 'redeemed') AS redeemed, c.created_at, c.updated_at FROM coupons c";
+      AND r.status = 'redeemed') AS redeemed, \
+     (SELECT count(*) FROM coupon_redemptions r WHERE r.coupon_id = c.id \
+      AND r.status = 'redeemed' AND r.updated_at > now() - interval '7 days') AS redeemed_7d, \
+     (SELECT COALESCE(sum(r.discount_cents), 0)::bigint FROM coupon_redemptions r \
+      WHERE r.coupon_id = c.id AND r.status = 'redeemed') AS discount_cents_total, \
+     c.created_at, c.updated_at FROM coupons c";
 
 const SNAPSHOT_SQL: &str = "jsonb_build_object('code', c.code, 'name', c.name, 'kind', c.kind, \
      'value', c.value, 'plan_ids', c.plan_ids, 'periods', c.periods, \
@@ -809,8 +820,18 @@ pub struct RedemptionView {
     over_limit: bool,
     discount_cents: i64,
     order_status: String,
+    /// The order's plan (snapshot name) and period kind.
+    plan_name: String,
+    period: String,
     created_at: DateTime<Utc>,
 }
+
+/// The coupon's last 200 redemptions (newest first).
+const REDEMPTIONS_SQL: &str = "SELECT r.order_id, o.out_trade_no, r.user_id, o.user_label, \
+     (SELECT u.email FROM users u WHERE u.id = r.user_id) AS user_email, r.status, r.over_limit, \
+     r.discount_cents, o.status AS order_status, o.plan_name, o.period, r.created_at \
+     FROM coupon_redemptions r JOIN orders o ON o.id = r.order_id WHERE r.coupon_id = $1 \
+     ORDER BY r.created_at DESC LIMIT 200";
 
 /// GET /coupons/{id}: the coupon and its last 200 redemptions.
 pub async fn get(
@@ -825,16 +846,10 @@ pub async fn get(
             .fetch_optional(state.pg())
             .await?
             .ok_or_else(ApiError::not_found)?;
-    let redemptions: Vec<RedemptionView> = sqlx::query_as(
-        "SELECT r.order_id, o.out_trade_no, r.user_id, o.user_label, \
-         (SELECT u.email FROM users u WHERE u.id = r.user_id) AS user_email, r.status, r.over_limit, \
-         r.discount_cents, o.status AS order_status, r.created_at FROM coupon_redemptions r \
-         JOIN orders o ON o.id = r.order_id WHERE r.coupon_id = $1 \
-         ORDER BY r.created_at DESC LIMIT 200",
-    )
-    .bind(id)
-    .fetch_all(state.pg())
-    .await?;
+    let redemptions: Vec<RedemptionView> = sqlx::query_as(REDEMPTIONS_SQL)
+        .bind(id)
+        .fetch_all(state.pg())
+        .await?;
     Ok(Json(
         json!({ "coupon": coupon, "redemptions": redemptions }),
     ))
@@ -898,5 +913,114 @@ pub mod mirror {
         let c = credit.clamp(0, list - d);
         let b = balance.clamp(0, list - d - c);
         (d, c, b, list - d - c - b)
+    }
+}
+
+/// The admin views' read-only aggregates on a real database.
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::testdb::TestDb;
+
+    /// A pending order of `user` with `discount` off a 10.00 list price.
+    async fn order(db: &TestDb, user: Uuid, code: &str, discount: i64) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
+             list_price_cents, discount_cents, coupon_code, period, subject, expires_at, action) \
+             VALUES ($1, $2, $3, 'u', '标准', 1000 - $4, 1000, $4, $5, 'year', 's', \
+             now() + interval '1 hour', 'new')",
+        )
+        .bind(id)
+        .bind(format!("AKT{}", id.simple()))
+        .bind(user)
+        .bind(discount)
+        .bind(code)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    async fn view(db: &TestDb, id: Uuid) -> CouponView {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!("{COUPON_SQL} WHERE c.id = $1")))
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn coupons_view_counts_recent_redemptions_and_discount_total() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let actor = Actor::test();
+        let mut c = db.pool.acquire().await.unwrap();
+        let req = |code: &str| CreateCouponReq {
+            code: code.into(),
+            name: None,
+            kind: Kind::Fixed,
+            value: 300,
+            plan_ids: None,
+            periods: None,
+            min_amount_cents: None,
+            starts_at: None,
+            ends_at: None,
+            max_uses: None,
+            per_user_limit: None,
+            new_users_only: None,
+            enabled: None,
+        };
+        let id = apply_create(&mut c, &actor, &req("VIEW7")).await.unwrap();
+        let unused = apply_create(&mut c, &actor, &req("VIEW0")).await.unwrap();
+        // Four orders reserve a use; three are paid (redeemed), one ends unpaid.
+        let mut ids = Vec::new();
+        for d in [100, 200, 300, 400] {
+            // One pending order per buyer (orders_one_pending).
+            let user = db.user().await;
+            let o = order(&db, user, "VIEW7", d).await;
+            reserve(&mut c, id, o, user, d).await.unwrap();
+            ids.push(o);
+        }
+        for o in &ids[..3] {
+            assert!(redeem(&mut c, *o).await.unwrap().is_some());
+        }
+        assert!(release(&mut c, ids[3]).await.unwrap());
+        // The third was redeemed 10 days ago: not "recent".
+        sqlx::query(
+            "UPDATE coupon_redemptions SET updated_at = now() - interval '10 days' WHERE order_id = $1",
+        )
+        .bind(ids[2])
+        .execute(&mut *c)
+        .await
+        .unwrap();
+        let v = view(&db, id).await;
+        assert_eq!((v.used, v.redeemed, v.redeemed_7d), (3, 3, 2));
+        assert_eq!(v.discount_cents_total, 600);
+        // A refund gives the use back: it no longer counts anywhere.
+        assert!(release_refunded(&mut c, ids[0]).await.unwrap());
+        let v = view(&db, id).await;
+        assert_eq!((v.used, v.redeemed, v.redeemed_7d), (2, 2, 1));
+        assert_eq!(v.discount_cents_total, 500);
+        // Never used: zeros, not NULL.
+        let v = view(&db, unused).await;
+        assert_eq!(
+            (v.redeemed, v.redeemed_7d, v.discount_cents_total),
+            (0, 0, 0)
+        );
+        // The redemption list carries the order's plan and period.
+        let rows: Vec<RedemptionView> = sqlx::query_as(REDEMPTIONS_SQL)
+            .bind(id)
+            .fetch_all(&mut *c)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(
+            rows.iter()
+                .all(|r| r.plan_name == "标准" && r.period == "year")
+        );
+        drop(c);
+        db.drop().await;
     }
 }
