@@ -69,6 +69,9 @@
   --radius-2xl: 22px;
 
   /* 字号层级（macOS 命名，后台密度） */
+  /* Tab bar labels and badges (iOS tab bar size). */
+  --text-micro: 10px;
+  --text-micro--line-height: 12px;
   --text-caption: 11px;
   --text-caption--line-height: 14px;
   --text-footnote: 12px;

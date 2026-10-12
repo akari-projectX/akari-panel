@@ -450,7 +450,7 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
                 to={pathOf(t.id)}
                 aria-current={on ? "page" : undefined}
                 className={cn(
-                  "relative flex h-[52px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium",
+                  "relative flex h-[52px] flex-col items-center justify-center gap-0.5 text-micro font-medium",
                   on ? "text-primary" : "text-faint",
                 )}
               >
@@ -458,7 +458,7 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
                 {tr(t.zh, t.en)}
                 {n > 0 && (
                   <span
-                    className="tnum absolute top-1 left-1/2 ml-2 rounded-full bg-destructive px-1 text-[10px] leading-4 font-semibold text-white"
+                    className="tnum absolute top-1 left-1/2 ml-2 rounded-full bg-destructive px-1 text-micro leading-4 font-semibold text-white"
                     aria-label={tr(`${n} 条待处理`, `${n} pending`)}
                   >
                     {n}

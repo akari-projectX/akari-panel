@@ -221,20 +221,3 @@ function DiscardConfirm({ open, onKeep, onDiscard }: { open: boolean; onKeep: ()
     </A.Root>
   );
 }
-
-/**
- * Legacy name for a detail panel: the redesign shows details in a wide
- * centred dialog (same props as the old drawer).
- */
-export function Drawer({
-  subtitle,
-  width,
-  ...props
-}: Omit<Parameters<typeof Dialog>[0], "description" | "size"> & {
-  subtitle?: ReactNode;
-  /** Ignored: kept so old call sites compile while they migrate. */
-  width?: string;
-}) {
-  void width;
-  return <Dialog size="lg" description={subtitle} {...props} />;
-}
