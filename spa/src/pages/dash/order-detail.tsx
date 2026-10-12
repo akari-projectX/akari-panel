@@ -88,10 +88,11 @@ export default function OrderDetail() {
         const o = await orderApi.get(id);
         if (!alive || o.status === 'pending') return;
         clearInterval(timer);
+        /* 先弹结果再换数据：setData 让 pending 变 false，这个 effect 随即被清理（alive = false）。
+           到期时间读的是 useAuth 的套餐，刷新回来弹窗里自己就更新 */
+        setOutcome(outcomeOf(o));
         order.setData(o);
-        /* 先拿到新的套餐（结果弹窗里的到期时间），再弹结果 */
-        if (o.status === 'paid') await refreshAuth().catch(() => {});
-        if (alive) setOutcome(outcomeOf(o));
+        if (o.status === 'paid') void refreshAuth();
       } catch { /* 轮询失败不打扰用户，下一轮再试 */ } finally {
         busy = false;
       }
