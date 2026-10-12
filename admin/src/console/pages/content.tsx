@@ -1,32 +1,58 @@
-// 内容 (CNT-*; audit §5.9): announcements (audience, site-zone window,
-// pinned, mail to the audience with the recipient count and a re-send
-// warning) and the knowledge base (categories, articles with a slug —
-// `terms` / `privacy` are the portal's legal pages), with the server's
-// sanitized live preview next to the Markdown editor. Editors are dialogs
-// with the dirty guard; zh/en tabs say which language is filled.
-import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { BookOpen, FolderPlus, Mail, Megaphone, Pencil, Plus, Settings, Trash2 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+// 内容 (CNT-*; v2 proposal §6 内容 · 公告 / 知识库). `/content/announcements`:
+// announcements by lifecycle — 进行中 (pinned first) → 已排期 → 草稿 → 已结束
+// (collapsed) — with a time axis and a per-row window bar (red line =
+// today), language fill chips, audience, window, the mail state (sent N /
+// progress / a 邮件通知 button) and a ⋯ menu (edit, mail, copy as new,
+// delete). Editor = xl dialog: form left (zh / EN tabs with fill dots,
+// title, Markdown body, audience cards with recipient counts, start / end
+// as site-time-zone date-time inputs, pinned), the server-rendered preview
+// right; 存为草稿 (enabled off) and 发布 each with their own spinner.
+// Mailing = a dialog with recipients, a duplicate warning that must be
+// acknowledged, and the progress while it runs. The knowledge base lives
+// in content-kb.tsx. URL: `?open=new|<id>` (`&copy=<id>`), `?mail=<id>`.
+import { useQuery } from "@tanstack/react-query";
+import {
+  Brush,
+  CalendarClock,
+  CircleCheck,
+  Copy,
+  Mail,
+  MailCheck,
+  Megaphone,
+  Pencil,
+  Pin,
+  Plus,
+  Send,
+  Trash2,
+  TriangleAlert,
+  Users,
+} from "lucide-react";
+import { useState } from "react";
+import { Link } from "react-router";
 import { del, get, post, put } from "../../shared/api";
-import { dateTime, fromLocalInput, toLocalInput } from "../../shared/format";
+import { cn } from "../../shared/cn";
+import { dateOnly, dateTime, fromLocalInput, toLocalInput } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Card, CardHeader } from "../../shared/ui/card";
+import { Card } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
-import { Field, Input, Segmented, Select, SwitchField, Textarea } from "../../shared/ui/form";
-import { Callout, PageHeader } from "../../shared/ui/layout";
-import { MenuItem, RowMenu } from "../../shared/ui/menu";
-import { EmptyState, ErrorState, LoadingBlock, Skeleton } from "../../shared/ui/states";
-import { DataTable, type Column } from "../../shared/ui/table";
-import { Tabs } from "../../shared/ui/tabs";
+import { Checkbox, Field, Input, Segmented, Switch, Textarea } from "../../shared/ui/form";
+import { PageHeader } from "../../shared/ui/layout";
+import { MenuItem, MenuSeparator, RowMenu } from "../../shared/ui/menu";
+import { Meter } from "../../shared/ui/meter";
+import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
+import { FixCount, Spin } from "../components/kit";
+import { LangTabs, RadioCards } from "../components/inputs";
+import { Fact, LangChip, MarkdownPreview } from "../components/support-content";
 import { useAction } from "../data";
-import { useDebounced } from "../kit";
-import { navigate, setQuery, useRoute } from "../router";
+import { navigate, useQS, useRoute } from "../router";
+import { useSite } from "../session";
+import { KnowledgeBase, useArticles } from "./content-kb";
 
-type Announcement = {
+export type Announcement = {
   id: string;
   title_zh: string;
   title_en: string | null;
@@ -43,24 +69,13 @@ type Announcement = {
   mail_sent: number;
   mail_done_at: string | null;
   created_at: string;
+  /** Who a mailing would reach now (verified customers in the audience). */
+  recipients?: number;
 };
-type Category = { id: string; name_zh: string; name_en: string | null; sort: number; articles: number };
-type Article = {
-  id: string;
-  category_id: string | null;
-  category_name: string | null;
-  title_zh: string;
-  title_en: string | null;
-  body_zh: string;
-  body_en: string | null;
-  sort: number;
-  published: boolean;
-  slug: string | null;
-  updated_at: string;
-};
-
-const SORT_RE = /^-?\d{1,9}$/;
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+type Audience = "all" | "with_plan" | "without_plan";
+type Life = "live" | "scheduled" | "draft" | "ended";
+const ORDER: Life[] = ["live", "scheduled", "draft", "ended"];
+const DAY = 86_400_000;
 
 function audienceName(a: string, tr: Tr) {
   return (
@@ -70,359 +85,532 @@ function audienceName(a: string, tr: Tr) {
         with_plan: tr("有生效套餐的用户", "Users with a plan"),
         without_plan: tr("没有套餐的用户", "Users without a plan"),
       } as Record<string, string>
-    )[a] ?? a
+    )[a] ?? tr("全部用户", "Everyone")
   );
 }
+function lifeName(s: Life, tr: Tr) {
+  return {
+    live: tr("进行中", "Live"),
+    scheduled: tr("已排期", "Scheduled"),
+    draft: tr("草稿", "Drafts"),
+    ended: tr("已结束", "Ended"),
+  }[s];
+}
+function lifeHint(s: Life, tr: Tr) {
+  return {
+    live: tr("正在门户首页显示", "Showing on the portal home"),
+    scheduled: tr("到时间自动显示", "Shows up on its start time"),
+    draft: tr("只有管理员能看到", "Only admins see these"),
+    ended: "",
+  }[s];
+}
+/** Lifecycle from the enabled flag and the window (the server's `active` = live). */
+export function lifeOf(a: Announcement, now = Date.now()): Life {
+  if (!a.enabled) return "draft";
+  if (a.visible_from && Date.parse(a.visible_from) > now) return "scheduled";
+  if (a.visible_until && Date.parse(a.visible_until) <= now) return "ended";
+  return "live";
+}
+const mailing = (a: Announcement) => !!a.mail_requested_at && !a.mail_done_at;
 
 export function ContentPage() {
   const tr = useTr();
   const { sub } = useRoute();
+  const [, patch] = useQS();
   const tab = sub[0] === "kb" ? "kb" : "announcements";
+  const anns = useAnnouncements();
+  const arts = useArticles();
+  const live = (anns.data ?? []).filter((a) => lifeOf(a) === "live").length;
+  const docs = (arts.data ?? []).filter((a) => a.slug !== "terms" && a.slug !== "privacy").length;
   return (
     <>
       <PageHeader
-        title={tr("内容管理", "Content")}
-        description={tr(
-          "门户里的公告与帮助文章；正文是 Markdown，由面板渲染并消毒。",
-          "Announcements and help articles in the portal; Markdown rendered and sanitized by the panel.",
-        )}
+        title={tr("内容", "Content")}
+        description={
+          <span className="inline-flex flex-wrap items-center gap-x-1">
+            {tr("门户里用户能看到的公告和帮助文章。", "The announcements and help articles users see in the portal.")}
+            <Link to="/settings/brand" className="inline-flex items-center gap-1 text-primary hover:underline">
+              <Brush className="size-3.5" aria-hidden="true" />
+              {tr("Logo 与页脚在 系统设置 › 外观与品牌", "Logo and footer: Settings › Brand")}
+            </Link>
+          </span>
+        }
         actions={
           tab === "announcements" ? (
-            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new", copy: null })}>
               {tr("新建公告", "New announcement")}
             </Button>
-          ) : (
-            <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
-              {tr("新建文章", "New article")}
-            </Button>
-          )
+          ) : undefined
         }
-      />
-      <div className="mb-4">
-        <Tabs
-          value={tab}
-          onChange={(v) => navigate(`/content/${v}`)}
-          tabs={[
-            { value: "announcements", label: tr("公告", "Announcements") },
-            { value: "kb", label: tr("知识库", "Knowledge base") },
-          ]}
-        />
-      </div>
-      {tab === "announcements" ? <Announcements /> : <KnowledgeBase />}
+      >
+        <div className="w-full">
+          <Segmented
+            label={tr("内容类型", "Content type")}
+            value={tab}
+            onChange={(v) => navigate(`/content/${v}`)}
+            options={[
+              {
+                value: "announcements",
+                label: (
+                  <>
+                    {tr("公告", "Announcements")}
+                    {live > 0 && (
+                      <span className="tnum text-caption text-success">{tr(`${live} 进行中`, `${live} live`)}</span>
+                    )}
+                  </>
+                ),
+              },
+              { value: "kb", label: tr("知识库", "Knowledge base"), count: arts.data ? docs : undefined },
+            ]}
+          />
+        </div>
+      </PageHeader>
+      {tab === "announcements" ? <Announcements q={anns} /> : <KnowledgeBase />}
     </>
   );
 }
 
-/** Markdown editor with the server-rendered (sanitized) preview. */
-function MarkdownField({
-  label,
-  value,
-  onChange,
-  error,
-  disabled,
-  required,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  error?: string;
-  disabled?: boolean;
-  required?: boolean;
-}) {
-  const tr = useTr();
-  const md = useDebounced(value, 400);
-  const prev = useQuery({
-    queryKey: ["content-preview", md],
-    queryFn: () => post<{ html: string }>("/content/preview", { markdown: md }),
-    enabled: md.trim().length > 0,
+function useAnnouncements() {
+  return useQuery({
+    queryKey: ["announcements"],
+    queryFn: () => get<Announcement[]>("/announcements"),
+    // While a mailing runs, follow its progress.
+    refetchInterval: (s) => ((s.state.data ?? []).some(mailing) ? 5000 : false),
   });
-  return (
-    <div className="grid gap-3 lg:grid-cols-2">
-      <Field label={label} error={error} required={required}>
-        <Textarea rows={12} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
-      </Field>
-      <div className="grid content-start gap-1.5">
-        <div className="flex items-center justify-between text-footnote font-medium text-muted-foreground">
-          {tr("预览", "Preview")}
-          {md.trim() && prev.isFetching && <span className="text-faint">{tr("渲染中…", "Rendering…")}</span>}
-        </div>
-        {md.trim() && prev.isError ? (
-          <div className="rounded-md bg-window">
-            <ErrorState compact error={prev.error} onRetry={() => void prev.refetch()} />
+}
+
+function Announcements({ q }: { q: ReturnType<typeof useAnnouncements> }) {
+  const tr = useTr();
+  const [query, patch] = useQS();
+  const [showEnded, setShowEnded] = useState(false);
+  const list = q.data ?? [];
+  const open = query.get("open");
+  const copy = query.get("copy");
+  const mailId = query.get("mail");
+  const editing = open && open !== "new" ? list.find((a) => a.id === open) : undefined;
+  const copyOf = open === "new" && copy ? list.find((a) => a.id === copy) : undefined;
+  const mailOf = mailId ? list.find((a) => a.id === mailId) : undefined;
+  const now = Date.now();
+  const axis = useAxis(list, now);
+
+  let body;
+  if (q.isPending)
+    body = (
+      <Card className="divide-y divide-separator" aria-busy="true">
+        {Array.from({ length: 5 }, (_, i) => (
+          <div key={i} className="flex h-16 items-center gap-4 px-4">
+            <Skeleton className="h-3 w-1/3" />
+            <Skeleton className="ml-auto h-2 w-1/3 rounded-full" />
           </div>
-        ) : (
-          /* Server-sanitized HTML (markdown.rs): fixed tags, escaped input. */
-          <div
-            className="md min-h-24 overflow-x-auto rounded-md bg-window p-3 text-body"
-            data-testid="preview"
-            aria-busy={prev.isFetching || undefined}
-            dangerouslySetInnerHTML={{ __html: md.trim() ? (prev.data?.html ?? "") : "" }}
-          />
-        )}
-        {!md.trim() && <p className="text-footnote text-faint">{tr("输入正文后在这里预览。", "Type to preview.")}</p>}
+        ))}
+      </Card>
+    );
+  else if (q.isError && !q.data)
+    body = (
+      <Card>
+        <ErrorState
+          title={tr("公告加载失败", "The announcements did not load")}
+          error={q.error}
+          onRetry={() => void q.refetch()}
+        />
+      </Card>
+    );
+  else if (list.length === 0)
+    body = (
+      <Card>
+        <EmptyState
+          icon={Megaphone}
+          title={tr("还没有公告", "No announcements yet")}
+          description={tr(
+            "公告会出现在门户首页顶部。可以设定显示时间、只给某些用户看，并用邮件通知他们。",
+            "Announcements show at the top of the portal home. Set when they show, who sees them, and mail them out.",
+          )}
+          action={
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+              {tr("新建公告", "New announcement")}
+            </Button>
+          }
+        />
+      </Card>
+    );
+  else
+    body = (
+      <div className="grid gap-5">
+        {ORDER.map((s) => {
+          const rows = list.filter((a) => lifeOf(a, now) === s).sort((a, b) => Number(b.pinned) - Number(a.pinned));
+          if (!rows.length) return null;
+          const collapsed = s === "ended" && !showEnded;
+          return (
+            <section key={s} aria-label={lifeName(s, tr)}>
+              <div className="mb-2 flex items-center gap-2 px-1">
+                <h2 className="text-headline font-semibold">{lifeName(s, tr)}</h2>
+                <span className="tnum rounded-full bg-secondary px-1.5 text-footnote font-medium text-muted-foreground">
+                  {rows.length}
+                </span>
+                {lifeHint(s, tr) && <span className="text-footnote text-faint max-sm:hidden">{lifeHint(s, tr)}</span>}
+                {s === "ended" && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="ml-auto"
+                    aria-expanded={!collapsed}
+                    onClick={() => setShowEnded(!showEnded)}
+                  >
+                    {collapsed ? tr("展开", "Show") : tr("收起", "Hide")}
+                  </Button>
+                )}
+              </div>
+              {!collapsed && (
+                <Card className="divide-y divide-separator overflow-hidden">
+                  {(s === "live" || s === "scheduled") && <Axis axis={axis} />}
+                  {rows.map((a) => (
+                    <AnnRow key={a.id} a={a} life={s} axis={axis} />
+                  ))}
+                </Card>
+              )}
+            </section>
+          );
+        })}
       </div>
+    );
+
+  return (
+    <>
+      {body}
+      {open && (open === "new" || editing) && (
+        <AnnouncementEditor
+          key={`${open}:${copy ?? ""}`}
+          a={editing ?? null}
+          from={copyOf ?? null}
+          onClose={() => patch({ open: null, copy: null }, true)}
+        />
+      )}
+      {mailOf && <MailDialog key={mailOf.id} a={mailOf} onClose={() => patch({ mail: null }, true)} />}
+    </>
+  );
+}
+
+/* ---------- Time axis ---------- */
+
+type AxisRange = { lo: number; hi: number; now: number; ticks: { at: number; label: string }[] };
+
+/** The axis of the live / scheduled rows: from two weeks back (or the earliest start) to the latest end (≥ two weeks ahead). */
+function useAxis(list: Announcement[], now: number): AxisRange {
+  const shown = list.filter((a) => {
+    const l = lifeOf(a, now);
+    return l === "live" || l === "scheduled";
+  });
+  let lo = now - 14 * DAY;
+  let hi = now + 14 * DAY;
+  for (const a of shown) {
+    if (a.visible_from) lo = Math.min(lo, Date.parse(a.visible_from));
+    if (a.visible_until) hi = Math.max(hi, Date.parse(a.visible_until));
+  }
+  // Keep the axis readable: at most a year either side.
+  lo = Math.max(lo, now - 365 * DAY);
+  hi = Math.min(hi, now + 365 * DAY);
+  const ticks = [0, 1 / 3, 2 / 3, 1].map((f) => {
+    const t = lo + (hi - lo) * f;
+    return { at: f, label: dateOnly(new Date(t).toISOString()).slice(5) };
+  });
+  return { lo, hi, now, ticks };
+}
+const pos = (r: AxisRange, t: number) => Math.min(1, Math.max(0, (t - r.lo) / (r.hi - r.lo)));
+
+function Axis({ axis }: { axis: AxisRange }) {
+  const tr = useTr();
+  return (
+    <div className="hidden h-7 items-end gap-4 bg-window/60 px-4 pb-1 lg:flex" aria-hidden="true">
+      <span className="flex flex-1 items-center gap-1.5 text-caption text-faint">
+        {tr("显示时间窗（站点时区）", "Display window (site time zone)")}
+        <span className="inline-block h-2.5 w-px bg-destructive" />
+        {tr("今天", "today")}
+      </span>
+      <div className="relative h-4 w-[260px] text-caption text-faint xl:w-[320px]">
+        {axis.ticks.map((t, i) => (
+          <span
+            key={i}
+            className={cn(
+              "tnum absolute whitespace-nowrap",
+              i === 0 ? "" : i === axis.ticks.length - 1 ? "-translate-x-full" : "-translate-x-1/2",
+            )}
+            style={{ left: `${t.at * 100}%` }}
+          >
+            {t.label}
+          </span>
+        ))}
+      </div>
+      <span className="w-[132px]" />
+      <span className="w-7" />
     </div>
   );
 }
 
-/** zh / en switch that says which language is filled in. */
-function LangSwitch({
-  value,
-  onChange,
-  zhFilled,
-  enFilled,
-}: {
-  value: "zh" | "en";
-  onChange: (v: "zh" | "en") => void;
-  zhFilled: boolean;
-  enFilled: boolean;
-}) {
-  const tr = useTr();
-  const mark = (filled: boolean, optional: boolean) => (
-    <Badge tone={filled ? "success" : optional ? "neutral" : "warning"} className="px-1.5">
-      {filled ? tr("已填", "filled") : tr("未填", "empty")}
-    </Badge>
-  );
+function WindowBar({ a, life, axis }: { a: Announcement; life: Life; axis: AxisRange }) {
+  const from = pos(axis, a.visible_from ? Date.parse(a.visible_from) : axis.lo);
+  const until = pos(axis, a.visible_until ? Date.parse(a.visible_until) : axis.hi);
   return (
-    <Segmented
-      label={tr("语言", "Language")}
-      value={value}
-      onChange={onChange}
-      options={[
-        {
-          value: "zh",
-          label: (
-            <>
-              {tr("中文", "Chinese")} {mark(zhFilled, false)}
-            </>
-          ),
-        },
-        {
-          value: "en",
-          label: (
-            <>
-              {tr("英文（可选）", "English (optional)")} {mark(enFilled, true)}
-            </>
-          ),
-        },
-      ]}
-    />
-  );
-}
-
-function Announcements() {
-  const tr = useTr();
-  const { query } = useRoute();
-  const open = query.get("open");
-  const q = useQuery({
-    queryKey: ["announcements"],
-    queryFn: () => get<Announcement[]>("/announcements"),
-    // While a mailing runs, follow its progress.
-    refetchInterval: (s) => ((s.state.data ?? []).some((a) => a.mail_requested_at && !a.mail_done_at) ? 5000 : false),
-  });
-  const columns: Column<Announcement>[] = [
-    {
-      key: "title",
-      header: tr("标题", "Title"),
-      fixed: true,
-      mobile: "title",
-      cell: (a) => (
-        <span className="flex min-w-0 items-center gap-1.5">
-          {a.pinned && <Badge tone="primary">{tr("置顶", "Pinned")}</Badge>}
-          <span className="break-words">{a.title_zh}</span>
-        </span>
-      ),
-    },
-    { key: "audience", header: tr("受众", "Audience"), cell: (a) => audienceName(a.audience, tr) },
-    {
-      key: "state",
-      header: tr("状态", "State"),
-      cell: (a) => (
-        <Badge tone={a.active ? "success" : "neutral"}>
-          {a.active
-            ? tr("显示中", "Showing")
-            : a.enabled
-              ? tr("不在时间窗内", "Outside window")
-              : tr("已停用", "Disabled")}
-        </Badge>
-      ),
-    },
-    {
-      key: "window",
-      header: tr("时间窗", "Window"),
-      optional: true,
-      cell: (a) => `${dateTime(a.visible_from)} → ${dateTime(a.visible_until)}`,
-    },
-    { key: "reads", header: tr("已读", "Reads"), align: "right", cell: (a) => a.reads },
-    {
-      key: "mail",
-      header: tr("邮件", "Mail"),
-      cell: (a) =>
-        a.mail_requested_at ? (
-          a.mail_done_at ? (
-            <Badge tone="success">{tr(`已发 ${a.mail_sent} 封`, `${a.mail_sent} sent`)}</Badge>
-          ) : (
-            <Badge tone="info">{tr(`发送中 · ${a.mail_sent} 封`, `sending · ${a.mail_sent}`)}</Badge>
-          )
-        ) : (
-          <span className="text-faint">—</span>
-        ),
-    },
-    { key: "created", header: tr("创建", "Created"), cell: (a) => dateTime(a.created_at) },
-  ];
-  const editing = open && open !== "new" ? q.data?.find((x) => x.id === open) : undefined;
-  return (
-    <>
-      <DataTable
-        label={tr("公告", "Announcements")}
-        storageKey="announcements"
-        rows={q.data ?? []}
-        columns={columns}
-        loading={q.isPending}
-        error={q.error}
-        onRetry={() => void q.refetch()}
-        onRowClick={(a) => setQuery({ open: a.id }, false)}
-        activeId={open}
-        empty={
-          <EmptyState
-            icon={Megaphone}
-            title={tr("还没有公告", "No announcements yet")}
-            description={tr(
-              "公告显示在门户首页，也可以邮件通知受众。",
-              "Shown on the portal home; can be mailed to the audience.",
-            )}
-            action={
-              <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
-                {tr("新建公告", "New announcement")}
-              </Button>
-            }
-          />
-        }
+    <div className="relative h-5 w-[260px] shrink-0 xl:w-[320px]" aria-hidden="true">
+      <div className="absolute inset-x-0 top-1/2 h-px bg-separator" />
+      {axis.ticks.map((t, i) => (
+        <span
+          key={i}
+          className="absolute top-1/2 h-1.5 w-px -translate-y-1/2 bg-separator"
+          style={{ left: `${t.at * 100}%` }}
+        />
+      ))}
+      <span
+        className={cn(
+          "absolute top-1/2 h-2 min-w-1.5 -translate-y-1/2 rounded-full",
+          life === "live" ? "bg-success" : "bg-info/70",
+          !a.visible_until && "rounded-r-none",
+        )}
+        style={{ left: `${from * 100}%`, width: `${Math.max(0, until - from) * 100}%` }}
       />
-      {open && (open === "new" || editing) && (
-        <AnnouncementEditor key={open} a={editing ?? null} onClose={() => setQuery({ open: null })} />
-      )}
-    </>
+      <span className="absolute inset-y-0 w-px bg-destructive" style={{ left: `${pos(axis, axis.now) * 100}%` }} />
+    </div>
   );
 }
 
-/** Upper bound of a mailing's recipients from the user list counts (verified addresses only get it). */
-async function recipientEstimate(audience: string): Promise<number | null> {
-  try {
-    const all = (await get<{ total: number }>("/users?role=user&limit=1")).total;
-    if (audience === "all") return all;
-    const none = (await get<{ total: number }>("/users?role=user&plan_id=none&limit=1")).total;
-    return audience === "without_plan" ? none : all - none;
-  } catch {
-    return null;
+/* ---------- Rows ---------- */
+
+function MailStatus({ a, life }: { a: Announcement; life: Life }) {
+  const tr = useTr();
+  const [, patch] = useQS();
+  if (mailing(a)) {
+    const total = a.recipients ?? 0;
+    return (
+      <button
+        type="button"
+        onClick={() => patch({ mail: a.id })}
+        className="grid w-[132px] gap-1 text-left"
+        aria-label={tr("邮件发送进度", "Mailing progress")}
+      >
+        <span className="flex items-center gap-1 text-footnote text-info">
+          <Spin className="size-3.5" />
+          {tr("发送中", "Sending")}
+        </span>
+        <Meter value={total ? (a.mail_sent / total) * 100 : 0} tone="primary" />
+        <span className="tnum text-caption text-faint">
+          {a.mail_sent} / {total || "—"}
+        </span>
+      </button>
+    );
   }
+  if (a.mail_requested_at)
+    return (
+      <span className="flex w-[132px] items-center gap-1 text-footnote text-muted-foreground">
+        <MailCheck className="size-3.5 shrink-0 text-success" aria-hidden="true" />
+        <span className="tnum truncate">
+          {tr(
+            `${a.mail_sent} 人 · ${dateOnly(a.mail_requested_at).slice(5)}`,
+            `${a.mail_sent} · ${dateOnly(a.mail_requested_at).slice(5)}`,
+          )}
+        </span>
+      </span>
+    );
+  if (life === "draft" || life === "ended") return <span className="w-[132px] text-footnote text-faint">—</span>;
+  return (
+    <span className="w-[132px]">
+      <Button size="sm" variant="soft" icon={Mail} onClick={() => patch({ mail: a.id })}>
+        {tr("邮件通知", "Mail it")}
+      </Button>
+    </span>
+  );
 }
 
-function AnnouncementEditor({ a, onClose }: { a: Announcement | null; onClose: () => void }) {
+function AnnRow({ a, life, axis }: { a: Announcement; life: Life; axis: AxisRange }) {
+  const tr = useTr();
+  const [, patch] = useQS();
+  const remove = useDeleteAnnouncement();
+  const edit = () => patch({ open: a.id, copy: null });
+  const when =
+    a.visible_from || a.visible_until ? (
+      <span className="tnum">
+        {a.visible_from ? dateTime(a.visible_from).slice(5) : tr("立即", "now")} →{" "}
+        {a.visible_until ? dateTime(a.visible_until).slice(5) : tr("不结束", "no end")}
+      </span>
+    ) : (
+      <span>{tr("一直显示", "Always")}</span>
+    );
+  return (
+    <div className="flex min-h-16 items-center gap-3 px-4 py-2.5 hover:bg-accent/50 sm:gap-4">
+      <button type="button" onClick={edit} className="min-w-0 flex-1 text-left">
+        <span className="flex items-center gap-1.5">
+          {a.pinned && (
+            <Badge tone="warning" className="px-1.5">
+              <Pin className="fill-current" aria-hidden="true" />
+              {tr("置顶", "Pinned")}
+            </Badge>
+          )}
+          <span className="truncate text-body font-semibold hover:text-primary">{a.title_zh}</span>
+        </span>
+        <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-footnote text-muted-foreground">
+          <span className="flex gap-1">
+            <LangChip on>{tr("中", "ZH")}</LangChip>
+            <LangChip on={!!(a.title_en && a.body_en)}>EN</LangChip>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <Users className="size-3.5 text-faint" aria-hidden="true" />
+            {audienceName(a.audience, tr)}
+          </span>
+          <span className="text-faint">·</span>
+          <span className="inline-flex items-center gap-1">
+            <CalendarClock className="size-3.5 text-faint" aria-hidden="true" />
+            {when}
+          </span>
+        </span>
+      </button>
+      {(life === "live" || life === "scheduled") && (
+        <span className="hidden lg:block">
+          <WindowBar a={a} life={life} axis={axis} />
+        </span>
+      )}
+      <span className="max-sm:hidden">
+        <MailStatus a={a} life={life} />
+      </span>
+      <RowMenu label={tr(`${a.title_zh} 的操作`, `Actions of ${a.title_zh}`)}>
+        {() => (
+          <>
+            <MenuItem icon={Pencil} onClick={edit}>
+              {tr("编辑", "Edit")}
+            </MenuItem>
+            <MenuItem icon={Mail} disabled={mailing(a)} onClick={() => patch({ mail: a.id })}>
+              {a.mail_requested_at ? tr("再次邮件通知…", "Mail again…") : tr("邮件通知…", "Mail it…")}
+            </MenuItem>
+            <MenuItem icon={Copy} onClick={() => patch({ open: "new", copy: a.id })}>
+              {tr("复制为新公告", "Copy as new")}
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem icon={Trash2} danger onClick={() => void remove(a)}>
+              {tr("删除…", "Delete…")}
+            </MenuItem>
+          </>
+        )}
+      </RowMenu>
+    </div>
+  );
+}
+
+function useDeleteAnnouncement() {
   const tr = useTr();
   const confirm = useConfirm();
   const toast = useToast();
+  return async (a: Announcement): Promise<boolean> => {
+    const ok = await confirm({
+      title: tr(`删除公告「${a.title_zh}」？`, `Delete "${a.title_zh}"?`),
+      description: tr(
+        "门户上立即消失，已读记录一并删除，无法恢复。已发出的邮件不受影响。",
+        "It disappears from the portal at once with its read marks; this cannot be undone. Mail already sent is not affected.",
+      ),
+      impacts: [
+        { label: tr("状态", "State"), value: lifeName(lifeOf(a), tr) },
+        { label: tr("显示对象", "Audience"), value: audienceName(a.audience, tr) },
+        {
+          label: tr("已邮件通知", "Mailed"),
+          value: a.mail_requested_at ? tr(`${a.mail_sent} 人`, `${a.mail_sent} people`) : tr("未发送", "Not mailed"),
+        },
+      ],
+      typeToConfirm: a.title_zh,
+      confirmLabel: tr("删除公告", "Delete announcement"),
+      action: () => del(`/announcements/${a.id}`),
+    });
+    if (ok) toast({ tone: "success", title: tr("已删除", "Deleted") });
+    return ok;
+  };
+}
+
+/* ---------- Editor ---------- */
+
+/** Recipient counts per audience for the editor's cards (the list rows carry them; else none). */
+function useAudienceCounts(): Partial<Record<Audience, number>> {
+  const q = useQuery({ queryKey: ["announcements"], queryFn: () => get<Announcement[]>("/announcements") });
+  const out: Partial<Record<Audience, number>> = {};
+  for (const a of q.data ?? []) if (a.recipients !== undefined) out[a.audience as Audience] = a.recipients;
+  return out;
+}
+
+function AnnouncementEditor({
+  a,
+  from,
+  onClose,
+}: {
+  a: Announcement | null;
+  /** "复制为新公告": the new one starts from this one. */
+  from: Announcement | null;
+  onClose: () => void;
+}) {
+  const tr = useTr();
+  const site = useSite();
+  const remove = useDeleteAnnouncement();
+  const counts = useAudienceCounts();
+  const src = a ?? from;
   const [f, setF] = useState({
-    title_zh: a?.title_zh ?? "",
-    title_en: a?.title_en ?? "",
-    body_zh: a?.body_zh ?? "",
-    body_en: a?.body_en ?? "",
-    pinned: a?.pinned ?? false,
-    enabled: a?.enabled ?? true,
-    from: toLocalInput(a?.visible_from),
-    until: toLocalInput(a?.visible_until),
-    audience: a?.audience ?? "all",
+    title_zh: src?.title_zh ?? "",
+    title_en: src?.title_en ?? "",
+    body_zh: src?.body_zh ?? "",
+    body_en: src?.body_en ?? "",
+    pinned: src?.pinned ?? false,
+    from: a ? toLocalInput(a.visible_from) : "",
+    until: a ? toLocalInput(a.visible_until) : "",
+    audience: (src?.audience ?? "all") as Audience,
   });
-  const [lang, setLang] = useState<"zh" | "en">("zh");
+  const [lang, setLang] = useState("zh");
   const [tried, setTried] = useState(false);
-  const [save, saving] = useAction();
-  const [mailing, setMailing] = useState(false);
+  const [saveDraft, draftBusy] = useAction();
+  const [publish, publishBusy] = useAction();
+  const fromIso = f.from ? fromLocalInput(f.from) : null;
+  const untilIso = f.until ? fromLocalInput(f.until) : null;
   const errs = {
     title_zh: !f.title_zh.trim() ? tr("请填写中文标题", "Enter the Chinese title") : null,
     body_zh: !f.body_zh.trim() ? tr("请填写中文正文", "Enter the Chinese body") : null,
-    body_en:
-      f.title_en.trim() && !f.body_en.trim() ? tr("填了英文标题就要填英文正文", "An English title needs a body") : null,
-    until: f.from && f.until && f.until <= f.from ? tr("结束时间要晚于开始时间", "Must be after the start") : null,
+    en:
+      !!f.title_en.trim() !== !!f.body_en.trim()
+        ? tr("英文标题和正文要么都填，要么都不填", "Fill in both the English title and body, or neither")
+        : null,
+    from: f.from && !fromIso ? tr("时间格式不对", "Not a valid time") : null,
+    until:
+      f.until && !untilIso
+        ? tr("时间格式不对", "Not a valid time")
+        : fromIso && untilIso && untilIso <= fromIso
+          ? tr("结束时间要晚于开始时间", "Must be after the start")
+          : null,
   };
   const bad = Object.values(errs).filter(Boolean).length;
   const err = (k: keyof typeof errs) => (tried && errs[k]) || undefined;
-  const body = () => ({
-    title_zh: f.title_zh.trim(),
-    title_en: f.title_en.trim() || null,
-    body_zh: f.body_zh,
-    body_en: f.body_en.trim() || null,
-    pinned: f.pinned,
-    enabled: f.enabled,
-    visible_from: f.from ? fromLocalInput(f.from) : null,
-    visible_until: f.until ? fromLocalInput(f.until) : null,
-    audience: f.audience,
-  });
-  const submit = async () => {
+  const wasLive = !!a && a.enabled;
+  const submit = async (enabled: boolean) => {
     setTried(true);
     if (bad) {
       if (errs.title_zh || errs.body_zh) setLang("zh");
-      else if (errs.body_en) setLang("en");
+      else if (errs.en) setLang("en");
       return;
     }
-    const r = await save(() => (a ? put(`/announcements/${a.id}`, body()) : post("/announcements", body())), {
-      ok: tr("公告已保存", "Announcement saved"),
+    const body = {
+      title_zh: f.title_zh.trim(),
+      title_en: f.title_en.trim() || null,
+      body_zh: f.body_zh,
+      body_en: f.body_en.trim() ? f.body_en : null,
+      pinned: f.pinned,
+      enabled,
+      visible_from: fromIso,
+      visible_until: untilIso,
+      audience: f.audience,
+    };
+    const run = enabled ? publish : saveDraft;
+    const r = await run(() => (a ? put(`/announcements/${a.id}`, body) : post("/announcements", body)), {
+      ok: enabled
+        ? wasLive
+          ? tr("公告已保存", "Announcement saved")
+          : tr("已发布", "Published")
+        : tr("已存为草稿", "Saved as a draft"),
     });
     if (r !== undefined) onClose();
   };
-  const mail = async () => {
-    if (!a || mailing) return;
-    setMailing(true);
-    const n = await recipientEstimate(a.audience);
-    setMailing(false);
-    const again = !!a.mail_requested_at;
-    const ok = await confirm({
-      title: again ? tr("再次邮件通知受众？", "Mail the audience again?") : tr("邮件通知受众？", "Mail the audience?"),
-      description: tr(
-        "只发给已验证的邮箱，经发件箱排队发送（按收件人的语言）。",
-        "Verified addresses only, queued through the outbox (in each recipient's language).",
-      ),
-      impact:
-        n === null
-          ? tr(
-              `受众：${audienceName(a.audience, tr)}（人数未知）`,
-              `Audience: ${audienceName(a.audience, tr)} (count unknown)`,
-            )
-          : tr(
-              `${audienceName(a.audience, tr)}：最多 ${n} 人（未验证邮箱的不发）`,
-              `${audienceName(a.audience, tr)}: up to ${n} people (unverified addresses skipped)`,
-            ),
-      details: again ? (
-        <Callout tone="warning">
-          {tr(
-            `这条公告已在 ${dateTime(a.mail_requested_at)} 发过（${a.mail_sent} 封）；再次发送会把全部受众重新发一遍。`,
-            `Already mailed ${dateTime(a.mail_requested_at)} (${a.mail_sent}); sending again mails the whole audience again.`,
-          )}
-        </Callout>
-      ) : undefined,
-      tone: "warning",
-      confirmLabel: again ? tr("确认再次发送", "Send again") : tr("确认发送", "Send"),
-      action: () => post(`/announcements/${a.id}/mail`),
-    });
-    if (ok) toast({ tone: "success", title: tr("已加入发送队列", "Queued") });
-  };
-  const remove = async () => {
-    if (!a) return;
-    const ok = await confirm({
-      title: tr("删除公告？", "Delete the announcement?"),
-      description: tr(
-        "门户里立即消失，已读记录一并删除。",
-        "It disappears from the portal at once, with its read marks.",
-      ),
-      typeToConfirm: a.title_zh,
-      confirmLabel: tr("删除", "Delete"),
-      action: () => del(`/announcements/${a.id}`),
-    });
-    if (ok) {
-      toast({ tone: "success", title: tr("已删除", "Deleted") });
-      onClose();
-    }
-  };
-  const sending = !!a?.mail_requested_at && !a.mail_done_at;
+  const zh = lang === "zh";
+  const cur = zh ? { title: f.title_zh, body: f.body_zh } : { title: f.title_en, body: f.body_en };
+  const count = (x: Audience) =>
+    counts[x] !== undefined ? tr(`${counts[x]} 人可收邮件`, `${counts[x]} mail recipients`) : undefined;
   return (
     <Dialog
       open
@@ -430,554 +618,278 @@ function AnnouncementEditor({ a, onClose }: { a: Announcement | null; onClose: (
       size="xl"
       icon={Megaphone}
       title={a ? tr("编辑公告", "Edit announcement") : tr("新建公告", "New announcement")}
-      description={
-        a?.mail_requested_at
-          ? sending
-            ? tr(`邮件发送中（已发 ${a.mail_sent} 封）`, `Mailing (${a.mail_sent} sent)`)
-            : tr(
-                `已于 ${dateTime(a.mail_requested_at)} 邮件通知，${a.mail_sent} 封`,
-                `Mailed ${dateTime(a.mail_requested_at)}, ${a.mail_sent} sent`,
-              )
-          : undefined
-      }
+      description={tr(
+        `门户首页顶部显示；时间按站点时区（${site.timezone}）。`,
+        `Shown at the top of the portal home; times in the site time zone (${site.timezone}).`,
+      )}
       footer={
         <>
           {a && (
-            <Button variant="destructive-soft" icon={Trash2} className="mr-auto" onClick={remove}>
+            <Button
+              variant="ghost"
+              icon={Trash2}
+              className="mr-auto text-destructive"
+              onClick={async () => {
+                if (await remove(a)) onClose();
+              }}
+            >
               {tr("删除", "Delete")}
             </Button>
           )}
-          {tried && bad > 0 && (
-            <span className="text-footnote text-destructive">{tr(`${bad} 处需要修正`, `${bad} to fix`)}</span>
-          )}
-          {a && (
-            <Button
-              icon={Mail}
-              loading={mailing}
-              disabled={sending}
-              title={sending ? tr("正在发送中", "Mailing now") : undefined}
-              onClick={mail}
-            >
-              {tr("邮件通知", "Mail it")}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            {tried && <FixCount n={bad} />}
+            <Button variant="ghost" onClick={onClose}>
+              {tr("取消", "Cancel")}
             </Button>
-          )}
-          <Button variant="primary" loading={saving} onClick={submit}>
-            {tr("保存", "Save")}
-          </Button>
+            {!wasLive && (
+              <Button loading={draftBusy} disabled={publishBusy} onClick={() => void submit(false)}>
+                {tr("存为草稿", "Save as draft")}
+              </Button>
+            )}
+            {wasLive && (
+              <Button loading={draftBusy} disabled={publishBusy} onClick={() => void submit(false)}>
+                {tr("撤回为草稿", "Back to draft")}
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              icon={Send}
+              loading={publishBusy}
+              disabled={draftBusy}
+              onClick={() => void submit(true)}
+            >
+              {wasLive ? tr("保存", "Save") : tr("发布", "Publish")}
+            </Button>
+          </div>
         </>
       }
     >
-      <div className="grid gap-4">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Field label={tr("受众", "Audience")}>
-            <Select value={f.audience} onChange={(e) => setF({ ...f, audience: e.target.value })}>
-              {["all", "with_plan", "without_plan"].map((x) => (
-                <option key={x} value={x}>
-                  {audienceName(x, tr)}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field
-            label={tr("开始显示（站点时区）", "Show from (site time zone)")}
-            hint={tr("留空 = 立即", "Empty = now")}
-          >
-            <Input type="datetime-local" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} />
-          </Field>
-          <Field
-            label={tr("结束显示（站点时区）", "Show until (site time zone)")}
-            hint={tr("留空 = 一直显示", "Empty = no end")}
-            error={err("until")}
-          >
-            <Input type="datetime-local" value={f.until} onChange={(e) => setF({ ...f, until: e.target.value })} />
-          </Field>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <SwitchField
-            checked={f.pinned}
-            onChange={(v) => setF({ ...f, pinned: v })}
-            label={tr("置顶", "Pinned")}
-            description={tr("排在门户公告列表最前", "First in the portal's list")}
-          />
-          <SwitchField
-            checked={f.enabled}
-            onChange={(v) => setF({ ...f, enabled: v })}
-            label={tr("启用", "Enabled")}
-            description={tr("关闭后门户不再显示", "Hidden from the portal when off")}
-          />
-        </div>
-        <LangSwitch
-          value={lang}
-          onChange={setLang}
-          zhFilled={!!(f.title_zh.trim() && f.body_zh.trim())}
-          enFilled={!!(f.title_en.trim() && f.body_en.trim())}
-        />
-        {lang === "zh" ? (
-          <>
-            <Field label={tr("标题（中文）", "Title (Chinese)")} error={err("title_zh")} required>
-              <Input value={f.title_zh} maxLength={200} onChange={(e) => setF({ ...f, title_zh: e.target.value })} />
-            </Field>
-            <MarkdownField
-              label={tr("正文（Markdown）", "Body (Markdown)")}
-              value={f.body_zh}
-              error={err("body_zh")}
-              required
-              onChange={(v) => setF({ ...f, body_zh: v })}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+        <div className="grid min-w-0 content-start gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <LangTabs
+              value={lang}
+              onChange={setLang}
+              items={[
+                {
+                  value: "zh",
+                  label: tr("中文", "Chinese"),
+                  filled: !!(f.title_zh.trim() && f.body_zh.trim()),
+                  required: true,
+                },
+                { value: "en", label: "English", filled: !!(f.title_en.trim() && f.body_en.trim()) },
+              ]}
             />
-          </>
-        ) : (
-          <>
+            <span className="text-footnote text-faint">
+              {zh ? tr("必填", "Required") : tr("不填则英文用户看到中文", "Empty = English readers see Chinese")}
+            </span>
+          </div>
+          <Field
+            label={zh ? tr("标题（中文）", "Title (Chinese)") : tr("标题（英文）", "Title (English)")}
+            required={zh}
+            error={zh ? err("title_zh") : err("en")}
+          >
+            <Input
+              value={cur.title}
+              maxLength={200}
+              data-autofocus
+              placeholder={
+                zh
+                  ? tr("一句话说清楚，例如：10 月 25 日凌晨维护", "One line, e.g. Maintenance on Oct 25")
+                  : "Maintenance on Oct 25"
+              }
+              onChange={(e) => setF(zh ? { ...f, title_zh: e.target.value } : { ...f, title_en: e.target.value })}
+            />
+          </Field>
+          <Field
+            label={zh ? tr("正文（Markdown）", "Body (Markdown)") : tr("正文（英文）", "Body (English)")}
+            required={zh}
+            error={zh ? err("body_zh") : undefined}
+            hint={tr("支持 Markdown：## 小标题、**粗体**、链接", "Markdown: ## headings, **bold**, links")}
+          >
+            <Textarea
+              value={cur.body}
+              onChange={(e) => setF(zh ? { ...f, body_zh: e.target.value } : { ...f, body_en: e.target.value })}
+              className="min-h-40 font-mono text-footnote"
+            />
+          </Field>
+          <Field label={tr("显示给", "Show to")}>
+            <RadioCards<Audience>
+              label={tr("显示给", "Show to")}
+              value={f.audience}
+              onChange={(v) => setF({ ...f, audience: v })}
+              items={(["all", "with_plan", "without_plan"] as Audience[]).map((x) => ({
+                value: x,
+                title: audienceName(x, tr),
+                desc: count(x),
+              }))}
+            />
+          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field
-              label={tr("标题（英文）", "Title (English)")}
-              hint={tr("留空 = 英文用户也看中文", "Empty = English readers see Chinese")}
+              label={tr("开始显示", "Show from")}
+              hint={tr(`站点时区 ${site.timezone} · 留空 = 立即`, `Site time zone ${site.timezone} · empty = now`)}
+              error={err("from")}
             >
-              <Input value={f.title_en} maxLength={200} onChange={(e) => setF({ ...f, title_en: e.target.value })} />
+              <Input
+                type="datetime-local"
+                className="tnum"
+                value={f.from}
+                onChange={(e) => setF({ ...f, from: e.target.value })}
+              />
             </Field>
-            <MarkdownField
-              label={tr("正文（英文）", "Body (English)")}
-              value={f.body_en}
-              error={err("body_en")}
-              onChange={(v) => setF({ ...f, body_en: v })}
-            />
-          </>
-        )}
+            <Field
+              label={tr("结束显示", "Show until")}
+              hint={tr("留空 = 一直显示", "Empty = no end")}
+              error={err("until")}
+            >
+              <Input
+                type="datetime-local"
+                className="tnum"
+                value={f.until}
+                onChange={(e) => setF({ ...f, until: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="flex items-center gap-3 rounded-lg bg-window px-3 py-2.5 ring-1 ring-border ring-inset">
+            <Pin className="size-4 shrink-0 text-warning" aria-hidden="true" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-body font-medium">{tr("置顶", "Pinned")}</span>
+              <span className="block text-footnote text-muted-foreground">
+                {tr("同时进行的公告里排在最前。", "First among the announcements showing at the same time.")}
+              </span>
+            </span>
+            <Switch checked={f.pinned} onChange={(v) => setF({ ...f, pinned: v })} label={tr("置顶", "Pinned")} />
+          </div>
+        </div>
+        <div className="min-w-0 lg:sticky lg:top-0 lg:self-start">
+          <MarkdownPreview
+            className="min-h-[320px] lg:h-[calc(min(86vh,880px)-170px)]"
+            title={cur.title}
+            markdown={cur.body}
+            label={
+              zh
+                ? tr("门户预览 · 中文", "Portal preview · Chinese")
+                : tr("门户预览 · English", "Portal preview · English")
+            }
+          />
+        </div>
       </div>
     </Dialog>
   );
 }
 
-function KnowledgeBase() {
-  const tr = useTr();
-  const { query } = useRoute();
-  const open = query.get("open");
-  const cats = useQuery({ queryKey: ["kb", "categories"], queryFn: () => get<Category[]>("/kb/categories") });
-  const arts = useQuery({ queryKey: ["kb", "articles"], queryFn: () => get<Article[]>("/kb/articles") });
-  const legal = ["terms", "privacy"].filter((s) => !(arts.data ?? []).some((a) => a.slug === s));
-  const columns: Column<Article>[] = [
-    {
-      key: "title",
-      header: tr("标题", "Title"),
-      fixed: true,
-      mobile: "title",
-      cell: (a) => <span className="break-words">{a.title_zh}</span>,
-    },
-    {
-      key: "slug",
-      header: tr("固定地址", "Slug"),
-      cell: (a) =>
-        a.slug ? <code className="font-mono text-footnote">{a.slug}</code> : <span className="text-faint">—</span>,
-    },
-    { key: "cat", header: tr("分类", "Category"), cell: (a) => a.category_name ?? tr("未分类", "Uncategorized") },
-    {
-      key: "pub",
-      header: tr("状态", "State"),
-      cell: (a) => (
-        <Badge tone={a.published ? "success" : "neutral"}>
-          {a.published ? tr("已发布", "Published") : tr("草稿", "Draft")}
-        </Badge>
-      ),
-    },
-    { key: "sort", header: tr("排序", "Sort"), optional: true, align: "right", cell: (a) => a.sort },
-    { key: "updated", header: tr("更新", "Updated"), cell: (a) => dateTime(a.updated_at) },
-  ];
-  const editing = open && open !== "new" ? arts.data?.find((x) => x.id === open) : undefined;
-  return (
-    <div className="grid gap-4">
-      {arts.data && legal.length > 0 && (
-        <Callout tone="info">
-          {tr(
-            `门户的服务条款 / 隐私政策页面读取固定地址为 terms、privacy 的已发布文章；还没有：${legal.join("、")}（缺省显示中性文案）。`,
-            `The portal's terms / privacy pages show the published articles with slug terms / privacy; missing: ${legal.join(", ")} (a neutral text is shown).`,
-          )}
-        </Callout>
-      )}
-      <Categories q={cats} />
-      <DataTable
-        label={tr("帮助文章", "Articles")}
-        storageKey="kb"
-        rows={arts.data ?? []}
-        columns={columns}
-        loading={arts.isPending}
-        error={arts.error}
-        onRetry={() => void arts.refetch()}
-        onRowClick={(a) => setQuery({ open: a.id }, false)}
-        activeId={open}
-        empty={
-          <EmptyState
-            icon={BookOpen}
-            title={tr("还没有文章", "No articles yet")}
-            description={tr("文章显示在门户的帮助中心。", "Articles show in the portal's help centre.")}
-            action={
-              <Button size="sm" variant="primary" icon={Plus} onClick={() => setQuery({ open: "new" }, false)}>
-                {tr("新建文章", "New article")}
-              </Button>
-            }
-          />
-        }
-      />
-      {open && (open === "new" || editing) && (
-        <ArticleEditor key={open} a={editing ?? null} cats={cats.data ?? []} onClose={() => setQuery({ open: null })} />
-      )}
-    </div>
-  );
-}
+/* ---------- Mailing ---------- */
 
-function CategoryDialog({ c, onClose }: { c: Category; onClose: () => void }) {
+function MailDialog({ a, onClose }: { a: Announcement; onClose: () => void }) {
   const tr = useTr();
-  const [f, setF] = useState({ name_zh: c.name_zh, name_en: c.name_en ?? "", sort: String(c.sort) });
-  const [tried, setTried] = useState(false);
-  const [save, busy] = useAction();
-  const errs = {
-    name_zh: !f.name_zh.trim() ? tr("请填写名称", "Enter a name") : null,
-    sort: !SORT_RE.test(f.sort.trim()) ? tr("整数，小的在前", "A whole number; smaller first") : null,
-  };
-  const bad = Object.values(errs).filter(Boolean).length;
-  const submit = async () => {
-    setTried(true);
-    if (bad) return;
-    const r = await save(
-      () =>
-        put(`/kb/categories/${c.id}`, {
-          name_zh: f.name_zh.trim(),
-          name_en: f.name_en.trim() || null,
-          sort: Number(f.sort.trim()),
-        }),
-      { ok: tr("已保存", "Saved") },
-    );
-    if (r !== undefined) onClose();
-  };
+  const [ack, setAck] = useState(false);
+  const [send, busy] = useAction();
+  const running = mailing(a);
+  const dup = !!a.mail_requested_at && !running;
+  const total = a.recipients;
   return (
     <Dialog
       open
       onClose={onClose}
       size="sm"
-      icon={Pencil}
-      title={tr("编辑分类", "Edit category")}
-      onSubmit={() => void submit()}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
+      icon={Mail}
+      title={
+        running ? tr("正在发送邮件通知", "Mailing in progress") : tr("用邮件通知这条公告？", "Mail this announcement?")
       }
-    >
-      <div className="grid gap-3">
-        <Field label={tr("分类名称（中文）", "Name (Chinese)")} error={(tried && errs.name_zh) || undefined} required>
-          <Input value={f.name_zh} onChange={(e) => setF({ ...f, name_zh: e.target.value })} data-autofocus />
-        </Field>
-        <Field label={tr("英文名称（可选）", "Name (English, optional)")}>
-          <Input value={f.name_en} onChange={(e) => setF({ ...f, name_en: e.target.value })} />
-        </Field>
-        <Field
-          label={tr("排序", "Sort")}
-          hint={tr("小的在前", "Smaller first")}
-          error={(tried && errs.sort) || undefined}
-        >
-          <Input inputMode="numeric" value={f.sort} onChange={(e) => setF({ ...f, sort: e.target.value })} />
-        </Field>
-      </div>
-    </Dialog>
-  );
-}
-
-function Categories({ q }: { q: UseQueryResult<Category[]> }) {
-  const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
-  const [add, adding] = useAction();
-  const [name, setName] = useState("");
-  const [edit, setEdit] = useState<Category | null>(null);
-  const cats = q.data ?? [];
-  const submit = async () => {
-    if (!name.trim()) return;
-    const r = await add(() => post("/kb/categories", { name_zh: name.trim() }), {
-      ok: tr("分类已添加", "Category added"),
-    });
-    if (r !== undefined) setName("");
-  };
-  let list: ReactNode;
-  if (q.isPending) list = <Skeleton className="m-4 h-16" />;
-  else if (q.isError) list = <ErrorState compact error={q.error} onRetry={() => void q.refetch()} />;
-  else if (cats.length === 0)
-    list = (
-      <p className="px-4 py-3 text-body text-muted-foreground">
-        {tr("还没有分类；文章可以不分类。", "No categories yet; articles may stay uncategorized.")}
-      </p>
-    );
-  else
-    list = (
-      <ul className="divide-y divide-separator">
-        {cats.map((c) => (
-          <li key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2 text-body">
-            <span className="font-medium break-words">{c.name_zh}</span>
-            {c.name_en && <span className="text-muted-foreground">{c.name_en}</span>}
-            <span className="text-footnote text-muted-foreground">
-              {tr(`${c.articles} 篇 · 排序 ${c.sort}`, `${c.articles} articles · sort ${c.sort}`)}
-            </span>
-            <span className="ml-auto">
-              <RowMenu label={tr(`分类 ${c.name_zh} 的操作`, `Actions of ${c.name_zh}`)}>
-                {(close) => (
-                  <>
-                    <MenuItem icon={Settings} onClick={() => (close(), setEdit(c))}>
-                      {tr("改名 / 排序", "Rename / sort")}
-                    </MenuItem>
-                    <MenuItem
-                      icon={Trash2}
-                      danger
-                      onClick={async () => {
-                        close();
-                        const ok = await confirm({
-                          title: tr(`删除分类 ${c.name_zh}？`, `Delete ${c.name_zh}?`),
-                          impact:
-                            c.articles > 0
-                              ? tr(`${c.articles} 篇文章会变成未分类`, `${c.articles} articles become uncategorized`)
-                              : tr("这个分类下没有文章", "No articles in it"),
-                          typeToConfirm: c.name_zh,
-                          confirmLabel: tr("删除", "Delete"),
-                          action: () => del(`/kb/categories/${c.id}`),
-                        });
-                        if (ok) toast({ tone: "success", title: tr("已删除", "Deleted") });
-                      }}
-                    >
-                      {tr("删除", "Delete")}
-                    </MenuItem>
-                  </>
-                )}
-              </RowMenu>
-            </span>
-          </li>
-        ))}
-      </ul>
-    );
-  return (
-    <Card>
-      <CardHeader
-        title={tr("文章分类", "Categories")}
-        description={tr(
-          "门户帮助中心按分类分组；删除分类不删除文章。",
-          "Groups in the portal's help centre; deleting one keeps its articles.",
-        )}
-      />
-      {list}
-      <form
-        className="flex flex-wrap gap-2 border-t border-separator px-4 py-3"
-        noValidate
-        onSubmit={(e) => {
-          e.preventDefault();
-          void submit();
-        }}
-      >
-        <Input
-          aria-label={tr("新分类名称", "New category name")}
-          placeholder={tr("新分类名称", "New category name")}
-          className="min-w-0 flex-1 sm:max-w-64"
-          value={name}
-          maxLength={60}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <Button type="submit" size="md" icon={FolderPlus} disabled={!name.trim()} loading={adding}>
-          {tr("添加分类", "Add category")}
-        </Button>
-      </form>
-      {edit && <CategoryDialog c={edit} onClose={() => setEdit(null)} />}
-    </Card>
-  );
-}
-
-function ArticleEditor({ a, cats, onClose }: { a: Article | null; cats: Category[]; onClose: () => void }) {
-  const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
-  const qc = useQueryClient();
-  const full = useQuery({
-    queryKey: ["kb", "article", a?.id],
-    queryFn: () => get<Article>(`/kb/articles/${a?.id}`),
-    enabled: !!a,
-    // Re-reads must never replace what the operator is typing.
-    refetchOnWindowFocus: false,
-    staleTime: Infinity,
-  });
-  const [f, setF] = useState({
-    category_id: a?.category_id ?? null,
-    title_zh: a?.title_zh ?? "",
-    title_en: a?.title_en ?? "",
-    body_zh: a?.body_zh ?? "",
-    body_en: a?.body_en ?? "",
-    sortText: String(a?.sort ?? 0),
-    published: a?.published ?? false,
-    slug: a?.slug ?? "",
-  });
-  // The full body arrives once, before the body fields are editable.
-  const [loaded, setLoaded] = useState(!a);
-  useEffect(() => {
-    if (full.data && !loaded) {
-      setF((x) => ({ ...x, body_zh: full.data.body_zh, body_en: full.data.body_en ?? "" }));
-      setLoaded(true);
-    }
-  }, [full.data, loaded]);
-  const [lang, setLang] = useState<"zh" | "en">("zh");
-  const [tried, setTried] = useState(false);
-  const [save, saving] = useAction();
-  const errs = {
-    title_zh: !f.title_zh.trim() ? tr("请填写中文标题", "Enter the Chinese title") : null,
-    body_zh: loaded && !f.body_zh.trim() ? tr("请填写中文正文", "Enter the Chinese body") : null,
-    sort: !SORT_RE.test(f.sortText.trim()) ? tr("整数，小的在前", "A whole number; smaller first") : null,
-    slug:
-      f.slug.trim() && !SLUG_RE.test(f.slug.trim())
-        ? tr("小写字母、数字、-，不能以 - 开头，最多 64 个", "a-z 0-9 -, not starting with -, up to 64")
-        : null,
-  };
-  const bad = Object.values(errs).filter(Boolean).length;
-  const err = (k: keyof typeof errs) => (tried && errs[k]) || undefined;
-  const submit = async () => {
-    setTried(true);
-    if (!loaded) return;
-    if (bad) {
-      if (errs.title_zh || errs.body_zh) setLang("zh");
-      return;
-    }
-    const b = {
-      category_id: f.category_id,
-      title_zh: f.title_zh.trim(),
-      title_en: f.title_en.trim() || null,
-      body_zh: f.body_zh,
-      body_en: f.body_en.trim() || null,
-      sort: Number(f.sortText.trim()),
-      published: f.published,
-      slug: f.slug.trim() || null,
-    };
-    const r = await save(() => (a ? put(`/kb/articles/${a.id}`, b) : post("/kb/articles", b)), {
-      ok: tr("文章已保存", "Article saved"),
-    });
-    if (r !== undefined) {
-      if (a) void qc.removeQueries({ queryKey: ["kb", "article", a.id] });
-      onClose();
-    }
-  };
-  const remove = async () => {
-    if (!a) return;
-    const ok = await confirm({
-      title: tr("删除文章？", "Delete the article?"),
-      description:
-        a.slug === "terms" || a.slug === "privacy"
-          ? tr(
-              "这是门户的法律页面，删除后门户显示中性文案。",
-              "This is a portal legal page; the portal falls back to a neutral text.",
-            )
-          : tr("门户里立即消失。", "It disappears from the portal at once."),
-      typeToConfirm: a.title_zh,
-      confirmLabel: tr("删除", "Delete"),
-      action: () => del(`/kb/articles/${a.id}`),
-    });
-    if (ok) {
-      toast({ tone: "success", title: tr("已删除", "Deleted") });
-      onClose();
-    }
-  };
-  const bodyField = (zh: boolean) =>
-    !loaded ? (
-      full.isError ? (
-        <ErrorState compact error={full.error} onRetry={() => void full.refetch()} />
-      ) : (
-        <div className="grid gap-1.5">
-          <span className="text-footnote font-medium text-muted-foreground">{tr("正文", "Body")}</span>
-          <LoadingBlock rows={4} />
-        </div>
-      )
-    ) : zh ? (
-      <MarkdownField
-        label={tr("正文（Markdown）", "Body (Markdown)")}
-        value={f.body_zh}
-        error={err("body_zh")}
-        required
-        onChange={(v) => setF({ ...f, body_zh: v })}
-      />
-    ) : (
-      <MarkdownField
-        label={tr("正文（英文）", "Body (English)")}
-        value={f.body_en}
-        onChange={(v) => setF({ ...f, body_en: v })}
-      />
-    );
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      size="xl"
-      icon={BookOpen}
-      title={a ? tr("编辑文章", "Edit article") : tr("新建文章", "New article")}
+      description={tr(`「${a.title_zh}」`, `"${a.title_zh}"`)}
       footer={
-        <>
-          {a && (
-            <Button variant="destructive-soft" icon={Trash2} className="mr-auto" onClick={remove}>
-              {tr("删除", "Delete")}
-            </Button>
-          )}
-          {tried && bad > 0 && (
-            <span className="text-footnote text-destructive">{tr(`${bad} 处需要修正`, `${bad} to fix`)}</span>
-          )}
-          <Button variant="primary" loading={saving} disabled={!loaded} onClick={submit}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
-    >
-      <div className="grid gap-4">
-        <div className="grid gap-3 sm:grid-cols-4">
-          <Field label={tr("分类", "Category")} className="sm:col-span-2">
-            <Select value={f.category_id ?? ""} onChange={(e) => setF({ ...f, category_id: e.target.value || null })}>
-              <option value="">{tr("未分类", "Uncategorized")}</option>
-              {cats.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name_zh}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field
-            label={tr("固定地址（可选）", "Slug (optional)")}
-            hint={tr("terms / privacy = 门户法律页", "terms / privacy = the portal's legal pages")}
-            error={err("slug")}
-          >
-            <Input value={f.slug} onChange={(e) => setF({ ...f, slug: e.target.value })} placeholder="terms" />
-          </Field>
-          <Field label={tr("排序", "Sort")} error={err("sort")}>
-            <Input inputMode="numeric" value={f.sortText} onChange={(e) => setF({ ...f, sortText: e.target.value })} />
-          </Field>
-        </div>
-        <SwitchField
-          checked={f.published}
-          onChange={(v) => setF({ ...f, published: v })}
-          label={tr("发布", "Published")}
-          description={tr(
-            "发布后用户在门户可见；草稿只在这里可见",
-            "Visible in the portal once published; drafts only here",
-          )}
-        />
-        <LangSwitch
-          value={lang}
-          onChange={setLang}
-          zhFilled={!!(f.title_zh.trim() && f.body_zh.trim())}
-          enFilled={!!(f.title_en.trim() && f.body_en.trim())}
-        />
-        {lang === "zh" ? (
+        running ? (
           <>
-            <Field label={tr("文章标题（中文）", "Title (Chinese)")} error={err("title_zh")} required>
-              <Input value={f.title_zh} maxLength={200} onChange={(e) => setF({ ...f, title_zh: e.target.value })} />
-            </Field>
-            {bodyField(true)}
+            <span className="mr-auto text-footnote text-muted-foreground">
+              {tr("可以关闭此窗口，发送在后台继续。", "You can close this; sending continues in the background.")}
+            </span>
+            <Button onClick={onClose}>{tr("关闭", "Close")}</Button>
           </>
         ) : (
           <>
-            <Field label={tr("文章标题（英文，可选）", "Title (English, optional)")}>
-              <Input value={f.title_en} maxLength={200} onChange={(e) => setF({ ...f, title_en: e.target.value })} />
-            </Field>
-            {bodyField(false)}
+            <Button variant="ghost" onClick={onClose}>
+              {tr("取消", "Cancel")}
+            </Button>
+            <Button
+              variant="primary"
+              icon={Send}
+              loading={busy}
+              disabled={dup && !ack}
+              onClick={async () => {
+                const r = await send(() => post(`/announcements/${a.id}/mail`), {
+                  ok: tr("已加入发送队列", "Queued"),
+                });
+                if (r !== undefined) onClose();
+              }}
+            >
+              {total !== undefined ? tr(`发送 ${total} 封`, `Send ${total}`) : tr("发送", "Send")}
+            </Button>
           </>
-        )}
-      </div>
+        )
+      }
+    >
+      {running ? (
+        <div className="grid gap-3" role="status">
+          <div className="flex items-baseline justify-between">
+            <span className="tnum text-title2 font-semibold">{a.mail_sent}</span>
+            <span className="tnum text-body text-muted-foreground">
+              {total !== undefined ? tr(`/ ${total} 封`, `/ ${total}`) : ""}
+            </span>
+          </div>
+          <Meter value={total ? (a.mail_sent / total) * 100 : 0} tone="primary" className="h-2" />
+          <span className="flex items-center gap-1 text-footnote text-muted-foreground">
+            <Spin className="size-3.5" />
+            {tr("每 5 秒刷新一次进度", "Progress refreshes every 5 seconds")}
+          </span>
+          <div className="rounded-lg bg-window p-3 text-footnote text-muted-foreground ring-1 ring-border ring-inset">
+            {tr("失败的邮件进入", "Failed mail goes to")}{" "}
+            <Link to="/status?tab=mail&mail=dead" className="text-primary hover:underline">
+              {tr("系统状态 › 邮件队列", "Status › Mail queue")}
+            </Link>
+            {tr("，可单独重发。", ", where it can be retried.")}
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          <dl className="divide-y divide-separator rounded-lg ring-1 ring-border ring-inset">
+            <Fact k={tr("收件人", "Recipients")} v={audienceName(a.audience, tr)} />
+            <Fact
+              k={tr("人数", "Count")}
+              v={
+                <span className="tnum">
+                  {total !== undefined ? tr(`${total} 人`, `${total}`) : tr("未知", "Unknown")}
+                </span>
+              }
+            />
+            <Fact k={tr("未验证邮箱 / 已封禁的用户", "Unverified / banned users")} v={tr("不发送", "Skipped")} />
+            <Fact k={tr("语言", "Language")} v={tr("按收件人的语言", "Each recipient's language")} />
+          </dl>
+          {dup ? (
+            <div className="rounded-lg bg-warning-soft p-3">
+              <div className="flex items-center gap-1.5 text-body font-semibold text-warning">
+                <TriangleAlert className="size-4" aria-hidden="true" />
+                {tr("已经发过一次", "Already mailed once")}
+              </div>
+              <p className="mt-1 text-footnote text-foreground/80">
+                {tr(
+                  `${dateTime(a.mail_requested_at)} 已发给 ${a.mail_sent} 人。再发一次，他们会收到重复的邮件。`,
+                  `Sent to ${a.mail_sent} people on ${dateTime(a.mail_requested_at)}. Sending again mails them twice.`,
+                )}
+              </p>
+              <label className="mt-2 flex min-h-8 items-center gap-2 text-footnote font-medium pointer-coarse:min-h-11">
+                <Checkbox checked={ack} onChange={setAck} label={tr("我确认要重复发送", "I want to send it again")} />
+                {tr("我确认要重复发送", "I want to send it again")}
+              </label>
+            </div>
+          ) : (
+            <p className="flex items-center gap-1.5 text-footnote text-muted-foreground">
+              <CircleCheck className="size-3.5 text-success" aria-hidden="true" />
+              {tr("这条公告还没有发过邮件。", "This announcement has not been mailed yet.")}
+            </p>
+          )}
+        </div>
+      )}
     </Dialog>
   );
 }

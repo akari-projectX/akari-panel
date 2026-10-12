@@ -300,14 +300,14 @@ export function MailQueue({ dead, pending }: { dead: number; pending: number }) 
   );
 }
 
-const STEPS: [string, string, string][] = [
-  ["config", "读取配置", "Read the settings"],
-  ["dns", "解析 DNS", "Resolve DNS"],
-  ["tcp", "连接 TCP", "Connect (TCP)"],
-  ["tls", "建立 TLS", "TLS"],
-  ["greeting", "SMTP 问候", "Greeting"],
-  ["auth", "登录认证", "Authenticate"],
-  ["send", "发送测试邮件", "Send the test mail"],
+const STEPS: { step: string; zh: string; en: string }[] = [
+  { step: "config", zh: "读取配置", en: "Read the settings" },
+  { step: "dns", zh: "解析 DNS", en: "Resolve DNS" },
+  { step: "tcp", zh: "连接 TCP", en: "Connect (TCP)" },
+  { step: "tls", zh: "建立 TLS", en: "Set up TLS" },
+  { step: "greeting", zh: "SMTP 问候", en: "SMTP greeting" },
+  { step: "auth", zh: "登录认证", en: "Authenticate" },
+  { step: "send", zh: "发送测试邮件", en: "Send the test mail" },
 ];
 
 /** "测试发信": POST /settings/mail/diagnose with the saved settings, step by step. */
@@ -327,17 +327,17 @@ function TestMailDialog({ onClose, lang }: { onClose: () => void; lang: "zh" | "
   const byStep = new Map((report?.steps ?? []).map((s) => [s.step, s]));
   // The server may name steps the list above does not know (another provider): show them too.
   const order = [
-    ...STEPS.map((s) => s[0]),
-    ...(report?.steps ?? []).map((s) => s.step).filter((s) => !STEPS.some((x) => x[0] === s)),
+    ...STEPS.map((s) => s.step),
+    ...(report?.steps ?? []).map((s) => s.step).filter((s) => !STEPS.some((x) => x.step === s)),
   ];
   const failed = report?.steps.find((s) => s.status === "fail");
   const failedAt = failed ? order.indexOf(failed.step) : -1;
   const msg = (s: Step) => (lang === "en" ? s.message.en : s.message.zh);
   const items = order
-    .filter((k) => !report || byStep.has(k) || STEPS.some((x) => x[0] === k))
+    .filter((k) => !report || byStep.has(k) || STEPS.some((x) => x.step === k))
     .map((k, i) => {
-      const def = STEPS.find((x) => x[0] === k);
-      const label = <span data-step={k}>{def ? tr(def[1], def[2]) : k}</span>;
+      const def = STEPS.find((x) => x.step === k);
+      const label = <span data-step={k}>{def ? tr(def.zh, def.en) : k}</span>;
       const s = byStep.get(k);
       if (busy) return { label, state: (i === 0 ? "active" : "todo") as StepState };
       if (!report || !s)

@@ -9,6 +9,8 @@ import { useLang, useTr, type Tr } from "../../shared/i18n";
 import { useErrText } from "../kit";
 import {
   fieldDefault,
+  fieldHelp,
+  fieldLabel,
   networkOptionLabel,
   protocolOptionLabel,
   templateRequiresTls,
@@ -16,6 +18,7 @@ import {
   transportLabel,
   transportTemplateNetworks,
   transportTemplateProtocols,
+  valueLabel,
 } from "../protocol-form";
 import { Button } from "../../shared/ui/button";
 import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
@@ -251,11 +254,12 @@ export function TemplateFields({
       });
       setCheck(
         v.ok
-          ? tr(
-              `可用：TLS 1.3 + h2${v.trusted ? "" : "（证书非公共信任）"}`,
-              `Usable: TLS 1.3 + h2${v.trusted ? "" : " (certificate not publicly trusted)"}`,
-            )
-          : tr(`不可用：${v.error ?? "未知原因"}`, `Not usable: ${v.error ?? "unknown"}`),
+          ? v.trusted
+            ? tr("可用：TLS 1.3 + h2", "Usable: TLS 1.3 + h2")
+            : tr("可用：TLS 1.3 + h2（证书非公共信任）", "Usable: TLS 1.3 + h2 (certificate not publicly trusted)")
+          : v.error
+            ? tr(`不可用：${v.error}`, `Not usable: ${v.error}`)
+            : tr("不可用：未知原因", "Not usable: unknown reason"),
       );
     } catch (e) {
       setCheck(errText(e));
@@ -389,7 +393,7 @@ export function TemplateFields({
           {transportFields(network).map((f) => {
             const key = FIELD_KEYS[f.name];
             if (!key) return null;
-            const label = `${transportLabel(network, lang)} ${lang === "en" ? f.name : f.label_zh}`;
+            const label = `${transportLabel(network, lang)} ${fieldLabel("transport", network, f, lang)}`;
             return (
               <Field
                 key={f.name}
@@ -401,14 +405,14 @@ export function TemplateFields({
                   <Select value={form[key] || (f.default ?? "")} onChange={(e) => set({ [key]: e.target.value })}>
                     {f.values.map((v) => (
                       <option key={v} value={v}>
-                        {v}
+                        {valueLabel("transport", network, f, v, lang)}
                       </option>
                     ))}
                   </Select>
                 ) : (
                   <Input
                     value={form[key]}
-                    placeholder={f.help_zh ?? ""}
+                    placeholder={fieldHelp("transport", network, f, lang)}
                     onChange={(e) => set({ [key]: e.target.value })}
                   />
                 )}

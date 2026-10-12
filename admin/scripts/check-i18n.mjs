@@ -11,9 +11,10 @@
 //     Chinese (`["中文", "English"]` pair tables, e.g. LOGIN_ERRORS);
 //   - inside a line marked `// i18n-ok` (data that is the same in both
 //     languages, e.g. a sample Chinese site name; say why on the line).
-// Comments, tests, errors.gen.ts (checked by check-error-codes.mjs) are
-// skipped. `npm run check`; `--list` prints every hit, otherwise the
-// first 40 and a per-file count.
+// Comments, tests, errors.gen.ts (checked by check-error-codes.mjs) and
+// protocols.gen.ts (twins pinned by protocol-form.test.ts) are skipped.
+// `npm run check`; `--list` prints every hit, otherwise the first 40 and a
+// per-file count.
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,9 @@ function* files(dir) {
   }
 }
 
-const SKIP = new Set(["shared/errors.gen.ts"]);
+// protocols.gen.ts: the manifest's Chinese labels; their English twins are
+// FIELD_EN / `label` in protocol-form.ts, pinned by protocol-form.test.ts.
+const SKIP = new Set(["shared/errors.gen.ts", "console/protocols.gen.ts"]);
 const KEEP_PROPS = new Set(["keywords", "keys", "glyph"]);
 const BASELINE_FILE = join(here, "i18n-baseline.json");
 

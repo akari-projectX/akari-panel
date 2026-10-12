@@ -627,7 +627,7 @@ function EntranceForm({
       title: tr("已保存入口", "Entrance saved"),
       description:
         changedBody.rate === undefined
-          ? tr(`只发送了改动：${changed.join("、")}`, `Sent only the changes: ${changed.join(", ")}`)
+          ? tr(`只发送了改动：${changed.join(tr("、", ", "))}`, `Sent only the changes: ${changed.join(", ")}`)
           : tr(
               `倍率 ${opened!.rate}x → ${rate}x：从下一次结算起生效，不追溯；改动后 30 秒内按两者中较低的倍率结算。`,
               `Multiplier ${opened!.rate}x → ${rate}x: from the next settlement on, not retroactive; for 30 s the lower of the two applies.`,
@@ -648,7 +648,7 @@ function EntranceForm({
     const names = e.group_ids
       .map((g) => groups.find((x) => x.id === g)?.name)
       .filter(Boolean)
-      .join("、");
+      .join(tr("、", ", "));
     const users = plans.data ? holdersOf([e.id], groups, plans.data) : null;
     const ok = await confirm({
       title: tr(`删除入口「${e.name}」？`, `Delete entrance "${e.name}"?`),
@@ -743,7 +743,7 @@ function EntranceForm({
             ) : liveBad > 0 ? (
               <FixCount n={liveBad} />
             ) : !create && changed.length ? (
-              tr(`改动：${changed.join("、")}`, `Changed: ${changed.join(", ")}`)
+              tr(`改动：${changed.join(tr("、", ", "))}`, `Changed: ${changed.join(", ")}`)
             ) : null}
           </div>
           <Button className="max-sm:hidden" onClick={onClose}>
@@ -769,7 +769,7 @@ function EntranceForm({
         >
           {theirs.length
             ? tr(
-                `最新版本改了：${theirs.join("、")}（版本 ${opened?.version} → ${e?.version}）。为避免覆盖，你的修改不会保存；请关闭后重新打开再改。`,
+                `最新版本改了：${theirs.join(tr("、", ", "))}（版本 ${opened?.version} → ${e?.version}）。为避免覆盖，你的修改不会保存；请关闭后重新打开再改。`,
                 `The latest version changed: ${theirs.join(", ")} (version ${opened?.version} → ${e?.version}). Your edits are not saved to avoid overwriting them; close and reopen to edit.`,
               )
             : tr(
@@ -835,10 +835,12 @@ function EntranceForm({
               hint={
                 relay
                   ? tr("中转机的域名或 IP（用户连到这里）", "The relay's domain or IP (users connect here)")
-                  : tr(
-                      `留空 = 服务器 TLS 域名${server?.tls_domain ? `（${server.tls_domain}）` : ""}`,
-                      `Empty = the server's TLS domain${server?.tls_domain ? ` (${server.tls_domain})` : ""}`,
-                    )
+                  : server?.tls_domain
+                    ? tr(
+                        `留空 = 服务器 TLS 域名（${server.tls_domain}）`,
+                        `Empty = the server's TLS domain (${server.tls_domain})`,
+                      )
+                    : tr("留空 = 服务器 TLS 域名", "Empty = the server's TLS domain")
               }
             >
               <Input
@@ -1345,15 +1347,17 @@ function EntranceHistory({ id }: { id: string }) {
               title:
                 c.action === "entrance.rate_rules.set" ? (
                   <>
-                    {tr("时段规则", "Time rules")}：
-                    <span className="text-muted-foreground line-through decoration-faint">{rules(c.rules_before)}</span>{" "}
+                    {tr("时段规则：", "Time rules: ")}
+                    <span className="text-muted-foreground line-through decoration-faint">
+                      {rules(c.rules_before)}
+                    </span>{" "}
                     → {rules(c.rules_after)}
                   </>
                 ) : c.action === "entrance.create" ? (
                   tr(`创建入口 ${c.rate_after}x`, `Created at ${c.rate_after}x`)
                 ) : (
                   <>
-                    {tr("基础倍率", "Base")}：
+                    {tr("基础倍率：", "Base: ")}
                     <span className="text-muted-foreground line-through decoration-faint">{c.rate_before}x</span> →{" "}
                     {c.rate_after}x
                   </>

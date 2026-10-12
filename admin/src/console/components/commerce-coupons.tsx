@@ -125,7 +125,7 @@ export function ruleParts(c: Rules, plans: PlanView[] | undefined, tr: Tr): stri
     (c.new_users_only ? tr("新用户首单 ", "New customers: ") : "") + discountLabel(c.kind, c.value, tr),
     c.min_amount_cents ? tr(`满 ${yuanShort(c.min_amount_cents)} 可用`, `over ${yuanShort(c.min_amount_cents)}`) : null,
     c.plan_ids?.length
-      ? tr(`仅${c.plan_ids.map(planName).join("、")}`, `only ${c.plan_ids.map(planName).join(", ")}`)
+      ? tr(`仅${c.plan_ids.map(planName).join(tr("、", ", "))}`, `only ${c.plan_ids.map(planName).join(", ")}`)
       : null,
     c.periods?.length
       ? tr(
@@ -238,7 +238,7 @@ export function CouponTicket({
         ) : (
           <>
             {(100 - value) / 10}
-            <span className="ml-0.5 text-title3">折</span>
+            <span className="ml-0.5 text-title3">{tr("折", "%")}</span>
           </>
         )
       ) : (

@@ -51,6 +51,8 @@ pub const MAX_OPEN_PER_USER: i64 = 5;
 pub const CREATE_PER_HOUR: i64 = 5;
 pub const REPLY_PER_HOUR: i64 = 30;
 const PAGE: i64 = 50;
+/// Characters of the newest message shown in the staff inbox row.
+pub const PREVIEW_CHARS: i64 = 140;
 const MY_LIST_LIMIT: i64 = 100;
 
 // ---------------------------------------------------------------------------
@@ -545,6 +547,13 @@ pub struct TicketRow {
     closed_at: Option<DateTime<Utc>>,
     closed_by: Option<String>,
     unread: bool,
+    /// Waiting for staff since (the customer's last message, else the
+    /// creation time); null unless the status is `open`.
+    waiting_since: Option<DateTime<Utc>>,
+    /// The newest message's first `PREVIEW_CHARS` characters and whether
+    /// staff wrote it (the inbox row; null when there is no message).
+    last_preview: Option<String>,
+    last_staff: Option<bool>,
     #[serde(skip)]
     last_user_at: Option<DateTime<Utc>>,
     #[serde(skip)]
@@ -557,10 +566,14 @@ fn ticket_select(unread: &str) -> String {
            t.status, t.messages, t.order_id, o.out_trade_no AS order_no, t.node_id, \
            coalesce(n.display_name, n.name) AS node_name, t.assignee_id, a.email AS assignee_email, \
            t.created_at, t.updated_at, t.closed_at, t.closed_by, {unread} AS unread, \
+           CASE WHEN t.status = 'open' THEN coalesce(t.last_user_at, t.created_at) END AS waiting_since, \
+           lm.preview AS last_preview, lm.staff AS last_staff, \
            t.last_user_at, t.last_staff_at \
          FROM tickets t JOIN users u ON u.id = t.user_id \
          LEFT JOIN orders o ON o.id = t.order_id LEFT JOIN nodes n ON n.id = t.node_id \
-         LEFT JOIN users a ON a.id = t.assignee_id"
+         LEFT JOIN users a ON a.id = t.assignee_id \
+         LEFT JOIN LATERAL (SELECT left(m.body, {PREVIEW_CHARS}) AS preview, m.staff \
+           FROM ticket_messages m WHERE m.ticket_id = t.id ORDER BY m.id DESC LIMIT 1) lm ON true"
     )
 }
 
@@ -872,6 +885,11 @@ pub struct ListQuery {
     pub q: Option<String>,
     #[serde(default)]
     pub page: Option<i64>,
+    /// updated (default: newest activity first) | waiting (the inbox:
+    /// tickets waiting for staff first, longest wait first, then the rest
+    /// by newest activity).
+    #[serde(default)]
+    pub sort: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -883,6 +901,41 @@ pub struct ListView {
     /// Queue counters (unfiltered): waiting for staff, unread.
     open: i64,
     unread: i64,
+    /// The inbox views (unfiltered): waiting for me, not closed and
+    /// unassigned, not closed, closed.
+    views: ViewCounts,
+    /// The ticket waiting longest for staff (null = none waiting).
+    oldest: Option<Oldest>,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct ViewCounts {
+    mine: i64,
+    unassigned: i64,
+    active: i64,
+    closed: i64,
+}
+
+#[derive(Serialize, sqlx::FromRow)]
+pub struct Oldest {
+    id: Uuid,
+    subject: String,
+    user_email: String,
+    waiting_since: DateTime<Utc>,
+}
+
+/// ORDER BY for a staff list (`sort`).
+pub fn list_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
+    match sort {
+        None | Some("") | Some("updated") => Ok("t.updated_at DESC, t.id"),
+        Some("waiting") => Ok("(t.status = 'open') DESC, \
+             CASE WHEN t.status = 'open' THEN coalesce(t.last_user_at, t.created_at) END ASC, \
+             t.updated_at DESC, t.id"),
+        Some(_) => Err(bad_request!(
+            "ticket_admin.sort_invalid",
+            "sort must be updated or waiting"
+        )),
+    }
 }
 
 fn bind(v: String, binds: &mut Vec<String>) -> String {
@@ -970,8 +1023,9 @@ pub async fn list_tickets(
     user.require_admin()?;
     let page = q.page.unwrap_or(1).clamp(1, 10_000);
     let (wh, binds) = list_filter(&q, user.id)?;
+    let order = list_order(q.sort.as_deref())?;
     let sql = format!(
-        "{}{wh} ORDER BY t.updated_at DESC, t.id LIMIT {PAGE} OFFSET {}",
+        "{}{wh} ORDER BY {order} LIMIT {PAGE} OFFSET {}",
         ticket_select(UNREAD_STAFF),
         (page - 1) * PAGE
     );
@@ -992,6 +1046,23 @@ pub async fn list_tickets(
     )))
     .fetch_one(state.pg())
     .await?;
+    let views: ViewCounts = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE t.status = 'open' AND t.assignee_id = $1) AS mine, \
+           count(*) FILTER (WHERE t.status <> 'closed' AND t.assignee_id IS NULL) AS unassigned, \
+           count(*) FILTER (WHERE t.status <> 'closed') AS active, \
+           count(*) FILTER (WHERE t.status = 'closed') AS closed FROM tickets t",
+    )
+    .bind(user.id)
+    .fetch_one(state.pg())
+    .await?;
+    let oldest: Option<Oldest> = sqlx::query_as(
+        "SELECT t.id, t.subject, u.email AS user_email, \
+           coalesce(t.last_user_at, t.created_at) AS waiting_since \
+         FROM tickets t JOIN users u ON u.id = t.user_id WHERE t.status = 'open' \
+         ORDER BY 4 ASC, t.id LIMIT 1",
+    )
+    .fetch_optional(state.pg())
+    .await?;
     Ok(Json(ListView {
         tickets,
         total,
@@ -999,6 +1070,8 @@ pub async fn list_tickets(
         per_page: PAGE,
         open,
         unread,
+        views,
+        oldest,
     }))
 }
 

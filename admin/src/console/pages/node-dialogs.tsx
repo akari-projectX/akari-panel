@@ -303,7 +303,7 @@ function CommandDialog({ shown, onClose }: { shown: Shown; onClose: () => void }
               <p className="text-footnote text-muted-foreground">
                 {tr(
                   "服务器不能访问面板时，用服务器菜单里的「重新生成注册令牌」下载引导文件。",
-                  "If the server cannot reach the panel, use 重新生成注册令牌 in the server menu for a bootstrap file.",
+                  "If the server cannot reach the panel, use “New enrollment token” in the server menu for a bootstrap file.",
                 )}
               </p>
             )}
@@ -335,7 +335,7 @@ function CommandDialog({ shown, onClose }: { shown: Shown; onClose: () => void }
         <p className="text-body text-foreground/85">
           {tr(
             "关闭后这条命令不会再显示。如果还没执行，只能到服务器页「安装命令」重新生成，旧命令会随之失效。",
-            "Once closed the command is not shown again. If it has not run yet, issue a new one from the server page (安装命令); this one then stops working.",
+            "Once closed the command is not shown again. If it has not run yet, issue a new one from the server page (“Install command”); this one then stops working.",
           )}
         </p>
       </Dialog>
@@ -645,6 +645,14 @@ function usedPorts(
   return out;
 }
 
+/** "本服务器已占用：443、8443" / "Used on this server: 443, 8443". */
+function usedPortsText(used: ReturnType<typeof usedPorts>, tr: Tr): string {
+  const ports = [...new Set(used.map((u) => u.port))].join(tr("、", ", "));
+  return ports
+    ? tr(`本服务器已占用：${ports}`, `Used on this server: ${ports}`)
+    : tr("本服务器已占用：无", "Used on this server: none");
+}
+
 function clashOf(
   tr: Tr,
   used: ReturnType<typeof usedPorts>,
@@ -844,7 +852,7 @@ function NewNodeWizard({
                     {tr(`已有 ${s.nodes.length} 个节点`, `${s.nodes.length} nodes`)}
                     {usedPorts(s).length > 0 &&
                       tr(
-                        ` · 占用端口 ${[...new Set(usedPorts(s).map((u) => u.port))].join("、")}`,
+                        ` · 占用端口 ${[...new Set(usedPorts(s).map((u) => u.port))].join(tr("、", ", "))}`,
                         ` · ports ${[...new Set(usedPorts(s).map((u) => u.port))].join(", ")}`,
                       )}
                   </span>
@@ -895,7 +903,7 @@ function NewNodeWizard({
           <p className="text-footnote text-muted-foreground">
             {tr(
               "表单由协议模板生成；之后可在节点的「入站」里换模板或改成 JSON。一个节点就是一个入站。",
-              "The form comes from the template; change the template or switch to JSON later in the node's 入站 tab. One node = one inbound.",
+              "The form comes from the template; change the template or switch to JSON later in the node's Inbound section. One node = one inbound.",
             )}
           </p>
         </div>
@@ -908,12 +916,7 @@ function NewNodeWizard({
               onChange={setJson}
               error={tried[2] ? (typeof spec === "string" ? spec : clash) : undefined}
             />
-            <p className="text-footnote text-muted-foreground">
-              {tr(
-                `本服务器已占用：${[...new Set(used.map((u) => u.port))].join("、") || "无"}`,
-                `Used on this server: ${[...new Set(used.map((u) => u.port))].join(", ") || "none"}`,
-              )}
-            </p>
+            <p className="text-footnote text-muted-foreground">{usedPortsText(used, tr)}</p>
           </div>
         ) : (
           <TemplateFields
@@ -923,10 +926,7 @@ function NewNodeWizard({
             tried={tried[2]}
             hideTemplate
             portClash={clash}
-            portHint={tr(
-              `本服务器已占用：${[...new Set(used.map((u) => u.port))].join("、") || "无"}`,
-              `Used on this server: ${[...new Set(used.map((u) => u.port))].join(", ") || "none"}`,
-            )}
+            portHint={usedPortsText(used, tr)}
           />
         ))}
       {step === 3 && (
@@ -984,7 +984,7 @@ function NewNodeWizard({
               </span>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={tr("入口名称", "Entrance name")} hint={tr("留空 = 直连", "Empty = 直连")}>
+              <Field label={tr("入口名称", "Entrance name")} hint={tr("留空 = 直连", "Empty = direct")}>
                 <Input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
               </Field>
               <TagsField value={d.tags} onChange={(v) => setD({ ...d, tags: v })} />
@@ -1342,7 +1342,7 @@ function NodeEditor({ n, block, onClose }: { n: FullNode; block: BlockStatus; on
             {errCount ? (
               <FixCount n={errCount} />
             ) : changed.length ? (
-              tr(`改动：${changed.join("、")}`, `Changed: ${changed.join(", ")}`)
+              tr(`改动：${changed.join(tr("、", ", "))}`, `Changed: ${changed.join(", ")}`)
             ) : null}
           </div>
           <Button className="max-sm:hidden" onClick={onClose}>

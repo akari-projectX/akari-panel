@@ -433,6 +433,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "ticket_admin.assignee_invalid": ["负责人必须是已启用的管理员", "Assignee must be an enabled admin"],
   "ticket_admin.not_closed": ["工单未关闭", "Ticket is not closed"],
   "ticket_admin.search_long": ["搜索内容最多 64 个字符", "Search text is longer than 64 characters"],
+  "ticket_admin.sort_invalid": ["排序方式无效", "Sort must be updated or waiting"],
   "ticket_admin.status_invalid": ["状态筛选无效", "Status must be open, answered, closed or active"],
   "user.admin_no_plan": ["管理员账户不是代理用户，不能分配套餐", "Admin accounts are not proxy users and cannot have a plan"],
   "user.admin_no_subscription": ["管理员账户没有订阅链接", "Admin accounts have no subscription"],

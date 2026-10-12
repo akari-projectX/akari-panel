@@ -5,7 +5,7 @@
 ## 文件
 
 - `shared.ts`：类型 `Shot` / `Ctx`、打开辅助（`go(path)`、`goto(page, path)`、`goDialog(c => path)`、`need(id, "说明")`、`ready`）、公共数据 `buildCtx`（自建一个用户 + 套餐 + 人工订单、一个节点 + 中转入口；`ctx.userId`、`planId`、`orderId`、`nodeId`、`serverId`、`entranceId`）。
-- `<区域>.ts`：`ops`、`people`、`commerce`、`nodes`、`settings`、`support`（与 `prototype/scripts/shots/*.json` 同名）。每个文件导出：
+- `<区域>.ts`：`ops`、`people`、`commerce`、`nodes`、`settings`、`support`（与 `prototype/scripts/shots/*.json` 同名；`support.json` 的 tickets-/content- 镜头在 `support-content.ts`）。每个文件导出：
   - `shots: Shot[]`——`{ name, open(page, ctx, device), full?, devices? }`；
   - 可选 `setup(ctx)`——为本区镜头造数据（经 `apiJson`），把 id 放进 `ctx.extra`。
 

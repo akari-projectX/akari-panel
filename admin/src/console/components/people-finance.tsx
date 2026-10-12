@@ -196,16 +196,18 @@ function hashCheck(chain: string, raw: string, tr: Tr): { error?: string; hint: 
 
 /* ---------- status ---------- */
 
-const W_STATUS: Record<string, [string, string, Tone, typeof Clock]> = {
-  pending: ["待审核", "Pending", "warning", Clock],
-  approved: ["已打款", "Paid", "success", Check],
-  rejected: ["已拒绝", "Rejected", "neutral", Undo2],
-  cancelled: ["用户撤销", "Cancelled", "neutral", X],
+type WStatusLabel = { zh: string; en: string; tone: Tone; icon: typeof Clock };
+const W_STATUS: Record<string, WStatusLabel> = {
+  pending: { zh: "待审核", en: "Pending", tone: "warning", icon: Clock },
+  approved: { zh: "已打款", en: "Paid", tone: "success", icon: Check },
+  rejected: { zh: "已拒绝", en: "Rejected", tone: "neutral", icon: Undo2 },
+  cancelled: { zh: "用户撤销", en: "Cancelled", tone: "neutral", icon: X },
 };
+const W_UNKNOWN: WStatusLabel = { zh: "未知状态", en: "Unknown", tone: "neutral", icon: Clock };
 
 export function WithdrawalBadge({ status }: { status: string }) {
   const tr = useTr();
-  const [zh, en, tone, Icon] = W_STATUS[status] ?? ["未知状态", "Unknown", "neutral", Clock];
+  const { zh, en, tone, icon: Icon } = W_STATUS[status] ?? W_UNKNOWN;
   return (
     <Badge tone={tone}>
       <Icon aria-hidden="true" />
@@ -590,7 +592,7 @@ function Review({ w, rate, bare, onDone }: { w: Withdrawal; rate: number | null;
           )}
           {banned && w.status === "pending" && (
             <Banner tone="danger" icon={<Ban />} title={tr("该用户已被封禁", "This user is banned")}>
-              {user.data?.ban?.reason ? `${user.data.ban.reason}。` : ""}
+              {user.data?.ban?.reason ? `${user.data.ban.reason}${tr("。", ". ")}` : ""}
               {tr("通常应拒绝并退回，或先在用户详情里核实。", "Usually reject it, or check the user's details first.")}
             </Banner>
           )}
@@ -880,7 +882,9 @@ function RejectPanel({
   const [run, busy] = useAction();
   const other = reason === REASONS.length - 1;
   const err = other && !extra.trim() ? tr("选了「其他」，请写说明", "“Other” needs a note") : undefined;
-  const text = other ? extra.trim() : `${tr(...REASONS[reason])}${extra.trim() ? `：${extra.trim()}` : ""}`;
+  const text = other
+    ? extra.trim()
+    : `${tr(...REASONS[reason])}${extra.trim() ? `${tr("：", ": ")}${extra.trim()}` : ""}`;
   const submit = async () => {
     setTried(true);
     if (err) return;

@@ -688,10 +688,11 @@ function AlertDialog({ a, loading, onClose }: { a: Alert | undefined; loading: b
       title={a ? `${alertKindName(a.kind, tr)} · ${a.server_name}` : tr("告警", "Alert")}
       description={
         a &&
-        tr(
-          `告警 #${a.id} · ${alertSevere(a.kind) ? "严重" : "警告"} · ${firing ? "正在告警" : "已恢复"}`,
-          `Alert #${a.id} · ${alertSevere(a.kind) ? "critical" : "warning"} · ${firing ? "firing" : "resolved"}`,
-        )
+        [
+          tr(`告警 #${a.id}`, `Alert #${a.id}`),
+          alertSevere(a.kind) ? tr("严重", "critical") : tr("警告", "warning"),
+          firing ? tr("正在告警", "firing") : tr("已恢复", "resolved"),
+        ].join(" · ")
       }
       footer={
         <>

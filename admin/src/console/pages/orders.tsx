@@ -22,6 +22,7 @@ import { Banner, PageHeader } from "../../shared/ui/layout";
 import { EmptyState, ErrorState, SkeletonRows } from "../../shared/ui/states";
 import { FilterChip } from "../../shared/ui/table";
 import { SearchField } from "../components/kit";
+import { WEEKDAYS } from "../components/ops-bits";
 import { OrdStatus, orderState } from "../components/status";
 import { useDebounced } from "../kit";
 import { useQS } from "../router";
@@ -273,8 +274,6 @@ function statusParams(s: Seg): Record<string, string> {
   return { status: s };
 }
 
-const WEEK_ZH = ["日", "一", "二", "三", "四", "五", "六"];
-const WEEK_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTH_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "今天 · 10月12日 周一" for a site day (YYYY-MM-DD). */
@@ -284,8 +283,8 @@ export function dayLabel(day: string, today: string, tr: Tr): string {
   const diff = Math.round((t.getTime() - d.getTime()) / 86_400_000);
   const m = d.getUTCMonth();
   const md = tr(
-    `${m + 1}月${d.getUTCDate()}日 周${WEEK_ZH[d.getUTCDay()]}`,
-    `${WEEK_EN[d.getUTCDay()]}, ${MONTH_EN[m]} ${d.getUTCDate()}`,
+    `${m + 1}月${d.getUTCDate()}日 ${WEEKDAYS[d.getUTCDay()][0]}`,
+    `${WEEKDAYS[d.getUTCDay()][1]}, ${MONTH_EN[m]} ${d.getUTCDate()}`,
   );
   const year = d.getUTCFullYear() !== t.getUTCFullYear() ? `${d.getUTCFullYear()} · ` : "";
   if (diff === 0) return `${tr("今天", "Today")} · ${md}`;

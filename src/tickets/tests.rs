@@ -79,6 +79,7 @@ fn list_filters() {
         unread: Some(true),
         q: Some("50%_off\\".into()),
         page: None,
+        sort: None,
     };
     let (wh, b) = list_filter(&q, me).unwrap();
     assert!(wh.contains("t.status <> 'closed'") && wh.contains(UNREAD_STAFF));
@@ -116,6 +117,124 @@ fn list_filters() {
     )
     .unwrap();
     assert!(wh.contains("t.assignee_id IS NULL") && wh.contains("t.status = $1"));
+    assert_eq!(
+        list_order(None).unwrap(),
+        list_order(Some("updated")).unwrap()
+    );
+    assert!(
+        list_order(Some("waiting"))
+            .unwrap()
+            .starts_with("(t.status = 'open') DESC")
+    );
+    assert!(list_order(Some("x")).is_err());
+}
+
+/// The inbox additions: per-row waiting time (open only) and the newest
+/// message's preview, `sort=waiting` (waiting first, longest first), the
+/// unfiltered view counters and the longest-waiting ticket.
+#[tokio::test]
+async fn inbox_fields() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let user = db.user().await;
+    let admin_id = db.admin().await;
+    let cu = client(&state, user).await;
+    let ca = client(&state, admin_id).await;
+    let a = create(&cu, "A 等得最久").await;
+    let b = create(&cu, "B 已回复").await;
+    let c = create(&cu, "C 刚来").await;
+    // A waits longest, C shortest; B is answered (not waiting).
+    for (id, mins) in [(a, 300), (b, 200), (c, 10)] {
+        sqlx::query(
+            "UPDATE tickets SET created_at = now() - make_interval(mins => $2), \
+               last_user_at = now() - make_interval(mins => $2), \
+               updated_at = now() - make_interval(mins => $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(mins)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    let long = "回".repeat(PREVIEW_CHARS as usize + 20);
+    let r = ca
+        .post(
+            &format!("/test/api/v1/tickets/{b}/replies"),
+            json!({ "message": long }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    assert_eq!(
+        ca.put(
+            &format!("/test/api/v1/tickets/{c}/assignee"),
+            json!({ "assignee_id": admin_id })
+        )
+        .await
+        .status,
+        StatusCode::NO_CONTENT
+    );
+
+    // Default order is unchanged: newest activity first (C was just
+    // assigned, B answered, A untouched).
+    let l = ca.get("/test/api/v1/tickets").await.json();
+    assert_eq!(l["tickets"][2]["id"], a.to_string());
+    // Waiting first, longest wait first; then the rest.
+    let l = ca.get("/test/api/v1/tickets?sort=waiting").await.json();
+    let ids: Vec<&str> = l["tickets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [a.to_string(), c.to_string(), b.to_string()]);
+    let rows = l["tickets"].as_array().unwrap();
+    assert!(rows[0]["waiting_since"].is_string());
+    assert!(rows[2]["waiting_since"].is_null());
+    assert_eq!(rows[0]["last_preview"], "节点连不上\n第二行");
+    assert_eq!(rows[0]["last_staff"], false);
+    assert_eq!(
+        rows[2]["last_preview"].as_str().unwrap().chars().count(),
+        PREVIEW_CHARS as usize
+    );
+    assert_eq!(rows[2]["last_staff"], true);
+    assert_eq!(
+        l["views"],
+        json!({ "mine": 1, "unassigned": 2, "active": 3, "closed": 0 })
+    );
+    assert_eq!(l["oldest"]["id"], a.to_string());
+    assert_eq!(l["oldest"]["subject"], "A 等得最久");
+    assert_eq!(l["oldest"]["user_email"], crate::testdb::test_email(user));
+    // The counters ignore the filters; bad sort is a 400.
+    let l = ca
+        .get("/test/api/v1/tickets?status=closed&sort=waiting")
+        .await
+        .json();
+    assert_eq!(l["total"], 0);
+    assert_eq!(l["views"]["active"], 3);
+    assert_eq!(
+        ca.get("/test/api/v1/tickets?sort=x").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // Closed tickets have no waiting time; the staff detail carries the fields too.
+    assert_eq!(
+        ca.post(&format!("/test/api/v1/tickets/{a}/close"), json!({}))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    let v = ca.get(&format!("/test/api/v1/tickets/{a}")).await.json();
+    assert!(v["waiting_since"].is_null());
+    assert_eq!(v["last_staff"], false);
+    let l = ca.get("/test/api/v1/tickets?sort=waiting").await.json();
+    assert_eq!(l["oldest"]["id"], c.to_string());
+    assert_eq!(l["views"]["closed"], 1);
+    // The customer's own views never carry the staff-only fields.
+    let mine = cu.get("/test/api/v1/me/tickets").await.json();
+    assert!(mine[0].get("last_preview").is_none());
+    let one = cu.get(&format!("/test/api/v1/me/tickets/{b}")).await.json();
+    assert!(one.get("last_preview").is_none() && one.get("waiting_since").is_none());
 }
 
 /// User A's ticket is invisible to user B: every customer endpoint answers

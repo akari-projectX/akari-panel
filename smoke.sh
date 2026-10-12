@@ -3083,6 +3083,10 @@ done
 [ "$(code -b "$JAR" "$BASE/api/v1/tickets?unread=true&status=open")" = "200" ] \
   && [ "$(last_json "[t['id'] for t in d['tickets']]==['$TK'] and d['unread']==1")" = "True" ] \
   || { echo "FAIL: staff queue"; cat /tmp/akari-smoke/last; exit 1; }
+# Inbox (sort=waiting): the waiting ticket carries its waiting time and the newest message's preview; view counters + longest wait.
+[ "$(code -b "$JAR" "$BASE/api/v1/tickets?sort=waiting&status=active")" = "200" ] \
+  && [ "$(last_json "any(t['id']=='$TK' and t['waiting_since'] is not None and t['last_staff'] is False and t['last_preview'].startswith('smoke ticket body') for t in d['tickets']) and d['views']['active']>=1 and d['oldest'] is not None")" = "True" ] \
+  || { echo "FAIL: staff inbox fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/tickets/$TK")" = "200" ] && last_json "d['thread'][0]['author_email']" | matches '^smoke-tk-a@smoke.test$' \
   || { echo "FAIL: staff ticket view"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/tickets/$TK/replies" '{"message":"smoke staff reply"}')" = "201" ] || { echo "FAIL: staff reply"; exit 1; }
@@ -3119,6 +3123,10 @@ for probe in "-X POST $BASE/api/v1/me/announcements/$ANN_OFF/read" "-X POST $BAS
   [ "$(fp -b "$TJA" $probe)" = "$REJ" ] || { echo "FAIL: hidden announcement not the canonical rejection: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
 done
 [ "$(code -b "$TJA" "$BASE/api/v1/announcements")" = "403" ] || { echo "FAIL: customer reached the announcement admin"; exit 1; }
+# The admin list carries each row's current recipient count (an integer, the sender's predicate).
+[ "$(code -b "$JAR" "$BASE/api/v1/announcements")" = "200" ] \
+  && [ "$(last_json "all(isinstance(a['recipients'], int) and a['recipients'] >= 0 for a in d) and any(a['id'] == '$ANN' for a in d)")" = "True" ] \
+  || { echo "FAIL: announcement recipient counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/announcements/$ANN/mail" '{}')" = "409" ] && last_json "d['code']" | matches -x 'announcement.mail_unavailable' \
   || { echo "FAIL: mailing without SMTP"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/content/preview" '{"markdown":"[x](javascript:alert(1)) ![i](http://e/i.png)"}')" = "200" ] \

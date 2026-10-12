@@ -529,6 +529,39 @@ async fn mailing_batches_the_audience() {
         .unwrap();
     give_plan(&db, disabled).await;
 
+    // The list and the detail say whom a mailing reaches: the three
+    // verified customers with a plan (not the unverified / banned ones);
+    // other audiences count the same predicate.
+    assert_eq!(
+        admin
+            .get(&format!("/test/api/v1/announcements/{id}"))
+            .await
+            .json()["recipients"],
+        3
+    );
+    let other = create(&admin, body("全部", json!({ "audience": "without_plan" }))).await;
+    let list = admin.get("/test/api/v1/announcements").await.json();
+    let n = |x: Uuid| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == x.to_string())
+            .unwrap()["recipients"]
+            .clone()
+    };
+    assert_eq!(n(id), 3);
+    assert_eq!(n(other), 1);
+    assert_eq!(
+        admin
+            .req(
+                Method::DELETE,
+                &format!("/test/api/v1/announcements/{other}"),
+                None
+            )
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
     assert_eq!(mail(id).await.status, StatusCode::ACCEPTED);
     let r = mail(id).await;
     assert_eq!(r.status, StatusCode::CONFLICT);
@@ -591,4 +624,13 @@ async fn mailing_batches_the_audience() {
         ]
     );
     db.drop().await;
+}
+
+#[test]
+fn recipient_predicates_agree() {
+    // The counts' predicate is the sender's minus the audience clause.
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let full = flat(RECIPIENT);
+    assert!(full.starts_with(&flat(RECIPIENT_BASE)));
+    assert!(full.contains(&flat(HAS_PLAN)));
 }

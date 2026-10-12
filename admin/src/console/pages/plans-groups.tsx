@@ -57,7 +57,7 @@ export function useDeleteGroup() {
       impacts: [
         {
           label: tr("使用它的套餐", "Plans using it"),
-          value: using.length ? using.map((p) => p.name).join("、") : tr("无", "None"),
+          value: using.length ? using.map((p) => p.name).join(tr("、", ", ")) : tr("无", "None"),
         },
         {
           label: tr("受影响的订阅", "Subscriptions affected"),
@@ -361,7 +361,7 @@ export function GroupEditor({
       description={
         using.length
           ? tr(
-              `改动会立即影响 ${using.map((p) => p.name).join("、")} 的 ${subs.toLocaleString()} 位用户（订阅刷新后生效）`,
+              `改动会立即影响 ${using.map((p) => p.name).join(tr("、", ", "))} 的 ${subs.toLocaleString()} 位用户（订阅刷新后生效）`,
               `Changes reach the ${subs.toLocaleString()} users of ${using.map((p) => p.name).join(", ")} at once (after their subscription refreshes)`,
             )
           : tr("把一组入口打包，供套餐选择", "Bundle entrances for plans to choose")
@@ -481,7 +481,7 @@ export function GroupEditor({
                               </span>
                               {also.length > 0 && (
                                 <span className="shrink-0 text-footnote text-muted-foreground max-sm:hidden">
-                                  {tr(`也在 ${also.join("、")}`, `Also in ${also.join(", ")}`)}
+                                  {tr(`也在 ${also.join(tr("、", ", "))}`, `Also in ${also.join(", ")}`)}
                                 </span>
                               )}
                             </label>
