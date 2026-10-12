@@ -4,14 +4,14 @@
 // its warnings; details and editors are centred dialogs (node-dialogs.tsx,
 // server-dialog.tsx, entrance-dialog.tsx) opened from the URL (`?open=`),
 // the search term lives in the URL too (`?q=`).
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { del, patch, put } from "../../shared/api";
 import { ago, bytes, dateOnly, pct, rateText } from "../../shared/format";
 import { useLang, useTr } from "../../shared/i18n";
-import { Stat } from "../kit";
+import { Stat, useDebounced } from "../kit";
 import { useAction } from "../data";
 import { overlaps } from "../rates";
-import { setQuery, useQueryParam, useRoute } from "../router";
+import { setQuery, useRoute } from "../router";
 import type { EntranceView, ServerNode, ServerView } from "../types";
 import { serverState, useGroups, useServers } from "../servers";
 import { EntranceDialog, RelayDialog } from "./entrance-dialog";
@@ -90,7 +90,10 @@ export function NodesPage() {
   const { query } = useRoute();
   const servers = useServers();
   const groups = useGroups();
-  const [search, setSearch] = useQueryParam("q");
+  // The box answers at once; the URL (`?q=`, shareable, kept on reload) follows shortly after.
+  const [search, setSearch] = useState(() => query.get("q") ?? "");
+  const debounced = useDebounced(search, 250);
+  useEffect(() => setQuery({ q: debounced.trim() ? debounced : null }), [debounced]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const creating = query.get("new");
   const open = query.get("open") ?? "";
@@ -213,7 +216,7 @@ export function NodesPage() {
               `没有名称或地址包含「${search.trim()}」的服务器、节点或入口。`,
               `Nothing is named or addressed like "${search.trim()}".`,
             )}
-            action={<Button onClick={() => setSearch(null)}>{tr("清除搜索", "Clear search")}</Button>}
+            action={<Button onClick={() => setSearch("")}>{tr("清除搜索", "Clear search")}</Button>}
           />
         </Card>
       )}

@@ -1105,7 +1105,14 @@ function NodeEditor({ n, onClose }: { n: FullNode; onClose: () => void }) {
         </span>
       }
       actions={
-        <Button size="sm" variant="ghost" icon={Activity} onClick={() => setQuery({ open: `server:${n.server_id}` })}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={Activity}
+          // Switching dialogs would drop unsaved edits without asking.
+          disabled={basicsChanged || inboundEdited}
+          onClick={() => setQuery({ open: `server:${n.server_id}` })}
+        >
           <span className="max-sm:sr-only">{tr("服务器状态", "Server status")}</span>
         </Button>
       }
