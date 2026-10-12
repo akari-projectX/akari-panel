@@ -2858,6 +2858,8 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 [ "$(last_json "d['pending_detail']['withdrawals_cents'] >= 0 and d['pending_detail']['alerts_unacked'] <= d['pending']['alerts_firing'] and (d['pending_detail']['order_sample_id'] is None) == (d['pending']['orders_unfulfilled'] == 0) and 0 <= d['subscribers_7d'] <= d['subscribers']")" = "True" ] \
   || { echo "FAIL: dashboard pending detail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/finance/summary")" = "403" ] || { echo "FAIL: user reached the finance summary"; exit 1; }
+[ "$(code "$BASE/api/v1/finance/summary")" = "401" ] || { echo "FAIL: finance summary without a session"; exit 1; }
 
 echo "== W31: system status =="
 [ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \
