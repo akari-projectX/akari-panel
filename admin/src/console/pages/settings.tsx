@@ -1,625 +1,518 @@
-// 系统设置 (SET-*): one tab per area, the tab is the URL
-// (/settings/<tab>). This file: the tab shell and 站点与域名 (site name,
-// time zone, D8 domain lists with preferred names, DNS checks, removal
-// impact, per-user subscription domains, Cloudflare trust, gRPC
-// certificate names, obsolete panel.toml keys).
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type ComponentType } from "react";
-import { get, post, put } from "../../shared/api";
-import { adminBase } from "../../shared/base";
-import { dateTime } from "../../shared/format";
-import { useTr, type Tr } from "../../shared/i18n";
-import { FormError, useErrText } from "../kit";
-import { useAction } from "../data";
-import { navigate, useRoute } from "../router";
-import { SecurityTab } from "./settings-access";
-import { MailTab, TemplatesTab } from "./settings-mail";
-import { BlockRulesTab, BrandingTab, CleanupTab, NodesTab } from "./settings-misc";
-import { PaymentsTab } from "./settings-payments";
-import { SignupTab } from "./settings-signup";
-import { SubscriptionTab } from "./settings-sub";
-import { Plus, Star, Trash2 } from "lucide-react";
-import { Badge } from "../../shared/ui/badge";
+// 系统设置 (SET-*, 2026-10 redesign, proposal §3): sections grouped by
+// domain, one URL each (`/settings` = overview, `/settings/<section>`; the
+// old `/settings/<tab>` paths redirect). Desktop: the group navigation with
+// search (labels, descriptions, old names) next to the section; phone: the
+// group list, then the section with "‹ 系统设置". Every section saves one
+// way: the bottom save bar (N unsaved changes · discard · save, ⌘/Ctrl+S;
+// disabled while fields need fixing); leaving with unsaved changes asks.
+import { ChevronLeft, ChevronRight, CloudCog, ExternalLink, Lock, Search, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Link, Navigate, useBlocker } from "react-router";
+import { cn } from "../../shared/cn";
+import { useTr } from "../../shared/i18n";
 import { Button } from "../../shared/ui/button";
-import { Card, CardBody, CardHeader } from "../../shared/ui/card";
+import { Tile } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
-import { Field, Input, Select, Switch } from "../../shared/ui/form";
-import { Callout, PageHeader } from "../../shared/ui/layout";
-import { Skeleton } from "../../shared/ui/states";
+import { Input, Kbd, MOD_KEY } from "../../shared/ui/form";
 import { useToast } from "../../shared/ui/toast";
+import { useErrText } from "../kit";
+import { useRoute } from "../router";
+import { useCrumb } from "../session";
+import { AccessSection, RetentionSection } from "./settings-access";
+import { useSettings } from "./settings-data";
+import { DomainsSection, SiteSection } from "./settings-general";
+import { MOVED_OUT, OLD_IDS, OVERVIEW_TINT, SECTIONS, SETTINGS_IA, type Section, type SectionId } from "./settings-ia";
+import { SaveContext, useWide, type SavePart, type SaveRegistry } from "./settings-kit";
+import { AlertsSection, MailSection, NoticesSection, TemplatesSection } from "./settings-mail";
+import { BlockSection, InstallSection, ProbeSection, UpdatesSection } from "./settings-misc";
+import { CommissionSection, PaymentsSection } from "./settings-payments";
+import { CleanupSection, LoginSection, SignupSection } from "./settings-signup";
+import { RoutingSection, SubscriptionSection } from "./settings-sub";
 
-export type DomainEntry = { domain: string; display: string; preferred: boolean };
-export type SettingsView = {
-  version: number;
-  main: { domains: DomainEntry[]; effective: string | null };
-  sub: { domains: DomainEntry[]; effective: string | null };
-  node: { domains: DomainEntry[]; panel_addr: string | null; server_name: string | null; default_port: number };
-  sub_domain_per_user: boolean;
-  trust_cloudflare: { value: boolean | null; effective: boolean };
-  server_names: {
-    name: string;
-    display: string;
-    source: string;
-    first_used_at: string;
-    current: boolean;
-    locked: string | null;
-    nodes: { id: string; name: string; reason: string }[];
-  }[];
-  certificate_names: string[];
-  host_gate: boolean;
-  site_name: string | null;
-  timezone: { value: string | null; effective: string; default: string };
-  passkey: {
-    domain: string | null;
-    rp_id: string | null;
-    related_origins: string[];
-    labels: number;
-    label_limit: number;
-  };
-  obsolete_config_keys: string[];
-  warnings: string[];
-  probe: {
-    interval_secs: { value: number | null; effective: number; default: number };
-    urls: { value: string[] | null; effective: string[]; default: string[] };
-    panel_tcp: { value: boolean | null; effective: boolean; default: boolean };
-    manual_cooldown_secs: number;
-  };
-  node_ops: {
-    install_tls_pin: string | null;
-    install_fallback_url: string | null;
-    install_fallback_effective: string | null;
-    install_fallback_default: string;
-    acme_directory_url: string | null;
-    acme_email: string | null;
-    remove_mode: { value: string | null; effective: string };
-  };
-  security: {
-    audit_retention_days: { value: number | null; effective: number; default: number };
-    traffic_daily_retention_days: { value: number | null; effective: number; default: number };
-    cloudflare_ranges: string[] | null;
-    cloudflare_ranges_shipped: number;
-    extra_release_keys: string[] | null;
-    release_keys: { id: string; label: string; official: boolean }[];
-  };
-  subscription: {
-    rules: { value: Rule[] | null; effective: Rule[]; default: Rule[] };
-    rule_set_clash_url: { value: string | null; effective: string; default: string };
-    rule_set_singbox_url: { value: string | null; effective: string; default: string };
-    formats: { value: string[] | null; effective: string[] };
-    import_clients: { value: string[] | null; effective: string[] };
-    /** next07: line names carry the entrance's base multiplier (default off). */
-    name_rate: boolean;
-  };
+export { useSettings, type DomainEntry, type Rule, type SettingsView } from "./settings-data";
+
+const BODIES: Record<Exclude<SectionId, "account">, ComponentType> = {
+  site: SiteSection,
+  domains: DomainsSection,
+  signup: SignupSection,
+  login: LoginSection,
+  cleanup: CleanupSection,
+  subscription: SubscriptionSection,
+  routing: RoutingSection,
+  install: InstallSection,
+  probe: ProbeSection,
+  block: BlockSection,
+  updates: UpdatesSection,
+  payments: PaymentsSection,
+  commission: CommissionSection,
+  mail: MailSection,
+  templates: TemplatesSection,
+  notices: NoticesSection,
+  alerts: AlertsSection,
+  access: AccessSection,
+  retention: RetentionSection,
 };
-export type Rule = { type: string; value: string; action: string };
 
-export function useSettings() {
-  return useQuery({ queryKey: ["settings"], queryFn: () => get<SettingsView>("/settings") });
-}
-
-type Tab = { id: string; zh: string; en: string; tag?: string; Comp: ComponentType };
-const TABS: Tab[] = [
-  { id: "site", zh: "站点与域名", en: "Site and domains", tag: "D8", Comp: SiteTab },
-  { id: "security", zh: "后台与登录安全", en: "Console and sign-in", tag: "D4/D7", Comp: SecurityTab },
-  { id: "subscription", zh: "订阅", en: "Subscriptions", tag: "D11/W30", Comp: SubscriptionTab },
-  { id: "signup", zh: "注册与人机验证", en: "Sign-up and bots", tag: "W27", Comp: SignupTab },
-  { id: "mail", zh: "邮件", en: "Mail", tag: "W31", Comp: MailTab },
-  { id: "templates", zh: "邮件模板", en: "Mail templates", Comp: TemplatesTab },
-  { id: "payments", zh: "支付", en: "Payments", Comp: PaymentsTab },
-  { id: "nodes", zh: "节点通信与测速", en: "Nodes and probes", Comp: NodesTab },
-  { id: "block", zh: "审计规则", en: "Block rules", tag: "W29", Comp: BlockRulesTab },
-  { id: "cleanup", zh: "账号清理", en: "Account cleanup", tag: "D10", Comp: CleanupTab },
-  { id: "branding", zh: "品牌", en: "Branding", Comp: BrandingTab },
-];
+const hrefOf = (s: Section) => s.href ?? `/settings/${s.id}`;
 
 export function SettingsPage() {
+  const { sub, query } = useRoute();
+  const wide = useWide();
+  const id = sub[0];
+  // Old addresses: the tab ids of the previous layout, and the outbox (now on the status page).
+  if (id === "mail" && query.has("outbox"))
+    return <Navigate to={`/status?mail=${query.get("outbox") || "dead"}`} replace />;
+  if (id && OLD_IDS[id]) return <Navigate to={`/settings/${OLD_IDS[id]}`} replace />;
+  if (id === "mail-templates") return <Navigate to="/settings/templates" replace />;
+  const cur = id ? SECTIONS.find((s) => s.id === id) : undefined;
+  if (id && !cur) return <Navigate to="/settings" replace />;
+  if (cur?.href) return <Navigate to={cur.href} replace />;
+  if (!wide) return cur ? <SectionPage key={cur.id} s={cur} /> : <PhoneIndex />;
+  return (
+    <div className="grid grid-cols-[232px_minmax(0,1fr)] gap-6 xl:gap-8">
+      <SettingsNav current={cur?.id} />
+      <div className="min-w-0">{cur ? <SectionPage key={cur.id} s={cur} /> : <Overview />}</div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+function useSearch() {
   const tr = useTr();
-  const { sub } = useRoute();
-  const tab = TABS.find((t) => t.id === sub[0]) ?? TABS[0];
-  const s = useSettings();
+  const [q, setQ] = useState("");
+  const t = q.trim().toLowerCase();
+  const match = useCallback(
+    (s: { zh: string; en: string; keywords: string; desc?: [string, string] }) =>
+      !t || `${s.zh} ${s.en} ${s.keywords} ${s.desc?.join(" ") ?? ""}`.toLowerCase().includes(t),
+    [t],
+  );
+  const box = (className?: string) => (
+    <div className={cn("relative", className)}>
+      <Search
+        className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-faint"
+        aria-hidden="true"
+      />
+      <Input
+        type="search"
+        aria-label={tr("搜索设置", "Search settings")}
+        placeholder={tr("搜索设置", "Search settings")}
+        className="rounded-full pl-8"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+    </div>
+  );
+  const moved = t ? MOVED_OUT.filter(match) : [];
+  return { q: t, match, box, moved };
+}
+
+function Moved({ items }: { items: typeof MOVED_OUT }) {
+  const tr = useTr();
   return (
     <>
-      <PageHeader title={tr("系统设置", "Settings")} />
-      {(s.data?.obsolete_config_keys.length ?? 0) > 0 && (
-        <div className="mb-4">
-          <Callout tone="warning" title={tr("panel.toml 中有已废弃的键", "panel.toml has obsolete keys")}>
-            {tr("这些设置已移到这里，请从 panel.toml 删除：", "These moved here; delete them from panel.toml: ")}
-            <code>{s.data?.obsolete_config_keys.join(", ")}</code>
-          </Callout>
-        </div>
-      )}
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <nav
-          aria-label={tr("设置分类", "Settings sections")}
-          className="scroll-thin -mx-1 flex shrink-0 gap-1 overflow-x-auto px-1 lg:mx-0 lg:w-56 lg:flex-col lg:px-0"
+      {items.map((m) => (
+        <Link
+          key={m.to}
+          to={m.to}
+          className="flex min-h-9 items-center gap-2.5 rounded-[9px] px-2 py-1 text-body hover:bg-accent"
         >
-          {TABS.map((t) => (
-            <a
-              key={t.id}
-              href={`${adminBase}/settings/${t.id}`}
-              aria-current={t.id === tab.id ? "page" : undefined}
-              onClick={(e) => {
-                e.preventDefault();
-                navigate(`/settings/${t.id}`);
-              }}
-              className={`flex shrink-0 items-center justify-between gap-2 rounded-md px-3 py-2 text-[13px] ${t.id === tab.id ? "bg-sidebar-accent font-medium" : "text-muted-foreground hover:bg-muted"}`}
-            >
-              {tr(t.zh, t.en)}
-              {t.tag && <span className="hidden text-[10px] text-muted-foreground lg:inline">{t.tag}</span>}
-            </a>
-          ))}
-        </nav>
-        <div className="min-w-0 flex-1">
-          <tab.Comp />
-        </div>
-      </div>
+          <ExternalLink className="size-4 text-faint" aria-hidden="true" />
+          <span className="min-w-0 flex-1">
+            <span className="block font-medium">{tr(m.zh, m.en)}</span>
+            <span className="block text-footnote text-muted-foreground">{tr(...m.where)}</span>
+          </span>
+        </Link>
+      ))}
     </>
   );
 }
 
-const KIND_NAME = (k: "main" | "sub" | "node", tr: Tr) =>
-  ({
-    main: tr("主域名", "Main domains"),
-    sub: tr("订阅域名", "Subscription domains"),
-    node: tr("节点通信域名", "Node communication domains"),
-  })[k];
+// ---------------------------------------------------------------------------
+// Desktop navigation and overview
+// ---------------------------------------------------------------------------
 
-type Lists = { main: string[]; sub: string[]; node: string[] };
-type Impact = {
-  removed: {
-    kind: string;
-    domain: string;
-    preferred: boolean;
-    places: { what: string; count: number; detail?: string }[];
-  }[];
-};
-
-function placeText(p: { what: string; count: number; detail?: string }, tr: Tr) {
-  switch (p.what) {
-    case "portal_console":
-      return tr("门户、后台与管理接口不再在此域名上提供", "The portal, console and admin API stop answering on it");
-    case "links":
-      return p.count
-        ? tr("邮件、安装与支付链接改用下一个主域名", "Mail, install and payment links move to the next main domain")
-        : tr(
-            "没有剩下的主域名：邮件 / 安装 / 支付链接不可用",
-            "No main domain left: mail / install / payment links stop",
-          );
-    case "pending_orders":
-      return tr(`${p.count} 个待付订单的支付回调`, `Payment notices of ${p.count} pending orders`);
-    case "install_links":
-      return tr(`${p.count} 个未使用的安装链接`, `${p.count} unused install links`);
-    case "subscription_links":
-      return tr(`${p.count} 个用户的订阅链接`, `Subscription links of ${p.count} users`);
-    case "nodes":
-      return tr(
-        `${p.count} 台已注册服务器连接此域名（继续工作）`,
-        `${p.count} enrolled servers dial it (they keep working)`,
-      );
-    default:
-      return `${p.what}: ${p.count}${p.detail ? ` (${p.detail})` : ""}`;
-  }
+function SettingsNav({ current }: { current?: SectionId }) {
+  const tr = useTr();
+  const search = useSearch();
+  const item = (on: boolean) =>
+    cn(
+      "flex h-8 items-center gap-2.5 rounded-[9px] px-2 text-body font-medium transition-colors",
+      on ? "bg-primary text-primary-foreground" : "hover:bg-accent",
+    );
+  const groups = SETTINGS_IA.map((g) => ({ ...g, sections: g.sections.filter(search.match) })).filter(
+    (g) => g.sections.length > 0,
+  );
+  return (
+    <aside className="sticky top-[76px] max-h-[calc(100dvh-100px)] self-start overflow-y-auto pr-1 pb-6">
+      <h1 className="mb-3 text-title2 font-bold tracking-[-0.02em]">{tr("系统设置", "Settings")}</h1>
+      {search.box("mb-3")}
+      <nav aria-label={tr("设置分类", "Settings sections")}>
+        {!search.q && (
+          <Link to="/settings" aria-current={!current ? "page" : undefined} className={cn(item(!current), "mb-1")}>
+            <Tile color={OVERVIEW_TINT}>
+              <CloudCog />
+            </Tile>
+            {tr("概览", "Overview")}
+          </Link>
+        )}
+        {groups.map((g) => (
+          <div key={g.zh} className="mt-3">
+            <div className="px-2 pb-1 text-caption font-semibold text-faint">{tr(g.zh, g.en)}</div>
+            {g.sections.map((s) => (
+              <Link
+                key={s.id}
+                to={hrefOf(s)}
+                aria-current={current === s.id ? "page" : undefined}
+                className={item(current === s.id)}
+              >
+                <Tile color={s.tint}>
+                  <s.icon />
+                </Tile>
+                <span className="flex-1 truncate">{tr(s.zh, s.en)}</span>
+                {s.owner && (
+                  <Lock
+                    className={cn("size-3", current === s.id ? "text-primary-foreground/80" : "text-faint")}
+                    aria-label={tr("仅所有者可修改", "Owner only")}
+                  />
+                )}
+                {s.href && <ChevronRight className="size-3.5 text-faint" aria-hidden="true" />}
+              </Link>
+            ))}
+          </div>
+        ))}
+        {search.moved.length > 0 && (
+          <div className="mt-3">
+            <div className="px-2 pb-1 text-caption font-semibold text-faint">{tr("已移出设置", "Moved elsewhere")}</div>
+            <Moved items={search.moved} />
+          </div>
+        )}
+        {search.q && groups.length === 0 && search.moved.length === 0 && (
+          <p className="px-2 py-3 text-footnote text-muted-foreground">
+            {tr("没有匹配的设置", "No matching settings")}
+          </p>
+        )}
+      </nav>
+    </aside>
+  );
 }
 
-function SiteTab() {
+/** "需要注意": obsolete panel.toml keys (SET-25) and the standing warnings of /settings. */
+function Attention() {
   const tr = useTr();
-  const errText = useErrText();
-  const toast = useToast();
-  const confirm = useConfirm();
   const s = useSettings();
-  const [siteName, setSiteName] = useState<string | null>(null);
-  const [tz, setTz] = useState<string | null>(null);
-  const [pkDomain, setPkDomain] = useState<string | null>(null);
-  const [lists, setLists] = useState<Lists | null>(null);
-  const [perUser, setPerUser] = useState<boolean | null>(null);
-  const [trust, setTrust] = useState<string | null>(null);
-  const [checks, setChecks] = useState<Record<string, string>>({});
-  const [run, busy] = useAction();
   const d = s.data;
-  useEffect(() => {
-    if (d && !lists)
-      setLists({
-        main: d.main.domains.map((x) => x.domain),
-        sub: d.sub.domains.map((x) => x.domain),
-        node: d.node.domains.map((x) => x.domain),
-      });
-  }, [d, lists]);
-  if (!d || !lists) return s.error ? <FormError error={s.error} /> : <Skeleton className="h-96" />;
-
-  const saveSite = () =>
-    run(
-      () =>
-        put("/settings/site", {
-          version: d.version,
-          site_name: siteName ?? d.site_name,
-          timezone: tz ?? d.timezone.value,
-        }),
-      {
-        ok: tr("站点设置已保存", "Site settings saved"),
-        invalidate: [["settings"]],
-      },
-    ).then((r) => {
-      if (r !== undefined) {
-        setSiteName(null);
-        setTz(null);
-      }
-    });
-
-  const savePasskeyDomain = async () => {
-    const domain = (pkDomain ?? d.passkey.domain ?? "").trim();
-    if (
-      d.passkey.domain !== null &&
-      !(await confirm({
-        title: tr("更换通行密钥中心域名？", "Change the passkey centre?"),
-        description: tr(
-          "通行密钥绑定在中心域名上。更换或清除之后，所有账户已绑定的通行密钥都不能再用，用户需要用密码登录后重新绑定。",
-          "Passkeys are bound to the centre. After changing or clearing it every stored passkey stops working; users sign in with a password and bind again.",
-        ),
-        tone: "warning",
-        confirmLabel: tr("仍然更换", "Change anyway"),
-      }))
-    )
-      return;
-    const r = await run(() => put("/settings/passkey-domain", { version: d.version, domain: domain || null }), {
-      ok: tr("通行密钥中心域名已保存", "Passkey centre saved"),
-      invalidate: [["settings"]],
-    });
-    if (r !== undefined) setPkDomain(null);
-  };
-
-  const dns = async (kind: string, domain: string) => {
-    setChecks((c) => ({ ...c, [`${kind}:${domain}`]: tr("检测中…", "Checking…") }));
-    try {
-      const v = await post<{ level: string; message: string; addresses: { ip: string; cloudflare?: boolean }[] }>(
-        "/settings/dns-check",
-        { kind, domain },
-      );
-      setChecks((c) => ({ ...c, [`${kind}:${domain}`]: `${v.level === "ok" ? "✓" : "⚠"} ${v.message}` }));
-    } catch (e) {
-      setChecks((c) => ({ ...c, [`${kind}:${domain}`]: errText(e) }));
-    }
-  };
-
-  const saveDomains = async (force = false, hostChange = false) => {
-    const body = {
-      version: d.version,
-      main_domains: lists.main.filter((x) => x.trim()),
-      sub_domains: lists.sub.filter((x) => x.trim()),
-      node_domains: lists.node.filter((x) => x.trim()),
-      sub_domain_per_user: perUser ?? d.sub_domain_per_user,
-      trust_cloudflare: trust === null ? d.trust_cloudflare.value : trust === "" ? null : trust === "true",
-      force_node_cloudflare: force,
-      confirm_host_change: hostChange,
-      confirm_removal: false,
-    };
-    let impact: Impact;
-    try {
-      impact = await post<Impact>("/settings/domains/impact", {
-        main_domains: body.main_domains,
-        sub_domains: body.sub_domains,
-        node_domains: body.node_domains,
-        sub_domain_per_user: body.sub_domain_per_user,
-      });
-    } catch (e) {
-      return toast({ tone: "error", title: errText(e) });
-    }
-    if (impact.removed.length) {
-      const names = impact.removed.map((r) => r.domain).join(", ");
-      const ok = await confirm({
-        title: tr(`删除域名 ${names}？`, `Remove ${names}?`),
-        impact: tr("以下地方会受影响", "These places are affected"),
-        details: (
-          <ul className="space-y-2 text-[13px]">
-            {impact.removed.map((r) => (
-              <li key={`${r.kind}:${r.domain}`}>
-                <b>{r.domain}</b> <Badge>{KIND_NAME(r.kind as "main", tr)}</Badge>
-                <ul className="ml-4 list-disc text-muted-foreground">
-                  {r.places.map((p) => (
-                    <li key={p.what}>{placeText(p, tr)}</li>
-                  ))}
-                </ul>
-              </li>
+  if (!d || (d.obsolete_config_keys.length === 0 && d.warnings.length === 0)) return null;
+  return (
+    <section
+      aria-label={tr("需要注意", "Needs attention")}
+      className="grid gap-2 rounded-xl bg-warning-soft px-4 py-3 text-body"
+    >
+      <div className="flex items-center gap-2 font-semibold">
+        <TriangleAlert className="size-4 text-warning" aria-hidden="true" />
+        {tr("需要注意", "Needs attention")}
+      </div>
+      {d.obsolete_config_keys.length > 0 && (
+        <div>
+          <div className="font-medium">{tr("panel.toml 中有已废弃的键", "panel.toml has obsolete keys")}</div>
+          <div className="text-footnote text-muted-foreground">
+            {tr(
+              "这些设置已经搬到系统设置里，请从 panel.toml 删除：",
+              "These settings moved here; delete them from panel.toml: ",
+            )}
+            <code className="font-mono break-all text-foreground">{d.obsolete_config_keys.join(", ")}</code>
+          </div>
+        </div>
+      )}
+      {d.warnings.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <ul className="min-w-0 flex-1 list-disc pl-4 text-footnote">
+            {d.warnings.map((w) => (
+              <li key={w}>{w}</li>
             ))}
           </ul>
-        ),
-        typeToConfirm: impact.removed[0].domain,
-      });
-      if (!ok) return;
-      body.confirm_removal = true;
-    }
-    try {
-      await put("/settings", body);
-      toast({ tone: "success", title: tr("域名设置已保存", "Domains saved") });
-      // Re-read first: the form re-initialises from the fresh values.
-      await s.refetch();
-      setLists(null);
-      setPerUser(null);
-      setTrust(null);
-    } catch (e) {
-      const code = (e as { code?: string }).code;
-      if (code === "settings.node_domain_cloudflare") {
-        if (
-          await confirm({
-            title: tr("节点域名解析到 Cloudflare", "The node domain resolves to Cloudflare"),
-            description: errText(e),
-            tone: "warning",
-            confirmLabel: tr("仍然保存", "Save anyway"),
-          })
-        )
-          await saveDomains(true, hostChange);
-      } else if (code === "settings.host_gate") {
-        if (
-          await confirm({
-            title: tr("当前地址将被拒绝", "This address will be refused"),
-            description: errText(e),
-            tone: "warning",
-            confirmLabel: tr("确认保存", "Save"),
-          })
-        )
-          await saveDomains(force, true);
-      } else toast({ tone: "error", title: errText(e) });
-    }
-  };
-
-  const list = (kind: keyof Lists) => (
-    <div className="space-y-2">
-      <div className="text-[13px] font-medium">{KIND_NAME(kind, tr)}</div>
-      {lists[kind].map((v, i) => (
-        <div key={i} className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            aria-label={tr("设为首选", "Make preferred")}
-            title={tr("首选", "Preferred")}
-            disabled={i === 0}
-            onClick={() => setLists({ ...lists, [kind]: [v, ...lists[kind].filter((_, j) => j !== i)] })}
-            className={i === 0 ? "text-warning" : "text-muted-foreground hover:text-warning"}
-          >
-            <Star size={16} fill={i === 0 ? "currentColor" : "none"} />
-          </button>
-          <Input
-            aria-label={`${KIND_NAME(kind, tr)} ${i + 1}`}
-            className="h-8 w-full sm:w-72"
-            value={v}
-            onChange={(e) => setLists({ ...lists, [kind]: lists[kind].map((x, j) => (j === i ? e.target.value : x)) })}
-          />
-          <Button size="sm" variant="ghost" onClick={() => void dns(kind, v)} disabled={!v.trim()}>
-            {tr("DNS 检测", "Check DNS")}
+          <Button asChild size="sm" variant="outline">
+            <Link to="/settings/domains">{tr("查看域名与证书", "Open domains")}</Link>
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            icon={Trash2}
-            aria-label={tr("移除", "Remove")}
-            disabled={i === 0 && lists[kind].length > 1}
-            title={
-              i === 0 && lists[kind].length > 1
-                ? tr("首选域名不能直接删：先把另一个设为首选", "Make another one preferred first")
-                : undefined
-            }
-            onClick={() => setLists({ ...lists, [kind]: lists[kind].filter((_, j) => j !== i) })}
-          />
-          {checks[`${kind}:${v}`] && (
-            <span role="status" className="w-full text-xs text-muted-foreground">
-              {checks[`${kind}:${v}`]}
-            </span>
-          )}
         </div>
-      ))}
-      <Button size="sm" icon={Plus} onClick={() => setLists({ ...lists, [kind]: [...lists[kind], ""] })}>
-        {tr("添加", "Add")}
-      </Button>
-    </div>
+      )}
+    </section>
   );
+}
 
+function Overview() {
+  const tr = useTr();
+  useCrumb(tr("概览", "Overview"));
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader title={tr("站点", "Site")} />
-        <CardBody>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={tr("站点名称", "Site name")}>
-              <Input
-                value={siteName ?? d.site_name ?? ""}
-                placeholder="Akari"
-                onChange={(e) => setSiteName(e.target.value)}
-              />
-            </Field>
-            <Field
-              label={tr("站点时区（IANA 名称）", "Site time zone (IANA name)")}
-              hint={tr(
-                "决定流量明细与审计规则统计的日、套餐月重置、仪表盘与 CSV 的日；从下一次写入起生效。",
-                "Sets the day of traffic history and block counts, monthly resets, the dashboard and CSV days; applies from the next write.",
-              )}
-            >
-              <Input
-                value={tz ?? d.timezone.value ?? ""}
-                placeholder={d.timezone.default}
-                list="tz-list"
-                onChange={(e) => setTz(e.target.value)}
-              />
-              <datalist id="tz-list">
-                {[
-                  "Asia/Shanghai",
-                  "Asia/Hong_Kong",
-                  "Asia/Tokyo",
-                  "Asia/Singapore",
-                  "UTC",
-                  "Europe/London",
-                  "America/New_York",
-                  "America/Los_Angeles",
-                ].map((z) => (
-                  <option key={z} value={z} />
-                ))}
-              </datalist>
-            </Field>
+    <div className="grid gap-6">
+      <div className="pt-1">
+        <h2 className="text-title2 font-bold tracking-[-0.02em]">{tr("概览", "Overview")}</h2>
+        <p className="mt-1 text-body text-muted-foreground">
+          {tr("带", "Sections with")} <Lock className="inline size-3" aria-label={tr("锁", "a lock")} />{" "}
+          {tr("的分区只有所有者能修改；带", "only the owner can change; sections with")}{" "}
+          <TriangleAlert className="inline size-3 text-warning" aria-label={tr("警告", "a warning sign")} />{" "}
+          {tr(
+            "的分区含有影响全站的操作，单独放在分区底部的「危险操作」里，保存时会再确认。",
+            "hold site-wide actions, kept apart in their danger zone and confirmed on save.",
+          )}
+        </p>
+      </div>
+      <Attention />
+      {SETTINGS_IA.map((g) => (
+        <section key={g.zh}>
+          <h3 className="mb-2 px-1 text-footnote font-semibold text-muted-foreground">{tr(g.zh, g.en)}</h3>
+          <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+            {g.sections.map((s) => (
+              <Link
+                key={s.id}
+                to={hrefOf(s)}
+                className="group flex items-center gap-3 rounded-xl bg-card p-3.5 shadow-card transition-shadow hover:shadow-raised"
+              >
+                <Tile color={s.tint} size={32}>
+                  <s.icon />
+                </Tile>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 text-body font-semibold">
+                    {tr(s.zh, s.en)}
+                    {s.owner && <Lock className="size-3 text-faint" aria-label={tr("仅所有者可修改", "Owner only")} />}
+                    {s.danger && (
+                      <TriangleAlert
+                        className="size-3 text-warning"
+                        aria-label={tr("含危险操作", "Has a danger zone")}
+                      />
+                    )}
+                  </div>
+                  <div className="line-clamp-2 text-footnote text-muted-foreground">{tr(...s.desc)}</div>
+                </div>
+                <ChevronRight
+                  className="size-4 text-faint transition-transform group-hover:translate-x-0.5"
+                  aria-hidden="true"
+                />
+              </Link>
+            ))}
           </div>
-          <Button className="mt-3" variant="primary" size="sm" loading={busy} onClick={() => void saveSite()}>
-            {tr("保存", "Save")}
-          </Button>
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader
-          title={tr("通行密钥中心域名", "Passkey centre")}
-          description={tr(
-            "通行密钥绑定在这个域名上（WebAuthn 的 RP ID），所有主域名通过它共用同一套通行密钥：在任一主域名绑定一次，全部主域名都能用。必须是单独的域名，不能同时是主域名、订阅域名或节点通信域名；它只提供 /.well-known/webauthn，不提供门户和后台。不要轮换它：更换后所有已绑定的通行密钥失效。留空 = 以首选主域名为 RP（多个主域名时只有首选主域名能用通行密钥）。",
-            "Passkeys are bound to this domain (the WebAuthn RP ID); every main domain shares one set through it: bind once on any main domain and it works on all. It must be a domain of its own (not a main, subscription or node domain) and serves only /.well-known/webauthn. Do not rotate it: changing it invalidates every bound passkey. Empty = the preferred main domain is the RP (with several main domains only that one can use passkeys).",
-          )}
-        />
-        <CardBody className="space-y-3">
-          <Field label={tr("中心域名", "Centre domain")}>
-            <Input
-              value={pkDomain ?? d.passkey.domain ?? ""}
-              placeholder="passkey.example.com"
-              onChange={(e) => setPkDomain(e.target.value)}
-            />
-          </Field>
-          {d.passkey.domain && (
-            <div className="space-y-1 text-[12.5px] text-muted-foreground">
-              <div>
-                RP ID: <span className="font-mono">{d.passkey.rp_id ?? "—"}</span>
-              </div>
-              <div>
-                {tr("关联来源（well-known 文件内容）", "Related origins (the well-known file)")}:{" "}
-                <span className="font-mono">{d.passkey.related_origins.join(", ") || "—"}</span>
-              </div>
-              <div>
-                {tr(
-                  `涉及 ${d.passkey.labels} 个不同的注册域（浏览器上限 ${d.passkey.label_limit}）`,
-                  `${d.passkey.labels} distinct registrable domains (browsers cap at ${d.passkey.label_limit})`,
-                )}
-              </div>
-            </div>
-          )}
-          {d.passkey.domain && d.passkey.labels > d.passkey.label_limit && (
-            <Callout tone="warning">
-              {tr(
-                "主域名涉及的注册域超过浏览器上限，超出的域名上通行密钥无法使用；请删除已弃用的域名。",
-                "The main domains span more registrable domains than browsers allow; the extra ones cannot use passkeys. Remove retired domains.",
-              )}
-            </Callout>
-          )}
-          <Button size="sm" variant="primary" loading={busy} onClick={() => void savePasskeyDomain()}>
-            {tr("保存", "Save")}
-          </Button>
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader
-          title={tr("域名（D8）", "Domains (D8)")}
-          description={tr(
-            "每类第一个（星标）是首选。主域名提供门户、后台、安装链接与支付回调；订阅域名只提供订阅；节点通信域名只给 agent 的 gRPC（必须灰色云朵，证书域名只增不减）。",
-            "The first (starred) of each kind is preferred. Main: portal, console, install and payment links; subscription: subscriptions only; node: the agents' gRPC only (DNS only, never proxied; certificate names only grow).",
-          )}
-        />
-        <CardBody className="space-y-5">
-          {list("main")}
-          {list("sub")}
-          <label className="flex items-center gap-2 text-[13px]">
-            <Switch
-              checked={perUser ?? d.sub_domain_per_user}
-              onChange={setPerUser}
-              label={tr("每个用户随机分配订阅域名", "Random subscription domain per user")}
-            />
-            {tr(
-              "每个用户随机分配一个订阅域名（默认关）",
-              "Give each user a random subscription domain (off by default)",
-            )}
-          </label>
-          {list("node")}
-          <Field label={tr("信任 Cloudflare（读取 CF-Connecting-IP）", "Trust Cloudflare (CF-Connecting-IP)")}>
-            <Select
-              value={trust ?? (d.trust_cloudflare.value === null ? "" : String(d.trust_cloudflare.value))}
-              onChange={(e) => setTrust(e.target.value)}
-            >
-              <option value="">
-                {tr(
-                  `默认（${d.trust_cloudflare.effective ? "开" : "关"}）`,
-                  `Default (${d.trust_cloudflare.effective ? "on" : "off"})`,
-                )}
-              </option>
-              <option value="true">{tr("开启", "On")}</option>
-              <option value="false">{tr("关闭", "Off")}</option>
-            </Select>
-          </Field>
-          {d.warnings.length > 0 && (
-            <Callout tone="warning">
-              <ul className="list-disc pl-4">
-                {d.warnings.map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            </Callout>
-          )}
-          <Button variant="primary" size="sm" onClick={() => void saveDomains()}>
-            {tr("保存域名", "Save domains")}
-          </Button>
-        </CardBody>
-      </Card>
-      <ServerNames d={d} />
+        </section>
+      ))}
     </div>
   );
 }
 
-function ServerNames({ d }: { d: SettingsView }) {
+// ---------------------------------------------------------------------------
+// Phone: the group list
+// ---------------------------------------------------------------------------
+
+function PhoneIndex() {
+  const tr = useTr();
+  const search = useSearch();
+  const groups = SETTINGS_IA.map((g) => ({ ...g, sections: g.sections.filter(search.match) })).filter(
+    (g) => g.sections.length > 0,
+  );
+  return (
+    <>
+      <h1 className="mb-3 text-title1 font-bold tracking-[-0.02em]">{tr("系统设置", "Settings")}</h1>
+      {search.box("mb-4")}
+      <div className="mb-5">
+        <Attention />
+      </div>
+      <nav aria-label={tr("设置分类", "Settings sections")} className="grid gap-5">
+        {groups.map((g) => (
+          <section key={g.zh} className="grid gap-1.5">
+            <h2 className="px-4 text-footnote font-semibold text-muted-foreground">{tr(g.zh, g.en)}</h2>
+            <div className="divide-y divide-separator overflow-hidden rounded-xl bg-card shadow-card">
+              {g.sections.map((s) => (
+                <Link key={s.id} to={hrefOf(s)} className="flex min-h-12 items-center gap-3 px-4 py-2 active:bg-accent">
+                  <Tile color={s.tint} size={28}>
+                    <s.icon />
+                  </Tile>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 text-callout font-medium">
+                      {tr(s.zh, s.en)}
+                      {s.owner && (
+                        <Lock className="size-3 text-faint" aria-label={tr("仅所有者可修改", "Owner only")} />
+                      )}
+                    </div>
+                    <div className="truncate text-footnote text-muted-foreground">{tr(...s.desc)}</div>
+                  </div>
+                  <ChevronRight className="size-4 text-faint" aria-hidden="true" />
+                </Link>
+              ))}
+            </div>
+          </section>
+        ))}
+        {search.moved.length > 0 && (
+          <section className="grid gap-1.5">
+            <h2 className="px-4 text-footnote font-semibold text-muted-foreground">
+              {tr("已移出设置", "Moved elsewhere")}
+            </h2>
+            <div className="rounded-xl bg-card p-1.5 shadow-card">
+              <Moved items={search.moved} />
+            </div>
+          </section>
+        )}
+        {search.q && groups.length === 0 && search.moved.length === 0 && (
+          <p className="px-4 text-footnote text-muted-foreground">{tr("没有匹配的设置", "No matching settings")}</p>
+        )}
+      </nav>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A section: header, body, the save bar and the leave guard
+// ---------------------------------------------------------------------------
+
+function SectionPage({ s }: { s: Section }) {
+  const tr = useTr();
+  const wide = useWide();
+  const Body = BODIES[s.id as Exclude<SectionId, "account">];
+  useCrumb(tr(s.zh, s.en));
+  return (
+    <SaveScope>
+      <div className="pb-6">
+        {!wide && (
+          <Link
+            to="/settings"
+            className="-ml-1 mb-2 inline-flex min-h-11 items-center text-callout text-primary"
+            aria-label={tr("返回系统设置", "Back to Settings")}
+          >
+            <ChevronLeft className="size-5" aria-hidden="true" />
+            {tr("系统设置", "Settings")}
+          </Link>
+        )}
+        <header className="mb-5 flex items-start gap-3 pt-1">
+          <Tile color={s.tint} size={36}>
+            <s.icon />
+          </Tile>
+          <div className="min-w-0 flex-1">
+            <h2 className="flex flex-wrap items-center gap-2 text-title2 font-bold tracking-[-0.02em]">
+              {tr(s.zh, s.en)}
+            </h2>
+            <p className="mt-0.5 text-body text-muted-foreground">{tr(...s.desc)}</p>
+          </div>
+        </header>
+        <div className="grid gap-6">
+          <Body />
+        </div>
+      </div>
+    </SaveScope>
+  );
+}
+
+function SaveScope({ children }: { children: ReactNode }) {
   const tr = useTr();
   const confirm = useConfirm();
   const toast = useToast();
-  const s = useSettings();
-  if (!d.server_names.length) return null;
+  const errText = useErrText();
+  const parts = useRef(new Map<string, { current: SavePart }>());
+  const [, setTick] = useState(0);
+  const registry = useMemo<SaveRegistry>(
+    () => ({
+      set: (id, part) => {
+        parts.current.set(id, part);
+        setTick((t) => t + 1);
+      },
+      remove: (id) => {
+        parts.current.delete(id);
+        setTick((t) => t + 1);
+      },
+      bump: () => setTick((t) => t + 1),
+    }),
+    [],
+  );
+  const all = [...parts.current.values()].map((p) => p.current);
+  const count = all.reduce((n, p) => n + p.count, 0);
+  const errors = all.reduce((n, p) => n + (p.count > 0 ? p.errors : 0), 0);
+  const [saving, setSaving] = useState(false);
+  const dirty = useRef(false);
+  dirty.current = count > 0;
+
+  const save = useCallback(async () => {
+    const list = [...parts.current.values()].map((p) => p.current);
+    if (saving || list.some((p) => p.count > 0 && p.errors > 0)) return;
+    setSaving(true);
+    try {
+      for (const p of list) if (p.count > 0 && !(await p.save())) return;
+    } catch (e) {
+      toast({ tone: "error", title: errText(e) });
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, toast, errText]);
+  const discard = () => {
+    for (const p of parts.current.values()) p.current.discard();
+  };
+
+  // ⌘/Ctrl+S saves.
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (dirty.current) void saveRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Leaving with unsaved changes asks (another section, another page, the browser).
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) => dirty.current && currentLocation.pathname !== nextLocation.pathname,
+  );
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    void confirm({
+      title: tr("放弃未保存的修改？", "Discard unsaved changes?"),
+      description: tr(
+        `这个分区还有 ${count} 项修改没有保存，离开后不会保存。`,
+        `${count} changes in this section are not saved; they are lost if you leave.`,
+      ),
+      confirmLabel: tr("放弃修改", "Discard"),
+      tone: "warning",
+    }).then((ok) => (ok ? blocker.proceed() : blocker.reset()));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocker.state]);
+  useEffect(() => {
+    if (count === 0) return;
+    const onUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [count]);
+
   return (
-    <Card>
-      <CardHeader
-        title={tr("节点通信证书域名", "gRPC certificate names")}
-        description={tr(
-          "面板 gRPC 证书包含的名字（只增不减；不再使用的可以移除）。",
-          "Names in the panel's gRPC certificate (they only grow; unused ones can be removed).",
-        )}
-      />
-      <ul className="divide-y divide-border">
-        {d.server_names.map((n) => (
-          <li key={n.name} className="flex flex-wrap items-center gap-2 px-4 py-2 text-[13px] sm:px-5">
-            <span className="font-mono">{n.display}</span>
-            {n.current && <Badge tone="success">{tr("当前", "current")}</Badge>}
-            <span className="text-xs text-muted-foreground">
-              {n.source} · {dateTime(n.first_used_at)}
-              {n.nodes.length ? tr(` · ${n.nodes.length} 台服务器在用`, ` · used by ${n.nodes.length} servers`) : ""}
+    <SaveContext.Provider value={registry}>
+      {children}
+      {count > 0 && (
+        <div
+          role="region"
+          aria-label={tr("保存栏", "Save bar")}
+          className="glass sticky bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl bg-(--glass-toolbar) px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
+        >
+          <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-body" role="status">
+            <span className="font-medium">
+              {tr(`${count} 项未保存的修改`, `${count} unsaved ${count === 1 ? "change" : "changes"}`)}
             </span>
-            {!n.locked && (
-              <Button
-                size="sm"
-                variant="destructive-soft"
-                className="ml-auto"
-                onClick={async () => {
-                  const ok = await confirm({
-                    title: tr(`移除证书域名 ${n.display}？`, `Remove ${n.display}?`),
-                    impact: n.nodes.length
-                      ? tr(`${n.nodes.length} 台服务器仍在使用它`, `${n.nodes.length} servers still use it`)
-                      : undefined,
-                    details: n.nodes.length ? (
-                      <ul className="list-disc pl-5 text-[13px]">
-                        {n.nodes.map((x) => (
-                          <li key={x.id}>
-                            {x.name}（{x.reason}）
-                          </li>
-                        ))}
-                      </ul>
-                    ) : undefined,
-                    action: () => post("/settings/server-names/remove", { name: n.name, confirm: true }),
-                  });
-                  if (ok) {
-                    toast({ tone: "success", title: tr("已移除", "Removed") });
-                    void s.refetch();
-                  }
-                }}
-              >
-                {tr("移除", "Remove")}
-              </Button>
+            {errors > 0 && (
+              <span className="ml-2 text-destructive max-sm:ml-0 max-sm:block">
+                {tr(`· ${errors} 处需要修正`, `· ${errors} to fix`)}
+              </span>
             )}
-            {n.locked && <span className="ml-auto text-xs text-muted-foreground">{n.locked}</span>}
-          </li>
-        ))}
-      </ul>
-    </Card>
+          </span>
+          <Button variant="ghost" size="sm" disabled={saving} onClick={discard}>
+            {tr("放弃", "Discard")}
+          </Button>
+          <Button variant="primary" size="sm" loading={saving} disabled={errors > 0} onClick={() => void save()}>
+            {tr("保存", "Save")}
+            <span aria-hidden="true" className="max-sm:hidden">
+              <Kbd className="bg-white/20 text-white">{MOD_KEY === "⌘" ? "⌘S" : "Ctrl S"}</Kbd>
+            </span>
+          </Button>
+        </div>
+      )}
+    </SaveContext.Provider>
   );
 }
