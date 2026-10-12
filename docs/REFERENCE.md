@@ -328,6 +328,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17：`{message, close?}` / 关闭 / 重开 |
 | PUT | /api/v1/tickets/{id}/assignee | admin | W17：`{assignee_id}`（已启用的管理员，或 null） |
 | GET | /api/v1/admins, /api/v1/admin-badges | admin | W17：可指派的管理员；控制台计数（未读工单、正在触发的告警） |
+| GET/POST, GET/PUT/DELETE, POST | /api/v1/announcements, /api/v1/announcements/{id}, /api/v1/announcements/{id}/mail | admin | 公告（Ops）：列表 / 新建、单条 / 修改 / 删除、邮件通知受众（发送中 409）。后台改版（只读增补）：每行带 `recipients` = 现在发邮件会发给多少人（与发件循环同一谓词：role=user、已验证邮箱、启用或仅超流量禁用、按受众），一次聚合查询 |
 | GET | /api/v1/alerts | admin | W17：告警中心 `?status=firing\|resolved&server&kind&before&limit` + 按 kind 统计的 `firing` 数量（Q1：告警按服务器归属：`server_id`、`server_name`）；`resolved_7d_by_kind` = 近 7 天已恢复的告警按 kind 计数（受 `server` 筛选，告警页历史胶囊） |
 | POST | /api/v1/alerts/{id}/ack | admin | W17：确认（仅审计一次） |
 | GET/PUT | /api/v1/alerts/settings | admin | W17：阈值和渠道（Telegram 机器人、签名 webhook、邮件）；密钥只写（`*_set` 标记），`version` 用于乐观并发（409） |

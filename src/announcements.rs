@@ -414,6 +414,34 @@ const RECIPIENT: &str = "u.role = 'user' AND u.email IS NOT NULL AND u.email_ver
      AND ($1 = 'all' OR ($1 = 'with_plan') = EXISTS (SELECT 1 FROM user_plans p \
          WHERE p.user_id = u.id AND p.status = 'active'))";
 
+/// `RECIPIENT` without the audience (the admin list's recipient counts;
+/// `tests::recipient_predicates_agree` keeps the two in step).
+const RECIPIENT_BASE: &str = "u.role = 'user' AND u.email IS NOT NULL AND u.email_verified_at IS NOT NULL \
+     AND (u.enabled OR u.disabled_reason = 'quota')";
+const HAS_PLAN: &str = "EXISTS (SELECT 1 FROM user_plans p \
+         WHERE p.user_id = u.id AND p.status = 'active')";
+
+/// Current mailing recipients per audience (all, with_plan, without_plan):
+/// one aggregate over the customers, read-only.
+async fn recipient_counts(pool: &sqlx::PgPool) -> sqlx::Result<(i64, i64, i64)> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*), count(*) FILTER (WHERE s.p), count(*) FILTER (WHERE NOT s.p) \
+         FROM (SELECT {HAS_PLAN} AS p FROM users u WHERE {RECIPIENT_BASE}) s"
+    )))
+    .fetch_one(pool)
+    .await
+}
+
+fn fill_recipients(rows: &mut [Row], (all, with, without): (i64, i64, i64)) {
+    for r in rows {
+        r.recipients = match r.audience.as_str() {
+            "with_plan" => with,
+            "without_plan" => without,
+            _ => all,
+        };
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct Recipient {
     id: Uuid,
@@ -522,6 +550,10 @@ pub struct Row {
     pub mail_requested_at: Option<DateTime<Utc>>,
     pub mail_sent: i32,
     pub mail_done_at: Option<DateTime<Utc>>,
+    /// Who a mailing would reach right now (verified customers in the
+    /// audience; the sender's own predicate).
+    #[sqlx(skip)]
+    pub recipients: i64,
 }
 
 const ADMIN_SELECT: &str = "SELECT a.id, a.title_zh, a.title_en, a.body_zh, a.body_en, a.pinned, a.enabled, \
@@ -634,11 +666,14 @@ pub async fn list(
     user: AuthUser,
 ) -> Result<Json<Vec<Row>>, ApiError> {
     user.require_admin()?;
-    let rows = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
+    let mut rows = sqlx::query_as::<_, Row>(sqlx::AssertSqlSafe(format!(
         "{ADMIN_SELECT} ORDER BY a.pinned DESC, a.created_at DESC, a.id LIMIT 500"
     )))
     .fetch_all(state.pg())
     .await?;
+    if !rows.is_empty() {
+        fill_recipients(&mut rows, recipient_counts(state.pg()).await?);
+    }
     Ok(Json(rows))
 }
 
@@ -669,6 +704,9 @@ pub async fn get_one(
     .fetch_optional(state.pg())
     .await?
     .ok_or_else(ApiError::not_found)?;
+    let mut rows = [row];
+    fill_recipients(&mut rows, recipient_counts(state.pg()).await?);
+    let [row] = rows;
     Ok(Json(row))
 }
 

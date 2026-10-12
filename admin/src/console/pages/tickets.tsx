@@ -12,7 +12,7 @@
 // through the queue.
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, Inbox, LifeBuoy, ListFilter, MailCheck } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Link } from "react-router";
 import { get, qs } from "../../shared/api";
 import { cn } from "../../shared/cn";
@@ -181,7 +181,7 @@ export function TicketsPage() {
   });
   const admins = useQuery({ queryKey: ["admins"], queryFn: () => get<Admin[]>("/admins") });
   const id = sub[0] ?? null;
-  const rows = list.data?.tickets ?? [];
+  const rows = useMemo(() => list.data?.tickets ?? [], [list.data]);
 
   // J / K: next / previous ticket (outside text fields).
   useEffect(() => {
