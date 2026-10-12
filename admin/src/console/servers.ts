@@ -8,11 +8,14 @@ import type { Tr } from "../shared/i18n";
 import type { Tone } from "../shared/ui/badge";
 import type { NodeGroup, PlanView, ServerView } from "./types";
 
+export const serversQuery = { queryKey: ["servers"], queryFn: () => get<ServerView[]>("/servers") };
+export const groupsQuery = { queryKey: ["node-groups"], queryFn: () => get<NodeGroup[]>("/node-groups") };
+
 export function useServers() {
-  return useQuery({ queryKey: ["servers"], queryFn: () => get<ServerView[]>("/servers"), refetchInterval: 10_000 });
+  return useQuery({ ...serversQuery, refetchInterval: 10_000 });
 }
 export function useGroups() {
-  return useQuery({ queryKey: ["node-groups"], queryFn: () => get<NodeGroup[]>("/node-groups") });
+  return useQuery(groupsQuery);
 }
 
 export function usePlanList() {

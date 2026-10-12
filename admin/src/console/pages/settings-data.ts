@@ -71,8 +71,8 @@ export type SettingsView = {
   };
 };
 
-export function useSettings() {
-  return useQuery({ queryKey: ["settings"], queryFn: () => get<SettingsView>("/settings") });
+export function useSettings(enabled = true) {
+  return useQuery({ queryKey: ["settings"], queryFn: () => get<SettingsView>("/settings"), enabled });
 }
 
 export type Access = {
@@ -84,8 +84,8 @@ export type Access = {
   sub_path: string;
 };
 
-export function useAccess() {
-  return useQuery({ queryKey: ["settings", "access"], queryFn: () => get<Access>("/settings/access") });
+export function useAccess(enabled = true) {
+  return useQuery({ queryKey: ["settings", "access"], queryFn: () => get<Access>("/settings/access"), enabled });
 }
 
 export type AuthSettings = {
@@ -103,8 +103,8 @@ export type AuthSettings = {
   warnings: string[];
 };
 
-export function useAuthSettings() {
-  return useQuery({ queryKey: ["settings", "auth"], queryFn: () => get<AuthSettings>("/settings/auth") });
+export function useAuthSettings(enabled = true) {
+  return useQuery({ queryKey: ["settings", "auth"], queryFn: () => get<AuthSettings>("/settings/auth"), enabled });
 }
 
 /** The latest cached value of a query (after a save's refetch landed). */

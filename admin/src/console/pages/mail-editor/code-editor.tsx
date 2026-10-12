@@ -127,6 +127,11 @@ export default function CodeEditor({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const cb = useRef({ onChange, onFocus, onSave });
+  // Documents this editor reported (newest last): a render that still
+  // carries one of them is the parent catching up with typing, not an
+  // outside change (on a slow device it can land after the next keystroke
+  // and would otherwise put the older text back).
+  const sent = useRef<string[]>([]);
   useEffect(() => {
     cb.current = { onChange, onFocus, onSave };
   });
@@ -160,7 +165,11 @@ export default function CodeEditor({
       marksPlugin,
       EditorView.contentAttributes.of({ "aria-label": label, spellcheck: "false" }),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) cb.current.onChange(u.state.doc.toString());
+        if (u.docChanged) {
+          const doc = u.state.doc.toString();
+          sent.current = [...sent.current.slice(-19), doc];
+          cb.current.onChange(doc);
+        }
         if (u.focusChanged && u.view.hasFocus) cb.current.onFocus?.();
       }),
     ];
@@ -178,8 +187,9 @@ export default function CodeEditor({
   // Outside changes (a reset, a loaded starting point) replace the document.
   useEffect(() => {
     const v = view.current;
-    if (v && v.state.doc.toString() !== value)
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value } });
+    if (!v || v.state.doc.toString() === value || sent.current.includes(value)) return;
+    sent.current = [];
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: value } });
   }, [value]);
 
   useEffect(() => {

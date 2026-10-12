@@ -262,6 +262,9 @@ pub struct AuditEntry {
     action: String,
     target_type: Option<String>,
     target_id: Option<String>,
+    /// The object's current name (email, order number, plan name, coupon
+    /// code, …); null when the object is gone or the type has no name.
+    target_label: Option<String>,
     before: Option<Value>,
     after: Option<Value>,
 }
@@ -290,7 +293,8 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
     let action = q.action.as_deref().filter(|a| !a.is_empty());
     // The page query (index-friendly, see below) is wrapped once to join the
     // acting account's current address (Q4: the row keeps a label only).
-    let mut qb = sqlx::QueryBuilder::new("SELECT q.*, u.email AS actor_email FROM (");
+    let mut qb =
+        sqlx::QueryBuilder::new("SELECT q.*, u.email AS actor_email, l.target_label FROM (");
     let prefix = action.filter(|a| a.ends_with('.'));
     if let Some(p) = prefix {
         // Prefix match (M2-2) without LIKE wildcards from the input and
@@ -353,7 +357,35 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
         qb.push(") e ORDER BY e.id DESC LIMIT ")
             .push_bind(limit + 1);
     }
-    qb.push(") q LEFT JOIN users u ON u.id = q.actor_id ORDER BY q.id DESC");
+    // The object's current name (admin redesign: the timeline's object chip
+    // reads "套餐 专业季付", not a hash); null when it is gone or has none.
+    qb.push(
+        ") q LEFT JOIN users u ON u.id = q.actor_id \
+         CROSS JOIN LATERAL (SELECT CASE WHEN q.target_id ~* \
+           '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+           THEN q.target_id::uuid END AS tid) t \
+         CROSS JOIN LATERAL (SELECT CASE q.target_type \
+           WHEN 'user' THEN (SELECT email FROM users WHERE id = t.tid) \
+           WHEN 'order' THEN (SELECT out_trade_no FROM orders WHERE id = t.tid) \
+           WHEN 'server' THEN (SELECT name FROM servers WHERE id = t.tid) \
+           WHEN 'node' THEN (SELECT name FROM nodes WHERE id = t.tid) \
+           WHEN 'entrance' THEN (SELECT name FROM entrances WHERE id = t.tid) \
+           WHEN 'plan' THEN (SELECT name FROM plans WHERE id = t.tid) \
+           WHEN 'node_group' THEN (SELECT name FROM node_groups WHERE id = t.tid) \
+           WHEN 'coupon' THEN (SELECT code FROM coupons WHERE id = t.tid) \
+           WHEN 'coupon_batch' THEN (SELECT NULLIF(name, '') FROM coupon_batches WHERE id = t.tid) \
+           WHEN 'ticket' THEN (SELECT subject FROM tickets WHERE id = t.tid) \
+           WHEN 'announcement' THEN (SELECT title_zh FROM announcements WHERE id = t.tid) \
+           WHEN 'kb_article' THEN (SELECT title_zh FROM kb_articles WHERE id = t.tid) \
+           WHEN 'kb_category' THEN (SELECT name_zh FROM kb_categories WHERE id = t.tid) \
+           WHEN 'payment_method' THEN (SELECT display_name FROM payment_methods WHERE id = t.tid) \
+           WHEN 'agent_release' THEN (SELECT version FROM agent_releases WHERE id = t.tid) \
+           WHEN 'rollout' THEN (SELECT version FROM rollouts WHERE id = t.tid) \
+           WHEN 'block_rule' THEN (SELECT name FROM block_rules WHERE id = \
+             CASE WHEN q.target_id ~ '^[0-9]{1,18}$' THEN q.target_id::bigint END) \
+         END AS target_label) l \
+         ORDER BY q.id DESC",
+    );
     let mut entries: Vec<AuditEntry> = qb.build_query_as().fetch_all(pg).await?;
     let more = entries.len() as i64 > limit;
     entries.truncate(limit as usize);
@@ -455,6 +487,55 @@ mod tests {
             actor: actor.map(String::from),
             action: action.map(String::from),
         }
+    }
+
+    /// Object chips (admin redesign): the target's current name; null for
+    /// an object that is gone, an id that is not one, a type without names.
+    #[tokio::test]
+    async fn target_label_names_the_object() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let user = db.user().await;
+        let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        // A shipped rule set (or none on a bare schema).
+        let rule: Option<(i64, String)> =
+            sqlx::query_as("SELECT id, name FROM block_rules ORDER BY id LIMIT 1")
+                .fetch_optional(&db.pool)
+                .await
+                .unwrap();
+        let rule_id = rule.as_ref().map_or(-1, |r| r.0);
+        let a = Actor::test();
+        let mut c = db.pool.acquire().await.unwrap();
+        for (t, id) in [
+            ("user", Some(user.to_string())),
+            ("user", Some(Uuid::new_v4().to_string())),
+            ("user", Some("not-a-uuid".to_string())),
+            ("settings", Some("mail".to_string())),
+            ("block_rule", Some(rule_id.to_string())),
+            ("block_rule", Some("x".to_string())),
+        ] {
+            record(&mut c, &a, "x.y", t, id, None, None).await.unwrap();
+        }
+        drop(c);
+        let p = query_page(&db.pool, &q(50, None, None, None))
+            .await
+            .unwrap();
+        let labels: Vec<Option<&str>> = p
+            .entries
+            .iter()
+            .rev()
+            .map(|e| e.target_label.as_deref())
+            .collect();
+        assert_eq!(labels[0], Some(email.as_str()));
+        assert_eq!(&labels[1..4], &[None, None, None]);
+        assert_eq!(labels[4], rule.as_ref().map(|r| r.1.as_str()));
+        assert_eq!(labels[5], None);
+        db.drop().await;
     }
 
     #[tokio::test]

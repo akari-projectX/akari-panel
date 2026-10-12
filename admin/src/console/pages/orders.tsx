@@ -375,7 +375,7 @@ export function OrdersPage() {
   const segLabel: Record<Seg, ReactNode> = {
     all: tr("全部", "All"),
     pending: tr("待支付", "Pending"),
-    paid: tr("已付款", "Paid"),
+    paid: tr("已完成", "Completed"),
     unfulfilled: <span className={cn(stuck > 0 && "text-destructive")}>{tr("未开通", "Not fulfilled")}</span>,
     refunded: tr("已退款", "Refunded"),
     expired: tr("已过期", "Expired"),
@@ -458,7 +458,7 @@ export function OrdersPage() {
             value={term}
             onChange={setTerm}
             shortcut="/"
-            className="min-w-56 flex-1 max-sm:order-first max-sm:basis-full"
+            className="min-w-56 flex-1 sm:order-last max-sm:order-first max-sm:basis-full"
           />
           <Segmented
             label={tr("订单状态", "Order status")}

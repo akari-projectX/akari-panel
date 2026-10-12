@@ -2969,6 +2969,64 @@ pub async fn get_settings(
     Ok(Json(view(&state, Vec::new()).await?))
 }
 
+/// GET /api/v1/settings/overview (admin, read-only): the settings overview
+/// in one round trip (admin redesign: a phone on a slow network paid one
+/// latency per section endpoint). Each part is exactly that section's own
+/// GET response (the console seeds those caches with them), except
+/// `mail_templates`, cut to `{kind, locale, custom}` (the overview only
+/// counts the customised ones; the editor still loads the full list).
+pub async fn get_overview(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    // The section handlers take their own `AuthUser` (each checks admin again).
+    let u = || AuthUser {
+        id: user.id,
+        email: user.email.clone(),
+        role: user.role.clone(),
+        ip: user.ip,
+    };
+    let st = || State(state.clone());
+    fn v<T: Serialize>(x: Json<T>) -> Result<Value, ApiError> {
+        serde_json::to_value(x.0).map_err(|_| ApiError::internal())
+    }
+    // One after the other: a single request never holds more than one pool connection.
+    let settings = v(get_settings(st(), u()).await?)?;
+    let signup = v(crate::signup::get_signup_settings(st(), u()).await?)?;
+    let auth = v(crate::botguard::get_settings(st(), u()).await?)?;
+    let cleanup = v(crate::cleanup::get_settings(st(), u()).await?)?;
+    let access = v(crate::access::get_access(st(), u()).await?)?;
+    let payments = v(crate::billing::methods::list(st(), u()).await?)?;
+    let commission = v(crate::billing::commission::get_settings(st(), u()).await?)?;
+    let mail = v(crate::mail::get_mail_settings(st(), u()).await?)?;
+    let mail_templates: Vec<Value> = crate::mail::overrides::list(st(), u())
+        .await?
+        .0
+        .iter()
+        .map(|t| json!({"kind": t.kind, "locale": t.locale, "custom": t.custom}))
+        .collect();
+    let alerts = v(crate::alerts::get_settings(st(), u()).await?)?;
+    let block_rules = v(crate::blockrules::list(st(), u()).await?)?;
+    let agent_updates = v(crate::updatecheck::get_status(st(), u()).await?)?;
+    let branding = v(crate::branding::get_branding(st(), u()).await?)?;
+    Ok(Json(json!({
+        "settings": settings,
+        "signup": signup,
+        "auth": auth,
+        "cleanup": cleanup,
+        "access": access,
+        "payments": payments,
+        "commission": commission,
+        "mail": mail,
+        "mail_templates": mail_templates,
+        "alerts": alerts,
+        "block_rules": block_rules,
+        "agent_updates": agent_updates,
+        "branding": branding,
+    })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateReq {

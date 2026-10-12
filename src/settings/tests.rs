@@ -770,6 +770,73 @@ async fn settings_api() {
     db.drop().await;
 }
 
+/// The settings overview (admin redesign): one read-only request whose
+/// parts equal the sections' own GET responses; admins only.
+#[tokio::test]
+async fn settings_overview_is_the_sections_in_one() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let mut admin = admin_client(&state, &db).await;
+    admin.headers = vec![("host".into(), "203.0.113.5".into())];
+    let r = admin.get("/test/api/v1/settings/overview").await;
+    assert_eq!(r.status, StatusCode::OK);
+    let o = r.json();
+    for (part, path) in [
+        ("settings", "/settings"),
+        ("signup", "/settings/signup"),
+        ("auth", "/settings/auth"),
+        ("cleanup", "/settings/cleanup"),
+        ("access", "/settings/access"),
+        ("payments", "/settings/payments"),
+        ("commission", "/commission-settings"),
+        ("mail", "/settings/mail"),
+        ("alerts", "/alerts/settings"),
+        ("block_rules", "/block-rules"),
+        ("agent_updates", "/agent-updates"),
+        ("branding", "/settings/branding"),
+    ] {
+        let r = admin.get(&format!("/test/api/v1{path}")).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}");
+        assert_eq!(o[part], r.json(), "{part} differs from GET {path}");
+    }
+    // Templates: kind, locale and custom only, one per template of the list.
+    let full = admin
+        .get("/test/api/v1/settings/mail-templates")
+        .await
+        .json();
+    let cut = o["mail_templates"].as_array().unwrap();
+    assert_eq!(cut.len(), full.as_array().unwrap().len());
+    assert!(!cut.is_empty());
+    assert_eq!(
+        cut[0],
+        json!({"kind": full[0]["kind"], "locale": full[0]["locale"], "custom": full[0]["custom"]})
+    );
+    // Nothing for a user or without a session.
+    let user = db.user().await;
+    let mut u = Client::new(&state, rand_ip());
+    let (role, sv): (String, i64) =
+        sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    u.cookie = Some(crate::auth::issue_token(&state, user, &role, sv).unwrap());
+    u.headers = admin.headers.clone();
+    assert_eq!(
+        u.get("/test/api/v1/settings/overview").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let mut anon = Client::new(&state, rand_ip());
+    anon.headers = admin.headers.clone();
+    assert_eq!(
+        anon.get("/test/api/v1/settings/overview").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    db.drop().await;
+}
+
 /// A failed login with a fresh (unknown) name: counts against the
 /// client's address bucket only.
 async fn login(c: &Client, n: usize) -> StatusCode {

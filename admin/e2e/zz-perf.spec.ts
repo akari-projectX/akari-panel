@@ -1,6 +1,6 @@
-// Timing suite (implementation-plan §3), REPORT-ONLY for now: first screen
+// Timing suite (implementation-plan §3): first screen
 // (navigation → `main[data-ready]`, and LCP), page switches (sidebar / tab
-// bar click → the target's `main[data-ready]`) dashboard → users → nodes →
+// bar tap → the target's `main[data-ready]`, both stamped in the page) dashboard → users → nodes →
 // orders → settings, and scrolling a 2,000-row user list (rAF gaps), on a
 // desktop and on a "mid phone" (Pixel 7 viewport, CDP CPU ×4, Fast 3G).
 // Every metric: 5 runs, the first (cold cache) reported apart as "first
@@ -104,7 +104,10 @@ const timelines: Record<string, Timeline> = {};
  * response's end, and when main[data-ready] appeared for the target.
  */
 type SwitchTrace = {
+  /** Tap → ready, in the page (the reported switch time). */
   totalMs: number;
+  /** Before the click → ready seen by the test (includes Playwright's round trips). */
+  wallMs: number;
   clickAt: number | null;
   readyAt: number | null;
   firstApiEnd: number | null;
@@ -118,7 +121,7 @@ async function traceStart(page: Page): Promise<number> {
   return page.evaluate(() => performance.now());
 }
 
-async function traceEnd(page: Page, t0: number, id: string, totalMs: number): Promise<SwitchTrace> {
+async function traceEnd(page: Page, t0: number, id: string, totalMs: number, wallMs: number): Promise<SwitchTrace> {
   const t = await page.evaluate(
     ([t0, id]) => {
       type W = typeof window & {
@@ -152,7 +155,7 @@ async function traceEnd(page: Page, t0: number, id: string, totalMs: number): Pr
     },
     [t0, id] as const,
   );
-  return { totalMs, ...t };
+  return { totalMs, wallMs, ...t };
 }
 
 /** First screen: goto → ready, and the LCP the browser reports. */
@@ -246,9 +249,24 @@ async function measure(browser: Browser, bigList: boolean, add: Add): Promise<vo
         const t0 = Date.now();
         await click(page, env, name);
         await ready(page, id);
-        const ms = Date.now() - t0;
+        const wall = Date.now() - t0;
+        // The switch = the tap on the target's link → its main[data-ready],
+        // both stamped in the page (Playwright's own round trips and its
+        // assertion polling are not the user's wait). Behind "更多" that is
+        // the second tap; the wall-clock time stays in the timeline.
+        const inPage = await page.evaluate(
+          ([p0, id]) => {
+            const p = (window as typeof window & { __perf?: { clicks: number[]; ready: Record<string, number> } })
+              .__perf;
+            const r = p?.ready[id];
+            const c = r === undefined ? undefined : p?.clicks.filter((x) => x >= p0 && x <= r).pop();
+            return r === undefined || c === undefined ? null : Math.round(r - c);
+          },
+          [p0, id] as const,
+        );
+        const ms = inPage ?? wall;
         (sw[id] ??= []).push(ms);
-        if (run > 0) switches[`${env}-${id}-run${run}`] = await traceEnd(page, p0, id, ms);
+        if (run > 0) switches[`${env}-${id}-run${run}`] = await traceEnd(page, p0, id, ms, wall);
         // Ready times are recorded once per page id: clear them so the next visit (e.g. "more" again) is timed anew.
         await page.evaluate(() => {
           const p = (window as typeof window & { __perf?: { ready: Record<string, number> } }).__perf;
@@ -322,7 +340,7 @@ test("perf: first screen, page switches, big list", async ({ browser }, info) =>
   // Every warm switch in one line; run 2's in full (requests and long tasks).
   for (const [label, t] of Object.entries(switches)) {
     console.log(
-      `perf switch ${label}: total ${t.totalMs} ms · click at ${t.clickAt ?? "—"} · first API end ${t.firstApiEnd ?? "—"} · ready at ${t.readyAt ?? "—"} · long tasks ${t.longTasksMs} ms (${t.long.length}) · ${t.requests.length} requests`,
+      `perf switch ${label}: total ${t.totalMs} ms (wall ${t.wallMs} ms) · click at ${t.clickAt ?? "—"} · first API end ${t.firstApiEnd ?? "—"} · ready at ${t.readyAt ?? "—"} · long tasks ${t.longTasksMs} ms (${t.long.length}) · ${t.requests.length} requests`,
     );
     if (!label.endsWith("-run2")) continue;
     for (const r of [...t.requests].sort((a, b) => a.start - b.start))

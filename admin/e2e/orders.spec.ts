@@ -100,7 +100,7 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders (3 steps), the da
   const d = dialog(page, /^订单 /);
   await expect(d.getByText("已付款并开通")).toBeVisible();
   await expect(d.getByText(/^原价/).first()).toBeVisible();
-  await expect(d.getByText("e2e offline payment")).toBeVisible();
+  await expect(d.getByText("e2e offline payment", { exact: true })).toBeVisible();
   // ORD-05: refund to the balance; what it undoes is shown first.
   await d.getByRole("button", { name: "退款", exact: true }).click();
   let r = refundDialog(page);

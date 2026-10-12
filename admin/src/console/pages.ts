@@ -1,5 +1,6 @@
 // The console's views by navigation id, each its own chunk (loaded on
 // first visit, prefetched when the pointer rests on its link).
+import type { QueryClient } from "@tanstack/react-query";
 import type { ComponentType } from "react";
 
 type Loader = () => Promise<ComponentType>;
@@ -33,12 +34,41 @@ export const SUB_PAGES: Record<string, Loader> = {
   "settings/mail-templates": () => import("./pages/mail-templates").then((m) => m.MailTemplatesPage),
 };
 
-/** Start loading a page's chunk (idempotent: the module cache dedupes). */
-export function prefetchPage(id: string): void {
-  void PAGES[id]?.().catch(() => {});
+/**
+ * The first data of the pages switched to most, fetched into the query
+ * cache ahead of a visit (same keys and requests as the page itself): the
+ * switch then renders at once and refreshes in the background. Each
+ * module's `prefetchData` only starts queries that are not cached and fresh.
+ */
+const DATA: Record<string, () => Promise<{ prefetchData: (qc: QueryClient) => void }>> = {
+  users: () => import("./pages/users"),
+  nodes: () => import("./pages/nodes"),
+  settings: () => import("./pages/settings-overview"),
+};
+
+let client: QueryClient | null = null;
+
+/** The query client data prefetches write to (main.tsx). */
+export function setPrefetchClient(qc: QueryClient): void {
+  client = qc;
 }
 
-/** Props for a link to a page: its chunk starts loading on hover, focus or touch (before the click). */
+function prefetchData(id: string): Promise<void> {
+  const load = DATA[id];
+  const qc = client;
+  if (!load || !qc) return Promise.resolve();
+  return load()
+    .then((m) => m.prefetchData(qc))
+    .catch(() => {});
+}
+
+/** Start loading a page's chunk (idempotent: the module cache dedupes) and its first data. */
+export function prefetchPage(id: string): void {
+  void PAGES[id]?.().catch(() => {});
+  void prefetchData(id);
+}
+
+/** Props for a link to a page: its chunk and data start loading on hover, focus or touch (before the click). */
 export function prefetchOn(id: string) {
   const go = () => prefetchPage(id);
   return { onMouseEnter: go, onFocus: go, onTouchStart: go };
@@ -47,7 +77,8 @@ export function prefetchOn(id: string) {
 /**
  * The pages most switched to (the phone's tab bar, and the two pages behind
  * "更多" visited most), loaded one per idle period once the first page is
- * ready, so a switch only renders (perf §3: switch ≤ 900 ms on a mid phone).
+ * ready, with the first data of those in DATA, so a switch only renders
+ * (perf §3: switch ≤ 900 ms on a mid phone).
  * Not on Save-Data / 2G connections. Once per session.
  */
 const IDLE_PAGES = ["users", "orders", "tickets", "more", "nodes", "settings", "dashboard"];
@@ -64,9 +95,7 @@ export function prefetchIdle(): void {
   const next = () => {
     const id = queue.shift();
     if (!id) return;
-    void PAGES[id]()
-      .catch(() => {})
-      .finally(() => idle(next));
+    void Promise.all([PAGES[id]().catch(() => {}), prefetchData(id)]).finally(() => idle(next));
   };
   idle(next);
 }

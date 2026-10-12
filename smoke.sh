@@ -2867,6 +2867,11 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/finance/summary")" = "403" ] || { echo "FAIL: user reached the finance summary"; exit 1; }
 [ "$(code "$BASE/api/v1/finance/summary")" = "401" ] || { echo "FAIL: finance summary without a session"; exit 1; }
+# Admin redesign: the settings overview in one request (each part = that section's GET).
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/overview")" = "200" ] \
+  && last_json "sorted(d) == sorted(['settings', 'signup', 'auth', 'cleanup', 'access', 'payments', 'commission', 'mail', 'mail_templates', 'alerts', 'block_rules', 'agent_updates', 'branding']) and isinstance(d['settings']['version'], int) and all(sorted(t) == ['custom', 'kind', 'locale'] for t in d['mail_templates'])" | matches '^True$' \
+  || { echo "FAIL: settings overview: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/settings/overview")" = "403" ] || { echo "FAIL: user reached the settings overview"; exit 1; }
 
 echo "== W31: system status =="
 [ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \

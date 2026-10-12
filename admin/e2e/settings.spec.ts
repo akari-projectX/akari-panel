@@ -144,13 +144,13 @@ test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links an
   await expect(bar(page)).toContainText("2 项未保存的修改");
   await save(page);
   await expect(dialog(page)).toContainText("之后的日界按新时区计算");
-  await confirmDialog(page);
+  await confirmDialog(page, undefined, "更改时区");
   await toast(page, "站点设置已保存");
   await expect(page.getByRole("button", { name: "站点时区" })).toContainText("Asia/Tokyo");
   await page.getByLabel("站点名称").fill("");
   await pickZone(page, "");
   await save(page);
-  await confirmDialog(page);
+  await confirmDialog(page, undefined, "更改时区");
   await toast(page, "站点设置已保存");
   await expect(page.getByRole("button", { name: "站点时区" })).toContainText("默认");
   // SET-24 (外观与品牌): a PNG logo up and down (applies at once), shown on a light and a dark tile.

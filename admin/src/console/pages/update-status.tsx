@@ -30,10 +30,11 @@ export type UpdateStatus = {
   update_available: string | null;
 };
 
+export const updateStatusQuery = { queryKey: ["agent-updates"], queryFn: () => get<UpdateStatus>("/agent-updates") };
+
 export function useUpdateStatus(poll = false) {
   return useQuery({
-    queryKey: ["agent-updates"],
-    queryFn: () => get<UpdateStatus>("/agent-updates"),
+    ...updateStatusQuery,
     refetchInterval: (q) => (poll || q.state.data?.checking ? 2000 : 60_000),
   });
 }

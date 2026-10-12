@@ -783,6 +783,8 @@ function Jobs({ jobs }: { jobs: Job[] }) {
         {tr("正常", "OK")}
       </Badge>
     );
+  // The mail job runs fine while given-up mail waits in the queue: say so.
+  const deadMail = (j: Job) => j.job === "mail" && Number(j.backlog?.dead ?? 0) > 0;
   const cell = (k: string, v: string, danger?: boolean) => (
     <div className="min-w-0">
       <div className="text-caption text-muted-foreground md:hidden">{k}</div>
@@ -804,7 +806,16 @@ function Jobs({ jobs }: { jobs: Job[] }) {
             <div className="text-body font-semibold">{jobName(j.job, tr)}</div>
             <div className="truncate text-footnote text-muted-foreground">{jobDesc(j.job, tr)}</div>
           </div>
-          <div className="md:pt-0.5">{badge(st)}</div>
+          <div className="md:pt-0.5">
+            {st === "ok" && deadMail(j) ? (
+              <Badge tone="warning">
+                <XCircle aria-hidden="true" />
+                {tr("有失败", "Has failures")}
+              </Badge>
+            ) : (
+              badge(st)
+            )}
+          </div>
           <div className="col-span-2 grid grid-cols-2 gap-2 md:contents">
             {cell(tr("上次运行", "Last run"), ago(j.last_run_at, lang), st === "stalled")}
             {cell(

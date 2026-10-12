@@ -65,9 +65,11 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
         : url;
     onWrite(method, path.split("?")[0]);
   }
-  if (res.status === 204) return null as T; // never undefined: `useAction` reads undefined as "failed"
+  // An empty body (204, or a 202 "queued") is null, never undefined:
+  // `useAction` reads undefined as "failed".
+  if (res.status === 204) return null as T;
   const text = await res.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  return (text ? JSON.parse(text) : null) as T;
 }
 
 const api = <T>(path: string, init?: RequestInit) => request<T>(`${apiBase}${path}`, init);

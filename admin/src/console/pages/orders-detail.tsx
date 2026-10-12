@@ -14,7 +14,6 @@ import {
   Clock,
   CreditCard,
   Hourglass,
-  Landmark,
   NotebookPen,
   ReceiptText,
   RotateCw,
@@ -1036,13 +1035,6 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
                   },
                 ]}
               />
-              {originalOff && (
-                <p className="mt-1.5 flex items-center gap-1 text-footnote text-faint">
-                  <Landmark className="size-3.5" aria-hidden="true" />
-                  {originalOff}
-                  {tr("。", ".")}
-                </p>
-              )}
             </section>
           )}
 

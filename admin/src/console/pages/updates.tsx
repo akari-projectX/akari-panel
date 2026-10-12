@@ -255,7 +255,7 @@ function Distribution({ latest }: { latest: string | undefined }) {
                   style={{ background: color(v, i) }}
                   aria-hidden="true"
                 />
-                <span className="font-semibold">{v}</span>
+                <span className="font-semibold whitespace-nowrap">{v}</span>
                 <span className="tnum whitespace-nowrap text-muted-foreground">
                   {tr(`${names.length} 台`, `${names.length}`)}
                 </span>
@@ -459,8 +459,8 @@ function CheckStage() {
           <dl className="grid min-w-0 gap-1.5 px-4 py-3 text-footnote">
             <div className="flex items-center gap-2">
               <dt className="w-16 shrink-0 text-muted-foreground">{tr("发布源", "Source")}</dt>
-              <dd className="min-w-0">
-                <CopyText value={d.source_url ?? d.default_source_url} />
+              <dd className="min-w-0 flex-1">
+                <CopyText value={d.source_url ?? d.default_source_url} className="max-w-full" />
               </dd>
             </div>
             <div className="flex items-center gap-2">

@@ -153,7 +153,9 @@ export function duration(secs: number | null | undefined, lang: Lang): string {
     ? t(`${d} 天 ${h} 小时`, `${d}d ${h}h`)
     : h
       ? t(`${h} 小时 ${m} 分`, `${h}h ${m}m`)
-      : t(`${m} 分 ${s} 秒`, `${m}m ${s}s`);
+      : m
+        ? t(`${m} 分 ${s} 秒`, `${m}m ${s}s`)
+        : t(`${s} 秒`, `${s}s`);
 }
 
 /** Multiplier text from permille (1000 → "1x", 1500 → "1.5x"). */

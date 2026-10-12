@@ -279,6 +279,22 @@ const FIX: Record<string, unknown> = {
   },
   "/me/passkeys": { passkeys: [{ current: true }] },
 };
+// The overview's one request: each part is that section's own GET.
+FIX["/settings/overview"] = {
+  settings: FIX["/settings"],
+  signup: FIX["/settings/signup"],
+  auth: FIX["/settings/auth"],
+  cleanup: FIX["/settings/cleanup"],
+  access: FIX["/settings/access"],
+  payments: FIX["/settings/payments"],
+  commission: FIX["/commission-settings"],
+  mail: FIX["/settings/mail"],
+  mail_templates: FIX["/settings/mail-templates"],
+  alerts: FIX["/alerts/settings"],
+  block_rules: FIX["/block-rules"],
+  agent_updates: FIX["/agent-updates"],
+  branding: FIX["/settings/branding"],
+};
 const calls: { method: string; path: string; body: unknown }[] = [];
 
 beforeEach(() => {
@@ -373,6 +389,16 @@ test("overview", async () => {
   expect(strip.textContent).toContain("个已废弃的键");
   // Summaries are real values once their queries land.
   await screen.findByText("Asia/Shanghai");
+});
+
+test("overview: one request seeds every section", async () => {
+  mount("/settings");
+  await screen.findByText("Asia/Shanghai");
+  await screen.findByRole("region", { name: "需要注意" });
+  const gets = calls.filter((c) => c.method === "GET").map((c) => c.path);
+  expect(gets).toContain("/settings/overview");
+  for (const p of ["/settings", "/settings/signup", "/settings/mail", "/settings/mail-templates", "/block-rules"])
+    expect(gets).not.toContain(p);
 });
 
 test("edit, bar, save", async () => {

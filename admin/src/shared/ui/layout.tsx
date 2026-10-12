@@ -2,7 +2,7 @@ import { CircleAlert, CircleCheck, Info, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../cn";
 
-/** Page header: large title, one line of explanation, the main actions on the right (wrap under on a phone). */
+/** Page header: large title, one line of explanation, the main actions on the right; `children` below. */
 export function PageHeader({
   title,
   description,
@@ -15,13 +15,30 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   return (
-    <header className="mb-5 flex flex-wrap items-end gap-x-4 gap-y-3">
-      <div className="min-w-0 flex-1 basis-64">
-        <h1 className="text-title2 font-bold tracking-[-0.02em] sm:text-title1">{title}</h1>
-        {description && <p className="mt-1 text-body text-muted-foreground">{description}</p>}
-      </div>
-      {actions && <div className="flex max-w-full flex-wrap items-center gap-2">{actions}</div>}
-      {children}
+    // Title on its own line; the actions sit at the right, beside the title
+    // and its line on a desktop, beside the line on a phone (never on a row
+    // of their own unless they do not fit).
+    <header className="mb-5 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-4 gap-y-1">
+      <h1
+        className={cn(
+          "text-title2 font-bold tracking-[-0.02em] sm:text-title1",
+          actions && description ? "col-span-2 sm:col-span-1" : "",
+        )}
+      >
+        {title}
+      </h1>
+      {description && <p className="col-start-1 text-body text-muted-foreground">{description}</p>}
+      {actions && (
+        <div
+          className={cn(
+            "col-start-2 flex max-w-[60vw] flex-wrap items-center justify-end gap-2 self-end sm:max-w-none",
+            description ? "row-start-2 sm:row-span-2 sm:row-start-1" : "row-start-1",
+          )}
+        >
+          {actions}
+        </div>
+      )}
+      {children && <div className="col-span-2 mt-2">{children}</div>}
     </header>
   );
 }

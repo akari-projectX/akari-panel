@@ -75,6 +75,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   // A required placeholder removed: reported too.
   if (tpl.required.length) {
     await body.fill("E2E 无必需变量");
+    await expect(body).toHaveText("E2E 无必需变量");
     await expect(errors(page)).toContainText(`缺少必需变量 {${tpl.required[0]}}`);
   }
   await body.fill(`${needed}\n\nE2E 自定义`);

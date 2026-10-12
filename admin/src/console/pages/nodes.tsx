@@ -8,6 +8,7 @@
 // (node-dialogs.tsx `NodesDialogs`): `?new=server|node|relay`, `?node=`,
 // `?entrance=`, `?action=install|enroll`; the old `?open=kind:id` links
 // (dashboard, alerts, audit, tickets) are redirected.
+import type { QueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import {
@@ -51,12 +52,17 @@ import {
 import { ServerStatus, serverStateOf } from "../components/status";
 import { useDebounced } from "../kit";
 import { navigate, useQS, useRoute } from "../router";
-import { useServers } from "../servers";
+import { groupsQuery, serversQuery, useServers } from "../servers";
 import type { ServerView } from "../types";
 import { NodesDialogs } from "./node-dialogs";
 import { ServerPage } from "./node-server";
 import { warningTitle } from "./node-common";
-import { UpdateBadge, useUpdateStatus } from "./update-status";
+import { UpdateBadge, updateStatusQuery, useUpdateStatus } from "./update-status";
+
+/** The fleet's first data, ahead of a visit (pages.ts). */
+export function prefetchData(qc: QueryClient): void {
+  for (const q of [serversQuery, groupsQuery, updateStatusQuery]) void qc.prefetchQuery<unknown>(q);
+}
 
 export function NodesPage() {
   const { sub, query } = useRoute();

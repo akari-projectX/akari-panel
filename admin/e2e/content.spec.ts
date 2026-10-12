@@ -234,8 +234,8 @@ test("CNT-03 CNT-04 CNT-05 CNT-06: knowledge base — categories, articles with 
   d = dialog(page, "新建文章");
   await d.getByLabel("地址（可选）").fill(slug);
   await expect(d.getByText(`已被「${art}」使用`).first()).toBeVisible();
-  // Leaving an edited editor asks first.
-  await d.getByRole("button", { name: "取消" }).click();
+  // Leaving an edited editor with Esc asks first (the footer's 取消 discards).
+  await page.keyboard.press("Escape");
   await dialog(page, "放弃未保存的修改？").getByRole("button", { name: "放弃修改" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // Unpublish from the row menu.

@@ -673,6 +673,7 @@ export function SelectionBar({
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+64px)] z-40 flex justify-center px-3 lg:bottom-6 lg:pl-[248px]">
       <div
+        data-floatbar
         role="region"
         aria-label={tr("批量操作", "Bulk actions")}
         className="glass pointer-events-auto flex max-w-full animate-in items-center gap-2 overflow-x-auto rounded-2xl bg-popover p-1.5 pl-2 shadow-dialog fade-in-0 slide-in-from-bottom-3 [scrollbar-width:none]"

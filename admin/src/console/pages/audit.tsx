@@ -48,6 +48,7 @@ import { EmptyState, ErrorState, SkeletonRows } from "../../shared/ui/states";
 import { Avatar } from "../components/kit";
 import { dayLabel } from "../components/ops-bits";
 import { useQS } from "../router";
+import { SECTIONS, type Section, type SectionId } from "./settings-ia";
 
 type Entry = {
   id: number;
@@ -59,6 +60,8 @@ type Entry = {
   action: string;
   target_type: string | null;
   target_id: string | null;
+  /** The object's current name (email, order number, plan name, …). */
+  target_label?: string | null;
   before: unknown;
   after: unknown;
 };
@@ -267,6 +270,16 @@ function targetName(t: string, tr: Tr): string {
     entrance: ["入口", "Entrance"],
     plan: ["套餐", "Plan"],
     group: ["节点组", "Node group"],
+    node_group: ["节点组", "Node group"],
+    coupon_batch: ["优惠码批次", "Coupon batch"],
+    batch: ["批量任务", "Bulk job"],
+    commission: ["返利", "Commission"],
+    mail_template: ["邮件模板", "Mail template"],
+    mail: ["邮件", "Mail"],
+    agent_update: ["agent 更新", "Agent updates"],
+    install: ["安装命令", "Install command"],
+    export: ["导出", "Export"],
+    alert_notification: ["告警通知", "Alert notification"],
     coupon: ["优惠券", "Coupon"],
     ticket: ["工单", "Ticket"],
     announcement: ["公告", "Announcement"],
@@ -285,8 +298,54 @@ function targetName(t: string, tr: Tr): string {
   return n ? tr(n[0], n[1]) : t;
 }
 
+/** Audit target ids of settings rows → the section (when the action names none). */
+const SETTINGS_TARGET: Record<string, SectionId> = {
+  access: "access",
+  alerts: "alerts",
+  auth: "login",
+  branding: "brand",
+  cleanup: "cleanup",
+  commission: "commission",
+  mail: "mail",
+  signup: "signup",
+};
+
+/** The settings section an audited settings change belongs to. */
+function settingsSection(e: Pick<Entry, "action" | "target_id">): Section | undefined {
+  return (
+    SECTIONS.find((s) => s.audit === e.action || (!!s.audit?.endsWith(".") && e.action.startsWith(s.audit))) ??
+    SECTIONS.find((s) => s.id === SETTINGS_TARGET[e.target_id ?? ""])
+  );
+}
+
+/** A name for the object from its stored snapshot (a deleted object keeps one there). */
+function snapshotName(e: Entry): string | null {
+  for (const v of [e.after, e.before])
+    if (v && typeof v === "object")
+      for (const k of ["email", "name", "code", "title_zh", "version", "out_trade_no", "display_name", "subject"]) {
+        const x = (v as Record<string, unknown>)[k];
+        if (typeof x === "string" && x.trim()) return x;
+      }
+  return null;
+}
+
+/** What the object chip says after the type: its name, else a short id. */
+function objectName(e: Entry, tr: Tr): { text: string; mono: boolean } | null {
+  if (e.target_type === "settings") {
+    const sec = settingsSection(e);
+    return sec ? { text: tr(sec.zh, sec.en), mono: false } : null;
+  }
+  const name = e.target_label ?? snapshotName(e);
+  if (name) return { text: name, mono: false };
+  return e.target_id ? { text: e.target_id.slice(0, 8), mono: true } : null;
+}
+
 /** Console link of an audited object (null: no page shows it by id). */
-function targetHref(t: string | null, id: string | null): string | null {
+function targetHref(t: string | null, id: string | null, e?: Pick<Entry, "action" | "target_id">): string | null {
+  if (t === "settings" && e) {
+    const sec = settingsSection(e);
+    return sec ? `/settings/${sec.id}` : null;
+  }
   if (!t || !id) return null;
   switch (t) {
     case "user":
@@ -319,6 +378,7 @@ const TARGET_ICON: Record<string, LucideIcon> = {
   ticket: LifeBuoy,
   plan: Layers,
   group: Layers,
+  node_group: Layers,
   settings: Settings,
   agent_release: Rocket,
   rollout: Rocket,
@@ -365,13 +425,21 @@ function ObjChip({ e }: { e: Entry }) {
   const tr = useTr();
   if (!e.target_type) return null;
   const Icon = TARGET_ICON[e.target_type] ?? FileText;
-  const href = targetHref(e.target_type, e.target_id);
+  const href = targetHref(e.target_type, e.target_id, e);
+  const name = objectName(e, tr);
+  // Named objects read as the name alone (the icon says the kind); otherwise "type id".
   const inner = (
     <>
       <Icon className="size-3 shrink-0 text-faint" aria-hidden="true" />
-      <span className="truncate">
-        {targetName(e.target_type, tr)}
-        {e.target_id && <span className="ml-1 font-mono text-footnote">{e.target_id.slice(0, 8)}</span>}
+      <span className="truncate" title={targetName(e.target_type, tr)}>
+        {name && !name.mono ? (
+          name.text
+        ) : (
+          <>
+            {targetName(e.target_type, tr)}
+            {name && <span className="ml-1 font-mono text-footnote">{name.text}</span>}
+          </>
+        )}
       </span>
     </>
   );
@@ -870,7 +938,7 @@ function EntryDialog({ e, loading, onClose }: { e: Entry | undefined; loading: b
   const tr = useTr();
   const lang = useLang();
   const rows = e ? auditDiff(e.before, e.after, tr) : [];
-  const href = e ? targetHref(e.target_type, e.target_id) : null;
+  const href = e ? targetHref(e.target_type, e.target_id, e) : null;
   return (
     <Dialog
       open
@@ -981,7 +1049,9 @@ function EntryDialog({ e, loading, onClose }: { e: Entry | undefined; loading: b
                 k: tr("对象", "Object"),
                 v: e.target_type ? (
                   <span className="break-all">
-                    {targetName(e.target_type, tr)} <span className="font-mono text-footnote">{e.target_id}</span>
+                    {targetName(e.target_type, tr)}
+                    {objectName(e, tr) && !objectName(e, tr)?.mono && ` ${objectName(e, tr)?.text}`}{" "}
+                    <span className="font-mono text-footnote">{e.target_id}</span>
                   </span>
                 ) : (
                   "—"

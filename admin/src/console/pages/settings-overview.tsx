@@ -4,7 +4,7 @@
 // coloured), then the last three settings changes (audit log). The same
 // data marks the navigation: an amber dot on sections with something to fix
 // and the count next to "概览".
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChevronRight, CircleAlert, History, Info, Lock, TriangleAlert } from "lucide-react";
 import { Link } from "react-router";
 import { get } from "../../shared/api";
@@ -76,6 +76,58 @@ const q = <T,>(key: unknown[], path: string, enabled = true) => ({
   enabled,
 });
 
+/**
+ * GET /settings/overview: every part is that section's own GET response
+ * (`mail_templates` cut to kind/locale/custom). One round trip instead of a
+ * dozen (a phone on a slow network paid one latency per request).
+ */
+type OverviewAll = {
+  settings: unknown;
+  signup: unknown;
+  auth: unknown;
+  cleanup: unknown;
+  access: unknown;
+  payments: unknown;
+  commission: unknown;
+  mail: unknown;
+  mail_templates: Tpl[];
+  alerts: unknown;
+  block_rules: unknown;
+  agent_updates: unknown;
+  branding: unknown;
+};
+
+/** Summary part → the query key its section reads (the cache is seeded with it). */
+const PARTS: [Exclude<keyof OverviewAll, "mail_templates">, unknown[]][] = [
+  ["settings", ["settings"]],
+  ["signup", ["settings", "signup"]],
+  ["auth", ["settings", "auth"]],
+  ["cleanup", ["settings", "cleanup"]],
+  ["access", ["settings", "access"]],
+  ["payments", ["settings", "payments"]],
+  ["commission", ["commission-settings"]],
+  ["mail", ["settings", "mail"]],
+  ["alerts", ["alerts", "settings"]],
+  ["block_rules", ["block-rules"]],
+  ["agent_updates", ["agent-updates"]],
+  ["branding", ["settings", "branding"]],
+];
+
+/** The summary query; its result seeds every section's cache. */
+const overviewQuery = (qc: QueryClient) => ({
+  queryKey: ["settings", "overview"],
+  queryFn: async () => {
+    const o = await get<OverviewAll>("/settings/overview");
+    for (const [part, key] of PARTS) qc.setQueryData(key, o[part]);
+    return o;
+  },
+});
+
+/** The overview's data ahead of a visit (pages.ts). */
+export function prefetchData(qc: QueryClient): void {
+  void qc.prefetchQuery(overviewQuery(qc));
+}
+
 /** Whole days until an instant (negative = past). */
 export function daysUntil(iso: string): number {
   return Math.floor((new Date(iso).getTime() - Date.now()) / 86_400_000);
@@ -100,19 +152,26 @@ export type Attn = {
  */
 export function useOverview() {
   const tr = useTr();
-  const st = useSettings();
-  const signup = useQuery(q<SignupS>(["settings", "signup"], "/settings/signup")).data;
-  const auth = useAuthSettings().data;
-  const cleanup = useQuery(q<CleanupS>(["settings", "cleanup"], "/settings/cleanup")).data;
-  const access = useAccess().data;
-  const pay = useQuery(q<PaymentsS>(["settings", "payments"], "/settings/payments")).data;
-  const com = useQuery(q<CommissionS>(["commission-settings"], "/commission-settings")).data;
-  const mail = useQuery(q<MailS>(["settings", "mail"], "/settings/mail")).data;
-  const tpl = useQuery(q<Tpl[]>(["mail-templates"], "/settings/mail-templates")).data;
-  const alerts = useQuery(q<AlertsS>(["alerts", "settings"], "/alerts/settings")).data;
-  const block = useQuery(q<BlockS>(["block-rules"], "/block-rules")).data;
-  const upd = useQuery(q<UpdatesS>(["agent-updates"], "/agent-updates")).data;
-  const brand = useQuery(q<BrandingS>(["settings", "branding"], "/settings/branding")).data;
+  const qc = useQueryClient();
+  // One request seeds every section's cache; the per-section queries below
+  // then start fresh (no requests) and follow their own invalidations. If
+  // the summary fails they fetch on their own.
+  const all = useQuery(overviewQuery(qc));
+  const on = all.isSuccess || all.isError;
+  const st = useSettings(on);
+  const signup = useQuery(q<SignupS>(["settings", "signup"], "/settings/signup", on)).data;
+  const auth = useAuthSettings(on).data;
+  const cleanup = useQuery(q<CleanupS>(["settings", "cleanup"], "/settings/cleanup", on)).data;
+  const access = useAccess(on).data;
+  const pay = useQuery(q<PaymentsS>(["settings", "payments"], "/settings/payments", on)).data;
+  const com = useQuery(q<CommissionS>(["commission-settings"], "/commission-settings", on)).data;
+  const mail = useQuery(q<MailS>(["settings", "mail"], "/settings/mail", on)).data;
+  const tplFull = useQuery(q<Tpl[]>(["mail-templates"], "/settings/mail-templates", all.isError)).data;
+  const tpl = all.data?.mail_templates ?? tplFull;
+  const alerts = useQuery(q<AlertsS>(["alerts", "settings"], "/alerts/settings", on)).data;
+  const block = useQuery(q<BlockS>(["block-rules"], "/block-rules", on)).data;
+  const upd = useQuery(q<UpdatesS>(["agent-updates"], "/agent-updates", on)).data;
+  const brand = useQuery(q<BrandingS>(["settings", "branding"], "/settings/branding", on)).data;
   // The main domain's served certificate (system status probes it through the
   // proxy, the slowest call here): a detail, the overview is ready without it.
   const status = useQuery({
@@ -367,7 +426,13 @@ export function useOverview() {
         cta: tr("查看", "View"),
       });
   sum.account = [{ k: tr("位置", "Where"), v: tr("我的账户", "My account") }];
-  return { sum, attn, error: st.error, refetch: st.refetch, loading: !d && !st.error };
+  return {
+    sum,
+    attn,
+    error: all.isError ? st.error : null,
+    refetch: () => void (all.isError ? st.refetch() : all.refetch()),
+    loading: !d && !(all.isError && st.error),
+  };
 }
 
 function hostOf(url: string): string {

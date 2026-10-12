@@ -8,7 +8,7 @@
 // URL: ?view= &q= &plan= &role= &never=1 &reg= &login= &sort= &cols= &size=
 // &page= &open= &tab= &new=1 &jobs=1 &job=<id>; old links (?filter=never,
 // ?never_used=1, ?registered_before=, ?last_login_before=, ?status=) work.
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, type QueryClient } from "@tanstack/react-query";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDownUp,
@@ -72,6 +72,7 @@ import {
   BatchDialog,
   JobDialog,
   JobsButton,
+  jobsQuery,
   useBulkDelete,
   type Kind,
   type Selection,
@@ -137,8 +138,10 @@ export function Avatar({ email, large, className }: { email: string; large?: boo
   return <KitAvatar name={email || "?"} size={large ? 40 : 30} className={className} />;
 }
 
+const plansQuery = { queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") };
+
 export function usePlans() {
-  return useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
+  return useQuery(plansQuery);
 }
 
 /** Find a user by address (exact or prefix) for pickers (manual orders, balances). */
@@ -383,6 +386,35 @@ function statusName(s: string, tr: Tr): string {
   }
 }
 
+/* ---------- Data ---------- */
+
+const paramsOf = (filter: UserFilter, sort: string) => ({
+  ...filter,
+  never_used: filter.never_used ? "true" : undefined,
+  sort,
+});
+
+const listQuery = (filter: UserFilter, sort: string, offset: number, size: number) => ({
+  queryKey: ["users", filter, sort, offset, size],
+  queryFn: () =>
+    get<{ users: UserRow[]; total: number }>(`/users${qs({ ...paramsOf(filter, sort), limit: size, offset })}`),
+});
+
+const countsQuery = {
+  queryKey: ["users", "counts"],
+  queryFn: () => get<{ counts?: Counts }>(`/users${qs({ counts: "true", limit: 1 })}`).then((r) => r.counts ?? null),
+  staleTime: 30_000,
+};
+
+/** The default list (all accounts, newest first, first page) ahead of a visit (pages.ts). */
+export function prefetchData(qc: QueryClient): void {
+  const all: UserFilter = { ...(VIEWS.find((v) => v.id === "all")?.params ?? {}) };
+  void qc.prefetchQuery<unknown>(listQuery(all, "-created", 0, DEFAULT_SIZE));
+  void qc.prefetchQuery<unknown>(countsQuery);
+  void qc.prefetchQuery<unknown>(plansQuery);
+  void qc.prefetchQuery<unknown>(jobsQuery);
+}
+
 /* ---------- Page ---------- */
 
 export function UsersPage() {
@@ -434,18 +466,10 @@ export function UsersPage() {
     ...(f.login ? { last_login_before: f.login } : {}),
     ...(f.status ? { status: f.status } : {}),
   };
-  const filterParams = { ...listFilter, never_used: listFilter.never_used ? "true" : undefined, sort: f.sort };
+  const filterParams = paramsOf(listFilter, f.sort);
   const offset = (f.page - 1) * f.size;
-  const users = useQuery({
-    queryKey: ["users", listFilter, f.sort, offset, f.size],
-    queryFn: () => get<{ users: UserRow[]; total: number }>(`/users${qs({ ...filterParams, limit: f.size, offset })}`),
-    placeholderData: keepPreviousData,
-  });
-  const counts = useQuery({
-    queryKey: ["users", "counts"],
-    queryFn: () => get<{ counts?: Counts }>(`/users${qs({ counts: "true", limit: 1 })}`).then((r) => r.counts ?? null),
-    staleTime: 30_000,
-  });
+  const users = useQuery({ ...listQuery(listFilter, f.sort, offset, f.size), placeholderData: keepPreviousData });
+  const counts = useQuery(countsQuery);
   const plans = usePlans();
   const rows = users.data?.users ?? [];
   const total = users.data?.total ?? 0;

@@ -266,7 +266,7 @@ test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in 
   await expect(page.getByRole("heading", { level: 1, name: "节点" })).toBeVisible();
   await expect(page.getByText("服务器列表加载失败", { exact: true })).toHaveCount(0);
   // Empty state with a next step.
-  await page.goto(`${CONSOLE}/alerts?kind=disk`);
+  await page.goto(`${CONSOLE}/users?q=nothing-matches-zz9`);
   await expect(page.getByText(/没有匹配/).first()).toBeVisible();
   // Q3: the site time zone, not the browser's.
   const s = await apiJson<{ version: number }>("GET", "/settings");

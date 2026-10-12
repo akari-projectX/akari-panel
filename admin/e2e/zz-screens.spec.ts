@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import { test, type Browser } from "@playwright/test";
 
-import { api } from "./helpers";
+import { api, apiJson } from "./helpers";
 import * as commerce from "./screens/commerce";
 import * as nodes from "./screens/nodes";
 import * as ops from "./screens/ops";
@@ -144,6 +144,12 @@ test("screens: the v2 design shots from the real app", async ({ browser }, info)
   const counts = await Promise.all(variants.map(([d, t]) => take(browser, d, t, shots, c, deadline, failed))).finally(
     stopSeed,
   );
+  // The seeded rollout must not outlive the shots: the mobile project's
+  // specs (UPD-*) run after these and expect no open rollout.
+  if (c.extra.rollout)
+    await apiJson("POST", `/rollouts/${c.extra.rollout}/abort`, {}).catch((e: Error) =>
+      failed.push(`rollout abort: ${e.message.split("\n")[0]}`),
+    );
   const taken = counts.reduce((a, b) => a + b, 0);
   const summary = `${taken} screenshots of ${shots.length} shots in ${Math.round((Date.now() - start) / 1000)}s`;
   console.log(`screens: ${summary}`);

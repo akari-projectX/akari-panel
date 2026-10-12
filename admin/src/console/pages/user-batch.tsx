@@ -642,11 +642,12 @@ function JobProgress({ j }: { j: Job }) {
   );
 }
 
+export const jobsQuery = { queryKey: ["batch-jobs"], queryFn: () => get<Job[]>("/users/batch") };
+
 function useJobs() {
   const qc = useQueryClient();
   const jobs = useQuery({
-    queryKey: ["batch-jobs"],
-    queryFn: () => get<Job[]>("/users/batch"),
+    ...jobsQuery,
     refetchInterval: (q) => ((q.state.data ?? []).some((j) => ACTIVE.includes(j.status)) ? 2000 : false),
   });
   // A job that finished changed accounts: refresh the list and the detail.

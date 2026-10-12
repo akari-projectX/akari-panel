@@ -364,6 +364,10 @@ fn inner_router(state: AppState) -> Router {
             "/{prefix}/api/v1/settings",
             get(settings::get_settings).put(settings::put_settings),
         )
+        .route(
+            "/{prefix}/api/v1/settings/overview",
+            get(settings::get_overview),
+        )
         .route("/{prefix}/api/v1/settings/probe", put(settings::put_probe))
         .route("/{prefix}/api/v1/settings/site", put(settings::put_site))
         .route(

@@ -275,6 +275,7 @@ export function SaveBar({
       aria-label={tr("保存栏", "Save bar")}
       style={style}
       data-savebar
+      data-floatbar
       className="glass fixed inset-x-3 bottom-[calc(60px+env(safe-area-inset-bottom))] z-20 flex items-center gap-3 rounded-2xl bg-popover px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
     >
       <span

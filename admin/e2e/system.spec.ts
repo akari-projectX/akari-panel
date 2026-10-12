@@ -31,10 +31,10 @@ test("ALR-01 ALR-02 ALR-05: firing board, acknowledge (card and bulk), detail ti
   sql(`UPDATE servers SET cert_serial = md5('${name}'), enrolled_at = now() WHERE id = '${id}'`);
   // Two firing alerts and a dead notification.
   const alert = sql(
-    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'cpu', 'firing', '97%', 'CPU 97% for 5 min') RETURNING id`,
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'cpu', 'firing', 'CPU 97%', '最近 5 分钟每分钟平均 CPU 都高于 90%') RETURNING id`,
   ).split("\n")[0];
   const memAlert = sql(
-    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'memory', 'firing', '95%', 'memory 95% for 5 min') RETURNING id`,
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'memory', 'firing', '内存 95%', '最近 5 分钟每分钟平均内存占用都高于 90%') RETURNING id`,
   ).split("\n")[0];
   sql(
     `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error) ` +
@@ -48,9 +48,9 @@ test("ALR-01 ALR-02 ALR-05: firing board, acknowledge (card and bulk), detail ti
   await expect(page).toHaveURL(/server=/);
   const cpu = page.locator(`[data-alert="${alert}"]`);
   const mem = page.locator(`[data-alert="${memAlert}"]`);
-  await expect(cpu).toContainText("CPU 97% for 5 min");
+  await expect(cpu).toContainText("最近 5 分钟每分钟平均 CPU 都高于 90%");
   await expect(cpu).toContainText("已持续");
-  await expect(mem).toContainText("memory 95% for 5 min");
+  await expect(mem).toContainText("最近 5 分钟每分钟平均内存占用都高于 90%");
   // ALR-02: acknowledge one card (the board updates without a reload).
   await cpu.getByRole("button", { name: "确认", exact: true }).click();
   await toast(page, "已确认");
@@ -68,7 +68,7 @@ test("ALR-01 ALR-02 ALR-05: firing board, acknowledge (card and bulk), detail ti
   await cpu.getByRole("button", { name }).click();
   await expect(page).toHaveURL(new RegExp(`open=${alert}`));
   const a = dialog(page, new RegExp(`CPU 过高 · ${name}`));
-  await expect(a.getByText("97%", { exact: true })).toBeVisible();
+  await expect(a.getByText("CPU 97%", { exact: true })).toBeVisible();
   await expect(a).toContainText("Webhook 通知失败");
   await expect(a).toContainText("仍在触发");
   await expect(a.getByRole("link", { name: "查看服务器" }).first()).toHaveAttribute("href", new RegExp(`server:${id}`));

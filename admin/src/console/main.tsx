@@ -11,6 +11,7 @@ import { Toaster } from "../shared/ui/toast";
 import { get, setUnauthorizedHandler } from "../shared/api";
 import { adminBase, loadPage, loginUrl } from "../shared/base";
 import { invalidateOnWrite, makeQueryClient } from "./data";
+import { setPrefetchClient } from "./pages";
 import { PAGES } from "./pages";
 import { makeRouter } from "./routes";
 
@@ -18,6 +19,7 @@ applyTheme(initialTheme());
 loadFontsAfterFirstScreen();
 
 const client = makeQueryClient();
+setPrefetchClient(client);
 invalidateOnWrite(client);
 
 // First screen without a waterfall: the session, the site facts, the

@@ -123,7 +123,8 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   sql(`UPDATE servers SET traffic_quota_tx_bytes = 21474836480 WHERE name = '${name}'`);
   await page.reload();
   await expect(page.getByText("本周期流量额度已用完。").first()).toBeVisible();
-  await expect(page.getByText("额度用尽").first()).toBeVisible();
+  // (Never installed: the status chip stays 等待安装, which outranks 额度用尽.)
+  await expect(page.getByRole("button", { name: "调整额度" }).first()).toBeVisible();
   // NOD-09: alert rules of this server.
   await tab(page, /^告警规则/).click();
   await page.getByRole("switch", { name: /^静音这台服务器/ }).click();

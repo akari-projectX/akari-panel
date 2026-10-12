@@ -26,10 +26,10 @@ export async function setup(c: Ctx): Promise<void> {
   sql(`UPDATE servers SET cert_serial = md5('${name}'), enrolled_at = now() WHERE id = '${id}'`);
   c.extra.alertServer = id;
   c.extra.alertFiring = sql(
-    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at) VALUES ('${id}', 'cpu', 'firing', '94%', 'CPU 高于 90% 已持续 10 分钟', now() - interval '25 minutes') RETURNING id`,
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at) VALUES ('${id}', 'cpu', 'firing', 'CPU 94%', '最近 10 分钟每分钟平均 CPU 都高于 90%', now() - interval '25 minutes') RETURNING id`,
   ).split("\n")[0];
   c.extra.alertResolved = sql(
-    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at, resolved_at, acked_at, acked_by) VALUES ('${id}', 'disk', 'resolved', '91%', '磁盘已用 91%', now() - interval '3 hours', now() - interval '2 hours', now() - interval '170 minutes', 'admin') RETURNING id`,
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at, resolved_at, acked_at, acked_by) VALUES ('${id}', 'disk', 'resolved', '磁盘 91%', '已用 45.5 GiB / 50.0 GiB，高于 90%', now() - interval '3 hours', now() - interval '2 hours', now() - interval '170 minutes', 'admin') RETURNING id`,
   ).split("\n")[0];
   sql(
     `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error, sent_at) ` +

@@ -436,3 +436,10 @@ html.dark {
   height: auto;
   border-radius: 6px;
 }
+
+/* A floating bar at the bottom (settings save bar, bulk actions) lifts the
+   toasts above it, so a "saved" toast never covers its buttons. */
+body:has([data-floatbar]) [data-sonner-toaster] {
+  --offset-bottom: 84px !important;
+  --mobile-offset-bottom: calc(128px + env(safe-area-inset-bottom)) !important;
+}
