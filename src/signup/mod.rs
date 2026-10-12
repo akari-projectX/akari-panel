@@ -436,9 +436,15 @@ pub async fn put_signup_settings(
 /// (`botguard::public_view`: a fresh form token, so `no-store`).
 pub async fn options(State(state): State<AppState>) -> Response {
     let s = settings_or_none(&state).await;
-    let guard = match state.pg().acquire().await {
-        Ok(mut c) => crate::botguard::load(&mut c).await.ok(),
-        Err(_) => None,
+    // Next-version (portal settings): whether the site sends mail, so the
+    // portal hides "change email" (its first step would be 409
+    // account.mail_off). Unreadable = false (the portal shows less).
+    let (guard, mail) = match state.pg().acquire().await {
+        Ok(mut c) => (
+            crate::botguard::load(&mut c).await.ok(),
+            crate::mail::load(&mut c).await.is_ok_and(|m| m.enabled),
+        ),
+        Err(_) => (None, false),
     };
     // W21: the site name for page titles (public anyway: it is in them).
     let site_name = state
@@ -483,6 +489,7 @@ pub async fn options(State(state): State<AppState>) -> Response {
     v["passkey_rp"] = crate::passkey::public_rp_id(&state);
     // Q3: the site time zone, for the portal's dates before sign-in.
     v["timezone"] = json!(state.settings().get().timezone());
+    v["mail"] = json!(mail);
     ([(axum::http::header::CACHE_CONTROL, "no-store")], Json(v)).into_response()
 }
 

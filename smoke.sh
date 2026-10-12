@@ -2112,8 +2112,8 @@ for p in register/code register password-reset/request password-reset; do
   [ "$(fp -X POST "$BASE/auth/$p" -H "$J" -d '{"email":"a@akari.test"}')" = "$REJ" ] \
     || { echo "FAIL: disabled /auth/$p is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
 done
-[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] or d['reset']" | matches False \
-  || { echo "FAIL: auth options while disabled"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] or d['reset'] or d['mail']" | matches False \
+  || { echo "FAIL: auth options while disabled (register / reset / mail)"; cat /tmp/akari-smoke/last; exit 1; }
 SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"invite_codes_per_user":5,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true,"email_verify":true'
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "409" ] \
   || { echo "FAIL: registration enabled without mail"; cat /tmp/akari-smoke/last; exit 1; }
@@ -2140,8 +2140,8 @@ VER=$(last_json "d['version']")
   || { echo "FAIL: set main domain"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "200" ] \
   || { echo "FAIL: enable registration + reset"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and d['reset']" | matches True \
-  || { echo "FAIL: auth options while enabled"; exit 1; }
+[ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] and d['reset'] and d['mail']" | matches True \
+  || { echo "FAIL: auth options while enabled (register / reset / mail)"; exit 1; }
 # Register: code by mail -> account + session; login by the address.
 REG="smoke-reg-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')@akari.test"
 NEW="smoke-new-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')@akari.test"
