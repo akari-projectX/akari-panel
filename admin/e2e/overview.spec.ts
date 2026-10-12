@@ -66,21 +66,34 @@ test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: needs-you queue, KPI tabs + cha
   expect(problems).toEqual([]);
 });
 
-test("ST-01 ST-02 ST-03: panel instances, PostgreSQL, Valkey, proxy, background jobs, refresh", async ({ page }) => {
+test("ST-01 ST-02 ST-03: verdict, panel instances, PostgreSQL, Valkey, proxy, background jobs, refresh", async ({
+  page,
+}) => {
   await openConsole(page, "/status");
   await expect(page.getByRole("heading", { level: 1, name: "系统状态" })).toBeVisible();
+  // The verdict comes first: all fine, or the issues listed.
+  await expect(page.locator("[data-verdict]")).toContainText(/全部正常|个问题需要关注/);
   await expect(page.getByText("当前实例")).toBeVisible();
-  await expect(page.getByRole("img", { name: /^CPU/ }).or(page.getByText("未知").first())).toBeVisible();
+  await expect(page.getByRole("img", { name: /^CPU/ }).or(page.getByText(/ProcSubset=pid/))).toBeVisible();
   await expect(page.getByText("面板进程内存")).toBeVisible();
-  await expect(page.getByText("PostgreSQL")).toBeVisible();
-  await expect(page.getByText("Valkey")).toBeVisible();
+  await expect(page.getByText("PostgreSQL", { exact: true })).toBeVisible();
+  await expect(page.getByText("Valkey", { exact: true })).toBeVisible();
   await expect(page.getByText("反向代理（Caddy）")).toBeVisible();
-  for (const j of ["流量结算", "支付对账", "邮件发件箱", "告警评估"]) await expect(page.getByText(j)).toBeVisible();
-  // Refresh re-reads (its own spinner); the mail queue is on this page.
+  // Jobs: problems first; the fine ones may be folded.
+  const more = page.getByRole("button", { name: /个任务运行正常/ });
+  if (await more.isVisible()) await more.click();
+  for (const j of ["流量结算", "支付对账", "邮件发件箱", "告警评估"])
+    await expect(page.locator(`[data-job]`, { hasText: j })).toBeVisible();
+  // Refresh re-reads (its own spinner); the mail queue is the second segment.
   const reread = page.waitForResponse((r) => r.url().endsWith("/api/v1/system/status"));
-  await page.getByRole("button", { name: "刷新" }).click();
+  await page.getByRole("button", { name: "立即刷新" }).click();
   await reread;
-  await expect(page.getByRole("heading", { name: "邮件队列" })).toBeVisible();
+  await page
+    .getByRole("group", { name: "系统状态视图" })
+    .getByRole("button", { name: /邮件队列/ })
+    .click();
+  await expect(page).toHaveURL(/[?&]tab=mail/);
+  await expect(page.getByRole("group", { name: "邮件队列" })).toBeVisible();
 });
 
 test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail queue (?mail=dead), retry", async ({
@@ -91,28 +104,32 @@ test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail que
     `INSERT INTO mail_outbox (kind, to_addr, subject, body_text, body_html, status, attempts, last_error, settled_at) ` +
       `VALUES ('test', 'nobody@e2e.test', '${subject}', 'body', '<p>body</p>', 'dead', 8, '550 mailbox unavailable', now())`,
   );
-  await openConsole(page, "/status?mail=dead");
+  await openConsole(page, "/status?tab=mail&mail=dead");
   // ST-04: the notice, and its 测试发信 runs the step-by-step diagnosis here.
   // The status answer is cached for 5 s per instance (sysstatus CACHE_FOR): the
-  // previous test's visit may still be served, so 刷新 until the new dead letter counts.
+  // previous test's visit may still be served, so refresh until the new dead letter counts.
   await expect(async () => {
-    await page.getByRole("button", { name: "刷新", exact: true }).click();
-    await expect(page.getByText(/封邮件发送失败/)).toBeVisible({ timeout: 1_500 });
+    await page.getByRole("button", { name: "立即刷新" }).click();
+    await expect(page.getByText(/封邮件已放弃发送/)).toBeVisible({ timeout: 1_500 });
   }).toPass({ timeout: 20_000 });
   await page.getByRole("button", { name: "测试发信" }).first().click();
+  await expect(page).toHaveURL(/[?&]diagnose=1/);
   const d = dialog(page, "测试发信");
   await expect(d.getByLabel("收件地址")).not.toHaveValue("");
   await d.getByRole("button", { name: "诊断并发送" }).click();
-  await expect(d.getByRole("list", { name: "诊断结果" })).toBeVisible({ timeout: 30_000 });
+  await expect(d.getByRole("group", { name: "诊断结果" })).toBeVisible({ timeout: 30_000 });
   await expect(d.locator("[data-step=config]")).toBeVisible();
+  await expect(d.getByRole("button", { name: "重新测试" })).toBeVisible({ timeout: 30_000 });
   await d.getByRole("button", { name: "关闭", exact: true }).first().click();
   await expect(d).toHaveCount(0);
-  // SET-17: the failed mail (pre-filtered by ?mail=dead), the server's answer, the kind in words; retry.
-  await expect(page.getByRole("group", { name: "邮件队列" }).getByRole("button", { name: /发送失败/ })).toHaveAttribute(
+  // SET-17: the failed mail (pre-filtered by ?mail=dead), the failure in words + the server's text, the kind in words; retry.
+  await expect(page.getByRole("group", { name: "邮件队列" }).getByRole("button", { name: /失败/ })).toHaveAttribute(
     "aria-pressed",
     "true",
   );
   const dead = page.locator("[data-row]:visible", { hasText: subject });
+  await expect(dead).toContainText("收件服务器拒收（550）");
+  await dead.getByRole("button", { name: "原始错误" }).click();
   await expect(dead).toContainText("550 mailbox unavailable");
   await expect(dead).toContainText("测试邮件");
   await dead.getByRole("button", { name: "重试", exact: true }).click();
@@ -125,6 +142,8 @@ test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail que
     .getByRole("button", { name: /待发送/ })
     .click();
   await expect(page).toHaveURL(/mail=pending/);
+  await page.getByRole("group", { name: "邮件队列" }).getByRole("button", { name: "全部" }).click();
+  await expect(page).not.toHaveURL(/mail=/);
 });
 
 test("ST-05: exited instances are folded away; hidden /proc is explained", async ({ page }) => {

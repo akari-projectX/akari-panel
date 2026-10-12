@@ -2836,6 +2836,10 @@ echo "== W31: system status =="
   && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
+# The mail queue's 全部 view: every status, newest first.
+[ "$(code -b "$JAR" "$BASE/api/v1/mail/outbox?status=all&limit=200")" = "200" ] \
+  && [ "$(last_json "isinstance(d, list) and all(r['status'] in ('dead','pending','sent') for r in d) and [r['id'] for r in d] == sorted([r['id'] for r in d], reverse=True)")" = "True" ] \
+  || { echo "FAIL: mail outbox all"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
   && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == '$BUYER_MAIL'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
