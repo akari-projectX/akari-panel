@@ -47,20 +47,6 @@ function loginGuard(): Plugin {
   };
 }
 
-/**
- * Console chunking (perf: the first screen on a slow phone link): every
- * lucide icon in one chunk, and the small console/shared modules used by two
- * or more chunks in one "common" chunk, instead of ~70 tiny files of a few
- * hundred bytes each (each one a request and an import level). Modules over
- * 8 KB stay in the automatic split (a page only loads the big ones it uses).
- */
-const CONSOLE_CHUNKS = {
-  groups: [
-    { name: "icons", test: /node_modules[\\/]lucide-react/ },
-    { name: "common", test: /[\\/]src[\\/]/, minShareCount: 2, maxModuleSize: 8000 },
-  ],
-};
-
 export default defineConfig({
   plugins: [react(), tailwindcss(), ...(entry === "login" ? [loginGuard()] : [])],
   base: entry === "login" ? "/app/" : "/admin/",
@@ -77,10 +63,11 @@ export default defineConfig({
     cssCodeSplit: false,
     assetsInlineLimit: 0,
     chunkSizeWarningLimit: 2000,
-    rollupOptions: {
-      input: entry === "login" ? "login.html" : "index.html",
-      ...(entry === "console" ? { output: { codeSplitting: CONSOLE_CHUNKS } } : {}),
-    },
+    // No manual chunk groups: grouping the lucide icons (or the small shared
+    // modules) into one chunk cut the cold first screen further but made
+    // every warm page switch slower (users 420 → 790 ms on the mid phone,
+    // CI A/B 2026-10-13); module preload alone already removes the waves.
+    rollupOptions: { input: entry === "login" ? "login.html" : "index.html" },
   },
   experimental: {
     renderBuiltUrl: (_file, { hostType }) => (hostType === "js" || hostType === "css" ? { relative: true } : undefined),
