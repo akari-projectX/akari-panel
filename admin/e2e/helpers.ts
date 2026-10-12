@@ -84,7 +84,12 @@ export async function openConsole(page: Page, path = ""): Promise<void> {
   const state = await (await api()).storageState();
   await page.context().addCookies(state.cookies);
   await page.goto(`${CONSOLE}${path}`);
-  await expect(page.getByRole("button", { name: /账户菜单|Account menu/ })).toBeVisible();
+  // includeHidden: a path that opens a dialog (?open=, ?entrance=…) may have
+  // it up already, and a modal dialog hides the shell from the a11y tree
+  // (the visible filter drops the other layout's display:none copy).
+  await expect(
+    page.getByRole("button", { name: /账户菜单|Account menu/, includeHidden: true }).filter({ visible: true }),
+  ).toBeVisible();
   await expectFits(page, path);
 }
 

@@ -76,8 +76,8 @@ export function prefetchOn(id: string) {
 
 /**
  * The pages most switched to (the phone's tab bar, and the two pages behind
- * "更多" visited most), loaded one per idle period once the first page is
- * ready, with the first data of those in DATA, so a switch only renders
+ * "更多" visited most), loaded one after another once the first page is
+ * ready (the first at once, the rest in idle periods), with the first data of those in DATA, so a switch only renders
  * (perf §3: switch ≤ 900 ms on a mid phone).
  * Not on Save-Data / 2G connections. Once per session.
  */
@@ -97,5 +97,8 @@ export function prefetchIdle(): void {
     if (!id) return;
     void Promise.all([PAGES[id]().catch(() => {}), prefetchData(id)]).finally(() => idle(next));
   };
-  idle(next);
+  // The first one (users, the page switched to most) starts at once: a tap
+  // right after the first screen would otherwise beat the idle callback and
+  // wait for its chunk and data.
+  next();
 }
