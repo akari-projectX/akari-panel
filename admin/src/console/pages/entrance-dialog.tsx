@@ -1,13 +1,17 @@
 // An entrance (NOD-15…19, NOD-22/23) in one centred dialog with one save:
-// connection (direct or relay settings, tags, node groups), the D9
-// time-window multipliers (base, rules with time inputs, overlap warnings,
-// a 7×24 heat map with its values, the multiplier now), and its traffic and
-// multiplier history; delete for relays. Plus the new-relay dialog.
+// connection (direct or relay settings, tags and egress addresses as chips
+// checked as they are added), the D9 time-window multipliers (base, rules
+// with time inputs, overlap warnings, a 7×24 heat map with its values, the
+// multiplier now), who can see it (node groups → users, estimated from the
+// plans), and its traffic and multiplier history; delete for relays with
+// the impact listed. Plus the new-relay dialog (from a node, or from the
+// page header with a node picker).
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { del, get, patch, post, put } from "../../shared/api";
 import { bytes, dateTime, daysBefore, rateText, siteToday } from "../../shared/format";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
+import { holdersOf, usePlanList } from "../servers";
 import { TrendChart, timeLabels } from "../../shared/ui/charts";
 import { SectionTitle, useConfirmFree } from "../kit";
 import { useAction } from "../data";
@@ -16,23 +20,28 @@ import { heatmap, hhmm, overlaps, parseHhmm, parseRate, rateAt, type Rule } from
 import { useCrumb, useSite } from "../session";
 import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
 import {
+  ChipInput,
   FixCount,
   GroupPicker,
   PORT,
   TagsField,
+  addrValues,
+  chips,
   entranceState,
   healthText,
+  isIpOrCidr,
   num,
   shown,
-  splitTags,
+  tagValues,
+  type Chips,
   type NumRule,
 } from "./node-common";
-import { ArrowRightLeft, Plus, ShieldCheck, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, Plus, Radar, ShieldCheck, Trash2, TriangleAlert, X } from "lucide-react";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
-import { Field, Input, SwitchField, Textarea } from "../../shared/ui/form";
+import { Field, Input, Select, SwitchField } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
 import { ErrorState, LoadingBlock } from "../../shared/ui/states";
 import { Tabs } from "../../shared/ui/tabs";
@@ -88,7 +97,7 @@ const RATE_REQUIRED: [string, string] = [
   "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
 ];
 
-/** The relay egress field (edit dialog and new-relay dialog). */
+/** The relay egress field (edit dialog and new-relay dialog): chips, each checked as it is added. */
 function EgressField({
   host,
   value,
@@ -96,36 +105,41 @@ function EgressField({
   error,
 }: {
   host: string;
-  value: string;
-  onChange: (v: string) => void;
+  value: Chips;
+  onChange: (v: Chips) => void;
   error?: string;
 }) {
   const tr = useTr();
+  const shownError =
+    error ??
+    (entryAsEgress(host, addrValues(value).join(" "))
+      ? tr(
+          "连接地址也在出口列表里：中转机的入口 IP 通常不是它的出口 IP，填错会让中转不通。请在最后一跳机器上用 curl -4 ifconfig.me 确认。",
+          "The dial address is listed as an egress: a relay's entry IP is usually not its egress IP, and a wrong one breaks the relay. Check with curl -4 ifconfig.me on the last hop.",
+        )
+      : undefined);
   return (
     <Field
-      label={tr("中转机出口 IP / CIDR（每行一个）", "Relay egress IPs / CIDRs (one per line)")}
+      group
+      label={tr("中转机出口 IP / CIDR", "Relay egress IPs / CIDRs")}
       required
       hint={tr(
-        "填最后一跳（转发到本节点的那台机器）的出口 IP：在该机器上运行 curl -4 ifconfig.me 查看。不是连接地址；多跳中转只填最后一跳。只接受这些地址的新连接，隔离主要靠独立凭据，白名单是附加防护。",
-        "Enter the egress IP of the last hop (the machine that forwards to this node): run curl -4 ifconfig.me on it. Not the dial address; for a multi-hop relay only the last hop. Only these addresses may open connections; isolation rests on separate credentials, the allowlist is extra.",
+        "填最后一跳（转发到本节点的那台机器）的出口 IP：在该机器上执行 curl -4 ifconfig.me。不是连接地址；多跳中转只填最后一跳。隔离主要靠独立凭据，白名单是附加防护。",
+        "The egress IP of the last hop (the machine that forwards to this node): run curl -4 ifconfig.me on it. Not the dial address; for a multi-hop relay only the last hop. Isolation rests on separate credentials; the allowlist is extra.",
       )}
-      error={
-        error ??
-        (entryAsEgress(host, value)
-          ? tr(
-              "连接地址也在出口列表里：中转机的入口 IP 通常不是它的出口 IP，填错会让中转不通。请在最后一跳机器上用 curl -4 ifconfig.me 确认。",
-              "The dial address is listed as an egress: a relay's entry IP is usually not its egress IP, and a wrong one breaks the relay. Check with curl -4 ifconfig.me on the last hop.",
-            )
-          : undefined)
-      }
+      error={shownError}
       className="sm:col-span-2"
     >
-      <Textarea
-        rows={3}
+      <ChipInput
         value={value}
-        onChange={(x) => onChange(x.target.value)}
-        placeholder="203.0.113.7"
-        className="font-mono"
+        onChange={onChange}
+        label={tr("添加出口 IP / CIDR", "Add an egress IP / CIDR")}
+        placeholder={tr("回车添加", "Enter to add")}
+        split={/[\s,，]+/}
+        invalid={(v) => !isIpOrCidr(v)}
+        mono
+        chipTone="neutral"
+        error={!!shownError}
       />
     </Field>
   );
@@ -138,10 +152,10 @@ type Form = {
   rate: string;
   enabled: boolean;
   sort: string;
-  tags: string;
+  tags: Chips;
   groups: string[];
   listen: string;
-  cidrs: string;
+  cidrs: Chips;
 };
 
 const SORT: NumRule = { min: -2_147_483_648, max: 2_147_483_647, int: true };
@@ -154,24 +168,31 @@ function formOf(e: EntranceView): Form {
     rate: String(e.rate),
     enabled: e.enabled,
     sort: String(e.sort),
-    tags: e.tags.join(", "),
+    tags: chips(e.tags),
     groups: e.group_ids,
     listen: e.listen_port ? String(e.listen_port) : "",
-    cidrs: e.source_cidrs.join("\n"),
+    cidrs: chips(e.source_cidrs),
   };
 }
 
 /** Field errors of the connection form (undefined = fine). */
 function formErrors(f: Form, relay: boolean, tr: Tr) {
+  const cidrs = addrValues(f.cidrs);
+  const badCidr = cidrs.find((c) => !isIpOrCidr(c));
   return {
     name: !f.name.trim() ? tr("请填写名称", "Enter a name") : undefined,
     host: relay && !f.host.trim() ? tr("请填写中转机的地址", "Enter the relay's address") : undefined,
     port: num(f.port, { ...PORT, optional: !relay }, tr)[1],
     listen: relay ? num(f.listen, PORT, tr)[1] : undefined,
-    cidrs:
-      relay && !f.cidrs.trim() ? tr("至少填一个出口 IP 或 CIDR", "Enter at least one egress IP or CIDR") : undefined,
+    cidrs: !relay
+      ? undefined
+      : badCidr !== undefined
+        ? tr(`「${badCidr}」不是有效的 IP 地址或 CIDR`, `"${badCidr}" is not a valid IP address or CIDR`)
+        : cidrs.length === 0
+          ? tr("至少填一个出口 IP 或 CIDR", "Enter at least one egress IP or CIDR")
+          : undefined,
     sort: num(f.sort, SORT, tr)[1],
-    tags: splitTags(f.tags).length > 8 ? "tags" : undefined,
+    tags: tagValues(f.tags).length > 8 ? "tags" : undefined,
     rate: parseRate(f.rate) === null ? tr(...RATE_REQUIRED) : undefined,
   };
 }
@@ -184,14 +205,14 @@ function formBody(f: Form, rate: number, relay: boolean): Record<string, unknown
     rate,
     enabled: f.enabled,
     sort: n(f.sort) ?? 0,
-    tags: splitTags(f.tags),
+    tags: tagValues(f.tags),
     group_ids: [...f.groups].sort(),
   };
   if (relay) {
     body.connect_host = f.host.trim();
     body.connect_port = n(f.port);
     body.listen_port = n(f.listen);
-    body.source_cidrs = f.cidrs.split(/[\s,]+/).filter(Boolean);
+    body.source_cidrs = addrValues(f.cidrs);
   } else {
     body.connect_host = f.host.trim() || null;
     body.connect_port = n(f.port);
@@ -225,7 +246,7 @@ function siteNow(tz: string): { wd: number; hour: number; minute: number } {
   };
 }
 
-type Tab = "conn" | "rate" | "history";
+type Tab = "conn" | "rate" | "access" | "history";
 
 export function EntranceDialog({
   entrance: e,
@@ -284,6 +305,16 @@ export function EntranceDialog({
   const max = Math.max(base, ...valid.map((r) => r.rate), 0.001);
   const [h, ht] = healthText(e, tr, lang);
   const [st, stt] = entranceState(e, tr);
+  const plans = usePlanList();
+  const holders = plans.data ? holdersOf([e.id], groups, plans.data) : null;
+  const groupNames = (ids: string[]) =>
+    ids
+      .map((g) => groups.find((x) => x.id === g)?.name)
+      .filter(Boolean)
+      .join("、");
+  // Egress chips are checked as they are added (the design's inline error); the rest once saved.
+  const cidrLive = f.cidrs.items.some((c) => !isIpOrCidr(c)) ? errors.cidrs : undefined;
+  const liveBad = tried ? connBad + rateBad : cidrLive ? 1 : 0;
 
   const save = async () => {
     setTried(true);
@@ -344,13 +375,34 @@ export function EntranceDialog({
     }
   };
   const remove = async () => {
+    // The entrance's billed traffic of the last 30 days (its own rows, never the node's).
+    const to = siteToday();
+    const billed = await get<{ days: { billed_bytes: number }[] }>(
+      `/entrances/${e.id}/traffic?from=${daysBefore(to, 29)}&to=${to}`,
+    )
+      .then((t) => t.days.reduce((n, d) => n + d.billed_bytes, 0))
+      .catch(() => null);
+    const names = groupNames(opened.group_ids);
     const ok = await confirm({
-      title: tr(`删除中转入口 ${e.name}？`, `Delete relay ${e.name}?`),
-      impact: tr(
-        "可以用这个入口的用户会失去它；它在订阅里的线路立即消失",
-        "Users of this entrance lose it; its line leaves subscriptions at once",
+      title: tr(`删除中转入口「${e.name}」？`, `Delete relay entrance "${e.name}"?`),
+      description: tr(
+        "该入口的派生入站与来源白名单会从落地节点上移除，订阅里对应线路立即消失。落地节点本身和直连入口不受影响。",
+        "Its derived inbound and source allowlist leave the landing node and its line leaves subscriptions at once. The landing node and its direct entrance are not affected.",
       ),
+      impacts: [
+        ...(holders === null
+          ? []
+          : [
+              {
+                label: tr("可使用该入口的用户（按套餐估算）", "Users who can use it (from the plans)"),
+                value: tr(`${holders.toLocaleString()} 人`, holders.toLocaleString()),
+              },
+            ]),
+        { label: tr("所属节点组", "Node groups"), value: names || tr("无", "none") },
+        ...(billed === null ? [] : [{ label: tr("近 30 天计费流量", "Billed, last 30 days"), value: bytes(billed) }]),
+      ],
       typeToConfirm: e.name,
+      confirmLabel: tr("删除入口", "Delete entrance"),
       action: () => del(`/entrances/${e.id}`),
     });
     if (ok) {
@@ -360,6 +412,7 @@ export function EntranceDialog({
   };
   const setRule = (i: number, p: Partial<RuleForm>) => setRules(rules.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const KindIcon = relay ? ArrowRightLeft : ShieldCheck;
+  const proto = [node.protocol?.toUpperCase(), node.port ? `:${node.port}` : null].filter(Boolean).join(" · ");
 
   return (
     <Dialog
@@ -369,21 +422,20 @@ export function EntranceDialog({
       onClose={onClose}
       onSubmit={save}
       dirty={formDirty || rulesDirty}
-      title={tr(`入口 · ${e.name}`, `Entrance · ${e.name}`)}
+      title={tr(`编辑入口 · ${e.name}`, `Edit entrance · ${e.name}`)}
       description={
-        <span className="flex flex-wrap items-center gap-1.5">
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
           <span>
             {server.name} → {node.display_name || node.name}
-            {node.protocol ? ` (${node.protocol})` : ""}
+            {proto ? tr(`（${proto}）`, ` (${proto})`) : ""}
           </span>
-          <Badge tone={relay ? "info" : "outline"}>
-            {relay ? tr("中转入口", "Relay entrance") : tr("直连入口", "Direct entrance")}
-          </Badge>
-          <Badge tone={stt}>{st}</Badge>
-          {relay && <Badge tone={ht}>{h}</Badge>}
-          <Badge tone="primary">
+          <span aria-hidden="true">·</span>
+          <span>{relay ? tr("中转入口", "Relay entrance") : tr("直连入口", "Direct entrance")}</span>
+          <span aria-hidden="true">·</span>
+          <span className="tnum">
             {tr("当前倍率", "Now")} {rateText(Math.round(e.rate_now * 1000))}
-          </Badge>
+          </span>
+          <Badge tone={stt === "danger" ? "outline" : stt}>{st}</Badge>
         </span>
       }
       tabs={
@@ -394,6 +446,7 @@ export function EntranceDialog({
           tabs={[
             { value: "conn", label: tr("连接", "Connection") },
             { value: "rate", label: tr("倍率与时段", "Multipliers"), count: rules.length || undefined },
+            { value: "access", label: tr("可见范围", "Visibility") },
             { value: "history", label: tr("流量与记录", "Traffic and history") },
           ]}
         />
@@ -402,11 +455,21 @@ export function EntranceDialog({
         <>
           {relay && (
             <Button variant="destructive-soft" icon={Trash2} onClick={remove} className="mr-auto">
-              {tr("删除中转入口", "Delete relay")}
+              {tr("删除入口", "Delete entrance")}
             </Button>
           )}
-          <FixCount n={tried ? connBad + rateBad : 0} />
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          {liveBad > 0 ? (
+            <FixCount n={liveBad} />
+          ) : (
+            (formDirty || rulesDirty) && (
+              <span className="mr-auto text-footnote text-muted-foreground max-sm:hidden sm:mr-1">
+                {tr("有未保存的修改", "Unsaved changes")}
+              </span>
+            )
+          )}
+          <Button variant="ghost" onClick={onClose}>
+            {tr("取消", "Cancel")}
+          </Button>
           <Button type="submit" variant="primary" loading={busy || busyRules}>
             {tr("保存", "Save")}
           </Button>
@@ -434,15 +497,12 @@ export function EntranceDialog({
         </Callout>
       )}
       {tab === "conn" && (
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
           <Field
-            label={tr("名称（订阅里显示）", "Name (in subscriptions)")}
+            label={tr("入口名称", "Entrance name")}
             required
             error={tried ? errors.name : undefined}
-            hint={tr(
-              "订阅里的线路名，标签与倍率附加在后面",
-              "The line name in subscriptions; tags and multiplier follow it",
-            )}
+            hint={tr("订阅里的线路名，倍率会自动附加", "The line name in subscriptions; the multiplier is appended")}
           >
             <Input value={f.name} onChange={(x) => setF({ ...f, name: x.target.value })} />
           </Field>
@@ -450,11 +510,16 @@ export function EntranceDialog({
           <Field
             label={
               relay
-                ? tr("连接地址（中转机）", "Dial host (the relay)")
+                ? tr("连接地址", "Dial host")
                 : tr("连接地址（留空 = 服务器域名）", "Dial host (empty = server domain)")
             }
             required={relay}
             error={tried ? errors.host : undefined}
+            hint={
+              relay
+                ? tr("中转机的域名或 IP（用户连接到这里）", "The relay's domain or IP (users connect here)")
+                : undefined
+            }
           >
             <Input
               value={f.host}
@@ -464,14 +529,13 @@ export function EntranceDialog({
             />
           </Field>
           <Field
-            label={
-              relay ? tr("连接端口", "Dial port") : tr("连接端口（留空 = 入站端口）", "Dial port (empty = inbound's)")
-            }
+            label={relay ? tr("端口", "Port") : tr("连接端口（留空 = 入站端口）", "Dial port (empty = inbound's)")}
             required={relay}
             error={shown(f.port, errors.port, tried)}
           >
             <Input
               inputMode="numeric"
+              className="tnum"
               value={f.port}
               placeholder={relay ? "" : String(node.port ?? "")}
               onChange={(x) => setF({ ...f, port: x.target.value })}
@@ -479,58 +543,71 @@ export function EntranceDialog({
           </Field>
           {relay && (
             <>
+              <EgressField
+                host={f.host}
+                value={f.cidrs}
+                onChange={(v) => setF({ ...f, cidrs: v })}
+                error={tried ? errors.cidrs : cidrLive}
+              />
               <Field
                 label={tr("监听端口（节点上的派生入站）", "Listen port (derived inbound on the node)")}
                 required
                 error={shown(f.listen, errors.listen, tried)}
               >
-                <Input inputMode="numeric" value={f.listen} onChange={(x) => setF({ ...f, listen: x.target.value })} />
+                <Input
+                  inputMode="numeric"
+                  className="tnum"
+                  value={f.listen}
+                  onChange={(x) => setF({ ...f, listen: x.target.value })}
+                />
               </Field>
-              <Field label={tr("排序", "Sort")} error={shown(f.sort, errors.sort, tried)}>
-                <Input inputMode="numeric" value={f.sort} onChange={(x) => setF({ ...f, sort: x.target.value })} />
-              </Field>
-              <EgressField
-                host={f.host}
-                value={f.cidrs}
-                onChange={(v) => setF({ ...f, cidrs: v })}
-                error={tried ? errors.cidrs : undefined}
-              />
             </>
           )}
-          {!relay && (
-            <Field label={tr("排序", "Sort")} error={shown(f.sort, errors.sort, tried)}>
-              <Input inputMode="numeric" value={f.sort} onChange={(x) => setF({ ...f, sort: x.target.value })} />
-            </Field>
-          )}
+          <Field label={tr("排序", "Sort")} error={shown(f.sort, errors.sort, tried)}>
+            <Input
+              inputMode="numeric"
+              className="tnum"
+              value={f.sort}
+              onChange={(x) => setF({ ...f, sort: x.target.value })}
+            />
+          </Field>
           <SwitchField
             className="rounded-xl bg-window px-4 py-3 ring-1 ring-border ring-inset sm:col-span-2"
             checked={f.enabled}
             onChange={(v) => setF({ ...f, enabled: v })}
             label={tr("启用入口", "Entrance enabled")}
             description={tr(
-              "停用后不下发、不进订阅；入口的设置保留。",
+              "关闭后不下发、订阅中隐藏；入口的设置保留。",
               "A disabled entrance is not served and leaves subscriptions; its settings are kept.",
             )}
           />
-          <div className="sm:col-span-2">
-            <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
-            <p className="mt-1 text-footnote text-muted-foreground">
-              {tr("权限：套餐 → 节点组 → 入口。", "Access: plan → node group → entrance.")}
-            </p>
-          </div>
           {relay && e.health_at && (
-            <Callout tone={e.health_ok ? "success" : "danger"} className="sm:col-span-2">
-              {tr(
-                `健康检查：面板 → ${e.connect_host ?? ""}:${e.connect_port ?? ""} TCP ${e.health_ok ? "正常" : "失败"}（${dateTime(e.health_at)}）`,
-                `Health check: panel → ${e.connect_host ?? ""}:${e.connect_port ?? ""} TCP ${e.health_ok ? "ok" : "failed"} (${dateTime(e.health_at)})`,
+            <div
+              className={cn(
+                "flex items-center gap-3 rounded-xl px-4 py-2.5 text-footnote sm:col-span-2",
+                e.health_ok ? "bg-success-soft" : "bg-destructive-soft",
               )}
-            </Callout>
+            >
+              <Radar
+                className={cn("size-4 shrink-0", e.health_ok ? "text-success" : "text-destructive")}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1">
+                {tr(
+                  `健康检查：面板 → ${opened.connect_host ?? ""}:${opened.connect_port ?? ""} TCP ${e.health_ok ? "正常" : "失败"}（${h}）`,
+                  `Health check: panel → ${opened.connect_host ?? ""}:${opened.connect_port ?? ""} TCP ${e.health_ok ? "ok" : "failed"} (${h})`,
+                )}
+              </span>
+              <Badge tone={ht} className="max-sm:hidden">
+                {dateTime(e.health_at)}
+              </Badge>
+            </div>
           )}
         </div>
       )}
       {tab === "rate" && (
-        <div className="space-y-4">
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,14rem)_1fr]">
+        <div className="grid gap-5">
+          <div className="grid gap-4 sm:grid-cols-[200px_1fr]">
             <Field
               label={tr("基础倍率（0–100）", "Base multiplier (0–100)")}
               required
@@ -541,131 +618,153 @@ export function EntranceDialog({
                       "已开启「订阅线路名显示倍率」：改倍率会改变线路名，客户端刷新订阅后可能切换线路。",
                       "Multipliers in line names is on: a change renames the line; clients may switch lines after a refresh.",
                     )
-                  : tr("0 = 免费，保存前需确认", "0 = free; you confirm before it is saved")
+                  : tr("0 = 免费，需二次确认", "0 = free; you confirm before it is saved")
               }
             >
-              <Input inputMode="decimal" value={f.rate} onChange={(x) => setF({ ...f, rate: x.target.value })} />
+              <Input
+                inputMode="decimal"
+                className="tnum"
+                value={f.rate}
+                onChange={(x) => setF({ ...f, rate: x.target.value })}
+              />
             </Field>
-            <div className="rounded-xl bg-window px-4 py-3 ring-1 ring-border ring-inset">
-              <div className="text-footnote text-muted-foreground">
-                {tr(
-                  `按当前编辑的规则，此刻（${weekdayText(now.wd + 1, tr)} ${hhmm(now.hour * 60 + now.minute)}，${site.timezone}）是`,
-                  `With these rules it is now (${weekdayText(now.wd + 1, tr)} ${hhmm(now.hour * 60 + now.minute)}, ${site.timezone})`,
-                )}
+            <div className="flex flex-wrap items-end gap-3 rounded-xl bg-window px-4 py-3 ring-1 ring-border ring-inset">
+              <div className="min-w-0 flex-1">
+                <div className="text-footnote text-muted-foreground">
+                  {tr(
+                    `此刻生效（${weekdayText(now.wd + 1, tr)} ${hhmm(now.hour * 60 + now.minute)}，${site.timezone}，按当前编辑的规则）`,
+                    `Now (${weekdayText(now.wd + 1, tr)} ${hhmm(now.hour * 60 + now.minute)}, ${site.timezone}, with these rules)`,
+                  )}
+                </div>
+                <div className="tnum text-title2 font-semibold">{nowRate}x</div>
               </div>
-              <div className="tnum text-title2 font-semibold">{nowRate}x</div>
+              {ov.length > 0 && (
+                <Badge tone="warning" className="whitespace-normal">
+                  <TriangleAlert aria-hidden="true" />
+                  {tr(`${ov.length} 处时段重叠，取最高`, `${ov.length} overlaps; the highest applies`)}
+                </Badge>
+              )}
             </div>
           </div>
-          <SectionTitle
-            actions={
-              <Button
-                size="sm"
-                icon={Plus}
-                onClick={() =>
-                  setRules([...rules, { weekdays: [1, 2, 3, 4, 5], start: "20:00", end: "00:00", rate: "2" }])
-                }
-                disabled={rules.length >= 24}
-              >
-                {tr("添加规则", "Add rule")}
-              </Button>
-            }
-          >
-            {tr(`时段倍率（${site.timezone}）`, `Time-window multipliers (${site.timezone})`)}
-          </SectionTitle>
-          <p className="text-footnote text-muted-foreground">
-            {tr(
-              "规则外按基础倍率；结束早于开始 = 跨午夜，结束 00:00 = 当天 24:00；重叠时取最高。",
-              "Outside every rule the base applies; an end before the start crosses midnight, an end of 00:00 is 24:00; overlaps take the highest.",
-            )}
-          </p>
-          {rules.length === 0 && (
-            <p className="text-body text-muted-foreground">{tr("没有时段规则。", "No time-window rules.")}</p>
-          )}
-          <ul className="space-y-2">
-            {rules.map((r, i) => {
-              const err = ruleErrors[i];
-              const inOverlap = ov.some((o) => o.a === i || o.b === i);
-              return (
-                <li
-                  key={i}
-                  data-rule={i}
-                  className={cn(
-                    "rounded-xl p-3 ring-1 ring-inset",
-                    inOverlap ? "bg-warning-soft ring-warning" : tried && err ? "ring-destructive" : "ring-border",
-                  )}
+          <div className="grid gap-2">
+            <SectionTitle
+              actions={
+                <Button
+                  size="sm"
+                  variant="soft"
+                  icon={Plus}
+                  onClick={() =>
+                    setRules([...rules, { weekdays: [1, 2, 3, 4, 5], start: "20:00", end: "00:00", rate: "2" }])
+                  }
+                  disabled={rules.length >= 24}
                 >
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="mr-1 text-footnote font-semibold text-muted-foreground">
-                      {tr(`规则 ${i + 1}`, `Rule ${i + 1}`)}
-                    </span>
-                    {WEEKDAYS.map((_, d) => {
-                      const on = r.weekdays.includes(d + 1);
-                      return (
-                        <button
-                          key={d}
-                          type="button"
-                          aria-pressed={on}
-                          aria-label={tr(
-                            `规则 ${i + 1} ${weekdayText(d + 1, tr)}`,
-                            `Rule ${i + 1} ${weekdayText(d + 1, tr)}`,
-                          )}
-                          onClick={() =>
-                            setRule(i, {
-                              weekdays: on ? r.weekdays.filter((w) => w !== d + 1) : [...r.weekdays, d + 1].sort(),
-                            })
-                          }
-                          className={cn(
-                            "hit-44 inline-flex size-8 items-center justify-center rounded-full text-footnote font-medium transition-colors",
-                            on ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
-                          )}
-                        >
-                          {lang === "zh" ? WEEKDAYS[d][0] : WEEKDAYS[d][1].slice(0, 2)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Input
-                      type="time"
-                      step={60}
-                      aria-label={tr(`规则 ${i + 1} 开始`, `Rule ${i + 1} start`)}
-                      className="tnum w-28"
-                      value={r.start}
-                      onChange={(x) => setRule(i, { start: x.target.value })}
-                    />
-                    <span className="text-muted-foreground">{tr("至", "to")}</span>
-                    <Input
-                      type="time"
-                      step={60}
-                      aria-label={tr(`规则 ${i + 1} 结束`, `Rule ${i + 1} end`)}
-                      className="tnum w-28"
-                      value={r.end}
-                      onChange={(x) => setRule(i, { end: x.target.value })}
-                    />
-                    <span className="text-muted-foreground">×</span>
-                    <Input
-                      aria-label={tr(`规则 ${i + 1} 倍率`, `Rule ${i + 1} multiplier`)}
-                      inputMode="decimal"
-                      className="tnum w-20"
-                      value={r.rate}
-                      onChange={(x) => setRule(i, { rate: x.target.value })}
-                    />
-                    <Button
-                      size="icon-sm"
-                      variant="ghost"
-                      icon={X}
-                      className="ml-auto"
-                      aria-label={tr("删除规则", "Remove rule")}
-                      onClick={() => setRules(rules.filter((_, j) => j !== i))}
-                    />
-                  </div>
-                  {(tried || r.start === "" || r.end === "") && err && (
-                    <p className="mt-1.5 text-footnote text-destructive">{err}</p>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                  {tr("添加规则", "Add rule")}
+                </Button>
+              }
+            >
+              {tr(`时段倍率（${site.timezone}）`, `Time-window multipliers (${site.timezone})`)}
+            </SectionTitle>
+            <p className="text-footnote text-muted-foreground">
+              {tr(
+                "规则外按基础倍率；结束早于开始 = 跨午夜，结束 00:00 = 当天 24:00；重叠时取最高。",
+                "Outside every rule the base applies; an end before the start crosses midnight, an end of 00:00 is 24:00; overlaps take the highest.",
+              )}
+            </p>
+            {rules.length === 0 && (
+              <p className="text-body text-muted-foreground">{tr("没有时段规则。", "No time-window rules.")}</p>
+            )}
+            <ul className="grid gap-2">
+              {rules.map((r, i) => {
+                const err = ruleErrors[i];
+                const inOverlap = ov.some((o) => o.a === i || o.b === i);
+                return (
+                  <li
+                    key={i}
+                    data-rule={i}
+                    className={cn(
+                      "rounded-xl p-3 ring-1 ring-inset",
+                      inOverlap
+                        ? "bg-warning-soft ring-[color-mix(in_srgb,var(--warning)_30%,transparent)]"
+                        : tried && err
+                          ? "bg-card ring-destructive"
+                          : "bg-card ring-border",
+                    )}
+                  >
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                      <span className="tnum text-footnote font-semibold text-muted-foreground">
+                        {tr(`规则 ${i + 1}`, `Rule ${i + 1}`)}
+                      </span>
+                      <div className="flex gap-1">
+                        {WEEKDAYS.map((_, d) => {
+                          const on = r.weekdays.includes(d + 1);
+                          return (
+                            <button
+                              key={d}
+                              type="button"
+                              aria-pressed={on}
+                              aria-label={tr(
+                                `规则 ${i + 1} ${weekdayText(d + 1, tr)}`,
+                                `Rule ${i + 1} ${weekdayText(d + 1, tr)}`,
+                              )}
+                              onClick={() =>
+                                setRule(i, {
+                                  weekdays: on ? r.weekdays.filter((w) => w !== d + 1) : [...r.weekdays, d + 1].sort(),
+                                })
+                              }
+                              className={cn(
+                                "hit-44 inline-flex size-7 items-center justify-center rounded-full text-footnote font-medium transition-colors",
+                                on ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground",
+                              )}
+                            >
+                              {lang === "zh" ? WEEKDAYS[d][0] : WEEKDAYS[d][1].slice(0, 2)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Input
+                          type="time"
+                          step={60}
+                          aria-label={tr(`规则 ${i + 1} 开始`, `Rule ${i + 1} start`)}
+                          className="tnum w-28"
+                          value={r.start}
+                          onChange={(x) => setRule(i, { start: x.target.value })}
+                        />
+                        <span className="text-muted-foreground">{tr("至", "to")}</span>
+                        <Input
+                          type="time"
+                          step={60}
+                          aria-label={tr(`规则 ${i + 1} 结束`, `Rule ${i + 1} end`)}
+                          className="tnum w-28"
+                          value={r.end}
+                          onChange={(x) => setRule(i, { end: x.target.value })}
+                        />
+                        <Input
+                          aria-label={tr(`规则 ${i + 1} 倍率`, `Rule ${i + 1} multiplier`)}
+                          inputMode="decimal"
+                          className="tnum w-16"
+                          value={r.rate}
+                          onChange={(x) => setRule(i, { rate: x.target.value })}
+                        />
+                        <span className="text-muted-foreground">x</span>
+                      </div>
+                      <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        icon={X}
+                        className="ml-auto"
+                        aria-label={tr("删除规则", "Remove rule")}
+                        onClick={() => setRules(rules.filter((_, j) => j !== i))}
+                      />
+                    </div>
+                    {(tried || r.start === "" || r.end === "") && err && (
+                      <p className="mt-1.5 text-footnote text-destructive">{err}</p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
           {ov.length > 0 && (
             <div role="status">
               <Callout tone="warning">
@@ -683,10 +782,42 @@ export function EntranceDialog({
           <Heatmap grid={grid} max={max} now={now} />
         </div>
       )}
+      {tab === "access" && (
+        <div className="grid gap-4">
+          <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
+          <div className="rounded-xl bg-window px-4 py-3 text-body ring-1 ring-border ring-inset">
+            {f.groups.length === 0 ? (
+              <span className="text-muted-foreground">
+                {tr("不在任何节点组里：没有用户能用这个入口。", "In no node group: nobody can use this entrance.")}
+              </span>
+            ) : (
+              <span>
+                {tr(`节点组：${groupNames(f.groups)}`, `Node groups: ${groupNames(f.groups)}`)}
+                {holders !== null && sameGroups(f.groups, opened.group_ids) && (
+                  <span className="text-muted-foreground">
+                    {tr(
+                      ` → 约 ${holders.toLocaleString()} 名用户可用（按套餐当前的节点组估算）`,
+                      ` → about ${holders.toLocaleString()} users (estimated from the plans' current groups)`,
+                    )}
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+          <p className="text-footnote text-muted-foreground">
+            {tr(
+              "权限只来自 套餐 → 节点组 → 入口；改动保存后立即生效。",
+              "Access comes only from plan → node group → entrance; a change applies once saved.",
+            )}
+          </p>
+        </div>
+      )}
       {tab === "history" && <EntranceHistory id={e.id} />}
     </Dialog>
   );
 }
+
+const sameGroups = (a: string[], b: string[]) => [...a].sort().join() === [...b].sort().join();
 
 /** 7 × 24 multipliers, each cell with its value (not only a tooltip); this hour outlined. */
 function Heatmap({ grid, max, now }: { grid: number[][]; max: number; now: { wd: number; hour: number } }) {
@@ -835,16 +966,30 @@ function EntranceHistory({ id }: { id: string }) {
   );
 }
 
-export function RelayDialog({ node, groups, onClose }: { node: ServerNode; groups: NodeGroup[]; onClose: () => void }) {
+export function RelayDialog({
+  node: given,
+  servers,
+  groups,
+  onClose,
+}: {
+  /** The landing node (from its row menu); else picked from `servers` (page header). */
+  node?: ServerNode;
+  servers?: ServerView[];
+  groups: NodeGroup[];
+  onClose: () => void;
+}) {
   const tr = useTr();
+  const choices = (servers ?? []).filter((s) => !s.deleting_at).flatMap((s) => s.nodes.map((n) => ({ s, n })));
+  const [nodeId, setNodeId] = useState(given?.id ?? choices[0]?.n.id ?? "");
+  const node = given ?? choices.find((c) => c.n.id === nodeId)?.n;
   const [f, setF] = useState<Form>({
     name: "",
     host: "",
     port: "",
     listen: "",
-    cidrs: "",
+    cidrs: chips([]),
     rate: "1",
-    tags: "",
+    tags: chips([]),
     groups: [],
     enabled: true,
     sort: "0",
@@ -853,11 +998,12 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
   const [run, busy] = useAction();
   const confirmFree = useConfirmFree();
   const errors = formErrors(f, true, tr);
-  const bad = Object.values(errors).filter(Boolean).length;
+  const cidrLive = f.cidrs.items.some((c) => !isIpOrCidr(c)) ? errors.cidrs : undefined;
+  const bad = Object.values(errors).filter(Boolean).length + (node ? 0 : 1);
   const submit = async () => {
     setTried(true);
     const rate = parseRate(f.rate);
-    if (bad || rate === null) return;
+    if (bad || rate === null || !node) return;
     if (rate === 0 && !(await confirmFree(f.name.trim()))) return;
     const b = formBody(f, rate, true);
     const r = await run(
@@ -882,10 +1028,14 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
       size="lg"
       icon={ArrowRightLeft}
       onClose={onClose}
-      title={tr(
-        `添加中转入口 · ${node.display_name || node.name}`,
-        `Add relay entrance · ${node.display_name || node.name}`,
-      )}
+      title={
+        given
+          ? tr(
+              `添加中转入口 · ${given.display_name || given.name}`,
+              `Add relay entrance · ${given.display_name || given.name}`,
+            )
+          : tr("添加中转入口", "Add relay entrance")
+      }
       description={tr(
         "外部中转转发到节点上的派生入站（同协议同参数、独立凭据），只接受中转机出口的新连接。",
         "An external relay forwards to a derived inbound on the node (same protocol, own credentials) that only accepts the relay's egress.",
@@ -893,49 +1043,84 @@ export function RelayDialog({ node, groups, onClose }: { node: ServerNode; group
       onSubmit={submit}
       footer={
         <>
-          <FixCount n={tried ? bad : 0} />
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <FixCount n={tried ? bad : cidrLive ? 1 : 0} />
+          <Button variant="ghost" onClick={onClose}>
+            {tr("取消", "Cancel")}
+          </Button>
           <Button type="submit" variant="primary" loading={busy}>
             {tr("添加", "Add")}
           </Button>
         </>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2">
+        {!given && (
+          <Field
+            label={tr("落地节点", "Landing node")}
+            required
+            className="sm:col-span-2"
+            error={tried && !node ? tr("先添加一个落地节点", "Add a landing node first") : undefined}
+          >
+            <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
+              {choices.map(({ s, n }) => (
+                <option key={n.id} value={n.id}>
+                  {s.name} / {n.display_name || n.name}
+                  {n.protocol ? ` (${n.protocol}${n.port ? ` :${n.port}` : ""})` : ""}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
         <Field label={tr("名称", "Name")} required error={tried ? errors.name : undefined}>
           <Input
             value={f.name}
             onChange={(e) => setF({ ...f, name: e.target.value })}
-            placeholder={tr("例如 IPLC", "e.g. IPLC")}
+            placeholder={tr("例如 广州 → 香港 IPLC", "e.g. Guangzhou → HK IPLC")}
           />
         </Field>
         <Field label={tr("倍率", "Multiplier")} required error={shown(f.rate, errors.rate, tried)}>
-          <Input inputMode="decimal" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })} />
+          <Input
+            inputMode="decimal"
+            className="tnum"
+            value={f.rate}
+            onChange={(e) => setF({ ...f, rate: e.target.value })}
+          />
         </Field>
         <Field
           label={tr("连接地址（中转机）", "Dial host (the relay)")}
           required
           error={tried ? errors.host : undefined}
+          hint={tr("用户连接到这里", "Users connect here")}
         >
           <Input className="font-mono" value={f.host} onChange={(e) => setF({ ...f, host: e.target.value })} />
         </Field>
         <Field label={tr("连接端口", "Dial port")} required error={shown(f.port, errors.port, tried)}>
-          <Input inputMode="numeric" value={f.port} onChange={(e) => setF({ ...f, port: e.target.value })} />
+          <Input
+            inputMode="numeric"
+            className="tnum"
+            value={f.port}
+            onChange={(e) => setF({ ...f, port: e.target.value })}
+          />
         </Field>
+        <EgressField
+          host={f.host}
+          value={f.cidrs}
+          onChange={(v) => setF({ ...f, cidrs: v })}
+          error={tried ? errors.cidrs : cidrLive}
+        />
         <Field
           label={tr("监听端口（节点上）", "Listen port (on the node)")}
           required
           error={shown(f.listen, errors.listen, tried)}
         >
-          <Input inputMode="numeric" value={f.listen} onChange={(e) => setF({ ...f, listen: e.target.value })} />
+          <Input
+            inputMode="numeric"
+            className="tnum"
+            value={f.listen}
+            onChange={(e) => setF({ ...f, listen: e.target.value })}
+          />
         </Field>
         <TagsField value={f.tags} onChange={(v) => setF({ ...f, tags: v })} />
-        <EgressField
-          host={f.host}
-          value={f.cidrs}
-          onChange={(v) => setF({ ...f, cidrs: v })}
-          error={tried ? errors.cidrs : undefined}
-        />
         <div className="sm:col-span-2">
           <GroupPicker groups={groups} value={f.groups} onChange={(g) => setF({ ...f, groups: g })} />
         </div>

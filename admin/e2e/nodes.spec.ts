@@ -18,10 +18,10 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
 }, info) => {
   const name = uniq(info, "srv");
   await openConsole(page, "/nodes");
-  for (const t of ["服务器在线", "落地节点", "入口", "探测失败已隐藏"])
+  for (const t of ["服务器在线", "落地节点", "入口", "健康检查失败"])
     await expect(page.getByText(t, { exact: true }).first()).toBeVisible();
   // NOD-03: add → the one-time install command with its countdown.
-  await page.getByRole("button", { name: "添加服务器" }).click();
+  await page.getByRole("button", { name: "添加服务器" }).first().click();
   let d = dialog(page, "添加服务器");
   await d.getByLabel("名称（内部，唯一）").fill(name);
   await d.getByRole("button", { name: "添加" }).click();
@@ -79,7 +79,8 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   // Over quota: the red state and its explanation.
   sql(`UPDATE servers SET traffic_quota_tx_bytes = 21474836480 WHERE name = '${name}'`);
   await page.reload();
-  await expect(card.getByText("已超额")).toBeVisible();
+  await expect(card.getByText(/本周期额度已用完/)).toBeVisible();
+  await expect(card.getByText("超额停用")).toBeVisible();
   // NOD-09: alert rules of this server.
   await menu(page, `服务器 ${name} 的操作`, "告警规则");
   d = dialog(page);
@@ -127,15 +128,16 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await d.getByLabel("端口", { exact: true }).fill(String(port));
   await d.getByLabel("倍率").fill("1.5");
   // Tags are the entrance's (the direct one here), not the node's.
-  await d.getByLabel("标签（逗号分隔，用户可见）").fill("原生, 流媒体");
+  await d.getByRole("textbox", { name: "添加标签" }).fill("原生, 流媒体");
   await d.getByRole("button", { name: "检测目标站点" }).click();
   await expect(d.getByRole("status")).toBeVisible();
   await d.getByRole("button", { name: "添加", exact: true }).click();
   await toast(page, "节点已添加");
   // NOD-11 / NOD-15: the row and its entrance table.
   const row = nodeRow(page, node);
-  await expect(row.getByText(`vless :${port}`)).toBeVisible();
+  await expect(row.getByText(`:${port}`, { exact: true })).toBeVisible();
   await expect(row.getByText("东京")).toBeVisible();
+  await expect(row.getByText("VLESS", { exact: true })).toBeVisible();
   const entrances = row.locator("li[data-entrance]");
   await expect(entrances).toHaveCount(1);
   await expect(entrances.first()).toContainText("1.5x");
@@ -179,28 +181,35 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await expect(reissue).toContainText("受影响的用户");
   await reissue.getByRole("button", { name: "取消" }).click();
   await expect(reissue).toHaveCount(0);
-  await expect(row.getByText(`vless :${port}`)).toBeVisible();
+  await expect(row.getByText(`:${port}`, { exact: true })).toBeVisible();
   await box.fill(JSON.stringify({ ...inbound, port: port + 1 }));
   await d.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "入站已保存，agent 将重建配置");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(row.getByText(`vless :${port + 1}`)).toBeVisible();
+  await expect(row.getByText(`:${port + 1}`, { exact: true })).toBeVisible();
   await expect(row.getByRole("button", { name: new RegExp(`^${node} 显示`) })).toBeVisible();
   // NOD-17: a relay entrance.
   await menu(page, `节点 ${node} 的操作`, "添加中转入口");
   d = dialog(page);
   await d.getByLabel("名称", { exact: true }).fill("IPLC");
   await d.getByLabel("倍率").fill("2");
-  await d.getByLabel("标签（逗号分隔，用户可见）").fill("IPLC 专线");
+  await d.getByRole("textbox", { name: "添加标签" }).fill("IPLC 专线");
   await d.getByLabel("连接端口").fill("30001");
   await d.getByLabel("监听端口（节点上）").fill(String(port + 2));
   // The egress hint; the dial IP typed in as the egress is called out.
   await expect(d.getByText(/curl -4 ifconfig\.me/).first()).toBeVisible();
   await d.getByLabel("连接地址（中转机）").fill("198.51.100.4");
-  await d.getByLabel("中转机出口 IP / CIDR").fill("198.51.100.4");
+  await d.getByRole("textbox", { name: "添加出口 IP / CIDR" }).fill("198.51.100.4");
   await expect(d.getByText(/连接地址也在出口列表里/)).toBeVisible();
   await d.getByLabel("连接地址（中转机）").fill("relay.example.com");
-  await d.getByLabel("中转机出口 IP / CIDR").fill("203.0.113.0/24");
+  // An address that is not an IP / CIDR is called out as a red chip under the field.
+  const egress = d.getByRole("textbox", { name: "添加出口 IP / CIDR" });
+  await egress.fill("203.0.113.300");
+  await egress.press("Enter");
+  await expect(d.getByText("「203.0.113.300」不是有效的 IP 地址或 CIDR")).toBeVisible();
+  await expect(d.getByText("1 处需要修正")).toBeVisible();
+  await d.getByRole("button", { name: "移除 203.0.113.300" }).click();
+  await egress.fill("203.0.113.0/24");
   await expect(d.getByText(/连接地址也在出口列表里/)).toHaveCount(0);
   await d.getByRole("button", { name: "添加" }).click();
   await toast(page, "中转入口已添加");
@@ -215,12 +224,27 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   );
   await page.reload();
   await expect(row.getByText(/已从订阅隐藏并已告警，恢复后自动显示/)).toBeVisible();
+  // Filters (in the URL): relays only, then what needs a look, then everything.
+  const filters = page.getByRole("group", { name: "筛选" });
+  await filters.getByRole("button", { name: "中转入口" }).click();
+  await expect(page).toHaveURL(/[?&]view=relay/);
+  await expect(entrances).toHaveCount(1);
+  await expect(entrances.first()).toContainText("IPLC");
+  await filters.getByRole("button", { name: /有异常/ }).click();
+  await expect(page).toHaveURL(/[?&]view=issue/);
+  await expect(entrances).toHaveCount(1);
+  await expect(entrances.first()).toContainText("IPLC");
+  await filters.getByRole("button", { name: "全部" }).click();
+  await expect(page).not.toHaveURL(/[?&]view=/);
+  await expect(entrances).toHaveCount(2);
   // NOD-16 / NOD-19: the direct entrance — base rate, time windows (overlap warned), heat map.
   await entrances.first().getByRole("button").click();
   d = dialog(page);
   await expect(d.getByText("当前倍率")).toBeVisible();
   // One save for the connection tab and the multiplier tab.
-  await d.getByLabel("标签（逗号分隔，用户可见）").fill("原生，高速");
+  await expect(d.getByRole("button", { name: "移除 原生" })).toBeVisible();
+  await d.getByRole("button", { name: "移除 流媒体" }).click();
+  await d.getByRole("textbox", { name: "添加标签" }).fill("高速");
   await d.getByRole("tab", { name: /倍率与时段/ }).click();
   await d.getByLabel("基础倍率（0–100）").fill("1");
   await d.getByRole("button", { name: "保存", exact: true }).click();
@@ -244,7 +268,10 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await expect(entrances.first().getByText("1", { exact: true })).toBeVisible();
   // Delete the relay (type its name).
   await relay.getByRole("button").click();
-  await dialog(page).getByRole("button", { name: "删除中转入口" }).click();
+  await dialog(page).getByRole("button", { name: "删除入口" }).click();
+  const del = page.getByRole("alertdialog");
+  await expect(del).toContainText("删除中转入口「IPLC」？");
+  await expect(del).toContainText("所属节点组");
   await confirmDialog(page, "IPLC");
   await toast(page, "入口已删除");
   await expect(entrances).toHaveCount(1);
