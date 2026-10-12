@@ -182,6 +182,12 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm run check
       - run: npm run build
+      # Report-only gzip sizes (scripts/bundle-report.mjs; also in the step summary).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-bundle-report
+          path: admin/dist/bundle-report.json
+          retention-days: 14
 
   deny:
     name: cargo-deny
@@ -292,7 +298,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the compiler (same as the Dockerfile).
@@ -312,6 +318,16 @@ jobs:
       - run: cd spa && npm ci && npx playwright install --with-deps chromium
       - run: cd admin && npm ci
       - run: make e2e
+        # Leave time for the uploads below when a run hangs.
+        timeout-minutes: 36
+      # Admin screenshot set (admin/e2e/00-screens.spec.ts) for review.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-screens
+          path: admin/test-results/screens
+          if-no-files-found: warn
+          retention-days: 14
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
