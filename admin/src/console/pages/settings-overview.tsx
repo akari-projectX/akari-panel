@@ -429,7 +429,8 @@ export function useOverview() {
   return {
     sum,
     attn,
-    error: all.isError ? st.error : null,
+    // A failed background refetch keeps what is shown (e.g. right after the admin prefix moved).
+    error: d ? null : all.isError ? (st.error ?? all.error) : null,
     refetch: () => void (all.isError ? st.refetch() : all.refetch()),
     loading: !d && !(all.isError && st.error),
   };
