@@ -307,11 +307,11 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
     "hit-44 inline-flex size-8 items-center justify-center rounded-full transition-colors hover:bg-accent";
 
   return (
-    <div className="min-h-dvh bg-window lg:bg-background">
+    <div className="min-h-dvh bg-window">
       <Sidebar page={page} collapsed={collapsed} onCollapse={() => setCollapsed((v) => !v)} onTheme={toggleTheme} />
       <div
         className={cn(
-          "min-h-dvh transition-[margin] duration-(--dur-base) ease-(--ease-out) lg:bg-window lg:shadow-[-0.5px_0_0_var(--border)]",
+          "min-h-dvh transition-[margin] duration-(--dur-base) ease-(--ease-out)",
           collapsed ? "lg:ml-[80px]" : "lg:ml-[248px]",
         )}
       >

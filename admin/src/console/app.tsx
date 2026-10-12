@@ -85,7 +85,7 @@ export function ConsoleApp() {
 
 export function BootSkeleton({ label }: { label: string }) {
   return (
-    <div className="min-h-dvh bg-window lg:bg-background" role="status" aria-label={label}>
+    <div className="min-h-dvh bg-window" role="status" aria-label={label}>
       <div className="fixed inset-y-2 left-2 hidden w-[232px] rounded-[18px] bg-(--glass-sidebar) lg:block" />
       <div className="grid gap-4 p-4 sm:p-6 lg:ml-[248px] lg:p-8">
         <Skeleton className="h-8 w-48" />
