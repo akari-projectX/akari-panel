@@ -22,7 +22,7 @@ test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search,
   await c.getByRole("button", { name: "创建" }).click();
   await expect(c.getByText("请输入整数")).toBeVisible();
   await c.getByLabel("总次数（空 = 不限）").fill("5");
-  await c.getByRole("checkbox", { name: "月付" }).click();
+  await c.getByRole("checkbox", { name: "月付", exact: true }).click();
   await c.getByRole("button", { name: "创建" }).click();
   await toast(page, "优惠券已创建");
   // Search (in the URL) finds it; the list refreshed without a reload.
@@ -56,7 +56,7 @@ test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search,
 test("CPN-05: code batches — generate, CSV, revoke (type the batch name)", async ({ page }, info) => {
   const name = uniq(info, "batch");
   await openConsole(page, "/coupons");
-  await page.getByRole("button", { name: "批量生成优惠码" }).click();
+  await page.getByRole("button", { name: "批量生成优惠码" }).first().click();
   const b = dialog(page, "批量生成优惠码");
   await b.getByLabel("批次名称").fill(name);
   await b.getByLabel("前缀（可选）").fill("E2E");

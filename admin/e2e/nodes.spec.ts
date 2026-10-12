@@ -390,7 +390,7 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   await d.getByLabel("流量额度（GiB，留空不限）").fill("100");
   await d.getByLabel("限速（Mbps，留空不限）").fill("50");
   await d.getByLabel("库存（最多用户数，留空不限）").fill("10");
-  await d.getByRole("checkbox", { name: "月付" }).click();
+  await d.getByRole("checkbox", { name: "月付", exact: true }).click();
   await d.getByLabel("月付价格").fill("10");
   await d.getByRole("checkbox", { name: group }).click();
   await expect(d.getByText("用户将获得的入口（1）")).toBeVisible();

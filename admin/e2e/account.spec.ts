@@ -9,8 +9,8 @@ test("ACC-01 ACC-02 ACC-04: account details, password change, sign out", async (
   await signIn(page, email, "account-pass-1", "/account");
   // ACC-01.
   await expect(page.getByRole("heading", { level: 1, name: "我的账户" })).toBeVisible();
-  await expect(page.getByText(email).first()).toBeVisible();
-  await expect(page.getByText("管理员", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("main").getByText(email).first()).toBeVisible();
+  await expect(page.getByRole("main").getByText("管理员", { exact: true }).first()).toBeVisible();
   // ACC-02: the new password twice (a mismatch is caught here); a wrong current password is refused; the right one changes it.
   await page.getByLabel("当前密码").fill("wrong-pass-1");
   await page.getByLabel("新密码（至少 8 位）").fill("account-pass-2");

@@ -69,7 +69,7 @@ test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, filters, more filters as
   await expect(row(page, `${tag}-b@e2e.test`)).toContainText("无套餐");
   // Plan filter (in 更多筛选) → only a, shown as a chip.
   await page.getByRole("button", { name: "更多筛选" }).click();
-  await page.getByLabel("套餐", { exact: true }).selectOption({ label: `${tag}-plan` });
+  await page.getByRole("combobox", { name: "套餐", exact: true }).selectOption({ label: `${tag}-plan` });
   await page.keyboard.press("Escape");
   await expect(row(page, `${tag}-b@e2e.test`)).toHaveCount(0);
   await expect(row(page, `${tag}-a@e2e.test`)).toBeVisible();
@@ -382,7 +382,7 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
   // The selection belongs to the view: changing the sort drops it.
   await expect(page.getByTestId("bulk-bar")).toBeVisible();
   await page.getByRole("button", { name: "更多筛选" }).click();
-  await page.getByLabel("排序", { exact: true }).selectOption("email");
+  await page.getByRole("combobox", { name: "排序", exact: true }).selectOption("email");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("bulk-bar")).toHaveCount(0);
   // Bulk delete of the selection (their balance makes them anonymized).

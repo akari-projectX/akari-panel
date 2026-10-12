@@ -102,9 +102,14 @@ test("CNT-01 CNT-02 CNT-03 CNT-04 CNT-05 CNT-06: announcements (preview, mail), 
       .filter({ hasText: /邮件发送尚未配置|已加入发送队列/ })
       .or(page.locator("[data-sonner-toast]", { hasText: "已加入发送队列" })),
   ).toBeVisible();
+  // Esc closes one layer: the confirmation (when the error is shown there), then the editor.
+  if (await page.getByRole("alertdialog").isVisible()) {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  }
   await page.keyboard.press("Escape");
-  if (await dialog(page, "编辑公告").isVisible()) await page.keyboard.press("Escape");
   await expect(dialog(page, "编辑公告")).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await openRow(page, title);
   await dialog(page, "编辑公告").getByRole("button", { name: "删除" }).click();
   await confirmDialog(page, title);

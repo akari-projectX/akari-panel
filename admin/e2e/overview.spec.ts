@@ -91,7 +91,12 @@ test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail que
   );
   await openConsole(page, "/status?mail=dead");
   // ST-04: the notice, and its 测试发信 runs the step-by-step diagnosis here.
-  await expect(page.getByText(/封邮件发送失败/)).toBeVisible();
+  // The status answer is cached for 5 s per instance (sysstatus CACHE_FOR): the
+  // previous test's visit may still be served, so 刷新 until the new dead letter counts.
+  await expect(async () => {
+    await page.getByRole("button", { name: "刷新", exact: true }).click();
+    await expect(page.getByText(/封邮件发送失败/)).toBeVisible({ timeout: 1_500 });
+  }).toPass({ timeout: 20_000 });
   await page.getByRole("button", { name: "测试发信" }).first().click();
   const d = dialog(page, "测试发信");
   await expect(d.getByLabel("收件地址")).not.toHaveValue("");

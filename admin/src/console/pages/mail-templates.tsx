@@ -132,6 +132,8 @@ function fieldLabel(tr: Tr, f: MailField | undefined, source: boolean): string {
 }
 
 function problemText(tr: Tr, p: Problem, source: boolean): string {
+  // The server's message already names the place ("HTML 源码第 3 行第 1 列：…").
+  if (p.kind === "server") return p.text ?? "";
   const where = [fieldLabel(tr, p.field, source), p.line ? tr(`第 ${p.line} 行`, `line ${p.line}`) : ""]
     .filter(Boolean)
     .join(" ");
@@ -422,6 +424,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
       const s = el.selectionStart ?? el.value.length;
       const e = el.selectionEnd ?? s;
       update({ subject: draft.subject.slice(0, s) + text + draft.subject.slice(e) });
+      if (tab === "vars") setTab("edit");
       requestAnimationFrame(() => {
         el.focus();
         el.setSelectionRange(s + text.length, s + text.length);

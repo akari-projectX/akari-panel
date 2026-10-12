@@ -84,7 +84,14 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   const subject = page.getByLabel("邮件主题");
   await subject.fill(`E2E ${info.project.name} `);
   await subject.press("End");
-  await page.getByRole("button", { name: "{site}", exact: true }).click();
+  if (isMobile(info)) {
+    // Phones: the 变量 tab lists the placeholders (the chip row is for wider windows).
+    await pane(page, info, "变量");
+    await page
+      .getByRole("complementary", { name: "变量" })
+      .getByRole("button", { name: /^\{site\}/ })
+      .click();
+  } else await page.getByRole("button", { name: "{site}", exact: true }).click();
   await expect(subject).toHaveValue(`E2E ${info.project.name} {site}`);
 
   // Server-rendered preview: HTML and the plain-text part.
@@ -146,7 +153,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   await expect(source).toContainText(/<!doctype html>/i);
   const generated = (await template()).starter_html;
   await source.fill(`${generated}\n<p>E2E 源码</p>\n<script>alert(1)</script>`);
-  await expect(errors(page)).toContainText("HTML 源码不能包含");
+  await expect(errors(page)).toContainText(/HTML 源码第 \d+ 行第 \d+ 列：不能包含/);
   await expect(saveButton(page)).toBeDisabled();
   await source.fill(`${generated}\n<p>E2E 源码</p>`);
   await expect(errors(page)).toHaveCount(0);

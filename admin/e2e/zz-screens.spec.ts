@@ -149,14 +149,29 @@ test("screens: the drafted screens from the real app", async ({ browser }, info)
     pricing: { on_sale: false, prices: [{ period: "month", price_cents: 2900 }] },
   });
   await apiJson("POST", "/orders/manual", { user_id: u.id, plan_id: plan.id, period: "month", reason: "screens" });
-  // A relay entrance if the node specs left one (else any entrance).
+  // A node with a relay entrance of our own (the node specs may have failed or cleaned up).
   const c: Ctx = { userId: u.id };
   try {
+    const port = 21000 + Math.floor(Math.random() * 20000);
+    const node = await apiJson<{ id: string }>("POST", "/nodes", {
+      name: uniq(info, "screens-node"),
+      region: "JP",
+      inbound: { protocol: "vmess", port, settings: { clients: [] } },
+    });
+    const relay = await apiJson<{ id: string }>("POST", `/nodes/${node.id}/entrances`, {
+      name: "IPLC 专线",
+      connect_host: "relay.example.com",
+      connect_port: 30001,
+      listen_port: port + 1,
+      source_cidrs: ["203.0.113.7/32"],
+      rate: 1.5,
+    });
+    c.entranceId = relay.id;
+  } catch (e) {
+    console.log(`screens: no relay entrance of our own (${(e as Error).message.split("\n")[0]})`);
     const servers = await apiJson<{ nodes?: { entrances?: { id: string; kind: string }[] }[] }[]>("GET", "/servers");
     const all = servers.flatMap((s) => (s.nodes ?? []).flatMap((n) => n.entrances ?? []));
     c.entranceId = (all.find((e) => e.kind === "relay") ?? all[0])?.id;
-  } catch {
-    /* no nodes */
   }
   const failed: string[] = [];
   for (const device of ["desktop", "mobile"] as const)

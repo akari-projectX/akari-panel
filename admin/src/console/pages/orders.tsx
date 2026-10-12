@@ -824,15 +824,15 @@ function RefundDialog({ order, onClose }: { order: Order; onClose: () => void })
   const [typed, setTyped] = useState("");
   const [run, busy] = useAction();
   const tail = order.out_trade_no.slice(-6);
-  const checkAmount = (): number | null | undefined => {
+  const checkAmount = (value = amount): number | null | undefined => {
     // undefined = invalid; null = empty (all, original route only)
     if (route === "balance") return null;
-    if (!amount.trim()) {
+    if (!value.trim()) {
       if (route === "original") return null;
       setAmountErr(tr("请填写在商家平台实际退回的金额", "Enter the amount refunded in the merchant console"));
       return undefined;
     }
-    const c = parseYuan(amount);
+    const c = parseYuan(value);
     const max = p.data?.amount_cents ?? 0;
     if (c === null || (route === "original" && c <= 0) || c > max) {
       setAmountErr(
@@ -960,7 +960,12 @@ function RefundDialog({ order, onClose }: { order: Order; onClose: () => void })
                   inputMode="decimal"
                   value={amount}
                   placeholder={centsToYuanText(p.data.amount_cents)}
-                  onChange={(e) => setAmount(e.target.value)}
+                  onChange={(e) => {
+                    setAmount(e.target.value);
+                    // A shown error clears as soon as the value is right — not on blur,
+                    // where the shift under the pointer would eat the next click.
+                    if (amountErr) checkAmount(e.target.value);
+                  }}
                   onBlur={() => amount.trim() && checkAmount()}
                 />
               </Field>

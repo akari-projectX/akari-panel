@@ -86,7 +86,7 @@ function ConfirmDialog({ pending, onDone }: { pending: Pending | null; onDone: (
       <A.Portal>
         <A.Overlay
           data-slot="alert-dialog-overlay"
-          className="fixed inset-0 z-50 bg-(--scrim) backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+          className="fixed inset-0 z-50 bg-(--scrim) backdrop-blur-[2px] data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
         />
         <A.Content
           data-slot="alert-dialog-content"
@@ -97,7 +97,7 @@ function ConfirmDialog({ pending, onDone }: { pending: Pending | null; onDone: (
               box.focus();
             }
           }}
-          className="fixed top-1/2 left-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-card p-5 shadow-dialog data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
+          className="fixed top-1/2 left-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-card p-5 shadow-dialog data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
         >
           <form
             noValidate

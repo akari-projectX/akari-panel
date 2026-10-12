@@ -8,7 +8,7 @@ import { cn } from "../cn";
 import { Button } from "./button";
 
 const surface =
-  "glass z-50 min-w-48 overflow-hidden rounded-lg bg-popover p-1 text-foreground shadow-pop data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]";
+  "glass z-50 min-w-48 overflow-hidden rounded-lg bg-popover p-1 text-foreground shadow-pop data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]";
 
 /** A dropdown menu on any trigger element. */
 export function Menu({

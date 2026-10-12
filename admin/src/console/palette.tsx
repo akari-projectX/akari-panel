@@ -177,15 +177,15 @@ export function CommandPalette({
       <D.Portal>
         <D.Overlay
           data-slot="dialog-overlay"
-          className="fixed inset-0 z-50 bg-(--scrim) data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+          className="fixed inset-0 z-50 bg-(--scrim) data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0"
         />
         <D.Content
           data-slot="dialog-content"
           aria-describedby={undefined}
-          className="glass fixed top-[12vh] left-1/2 z-50 w-[calc(100vw-24px)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-2xl bg-popover shadow-dialog data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
+          className="glass fixed top-[12vh] left-1/2 z-50 w-[calc(100vw-24px)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-2xl bg-popover shadow-dialog data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
         >
           <D.Title className="sr-only">{tr("命令面板", "Command palette")}</D.Title>
-          <Command loop shouldFilter={false} label={tr("命令面板", "Command palette")}>
+          <Command loop shouldFilter={false} label={tr("搜索", "Search")}>
             <div className="flex items-center gap-2.5 border-b border-separator px-4">
               <Search className="size-[18px] shrink-0 text-faint" aria-hidden="true" />
               <Command.Input

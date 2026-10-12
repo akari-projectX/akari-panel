@@ -414,6 +414,7 @@ function ServerCard({
   const hb = s.heartbeat;
   const q = s.traffic_quota;
   const qp = q.bytes ? pct(q.used_bytes, q.bytes) : null;
+  const overState = !!q.exceeded_at && s.enrolled && !s.deleting_at;
   const certDays = s.cert_not_after ? Math.floor((Date.parse(s.cert_not_after) - Date.now()) / 86_400_000) : null;
   const newer = updates.data?.update_available;
   const canUpdate = !!newer && !!s.agent_version && s.agent_version !== newer;
@@ -477,10 +478,17 @@ function ServerCard({
                 >
                   {s.name}
                 </button>
-                <Badge tone={tone} dot={!q.exceeded_at}>
-                  {q.exceeded_at && <TriangleAlert aria-hidden="true" />}
+                <Badge tone={tone} dot={!overState}>
+                  {overState && <TriangleAlert aria-hidden="true" />}
                   {state}
                 </Badge>
+                {q.exceeded_at && !overState && (
+                  // Not installed (or being deleted) and over quota: both facts show.
+                  <Badge tone="danger">
+                    <TriangleAlert aria-hidden="true" />
+                    {tr("超额停用", "Over quota")}
+                  </Badge>
+                )}
                 {s.alerts_firing > 0 && (
                   <Badge tone="danger">
                     <Bell aria-hidden="true" />
