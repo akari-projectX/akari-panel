@@ -5,7 +5,7 @@
 // the IP literal (always served), and puts the domains back afterwards.
 import { expect, request, test, type APIRequestContext, type Page } from "@playwright/test";
 
-import { ADMIN, ADMIN_PW, LOGIN, PREFIX, apiJson, toast, uniq } from "./helpers";
+import { ADMIN, ADMIN_PW, LOGIN, PREFIX, apiJson, confirmDialog, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -130,23 +130,19 @@ test("SH-04 SH-02 SH-03 ACC-03: bind after a password sign-in, sign in with the 
   await expect(page.getByRole("button", { name: "账户菜单" })).toBeVisible();
   // ACC-03: listed, renamed, a second one added.
   await page.goto(`${L_CONSOLE}/account`);
-  const list = page
-    .getByRole("heading", { name: "通行密钥" })
-    .locator("xpath=ancestor::*[contains(@class,'rounded-lg')][1]");
+  const list = page.locator("[data-passkeys]");
   await expect(list.getByText("最后使用").first()).toBeVisible();
   await list.getByRole("button", { name: "改名" }).first().click();
   await list.getByRole("textbox", { name: "名称", exact: true }).fill("e2e key");
   await list.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "已改名");
   await expect(list.getByText("e2e key")).toBeVisible();
-  // Replace it: delete, then add another (one authenticator holds one credential per account).
+  // Replace it: delete (the last one: the confirmation warns; type its name), then add another
+  // (one authenticator holds one credential per account).
   await list.getByRole("listitem").filter({ hasText: "e2e key" }).getByRole("button", { name: "删除" }).click();
-  await page
-    .getByRole("dialog")
-    .last()
-    .getByRole("button", { name: /确认|删除/ })
-    .last()
-    .click();
+  await expect(page.getByRole("alertdialog")).toContainText("这是你最后一个可用的通行密钥");
+  await confirmDialog(page, "e2e key");
+  await toast(page, "通行密钥已删除");
   await expect(list.getByText("e2e key")).toHaveCount(0);
   await forget();
   await list.getByLabel("新通行密钥名称").fill("second");
@@ -177,20 +173,21 @@ test("SH-04 SH-02 SH-03 ACC-03: bind after a password sign-in, sign in with the 
   await authPolicy({ passkey_only_admins: false });
   // ACC-03: passkey-only for this account (on, off), then delete both passkeys.
   await page.goto(`${L_CONSOLE}/account`);
-  const only = page.getByRole("switch", { name: "只用通行密钥登录" });
+  const only = page.getByRole("switch", { name: /只用通行密钥登录/ });
+  // Turning it on asks first (how to recover is spelled out); cancelling changes nothing.
   await only.click();
+  await expect(page.getByRole("alertdialog")).toContainText("akari admin reset-login");
+  await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
+  await expect(only).toHaveAttribute("aria-checked", "false");
+  await only.click();
+  await confirmDialog(page);
   await toast(page, "已保存");
   await expect(only).toHaveAttribute("aria-checked", "true");
   await only.click();
   await expect(only).toHaveAttribute("aria-checked", "false");
   for (const n of ["second"]) {
     await list.getByRole("listitem").filter({ hasText: n }).getByRole("button", { name: "删除" }).click();
-    await page
-      .getByRole("dialog")
-      .last()
-      .getByRole("button", { name: /确认|删除/ })
-      .last()
-      .click();
+    await confirmDialog(page, n);
     await expect(list.getByText(n)).toHaveCount(0);
   }
   await expect(list.getByText("还没有通行密钥。")).toBeVisible();
