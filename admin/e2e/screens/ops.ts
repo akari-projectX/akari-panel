@@ -7,11 +7,11 @@
 // alerts-outbox-empty (never empty there), updates-checking / -nokey /
 // -check-error / -no-releases / -error / -paused / -delete-inuse /
 // -upload-progress / -upload-error (transient or need a state the CI data
-// does not have). status-diagnose-ok / -failed: only the one matching the
+// does not have), audit-empty / -loading / -error. status-diagnose-ok / -failed: only the one matching the
 // CI mail setup is taken.
 import { expect, type Page } from "@playwright/test";
 
-import { apiJson, sql, uniq } from "../helpers";
+import { ADMIN, apiJson, sql, uniq } from "../helpers";
 import { go, goDialog, goto, need, type Ctx, type Shot } from "./shared";
 
 /**
@@ -36,6 +36,15 @@ export async function setup(c: Ctx): Promise<void> {
       `(${c.extra.alertFiring}, 'email', 'firing', '{"title":"${name} CPU 过高"}', 'sent', 1, NULL)`,
   );
 }
+
+/** Open the audit log at `path`, then the first entry (matching `has`). */
+const auditEntry = (path: string, has?: RegExp) => async (page: Page) => {
+  await goto(page, path);
+  const rows = page.locator("[data-row]");
+  const r = has ? rows.filter({ hasText: has }).first() : rows.first();
+  await r.getByText(/^\d{2}:\d{2}$/).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+};
 
 /** Run the test mail in the open dialog; resolve only when the outcome is `want`. */
 const diagnose = (want: "ok" | "failed") => async (page: Page) => {
@@ -131,6 +140,36 @@ export const shots: Shot[] = [
         .click();
     },
   },
+  { name: "audit-timeline", open: go("/audit"), full: true },
+  {
+    name: "audit-filtered",
+    open: async (page) => {
+      const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" });
+      await goto(page, `/audit?actor=${encodeURIComponent(ADMIN)}&from=${today}&to=${today}`);
+    },
+  },
+  {
+    name: "audit-actor-menu",
+    open: async (page) => {
+      await goto(page, "/audit");
+      await page.getByRole("button", { name: "操作者", exact: true }).click();
+      await expect(page.getByLabel("操作者邮箱或标签")).toBeVisible();
+    },
+  },
+  {
+    name: "audit-date-popover",
+    open: async (page) => {
+      await goto(page, "/audit");
+      await page.getByRole("button", { name: "日期", exact: true }).click();
+      await page.getByRole("button", { name: "近 7 天" }).click();
+      await page.getByRole("button", { name: /^日期：/ }).click();
+      await expect(page.getByRole("button", { name: "近 7 天" })).toBeVisible();
+    },
+  },
+  { name: "audit-nomatch", open: go("/audit?actor=system&action=user.ban") },
+  { name: "audit-detail-diff", open: auditEntry("/audit", /个字段变更/) },
+  { name: "audit-detail-ban", open: auditEntry("/audit?action=user.ban") },
+  { name: "audit-detail-system", open: auditEntry("/audit?actor=system") },
   {
     name: "updates-rollout-confirm",
     open: async (page) => {

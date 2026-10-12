@@ -2,7 +2,7 @@
 // thresholds/channels and the release source are settings now (settings.spec.ts).
 import { join } from "node:path";
 
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 import {
   ADMIN,
@@ -12,22 +12,13 @@ import {
   apiJson,
   confirmDialog,
   dialog,
-  isMobile,
   openConsole,
-  row,
   sql,
   toast,
   uniq,
 } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
-
-/** Open a row by clicking a text inside it (a link elsewhere in the row would navigate away). */
-async function openBy(page: Page, info: TestInfo, r: ReturnType<typeof row>, text: string | RegExp) {
-  await expect(r).toBeVisible();
-  if (isMobile(info)) await r.locator('[role="button"]').first().click();
-  else await r.getByText(text).first().click();
-}
 
 test("ALR-01 ALR-02 ALR-05: firing board, acknowledge (card and bulk), detail timeline, history filters, notification log with filters and retry", async ({
   page,
@@ -207,41 +198,46 @@ test("UPD-01 UPD-02 UPD-03 DSH-06: check for updates from the source, releases (
   await expect(dialog(page, /灰度 v0\.9\.0/).getByText(name)).toBeVisible();
 });
 
-test("AUD-01 AUD-02: the audit log — actor (by email) and action filters in the URL, object link, change detail, load older", async ({
+test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in the URL, object link, change detail, load older", async ({
   page,
 }, info) => {
   const email = `${uniq(info, "audited")}@e2e.test`;
   const u = await apiJson<{ id: string }>("POST", "/users", { email, password: "audited-pass-1" });
   await apiJson("POST", `/users/${u.id}/ban`, { reason: "audit trail" });
   await openConsole(page, "/audit");
-  // The actor by email (resolved to the account's label).
-  await page.getByLabel("操作者").fill(ADMIN);
-  await page.getByLabel("操作", { exact: true }).fill("user.ban");
+  // The actor by email (resolved to the account's label), the action by code: pills, in the URL.
+  await page.getByRole("button", { name: "操作者", exact: true }).click();
+  await page.getByLabel("操作者邮箱或标签").fill(ADMIN);
+  await page.getByLabel("操作者邮箱或标签").press("Enter");
+  await expect(page).toHaveURL(/actor=/);
+  await page.getByRole("button", { name: "动作", exact: true }).click();
+  await page.getByLabel("动作代码或前缀").fill("user.ban");
+  await page.getByLabel("动作代码或前缀").press("Enter");
   await expect(page).toHaveURL(/action=user\.ban/);
-  const r = row(page, u.id.slice(0, 8));
+  const r = page.locator("[data-row]", { hasText: u.id.slice(0, 8) }).first();
   await expect(r).toContainText(ADMIN);
   await expect(r).toContainText("封禁用户");
   // The object links to the user.
   await expect(r.getByRole("link", { name: /用户/ })).toHaveAttribute("href", new RegExp(`/users\\?open=${u.id}`));
-  // AUD-02: the changed fields, before → after, in the entry's dialog.
-  await openBy(page, info, r, "封禁用户");
+  // AUD-02: the changed fields, before → after, in the entry's dialog (?open=).
+  await r.getByText(/^\d{2}:\d{2}$/).click();
+  await expect(page).toHaveURL(/[?&]open=\d+/);
   const d = dialog(page, "封禁用户");
   await expect(d.getByText("enabled", { exact: true })).toBeVisible();
   await expect(d.locator(".line-through").first()).toBeVisible();
   await d.getByRole("button", { name: "关闭", exact: true }).first().click();
   // The filters survive a reload (they are in the URL).
   await page.reload();
-  await expect(page.getByLabel("操作", { exact: true })).toHaveValue("user.ban");
-  await expect(row(page, u.id.slice(0, 8))).toContainText("封禁用户");
+  await expect(page.getByRole("button", { name: /^动作：/ })).toContainText("封禁用户");
+  await expect(page.locator("[data-row]", { hasText: u.id.slice(0, 8) }).first()).toContainText("封禁用户");
   // Load older pages of everything (the audit log is append-only: enough real entries for a second page).
   for (let i = 0; i < 26; i++) {
     await apiJson("POST", `/users/${u.id}/unban`);
     await apiJson("POST", `/users/${u.id}/ban`, { reason: `round ${i}` });
   }
-  await page.getByLabel("操作者").fill("");
-  await page.getByLabel("操作", { exact: true }).fill("");
+  await page.getByRole("button", { name: "清除全部" }).click();
   await expect(page).not.toHaveURL(/action=/);
-  await expect(page.getByRole("button", { name: "加载更早" })).toBeVisible();
-  await page.getByRole("button", { name: "加载更早" }).click();
-  await expect(page.locator("[data-row]:visible")).not.toHaveCount(50);
+  await expect(page.getByRole("button", { name: "加载更早的记录" })).toBeVisible();
+  await page.getByRole("button", { name: "加载更早的记录" }).click();
+  await expect(page.locator("[data-row]")).not.toHaveCount(50);
 });
