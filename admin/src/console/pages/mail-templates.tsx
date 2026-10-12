@@ -203,7 +203,8 @@ export function MailTemplatesPage() {
       className="hit-44 inline-flex items-center text-footnote text-muted-foreground hover:text-foreground max-lg:text-callout max-lg:text-primary"
     >
       <ChevronLeft className="size-4" aria-hidden="true" />
-      {tr("系统设置 · 通知", "Settings · Notifications")}
+      {tr("系统设置", "Settings")}
+      <span className="max-lg:hidden">{tr(" · 通知", " · Notifications")}</span>
     </Link>
   );
   if (!list.data)
@@ -456,7 +457,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
     if (k !== kind) setKind(k);
   };
   const toolbar = (
-    <div className="flex max-w-full flex-wrap items-center gap-2">
+    <div className="flex max-w-full items-center gap-2 overflow-x-auto [scrollbar-width:none] xl:flex-wrap">
       <Segmented
         label={tr("语言", "Language")}
         value={locale}
@@ -554,7 +555,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
 
   const chips = (
     <div
-      className="flex items-center gap-1.5 overflow-x-auto border-b border-separator px-3 py-1.5 [scrollbar-width:none] 2xl:hidden"
+      className="flex items-center gap-1.5 overflow-x-auto border-b border-separator px-3 py-1.5 [scrollbar-width:none] max-sm:hidden 2xl:hidden"
       role="group"
       aria-label={tr("插入变量", "Insert a placeholder")}
     >
@@ -619,8 +620,11 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
         : tr("邮件正文", "Body");
   const editorPane = (
     <>
-      <div className="flex items-center gap-2 border-b border-separator px-3 py-2">
-        <label htmlFor="mail-subject" className="shrink-0 text-footnote font-medium text-muted-foreground">
+      <div className="flex flex-col gap-1 border-b border-separator px-4 py-2.5 sm:flex-row sm:items-center sm:gap-2 sm:px-3 sm:py-2">
+        <label
+          htmlFor="mail-subject"
+          className="shrink-0 text-caption font-medium text-muted-foreground sm:text-footnote"
+        >
           {tr("主题", "Subject")}
         </label>
         <Input
@@ -632,7 +636,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
           aria-invalid={problems.some((p) => p.field === "subject") || undefined}
           onFocus={() => (lastFocus.current = "subject")}
           onChange={(e) => update({ subject: e.target.value })}
-          className="h-7"
+          className="sm:h-7"
         />
       </div>
       {chips}
@@ -800,7 +804,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
   );
 
   const footer = (
-    <div className="z-10 flex flex-wrap items-center gap-2 border-t border-separator bg-[color-mix(in_srgb,var(--window),var(--card)_40%)] px-4 py-2.5 max-xl:sticky max-xl:bottom-0 max-xl:rounded-b-xl max-lg:bottom-[calc(52px+env(safe-area-inset-bottom))]">
+    <div className="z-10 flex flex-wrap items-center gap-2 border-t border-separator bg-[color-mix(in_srgb,var(--window),var(--card)_40%)] px-4 py-2.5 max-xl:sticky max-xl:bottom-0 max-xl:rounded-b-xl max-sm:rounded-none max-lg:bottom-[calc(52px+env(safe-area-inset-bottom))]">
       <span className="flex items-center gap-1.5 text-footnote" aria-live="polite">
         {dirty ? (
           <>
@@ -835,7 +839,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
   );
 
   return (
-    <div>
+    <div className="xl:-mt-2">
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1 basis-64">
           {back}
@@ -848,7 +852,12 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
 
       {/* Narrow: picker, language + mode, tabs. */}
       <div className="mb-3 grid gap-2 xl:hidden">
-        <Select aria-label={tr("模板", "Template")} value={kind} onChange={(e) => pick(e.target.value)}>
+        <Select
+          aria-label={tr("模板", "Template")}
+          className="[&>select]:pointer-coarse:h-11"
+          value={kind}
+          onChange={(e) => pick(e.target.value)}
+        >
           {groups.map((g) => (
             <optgroup key={g.zh} label={tr(g.zh, g.en)}>
               {g.kinds.map((k) => (
@@ -873,7 +882,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
         />
       </div>
 
-      <Card className="flex flex-col xl:h-[calc(100dvh-180px)] xl:min-h-[620px] xl:overflow-hidden">
+      <Card className="flex flex-col max-sm:-mx-4 max-sm:rounded-none xl:h-[calc(100dvh-170px)] xl:min-h-[620px] xl:overflow-hidden">
         <div className="grid min-h-0 flex-1 xl:grid-cols-[220px_minmax(0,1fr)_minmax(0,1fr)] 2xl:grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)_230px]">
           <aside className="hidden overflow-y-auto border-r border-separator bg-window/60 xl:block">
             {templateList}

@@ -6,23 +6,33 @@
 // "load more" up to the server's 500 and say so when they hit it, never
 // cut silently (audit §5.7). Filters live in the URL.
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Wallet } from "lucide-react";
+import {
+  CircleCheck,
+  CircleDashed,
+  CircleX,
+  Clock,
+  HandCoins,
+  SearchX,
+  Undo2,
+  Wallet,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { get, post, qs } from "../../shared/api";
-import { dateTime, yuan } from "../../shared/format";
+import { yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Dialog } from "../../shared/ui/dialog";
-import { Field, Input, Segmented, Select } from "../../shared/ui/form";
+import { Field, Input, Segmented } from "../../shared/ui/form";
 import { Callout, PageHeader } from "../../shared/ui/layout";
 import { EmptyState } from "../../shared/ui/states";
-import { DataTable, type Column } from "../../shared/ui/table";
 import { Tabs } from "../../shared/ui/tabs";
 import { useAction } from "../data";
 import { CopyButton, Mono, useDebounced } from "../kit";
 import { navigate, setQuery, useRoute } from "../router";
+import { LedgerTable, ScrollX, SearchField, When, shortTime, useColumns } from "./ledger";
 import { AdjustBalanceDialog } from "./user-detail";
 
 type Withdrawal = {
@@ -155,11 +165,23 @@ export function FinancePage() {
     if (sub[0] === "settings") navigate("/settings/commission", true);
   }, [sub]);
   const tab = ["balances", "commissions"].includes(sub[0]) ? sub[0] : "withdrawals";
+  const pending = usePendingWithdrawals();
   return (
     <>
       <PageHeader
         title={tr("资金", "Finance")}
-        description={tr("提现审核、用户余额与邀请返利记录。", "Withdrawals, balances and invite commissions.")}
+        description={
+          pending ? (
+            <span className="tnum">
+              {tr(
+                `${pending} 笔提现待审核 · 用户余额与邀请返利记录`,
+                `${pending} withdrawals to review · balances and invite commissions`,
+              )}
+            </span>
+          ) : (
+            tr("提现审核、用户余额与邀请返利记录。", "Withdrawals, balances and invite commissions.")
+          )
+        }
       />
       <div className="mb-4">
         <Tabs
@@ -167,7 +189,7 @@ export function FinancePage() {
           value={tab}
           onChange={(v) => navigate(v === "withdrawals" ? "/finance" : `/finance/${v}`)}
           tabs={[
-            { value: "withdrawals", label: tr("提现审核", "Withdrawals") },
+            { value: "withdrawals", label: tr("提现审核", "Withdrawals"), count: pending || undefined },
             { value: "balances", label: tr("用户余额", "Balances") },
             { value: "commissions", label: tr("返利记录", "Commissions") },
           ]}
@@ -177,6 +199,34 @@ export function FinancePage() {
       {tab === "balances" && <Balances />}
       {tab === "commissions" && <Commissions />}
     </>
+  );
+}
+
+/** Pending withdrawals from the dashboard counters (same query key: one request, refreshed by writes). */
+function usePendingWithdrawals(): number {
+  const q = useQuery({
+    queryKey: ["dashboard"],
+    queryFn: () => get<{ pending: { withdrawals: number } }>("/dashboard"),
+  });
+  return q.data?.pending.withdrawals ?? 0;
+}
+
+const W_ICON: Record<string, LucideIcon> = {
+  pending: Clock,
+  approved: CircleCheck,
+  rejected: CircleX,
+  cancelled: Undo2,
+};
+
+function WithdrawalChip({ status }: { status: string }) {
+  const tr = useTr();
+  const [t, tone] = wStatus(status, tr);
+  const Icon = W_ICON[status] ?? CircleDashed;
+  return (
+    <Badge tone={tone}>
+      <Icon aria-hidden="true" />
+      {t}
+    </Badge>
   );
 }
 
@@ -210,104 +260,126 @@ function Withdrawals() {
     queryKey: ["commission-settings"],
     queryFn: () => get<{ usdt_rate_cents: number | null }>("/commission-settings"),
   });
+  const pending = usePendingWithdrawals();
   const [deciding, setDeciding] = useState<{ w: Withdrawal; approve: boolean } | null>(null);
   const rate = settings.data?.usdt_rate_cents;
   const rows = q.data ?? [];
-  const columns: Column<Withdrawal>[] = [
+  const approx = (w: Withdrawal) => (rate ? `≈ ${(w.amount_cents / rate).toFixed(2)} USDT` : null);
+  const decide = (w: Withdrawal) =>
+    w.status === "pending" ? (
+      <span className="inline-flex gap-1">
+        <Button size="sm" variant="primary" onClick={(e) => (e.stopPropagation(), setDeciding({ w, approve: true }))}>
+          {tr("通过", "Approve")}
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive-soft"
+          onClick={(e) => (e.stopPropagation(), setDeciding({ w, approve: false }))}
+        >
+          {tr("拒绝", "Reject")}
+        </Button>
+      </span>
+    ) : null;
+  const [columns, chooser] = useColumns<Withdrawal>("withdrawals", [
     {
       key: "user",
       header: tr("用户", "User"),
-      fixed: true,
-      mobile: "title",
-      cell: (w) => w.user_email ?? w.user_label,
+      className: "max-w-56 truncate",
+      cell: (w) => w.user_email ?? <span className="text-muted-foreground">{w.user_label}</span>,
     },
     {
-      key: "amount",
-      header: tr("金额", "Amount"),
-      cell: (w) => (
-        <span className="tnum">
-          {yuan(w.amount_cents)}
-          {rate ? (
-            <span className="ml-1 text-footnote text-muted-foreground">
-              ≈ {(w.amount_cents / rate).toFixed(2)} USDT
-            </span>
-          ) : null}
-        </span>
-      ),
+      key: "chain",
+      header: tr("网络", "Network"),
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (w) => chainName(w.chain),
     },
-    { key: "chain", header: tr("网络", "Network"), cell: (w) => chainName(w.chain) },
     {
       key: "address",
       header: tr("地址", "Address"),
       cell: (w) => (
         <span className="flex min-w-0 flex-wrap items-center gap-1">
-          <Mono>{w.address}</Mono>
+          <span className="font-mono text-footnote break-all">{w.address}</span>
           {w.memo && <Badge tone="outline">Memo {w.memo}</Badge>}
         </span>
       ),
     },
-    {
-      key: "status",
-      header: tr("状态", "Status"),
-      cell: (w) => {
-        const [t, tone] = wStatus(w.status, tr);
-        return (
-          <Badge tone={tone} dot>
-            {t}
-          </Badge>
-        );
-      },
-    },
+    { key: "status", header: tr("状态", "Status"), cell: (w) => <WithdrawalChip status={w.status} /> },
     { key: "paid", header: tr("实付 / 交易哈希", "Paid / tx hash"), cell: (w) => <Payout w={w} /> },
+    {
+      key: "amount",
+      header: tr("申请金额", "Amount"),
+      align: "right",
+      className: "whitespace-nowrap",
+      cell: (w) => (
+        <span className="inline-flex flex-col items-end">
+          <span className="font-semibold">{yuan(w.amount_cents)}</span>
+          {approx(w) && <span className="text-caption text-muted-foreground">{approx(w)}</span>}
+        </span>
+      ),
+    },
     {
       key: "created",
       header: tr("申请时间", "Requested"),
-      cell: (w) => <span className="tnum">{dateTime(w.created_at)}</span>,
+      align: "right",
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (w) => <When iso={w.created_at} />,
     },
     {
       key: "act",
       header: <span className="sr-only">{tr("操作", "Actions")}</span>,
-      label: tr("操作", "Actions"),
-      fixed: true,
       align: "right",
-      cell: (w) =>
-        w.status === "pending" ? (
-          <span className="inline-flex gap-1">
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={(e) => (e.stopPropagation(), setDeciding({ w, approve: true }))}
-            >
-              {tr("通过", "Approve")}
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive-soft"
-              onClick={(e) => (e.stopPropagation(), setDeciding({ w, approve: false }))}
-            >
-              {tr("拒绝", "Reject")}
-            </Button>
-          </span>
-        ) : null,
+      className: "whitespace-nowrap",
+      cell: decide,
     },
-  ];
+  ]);
+  const filtered = !!email || !["all", "pending"].includes(status);
+  const clear = () => {
+    setText("");
+    setQuery({ status: "all", email: null });
+  };
   return (
     <>
-      <DataTable
+      <LedgerTable
         label={tr("提现", "Withdrawals")}
-        storageKey="withdrawals"
         rows={rows}
         columns={columns}
         loading={q.isPending}
         error={q.error}
         onRetry={() => void q.refetch()}
-        filtered={!!email || !["all", "pending"].includes(status)}
-        onClearFilters={() => {
-          setText("");
-          setQuery({ status: "all", email: null });
-        }}
+        phone={(w) => ({
+          title: w.user_email ?? w.user_label,
+          sub: (
+            <>
+              {chainName(w.chain)} · <span className="font-mono">{w.address}</span>
+              {w.memo && ` · Memo ${w.memo}`}
+            </>
+          ),
+          meta: (
+            <>
+              {shortTime(w.created_at, tr)}
+              {approx(w) && ` · ${approx(w)}`}
+            </>
+          ),
+          amount: yuan(w.amount_cents),
+          status: <WithdrawalChip status={w.status} />,
+          actions: w.status === "pending" ? decide(w) : w.txid || w.note ? <Payout w={w} /> : undefined,
+        })}
         empty={
-          email || !["all", "pending"].includes(status) ? undefined : (
+          filtered ? (
+            <EmptyState
+              icon={SearchX}
+              title={tr("没有符合条件的提现", "No withdrawals match")}
+              description={
+                email
+                  ? tr(
+                      `没有邮箱为「${email}」的用户的提现（精确匹配）。检查拼写，或清除筛选。`,
+                      `No withdrawal by “${email}” (exact match). Check the spelling, or clear the filters.`,
+                    )
+                  : tr("当前筛选下没有提现。清除筛选查看全部。", "None under these filters. Clear them to see all.")
+              }
+              action={<Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>}
+            />
+          ) : (
             <EmptyState
               icon={Wallet}
               title={
@@ -319,34 +391,40 @@ function Withdrawals() {
                 "用户在门户申请把返利提现为 USDT 后会出现在这里。",
                 "Requests appear here when users withdraw commissions as USDT in the portal.",
               )}
+              action={
+                status === "pending" ? (
+                  <Button onClick={() => setQuery({ status: "all" })}>{tr("查看全部提现", "Show all")}</Button>
+                ) : undefined
+              }
             />
           )
         }
         toolbar={
           <>
-            <Select
-              aria-label={tr("状态", "Status")}
-              className="w-36 max-sm:flex-1"
-              value={status}
-              onChange={(e) => {
-                setLimit(STEP);
-                setQuery({ status: e.target.value });
-              }}
-            >
-              <option value="pending">{tr("待审核", "Pending")}</option>
-              <option value="approved">{tr("已打款", "Paid")}</option>
-              <option value="rejected">{tr("已拒绝", "Rejected")}</option>
-              <option value="cancelled">{tr("用户撤销", "Cancelled")}</option>
-              <option value="all">{tr("全部", "All")}</option>
-            </Select>
-            <Input
-              type="search"
+            <SearchField
               aria-label={tr("用户邮箱（精确）", "User email (exact)")}
               placeholder={tr("用户邮箱（精确）", "User email (exact)")}
-              className="min-w-0 flex-1 basis-56 sm:max-w-72"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
+            <ScrollX>
+              <Segmented
+                label={tr("提现状态", "Withdrawal status")}
+                value={status}
+                onChange={(v) => {
+                  setLimit(STEP);
+                  setQuery({ status: v });
+                }}
+                options={[
+                  { value: "pending", label: tr("待审核", "Pending"), count: pending || undefined },
+                  { value: "approved", label: tr("已打款", "Paid") },
+                  { value: "rejected", label: tr("已拒绝", "Rejected") },
+                  { value: "cancelled", label: tr("用户撤销", "Cancelled") },
+                  { value: "all", label: tr("全部", "All") },
+                ]}
+              />
+            </ScrollX>
+            {chooser}
           </>
         }
         footer={
@@ -509,36 +587,38 @@ function Balances() {
   });
   const [adjust, setAdjust] = useState<BalanceRow | null>(null);
   const rows = (q.data ?? []).map((b) => ({ ...b, id: b.user_id }));
-  const columns: Column<BalanceRow & { id: string }>[] = [
-    { key: "email", header: tr("用户", "User"), fixed: true, mobile: "title", cell: (b) => b.email },
-    {
-      key: "balance",
-      header: tr("余额", "Balance"),
-      align: "right",
-      cell: (b) => <span className="tnum">{yuan(b.balance_cents)}</span>,
-    },
+  type Row = BalanceRow & { id: string };
+  const adjustButton = (b: Row) => (
+    <Button size="sm" onClick={(e) => (e.stopPropagation(), setAdjust(b))}>
+      {tr("调整", "Adjust")}
+    </Button>
+  );
+  const [columns, chooser] = useColumns<Row>("balances", [
+    { key: "email", header: tr("用户", "User"), className: "max-w-72 truncate", cell: (b) => b.email },
     {
       key: "updated",
       header: tr("最近变动", "Last change"),
       optional: true,
-      cell: (b) => dateTime(b.updated_at),
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (b) => <When iso={b.updated_at} />,
+    },
+    {
+      key: "balance",
+      header: tr("余额", "Balance"),
+      align: "right",
+      cell: (b) => <span className="font-semibold">{yuan(b.balance_cents)}</span>,
     },
     {
       key: "act",
       header: <span className="sr-only">{tr("操作", "Actions")}</span>,
-      label: tr("操作", "Actions"),
-      fixed: true,
       align: "right",
-      cell: (b) => (
-        <Button size="sm" onClick={(e) => (e.stopPropagation(), setAdjust(b))}>
-          {tr("调整", "Adjust")}
-        </Button>
-      ),
+      className: "w-24",
+      cell: adjustButton,
     },
-  ];
+  ]);
   return (
     <>
-      <DataTable
+      <LedgerTable
         label={tr("余额", "Balances")}
         rows={rows}
         columns={columns}
@@ -546,10 +626,26 @@ function Balances() {
         error={q.error}
         onRetry={() => void q.refetch()}
         onRowClick={(b) => navigate(`/users?open=${b.user_id}`)}
-        filtered={!!email}
-        onClearFilters={() => setText("")}
+        phone={(b) => ({
+          title: <span className="truncate">{b.email}</span>,
+          meta: b.updated_at
+            ? tr(`最近变动 ${shortTime(b.updated_at, tr)}`, `Changed ${shortTime(b.updated_at, tr)}`)
+            : undefined,
+          amount: yuan(b.balance_cents),
+          actions: adjustButton(b),
+        })}
         empty={
-          email ? undefined : (
+          email ? (
+            <EmptyState
+              icon={SearchX}
+              title={tr("没有找到这个用户", "No such user")}
+              description={tr(
+                `没有邮箱为「${email}」的账户（精确匹配）。检查拼写，或清除搜索。`,
+                `No account with the address “${email}” (exact match). Check the spelling, or clear the search.`,
+              )}
+              action={<Button onClick={() => setText("")}>{tr("清除搜索", "Clear the search")}</Button>}
+            />
+          ) : (
             <EmptyState
               icon={Wallet}
               title={tr("还没有人有余额", "Nobody holds a balance yet")}
@@ -561,14 +657,15 @@ function Balances() {
           )
         }
         toolbar={
-          <Input
-            type="search"
-            aria-label={tr("按邮箱查找任意用户", "Find anyone by email")}
-            placeholder={tr("按邮箱查找任意用户（精确）", "Find anyone by email (exact)")}
-            className="min-w-0 flex-1 basis-56 sm:max-w-80"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
+          <>
+            <SearchField
+              aria-label={tr("按邮箱查找任意用户", "Find anyone by email")}
+              placeholder={tr("按邮箱查找任意用户（精确）", "Find anyone by email (exact)")}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            {chooser}
+          </>
         }
         footer={
           <GrowFooter
@@ -586,6 +683,12 @@ function Balances() {
 
 type CStatus = "" | "pending" | "credited" | "reversed";
 
+const C_CHIP: Record<string, ["warning" | "success" | "danger", LucideIcon]> = {
+  pending: ["warning", Clock],
+  credited: ["success", CircleCheck],
+  reversed: ["danger", Undo2],
+};
+
 function Commissions() {
   const tr = useTr();
   const { query } = useRoute();
@@ -602,55 +705,80 @@ function Commissions() {
   const cText = (s: string) =>
     ({ pending: tr("冻结中", "Held"), credited: tr("已入账", "Credited"), reversed: tr("已撤销", "Reversed") })[s] ??
     tr("未知状态", "Unknown");
-  const columns: Column<Commission>[] = [
+  const chip = (c: Commission) => {
+    const [tone, Icon] = C_CHIP[c.status] ?? ["warning", CircleDashed];
+    return (
+      <span className="inline-flex flex-wrap justify-end gap-1">
+        <Badge tone={tone}>
+          <Icon aria-hidden="true" />
+          {cText(c.status)}
+        </Badge>
+        {c.clawback_cents ? (
+          <Badge tone="danger">{tr(`追回 ${yuan(c.clawback_cents)}`, `clawback ${yuan(c.clawback_cents)}`)}</Badge>
+        ) : null}
+      </span>
+    );
+  };
+  const orderLink = (c: Commission) => (
+    <Link
+      to={`/orders?no=${encodeURIComponent(c.out_trade_no)}`}
+      onClick={(e) => e.stopPropagation()}
+      className="font-mono text-footnote text-primary underline-offset-4 hover:underline"
+    >
+      {c.out_trade_no}
+    </Link>
+  );
+  const [columns, chooser] = useColumns<Commission>("commissions", [
     {
       key: "inviter",
       header: tr("邀请人", "Inviter"),
-      fixed: true,
-      mobile: "title",
+      className: "max-w-56 truncate",
       cell: (c) => c.inviter_email ?? c.inviter_label,
     },
-    { key: "invitee", header: tr("被邀请人", "Invitee"), cell: (c) => c.invitee_email ?? c.invitee_label },
     {
-      key: "order",
-      header: tr("订单", "Order"),
-      cell: (c) => <span className="font-mono text-footnote">{c.out_trade_no}</span>,
+      key: "invitee",
+      header: tr("被邀请人", "Invitee"),
+      className: "max-w-56 truncate text-muted-foreground",
+      cell: (c) => c.invitee_email ?? c.invitee_label,
+    },
+    { key: "order", header: tr("订单", "Order"), className: "whitespace-nowrap", cell: orderLink },
+    { key: "status", header: tr("状态", "Status"), cell: chip },
+    {
+      key: "available",
+      header: tr("可入账时间", "Available"),
+      optional: true,
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (c) => <When iso={c.available_at} />,
     },
     {
       key: "amount",
       header: tr("返利", "Commission"),
+      align: "right",
+      className: "whitespace-nowrap",
       cell: (c) => (
-        <span className="tnum">
-          {yuan(c.amount_cents)}{" "}
-          <span className="text-muted-foreground">
-            ({c.rate_percent}% × {yuan(c.base_cents)})
+        <span className="inline-flex flex-col items-end">
+          <span className="font-semibold">{yuan(c.amount_cents)}</span>
+          <span className="text-caption text-muted-foreground">
+            {c.rate_percent}% × {yuan(c.base_cents)}
           </span>
         </span>
       ),
     },
     {
-      key: "status",
-      header: tr("状态", "Status"),
-      cell: (c) => (
-        <span className="flex flex-wrap gap-1">
-          <Badge tone={c.status === "credited" ? "success" : c.status === "reversed" ? "danger" : "warning"} dot>
-            {cText(c.status)}
-          </Badge>
-          {c.clawback_cents ? (
-            <Badge tone="danger">{tr(`追回 ${yuan(c.clawback_cents)}`, `clawback ${yuan(c.clawback_cents)}`)}</Badge>
-          ) : null}
-        </span>
-      ),
-    },
-    { key: "available", header: tr("可入账时间", "Available"), optional: true, cell: (c) => dateTime(c.available_at) },
-    {
       key: "created",
       header: tr("时间", "Created"),
-      cell: (c) => <span className="tnum">{dateTime(c.created_at)}</span>,
+      align: "right",
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (c) => <When iso={c.created_at} />,
     },
-  ];
+  ]);
+  const filtered = !!(status || email);
+  const clear = () => {
+    setText("");
+    setQuery({ status: null, email: null });
+  };
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-3">
       <Callout tone="info">
         {tr("返利比例、冻结天数、USDT 网络等设置已移到 ", "The commission rate, hold days and USDT networks moved to ")}
         <Link to="/settings/commission" className="font-medium text-primary underline-offset-4 hover:underline">
@@ -658,43 +786,78 @@ function Commissions() {
         </Link>
         {tr("。", ".")}
       </Callout>
-      <DataTable
+      <LedgerTable
         label={tr("返利记录", "Commissions")}
-        storageKey="commissions"
         rows={rows}
         columns={columns}
         loading={q.isPending}
         error={q.error}
         onRetry={() => void q.refetch()}
-        filtered={!!(status || email)}
-        onClearFilters={() => {
-          setText("");
-          setQuery({ status: null, email: null });
-        }}
+        phone={(c) => ({
+          title: <span className="truncate">{c.inviter_email ?? c.inviter_label}</span>,
+          sub: tr(
+            `邀请 ${c.invitee_email ?? c.invitee_label} · ${c.rate_percent}% × ${yuan(c.base_cents)}`,
+            `invited ${c.invitee_email ?? c.invitee_label} · ${c.rate_percent}% × ${yuan(c.base_cents)}`,
+          ),
+          meta: (
+            <>
+              {orderLink(c)} · {shortTime(c.created_at, tr)}
+            </>
+          ),
+          amount: yuan(c.amount_cents),
+          status: chip(c),
+        })}
+        empty={
+          filtered ? (
+            <EmptyState
+              icon={SearchX}
+              title={tr("没有符合条件的返利", "No commissions match")}
+              description={
+                email
+                  ? tr(
+                      `没有邀请人邮箱为「${email}」的返利（精确匹配）。检查拼写，或清除筛选。`,
+                      `No commission for the inviter “${email}” (exact match). Check the spelling, or clear the filters.`,
+                    )
+                  : tr("当前筛选下没有返利。清除筛选查看全部。", "None under these filters. Clear them to see all.")
+              }
+              action={<Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>}
+            />
+          ) : (
+            <EmptyState
+              icon={HandCoins}
+              title={tr("还没有返利", "No commissions yet")}
+              description={tr(
+                "被邀请的用户付款后，邀请人的返利会出现在这里。",
+                "A commission appears here when an invited user pays.",
+              )}
+            />
+          )
+        }
         toolbar={
           <>
-            <Segmented
-              label={tr("返利状态", "Commission status")}
-              value={status}
-              onChange={(v) => {
-                setLimit(STEP);
-                setQuery({ status: v || null });
-              }}
-              options={[
-                { value: "", label: tr("全部", "All") },
-                { value: "pending", label: tr("冻结中", "Held") },
-                { value: "credited", label: tr("已入账", "Credited") },
-                { value: "reversed", label: tr("已撤销", "Reversed") },
-              ]}
-            />
-            <Input
-              type="search"
+            <SearchField
               aria-label={tr("邀请人邮箱", "Inviter email")}
               placeholder={tr("邀请人邮箱（精确）", "Inviter email (exact)")}
-              className="min-w-0 flex-1 basis-56 sm:max-w-72"
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
+            <ScrollX>
+              <Segmented
+                label={tr("返利状态", "Commission status")}
+                value={status}
+                onChange={(v) => {
+                  setLimit(STEP);
+                  setQuery({ status: v || null });
+                }}
+                options={[
+                  { value: "", label: tr("全部", "All") },
+                  { value: "pending", label: tr("冻结中", "Held") },
+                  { value: "credited", label: tr("已入账", "Credited") },
+                  { value: "reversed", label: tr("已撤销", "Reversed") },
+                ]}
+              />
+            </ScrollX>
+            {chooser}
           </>
         }
         footer={
