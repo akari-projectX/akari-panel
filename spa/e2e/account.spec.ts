@@ -138,6 +138,8 @@ test('settings: one page with section anchors; the old ?tab=security link lands 
   for (const id of ['account', 'security', 'subscription', 'preferences', 'danger']) {
     await expect(page.locator(`section#${id}`)).toHaveCount(1);
   }
+  /* 手机上不出现横向滚动（分区导航自己横滑） */
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await nav.getByRole('link', { name: '危险操作' }).click();
   await expect(page).toHaveURL(/#danger$/);
   await expect(page.locator('#danger').getByRole('button', { name: '注销账户…' })).toBeInViewport();
@@ -166,9 +168,10 @@ test('settings: light / dark / follow the system (the default)', async ({ page }
 });
 
 test('settings: with site mail off there is no "change email" or "verify"', async ({ page }, info) => {
+  /* 浏览器走的是 TLS 前端（Node 这边解析不了那个名字）：直接问面板，再改掉 mail */
   await page.route(/\/auth\/options$/, async (r) => {
-    const res = await r.fetch();
-    await r.fulfill({ response: res, json: { ...(await res.json()), mail: false } });
+    const res = await fetch(`${process.env.E2E_API}/auth/options`);
+    await r.fulfill({ json: { ...(await res.json()), mail: false }, headers: { 'cache-control': 'no-store' } });
   });
   psql(`UPDATE users SET email_verified_at = NULL WHERE email = '${mine(info, 'settings')}';`);
   try {
