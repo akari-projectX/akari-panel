@@ -430,3 +430,35 @@ export function GroupPicker({
 export function sameSet(a: string[], b: string[]): boolean {
   return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 }
+
+export const ALERT_KINDS = [
+  "offline",
+  "cpu",
+  "memory",
+  "disk",
+  "latency",
+  "cert",
+  "agent_cert",
+  "last_error",
+  "entrance_down",
+  "traffic_quota",
+] as const;
+
+export function alertKindName(k: string, tr: Tr): string {
+  return (
+    (
+      {
+        offline: tr("服务器离线", "Server offline"),
+        cpu: tr("CPU 过高", "High CPU"),
+        memory: tr("内存过高", "High memory"),
+        disk: tr("磁盘将满", "Disk filling up"),
+        latency: tr("测速全部失败", "Every probe fails"),
+        cert: tr("服务器证书即将到期", "Server certificate expiring"),
+        agent_cert: tr("Agent 证书即将到期", "Agent certificate expiring"),
+        last_error: tr("配置应用失败", "Apply failed"),
+        entrance_down: tr("中转入口不可用", "Relay entrance down"),
+        traffic_quota: tr("流量额度已用完", "Traffic quota used up"),
+      } as Record<string, string>
+    )[k] ?? k
+  );
+}

@@ -72,7 +72,7 @@ import { navigate, useQS } from "../router";
 import { holdersOf, useGroups, usePlanList, useServers } from "../servers";
 import { useCrumb } from "../session";
 import type { ServerNode, ServerView } from "../types";
-import { alertKindName, ALERT_KINDS } from "./node-dialogs";
+import { alertKindName, ALERT_KINDS } from "./node-common";
 import { warningTitle } from "./node-common";
 import { useUpdateStatus } from "./update-status";
 

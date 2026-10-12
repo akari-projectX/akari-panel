@@ -210,12 +210,20 @@ export function TemplateFields({
   onChange,
   nodeDomain = "",
   tried = false,
+  hideTemplate = false,
+  portClash,
+  portHint,
 }: {
   form: TemplateForm;
   onChange: (f: TemplateForm) => void;
   nodeDomain?: string;
   /** A save was tried: show the errors of untouched fields too. */
   tried?: boolean;
+  /** The template is chosen elsewhere (wizard / node dialog radio cards). */
+  hideTemplate?: boolean;
+  /** The port is taken on this server (shown at once). */
+  portClash?: string;
+  portHint?: string;
 }) {
   const tr = useTr();
   const lang = useLang();
@@ -258,16 +266,23 @@ export function TemplateFields({
   const tlsRequired = t === "transport" && templateRequiresTls(form.protocol, network);
   return (
     <div className="grid gap-3 sm:grid-cols-4">
-      <Field label={tr("协议模板", "Template")} className="sm:col-span-3">
-        <Select value={t} onChange={(e) => set({ template: e.target.value as TemplateKind })}>
-          {TEMPLATES.map((k) => (
-            <option key={k} value={k}>
-              {templateLabel(k, tr)}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field label={tr("端口", "Port")} error={shown(form.port, portError, tried)}>
+      {!hideTemplate && (
+        <Field label={tr("协议模板", "Template")} className="sm:col-span-3">
+          <Select value={t} onChange={(e) => set({ template: e.target.value as TemplateKind })}>
+            {TEMPLATES.map((k) => (
+              <option key={k} value={k}>
+                {templateLabel(k, tr)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
+      <Field
+        label={tr("端口", "Port")}
+        error={shown(form.port, portError, tried) ?? portClash}
+        hint={portHint}
+        className={hideTemplate ? "sm:col-span-2" : undefined}
+      >
         <Input inputMode="numeric" value={form.port} onChange={(e) => set({ port: e.target.value })} />
       </Field>
       {reality && (
