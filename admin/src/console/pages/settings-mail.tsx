@@ -312,7 +312,7 @@ function TransportForm({ m, onDiagnose }: { m: Mail; onDiagnose: () => void }) {
               onChange={(x) => f.set("security", x)}
               options={[
                 { value: "tls", label: tr("隐式 TLS（465）", "Implicit TLS (465)") },
-                { value: "starttls", label: "STARTTLS（587）" },
+                { value: "starttls", label: tr("STARTTLS（587）", "STARTTLS (587)") },
                 { value: "none", label: tr("不加密", "None") },
               ]}
             />

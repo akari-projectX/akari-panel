@@ -18,7 +18,7 @@ type Template = {
 type Mail = Record<string, unknown> & { version: number };
 
 const KIND = "register_code";
-const URL = `/settings/mail-templates?kind=${KIND}`;
+const URL = `/settings/templates?kind=${KIND}`;
 
 async function template(): Promise<Template> {
   const all = await apiJson<Template[]>("GET", "/settings/mail-templates");
@@ -175,7 +175,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
     .click();
   await expect(dialog(page, "放弃未保存的修改？")).toBeVisible();
   await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
-  await expect(page).toHaveURL(/\/settings\/mail-templates/);
+  await expect(page).toHaveURL(/\/settings\/(mail-)?templates/);
 
   // 恢复默认 (confirmed): back to the default, shown without a reload.
   await page.getByRole("button", { name: "恢复默认" }).click();

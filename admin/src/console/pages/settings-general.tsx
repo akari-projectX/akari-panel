@@ -853,7 +853,7 @@ function Domains({ d }: { d: SettingsView }) {
           return false;
         }
         if (impact.removed.length) {
-          const names = impact.removed.map((r) => r.domain).join("、");
+          const names = impact.removed.map((r) => r.domain).join(tr("、", ", "));
           const ok = await confirm({
             title: tr(`删除域名 ${names}？`, `Remove ${names}?`),
             impact: tr("以下地方会受影响", "These places are affected"),
@@ -896,7 +896,7 @@ function Domains({ d }: { d: SettingsView }) {
         ...c,
         [key]: {
           tone: r.level === "ok" ? "success" : "warning",
-          text: `${r.level === "ok" ? tr("解析正常", "Resolves") : tr("注意", "Check")}：${r.message}`,
+          text: `${r.level === "ok" ? tr("解析正常", "Resolves") : tr("注意", "Check")}${tr("：", ": ")}${r.message}`,
         },
       }));
     } catch (e) {
@@ -1152,7 +1152,7 @@ function CloudflareGroup({ d, trust, setTrust }: { d: SettingsView; trust: strin
           <Select {...a} className="sm:w-44" value={trust} onChange={(e) => setTrust(e.target.value)}>
             <option value="">
               {tr(
-                `默认（${d.trust_cloudflare.effective ? "开" : "关"}）`,
+                `默认（${d.trust_cloudflare.effective ? tr("开", "on") : tr("关", "off")}）`,
                 `Default (${d.trust_cloudflare.effective ? "on" : "off"})`,
               )}
             </option>
@@ -1166,7 +1166,7 @@ function CloudflareGroup({ d, trust, setTrust }: { d: SettingsView; trust: strin
         description={
           ranges.length
             ? tr(
-                `自定义 ${ranges.length} 段：${ranges.slice(0, 2).join("、")}${ranges.length > 2 ? " 等" : ""}`,
+                `自定义 ${ranges.length} 段：${ranges.slice(0, 2).join(tr("、", ", "))}${ranges.length > 2 ? tr(" 等", "…") : ""}`,
                 `${ranges.length} custom: ${ranges.slice(0, 2).join(", ")}${ranges.length > 2 ? "…" : ""}`,
               )
             : tr(
@@ -1253,7 +1253,7 @@ function ServerNames({ d }: { d: SettingsView }) {
           description={
             <>
               {tr(
-                `${n.source === "config" ? "来自旧配置" : "已使用"} · 首次使用 ${dateTime(n.first_used_at)}`,
+                `${n.source === "config" ? tr("来自旧配置", "From the old config") : tr("已使用", "Used")} · 首次使用 ${dateTime(n.first_used_at)}`,
                 `${n.source === "config" ? "From the old config" : "Used"} · first used ${dateTime(n.first_used_at)}`,
               )}
               {n.nodes.length > 0 && tr(` · ${n.nodes.length} 台服务器在用`, ` · used by ${n.nodes.length} servers`)}
@@ -1378,7 +1378,10 @@ function PasskeyCentre({ d }: { d: SettingsView }) {
           label={tr("更换通行密钥中心域名", "Change the passkey centre")}
           description={
             f.isEdited("domain")
-              ? tr(`将改为 ${next || "（清除）"}，保存时确认。`, `Becomes ${next || "(cleared)"}; confirmed on save.`)
+              ? tr(
+                  `将改为 ${next || tr("（清除）", "(cleared)")}，保存时确认。`,
+                  `Becomes ${next || "(cleared)"}; confirmed on save.`,
+                )
               : tr(
                   "更换后所有账户（含管理员）已绑定的通行密钥全部失效，需要重新绑定。不要轮换。",
                   "Changing it voids every bound passkey (admins included); everyone binds again. Do not rotate it.",

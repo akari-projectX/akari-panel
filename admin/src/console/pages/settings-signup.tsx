@@ -404,7 +404,11 @@ function LoginForm({ a }: { a: AuthSettings }) {
             { label: tr("你的通行密钥", "Your passkeys"), value: tr(`${mine} 个`, `${mine}`) },
             {
               label: tr("丢失通行密钥时", "If a passkey is lost"),
-              value: <code className="font-mono text-footnote">akari admin reset-login &lt;邮箱&gt;</code>,
+              value: (
+                <code className="font-mono text-footnote">
+                  {tr("akari admin reset-login <邮箱>", "akari admin reset-login <email>")}
+                </code>
+              ),
             },
           ],
           typeToConfirm: tr("只用通行密钥", "passkeys only"),

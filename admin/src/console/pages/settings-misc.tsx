@@ -104,7 +104,7 @@ function InstallForm({ d }: { d: SettingsView }) {
       <Group
         title={tr("安装命令", "Install command")}
         footer={tr(
-          `agent 连接面板的地址：${d.node.panel_addr ?? "（未设置节点通信域名）"}`,
+          `agent 连接面板的地址：${d.node.panel_addr ?? tr("（未设置节点通信域名）", "(no node domain set)")}`,
           `Agents dial: ${d.node.panel_addr ?? "(no node domain set)"}`,
         )}
       >
@@ -213,7 +213,7 @@ function InstallForm({ d }: { d: SettingsView }) {
             {
               value: "",
               title: tr(
-                `默认（${o.remove_mode.effective === "rebuild" ? "重建" : "按用户"}）`,
+                `默认（${o.remove_mode.effective === "rebuild" ? tr("重建", "rebuild") : tr("按用户", "per user")}）`,
                 `Default (${o.remove_mode.effective === "rebuild" ? "rebuild" : "per user"})`,
               ),
               desc: tr("跟随内置默认值", "Follows the built-in default"),
@@ -348,7 +348,7 @@ function ProbeForm({ d }: { d: SettingsView }) {
               </div>
               <div className="mt-0.5 text-footnote text-muted-foreground">
                 {tr(
-                  `节点依次请求；返回 204 或 200 的轻量地址最好。不填 = 默认（${p.urls.default.join("、")}）`,
+                  `节点依次请求；返回 204 或 200 的轻量地址最好。不填 = 默认（${p.urls.default.join(tr("、", ", "))}）`,
                   `Fetched in turn; a light URL answering 204 or 200 is best. None = the default (${p.urls.default.join(", ")})`,
                 )}
               </div>

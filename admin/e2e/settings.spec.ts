@@ -61,7 +61,7 @@ test("SET-25: overview (needs attention: obsolete keys), search by old names, ol
 }, info: TestInfo) => {
   await openConsole(page, "/settings");
   // SET-25: the e2e panel.toml carries obsolete keys on purpose.
-  await expect(page.getByRole("region", { name: "需要注意" })).toContainText("panel.toml 中有已废弃的键");
+  await expect(page.getByRole("region", { name: "需要注意" })).toContainText("个已废弃的键");
   // Search finds a section by its old name.
   await page.getByLabel("搜索设置").fill("审计规则");
   await sections(page)
@@ -73,11 +73,15 @@ test("SET-25: overview (needs attention: obsolete keys), search by old names, ol
   for (const [from, to] of [
     ["security", "access"],
     ["nodes", "install"],
-    ["branding", "site"],
+    ["branding", "brand"],
+    ["notify", "notices"],
+    ["passkeys", "account"],
   ]) {
     await page.goto(`${CONSOLE}/settings/${from}`);
     await expect(page).toHaveURL(new RegExp(`/settings/${to}$`));
   }
+  await page.goto(`${CONSOLE}/settings?section=payments`);
+  await expect(page).toHaveURL(/\/settings\/payments$/);
   await page.goto(`${CONSOLE}/settings/mail?outbox=dead`);
   await expect(page).toHaveURL(/\/status\?mail=dead$/);
   // Unsaved changes: the save bar counts them; leaving asks first. The site name is put back
@@ -104,8 +108,8 @@ async function guardAndShortcut(page: Page, info: TestInfo) {
           .getByRole("link", { name: /域名与证书/ })
           .click();
   await leave();
-  await expect(dialog(page, "放弃未保存的修改？")).toBeVisible();
-  await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
+  await expect(dialog(page, "有未保存的修改")).toBeVisible();
+  await dialog(page, "有未保存的修改").getByRole("button", { name: "继续编辑" }).click();
   await expect(page).toHaveURL(/\/settings\/site$/);
   await expect(name).toHaveValue("Akari guard");
   // ⌘/Ctrl+S saves; then back to the default name the same way (each save finished before
@@ -125,7 +129,9 @@ async function guardAndShortcut(page: Page, info: TestInfo) {
   await expect(bar(page)).toHaveCount(0);
   await name.fill("Akari leave");
   await leave();
-  await confirmDialog(page, undefined, "放弃修改");
+  await dialog(page, "有未保存的修改")
+    .getByRole("button", { name: /^放弃修改/ })
+    .click();
   await expect(page).toHaveURL(/\/settings(\/domains)?$/);
 }
 
@@ -146,14 +152,16 @@ test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links an
   await confirmDialog(page);
   await toast(page, "站点设置已保存");
   await expect(page.getByRole("button", { name: "站点时区" })).toContainText("默认");
-  // SET-24: a PNG logo up and down (applies at once).
+  // SET-24 (外观与品牌): a PNG logo up and down (applies at once), shown on a light and a dark tile.
+  await page.goto(`${CONSOLE}/settings/brand`);
   await page.getByLabel("上传Logo（PNG）").setInputFiles({ name: "logo.png", mimeType: "image/png", buffer: PNG });
   await toast(page, "已上传");
-  await expect(page.getByRole("img", { name: "Logo" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Logo", exact: true })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Logo（深色底）" })).toBeVisible();
   await page.getByRole("button", { name: "删除Logo" }).click();
   await confirmDialog(page);
-  await expect(page.getByRole("img", { name: "Logo" })).toHaveCount(0);
-  // Footer text, a link (a bad address is refused in place), a download.
+  await expect(page.getByRole("img", { name: "Logo", exact: true })).toHaveCount(0);
+  // Footer text and a link (a bad address is refused in place).
   await page.getByLabel("页脚文字").fill("© Akari E2E");
   await page.getByRole("button", { name: "添加链接" }).click();
   await page.getByRole("textbox", { name: "文字" }).last().fill("状态页");
@@ -162,19 +170,28 @@ test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links an
   await expect(bar(page)).toContainText("1 处需要修正");
   await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await link.fill("https://status.example.com");
-  await page.getByRole("button", { name: "添加下载" }).click();
-  await page.getByRole("textbox", { name: "下载地址" }).last().fill("https://example.com/akari.apk");
   await save(page);
   await toast(page, "品牌设置已保存");
-  await page.reload();
   await expect(page.getByLabel("页脚文字")).toHaveValue("© Akari E2E");
   await page.getByLabel("页脚文字").fill("");
-  for (const kind of ["删除页脚链接", "删除下载链接"]) {
-    const buttons = page.getByRole("button", { name: new RegExp(`^${kind}`) });
-    while ((await buttons.count()) > 0) await buttons.first().click();
-  }
+  const links = page.getByRole("button", { name: /^删除页脚链接/ });
+  while ((await links.count()) > 0) await links.first().click();
   await save(page);
   await toast(page, "品牌设置已保存");
+  // SET-24 (条款与下载链接): one row per platform with a portal switch; links checked in place.
+  await page.goto(`${CONSOLE}/settings/links`);
+  await page.getByLabel("隐私政策链接").fill("example.com/privacy");
+  await expect(bar(page)).toContainText("1 处需要修正");
+  await page.getByLabel("隐私政策链接").fill("");
+  await setSwitch(page.getByRole("switch", { name: "在门户显示 Android" }), true);
+  await page.getByLabel("Android 下载地址").fill("https://example.com/akari.apk");
+  await save(page);
+  await toast(page, "链接已保存");
+  await expect(page.getByLabel("Android 下载地址")).toHaveValue("https://example.com/akari.apk");
+  await setSwitch(page.getByRole("switch", { name: "在门户显示 Android" }), false);
+  await save(page);
+  await toast(page, "链接已保存");
+  await expect(page.getByRole("switch", { name: "在门户显示 Android" })).toHaveAttribute("aria-checked", "false");
 });
 
 test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added inline, DNS check from the row menu), removal impact, per-user subscription domains, Cloudflare, certificate names, the passkey centre", async ({
@@ -352,9 +369,12 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   await expect(bar(page)).toContainText("1 处需要修正");
   await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await codes.fill("3");
-  await page.getByRole("button", { name: "邮箱域名白名单" }).click();
-  await dialog(page, "允许注册的邮箱域名").getByLabel("邮箱域名（每行一个）").fill("e2e.test\nexample.com");
-  await dialog(page, "允许注册的邮箱域名").getByRole("button", { name: "完成" }).click();
+  const domains = page.getByLabel("添加邮箱域名");
+  for (const d of ["e2e.test", "example.com"]) {
+    await domains.fill(d);
+    await domains.press("Enter");
+  }
+  await expect(page.getByRole("button", { name: "移除 example.com" })).toBeVisible();
   await page.getByLabel("试用天数").fill("7");
   const saved = page.waitForResponse((r) => r.url().endsWith("/settings/signup") && r.request().method() === "PUT");
   await save(page);
@@ -362,12 +382,10 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   expect(res.status(), await res.text()).toBe(200);
   await toast(page, "注册设置已保存");
   await page.reload();
-  await expect(page.getByRole("button", { name: "邮箱域名白名单" })).toHaveText("2 个域名");
+  await expect(page.getByText("只有这 2 个域名的邮箱能注册", { exact: false })).toBeVisible();
   await setSwitch(page.getByRole("switch", { name: "开放注册" }), false);
   await setSwitch(page.getByRole("switch", { name: "注册需要邀请码" }), false);
-  await page.getByRole("button", { name: "邮箱域名白名单" }).click();
-  await dialog(page, "允许注册的邮箱域名").getByLabel("邮箱域名（每行一个）").fill("");
-  await dialog(page, "允许注册的邮箱域名").getByRole("button", { name: "完成" }).click();
+  for (const d of ["e2e.test", "example.com"]) await page.getByRole("button", { name: `移除 ${d}` }).click();
   await save(page);
   await toast(page, "注册设置已保存");
 });
@@ -405,22 +423,26 @@ test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), 
   page,
 }) => {
   await openConsole(page, "/settings/subscription");
+  await page.getByRole("region", { name: "危险操作" }).getByRole("button", { name: "显示" }).click();
   const current = (await page.getByText(/^\/.+\/<token>$/).innerText()).split("/")[1];
   // SET-10: a new path, every user mailed (a batch job), then back without mail.
   for (const [path, notify] of [
     [`${current.slice(0, 20)}e2e`, true],
     [current, false],
   ] as const) {
-    await page.getByRole("button", { name: "更换订阅路径…" }).click();
-    const d = dialog(page, "更换订阅路径");
+    await page.getByRole("button", { name: "轮换订阅路径…" }).click();
+    const d = dialog(page, "轮换订阅路径");
+    await d.getByRole("radio", { name: /自定义/ }).click();
     await d.getByLabel("新路径（4–64 位字母、数字、- 或 _）").fill(path);
     const box = d.getByRole("checkbox", { name: "邮件通知所有用户新链接" });
     if ((await box.isChecked()) !== notify) await box.click();
-    await d.getByRole("button", { name: "应用新路径" }).click();
+    await d.getByRole("button", { name: "轮换…" }).click();
     await expect(page.getByRole("alertdialog")).toContainText("所有用户的旧订阅链接立即失效");
     await confirmDialog(page, "旧链接全部失效");
-    await toast(page, "订阅路径已更新（写入审计）");
-    if (notify) await toast(page, "邮件通知任务已创建（用户 → 批量任务）");
+    const done = dialog(page, "订阅路径已轮换");
+    await expect(done).toContainText(`/${path}/<token>`);
+    if (notify) await expect(done).toContainText("邮件通知任务已创建（用户 → 批量任务）");
+    await done.getByRole("button", { name: "完成" }).click();
     await expect(page.getByText(`/${path}/<token>`)).toBeVisible();
   }
   // SET-12: a format and an import button off (the format confirmed), then on again.
@@ -463,7 +485,7 @@ test("SET-11: routing rules — add (an empty value is flagged), move, save, res
   await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await rules.last().selectOption("domain_suffix");
   await page.getByRole("textbox", { name: "值" }).last().fill("example.org");
-  await page.getByRole("combobox", { name: "动作" }).last().selectOption("reject");
+  await page.getByRole("group", { name: "动作" }).last().getByRole("button", { name: "拒绝" }).click();
   await page.getByRole("button", { name: "上移" }).last().click();
   await save(page);
   await toast(page, "分流规则已保存");
@@ -482,13 +504,13 @@ test("SET-15 SET-16 SET-17 SET-18: mail via SMTP (port validated), step-by-step 
   await openConsole(page, "/settings/mail");
   // SET-15: SMTP to the Mailpit sink.
   await setSwitch(page.getByRole("switch", { name: "启用邮件发送" }), true);
-  await page.getByRole("button", { name: "SMTP", exact: true }).click();
+  await page.getByRole("radio", { name: /^SMTP/ }).click();
   await page.getByLabel("SMTP 服务器").fill("127.0.0.1");
   const port = page.getByLabel("端口", { exact: true });
   await port.fill("70000");
   await expect(page.getByText("请输入 1–65535 的整数")).toBeVisible();
   await port.fill(String(SMTP_PORT));
-  await page.getByLabel("加密方式").selectOption("none");
+  await page.getByRole("group", { name: "加密方式" }).getByRole("button", { name: "不加密" }).click();
   await page.getByLabel("发件地址").fill("panel@e2e.test");
   await page.getByLabel("发件人名称").fill("Akari");
   if (await bar(page).count()) {
@@ -497,33 +519,45 @@ test("SET-15 SET-16 SET-17 SET-18: mail via SMTP (port validated), step-by-step 
   }
   // SET-16: diagnose and send (the saved configuration).
   const to = `${uniq(info, "diag")}@e2e.test`;
-  await page.getByLabel("收件地址").fill(to);
-  await page.getByRole("button", { name: "诊断并发送" }).click();
-  const report = page.getByRole("list", { name: "诊断结果" });
+  await page.getByRole("button", { name: "测试发信" }).click();
+  const diag = dialog(page, "测试发信");
+  await diag.getByLabel("收件地址").fill(to);
+  await diag.getByRole("button", { name: "诊断并发送" }).click();
+  const report = diag.getByRole("list", { name: "诊断结果" });
   await expect(report.getByText("测试邮件已被接受")).toBeVisible();
   await expect(report.locator("[data-step=config]")).toContainText("未加密连接");
   for (const step of ["tcp", "send"]) await expect(report.locator(`[data-step=${step}]`)).toContainText("通过");
-  await page.getByRole("button", { name: "直接发送测试邮件" }).click();
+  await diag.getByRole("button", { name: "直接发送测试邮件" }).click();
   await toast(page, `测试邮件已发出：${to}`);
+  await diag.getByRole("button", { name: "关闭" }).first().click();
+  await expect(page).toHaveURL(/\/settings\/mail$/);
   // SET-15 (notices): what is sent, apart from how; the reminder days are validated.
   await page.goto(`${CONSOLE}/settings/notices`);
   await setSwitch(page.getByRole("switch", { name: "退款通知" }), true);
+  const reminder = page.getByRole("switch", { name: "到期前提醒" });
+  const reminderWas = (await reminder.getAttribute("aria-checked")) === "true";
+  await setSwitch(reminder, true);
   const days = page.getByLabel("到期前多少天提醒");
   const before = await days.inputValue();
   await days.fill("31");
-  await expect(page.getByText("请输入 0–30 的整数")).toBeVisible();
+  await expect(page.getByText("请输入 1–30 的整数")).toBeVisible();
   await days.fill(before === "3" ? "4" : "3");
   await save(page);
   await toast(page, "通知设置已保存");
   await days.fill(before);
-  await save(page);
-  await toast(page, "通知设置已保存");
-  // SET-18: the template editor is its own page.
-  await page.goto(`${CONSOLE}/settings/templates`);
-  await expect(page.getByRole("link", { name: /打开模板编辑器/ })).toHaveAttribute(
-    "href",
-    new RegExp(`/${PREFIX}/admin/settings/mail-templates$`),
-  );
+  await setSwitch(reminder, reminderWas);
+  if (await bar(page).count()) {
+    await save(page);
+    await toast(page, "通知设置已保存");
+  }
+  // SET-18: the template editor is its own full-width page (/settings/templates, the old address too).
+  await page.goto(`${CONSOLE}/settings/mail`);
+  await page
+    .getByRole("link", { name: /邮件模板/ })
+    .first()
+    .click();
+  await expect(page).toHaveURL(new RegExp(`/${PREFIX}/admin/settings/templates$`));
+  await expect(page.getByRole("heading", { name: "邮件模板" })).toBeVisible();
   // SET-17: the outbox is on the status page now (old links follow it).
   await page.goto(`${CONSOLE}/settings/mail?outbox=dead`);
   await expect(page).toHaveURL(/\/status\?mail=dead$/);
@@ -676,11 +710,12 @@ test("SET-20 SET-21 SET-22: install and certificates, probes (turning the TCP pr
   await email.fill("nope");
   await expect(page.getByText("邮箱格式不对")).toBeVisible();
   await email.fill("ops@e2e.test");
-  await page.getByLabel("撤权方式").selectOption({ index: 1 });
+  const remove = page.getByRole("radiogroup", { name: "撤权方式" }).getByRole("radio");
+  await remove.nth(1).click();
   await save(page);
   await toast(page, "安装与证书设置已保存");
   await email.fill("");
-  await page.getByLabel("撤权方式").selectOption({ index: 0 });
+  await remove.nth(0).click();
   await save(page);
   await toast(page, "安装与证书设置已保存");
   // SET-21.
@@ -689,8 +724,11 @@ test("SET-20 SET-21 SET-22: install and certificates, probes (turning the TCP pr
   await interval.fill("5");
   await expect(page.getByText("请输入 10–10080 的整数")).toBeVisible();
   await interval.fill("10");
-  await page.getByLabel("面板 TCP 测速", { exact: true }).selectOption("false");
-  await page.getByLabel("测速地址").fill("https://www.example.com/");
+  const tcp = page.getByRole("switch", { name: "面板 TCP 测速" });
+  const tcpWas = (await tcp.getAttribute("aria-checked")) === "true";
+  await setSwitch(tcp, false);
+  await page.getByRole("button", { name: "添加地址" }).click();
+  await page.getByLabel("测速地址 1").fill("https://www.example.com/");
   await save(page);
   const saved = page.locator("[data-sonner-toast]", { hasText: "测速设置已保存" });
   await expect(page.getByRole("alertdialog").or(saved).first()).toBeVisible();
@@ -700,8 +738,8 @@ test("SET-20 SET-21 SET-22: install and certificates, probes (turning the TCP pr
   }
   await toast(page, "测速设置已保存");
   await interval.fill("");
-  await page.getByLabel("面板 TCP 测速", { exact: true }).selectOption("");
-  await page.getByLabel("测速地址").fill("");
+  await setSwitch(tcp, tcpWas);
+  await page.getByRole("button", { name: "移除测速地址 1" }).click();
   await save(page);
   await toast(page, "测速设置已保存");
   // SET-22: a custom rule set — create (dialog), switch off (save bar), edit, delete; built-ins listed.

@@ -88,7 +88,7 @@ function AccessForm({ a }: { a: Access }) {
           ? tr(`只允许 ${list.length} 个地址或网段访问后台？`, `Allow only ${list.length} addresses or networks?`)
           : tr("取消 IP 白名单（任意地址可访问后台前缀）？", "Remove the allowlist (any address)?"),
         description: tr(
-          `你的地址：${a.your_ip ?? "未知"}。被锁在外面时在服务器上执行：akari settings unset admin-allow`,
+          `你的地址：${a.your_ip ?? tr("未知", "unknown")}。被锁在外面时在服务器上执行：akari settings unset admin-allow`,
           `Your address: ${a.your_ip ?? "unknown"}. Locked out? On the server run: akari settings unset admin-allow`,
         ),
         tone: "warning",
@@ -145,7 +145,7 @@ function AccessForm({ a }: { a: Access }) {
             "Admin IP allowlist (one address / CIDR per line; empty = any)",
           )}
           description={tr(
-            `你的地址：${a.your_ip ?? "未知"}（保存时必须包含它）`,
+            `你的地址：${a.your_ip ?? tr("未知", "unknown")}（保存时必须包含它）`,
             `Your address: ${a.your_ip ?? "unknown"} (must be included)`,
           )}
           error={
@@ -356,7 +356,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
       <FieldRow
         label={tr("审计日志保留天数", "Audit log retention (days)")}
         description={tr(
-          `0–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${sec.audit_retention_days.effective || "永久"}`,
+          `0–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${sec.audit_retention_days.effective || tr("永久", "forever")}`,
           `0–36500; default ${sec.audit_retention_days.default}, in effect ${sec.audit_retention_days.effective || "forever"}`,
         )}
         error={auditError}
@@ -375,7 +375,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
       <FieldRow
         label={tr("流量明细保留天数", "Traffic history retention (days)")}
         description={tr(
-          `0 或 32–36500；默认 ${sec.traffic_daily_retention_days.default}，当前生效 ${sec.traffic_daily_retention_days.effective || "永久"}`,
+          `0 或 32–36500；默认 ${sec.traffic_daily_retention_days.default}，当前生效 ${sec.traffic_daily_retention_days.effective || tr("永久", "forever")}`,
           `0 or 32–36500; default ${sec.traffic_daily_retention_days.default}, in effect ${sec.traffic_daily_retention_days.effective || "forever"}`,
         )}
         error={trafficError}

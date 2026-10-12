@@ -145,7 +145,7 @@ function problemText(tr: Tr, p: Problem, source: boolean): string {
         : p.kind === "empty"
           ? tr("不能为空", "must not be empty")
           : (p.text ?? "");
-  return where ? `${where}：${what}` : what;
+  return where ? `${where}${tr("：", ": ")}${what}` : what;
 }
 
 /** A server 400 (preview or save) as a problem, with its place when the server gave one. */
@@ -201,7 +201,7 @@ export function MailTemplatesPage() {
   const list = useQuery({ queryKey: ["mail-templates"], queryFn: () => get<Template[]>("/settings/mail-templates") });
   const back = (
     <Link
-      to="/settings/templates"
+      to="/settings/notices"
       className="hit-44 inline-flex items-center text-footnote text-muted-foreground hover:text-foreground max-lg:text-callout max-lg:text-primary"
     >
       <ChevronLeft className="size-4" aria-hidden="true" />
@@ -377,7 +377,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
     const ok = await confirm({
       title: tr("恢复默认模板？", "Reset to the default?"),
       description: tr(
-        `「${label(cur.kind)}」（${locale === "zh" ? "中文" : "English"}）的自定义主题、正文与 HTML 源码会被删除，下一封邮件即用默认模板。`,
+        `「${label(cur.kind)}」（${locale === "zh" ? tr("中文", "Chinese") : "English"}）的自定义主题、正文与 HTML 源码会被删除，下一封邮件即用默认模板。`,
         `The custom subject, body and HTML source of “${label(cur.kind)}” (${locale === "zh" ? "Chinese" : "English"}) are deleted; the next mail uses the default.`,
       ),
       impact: dirty ? tr("未保存的修改也会丢失。", "Unsaved changes are lost too.") : undefined,
@@ -466,7 +466,7 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
         value={locale}
         onChange={(l) => l !== locale && setLang(l === "zh" ? null : l)}
         options={[
-          { value: "zh", label: "中文" },
+          { value: "zh", label: "中文" }, // i18n-ok: the language names itself
           { value: "en", label: "English" },
         ]}
       />

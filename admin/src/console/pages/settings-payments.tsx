@@ -122,7 +122,7 @@ function PaymentList({ p }: { p: Payments }) {
       if (off.length) {
         const ok = await confirm({
           title: tr(
-            `停用 ${off.map((m) => m.display_name).join("、")}？`,
+            `停用 ${off.map((m) => m.display_name).join(tr("、", ", "))}？`,
             `Disable ${off.map((m) => m.display_name).join(", ")}?`,
           ),
           impact: tr(
@@ -356,7 +356,7 @@ function PaymentRow({
       toast({
         tone: r.ok ? "success" : "error",
         title: r.ok ? tr("连接正常", "Connection works") : tr("连接测试失败", "The connection test failed"),
-        description: r.sub_code ? `${r.message}（${r.sub_code}）` : r.message,
+        description: r.sub_code ? `${r.message}${tr(`（${r.sub_code}）`, ` (${r.sub_code})`)}` : r.message,
       });
     } catch (e) {
       toast({ tone: "error", title: errText(e) });
@@ -456,7 +456,7 @@ function PaymentRow({
         />
       </div>
       {m.warnings.length > 0 && (
-        <p className="mt-1.5 text-footnote text-warning sm:pl-[4.25rem]">{m.warnings.join("；")}</p>
+        <p className="mt-1.5 text-footnote text-warning sm:pl-[4.25rem]">{m.warnings.join(tr("；", "; "))}</p>
       )}
     </div>
   );
@@ -640,7 +640,7 @@ function MethodDialog({
                 hint={
                   isSet || fp
                     ? tr(
-                        `已设置${fp ? `（指纹 ${fp.slice(0, 16)}…）` : ""}；留空 = 不修改`,
+                        `已设置${fp ? tr(`（指纹 ${fp.slice(0, 16)}…）`, ` (fingerprint ${fp.slice(0, 16)}…)`) : ""}；留空 = 不修改`,
                         `Set${fp ? ` (fingerprint ${fp.slice(0, 16)}…)` : ""}; empty = keep`,
                       )
                     : tr(

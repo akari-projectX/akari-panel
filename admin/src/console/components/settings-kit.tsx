@@ -890,7 +890,7 @@ export function OwnerNotice({ what }: { what?: string }) {
   return (
     <Banner tone="info" icon={<Lock />} title={tr("仅所有者可修改", "Owner only")}>
       {tr(
-        `你以管理员身份登录，${what ?? "这个分区"}对你只读。需要修改时请联系所有者。`,
+        `你以管理员身份登录，${what ?? tr("这个分区", "this section")}对你只读。需要修改时请联系所有者。`,
         `You are signed in as an admin: ${what ?? "this section"} is read-only for you. Ask the owner to change it.`,
       )}
     </Banner>
