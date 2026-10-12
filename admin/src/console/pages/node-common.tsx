@@ -7,9 +7,11 @@ import { useLang, useTr, type Tr } from "../../shared/i18n";
 import { ago } from "../../shared/format";
 import type { EntranceView, NodeGroup } from "../types";
 import type { Tone } from "../../shared/ui/badge";
-import { Checkbox, Field, Input } from "../../shared/ui/form";
+import { Checkbox, Field } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, X, type LucideIcon } from "lucide-react";
+import { Card } from "../../shared/ui/card";
+import { cn } from "../../shared/cn";
 import type { ReactNode } from "react";
 
 export function entranceState(e: EntranceView, tr: Tr): [string, Tone] {
@@ -29,6 +31,47 @@ export function healthText(e: EntranceView, tr: Tr, lang: "zh" | "en"): [string,
     ),
     "danger",
   ];
+}
+
+// --- Summary tiles (nodes and plans pages) -----------------------------------
+
+/** A summary tile: tinted icon, label, number, one line under it. */
+export function Summary({
+  icon: Icon,
+  label,
+  value,
+  foot,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: ReactNode;
+  foot: string;
+  tone?: "warning" | "danger";
+}) {
+  return (
+    <Card className="flex items-center gap-3 p-3.5">
+      <span
+        className={cn(
+          "inline-flex size-9 shrink-0 items-center justify-center rounded-[10px]",
+          tone === "danger"
+            ? "bg-destructive-soft text-destructive"
+            : tone === "warning"
+              ? "bg-warning-soft text-warning"
+              : "bg-primary-soft text-primary",
+        )}
+      >
+        <Icon className="size-[18px]" aria-hidden="true" />
+      </span>
+      <div className="min-w-0">
+        <div className="text-footnote text-muted-foreground">{label}</div>
+        <div className="tnum text-title3 font-semibold">{value}</div>
+        <div className="truncate text-caption text-faint" title={foot}>
+          {foot}
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 // --- Backend warnings -------------------------------------------------------
@@ -159,14 +202,152 @@ export function shown(text: string, error: string | undefined, tried: boolean): 
   return tried || text.trim() !== "" ? error : undefined;
 }
 
-// --- Tags and groups ----------------------------------------------------------
+// --- Chips (tags, egress addresses) ------------------------------------------
+
+/** A chip list while editing: the committed chips and what is still typed in the box. */
+export type Chips = { items: string[]; draft: string };
+
+export const chips = (items: string[]): Chips => ({ items, draft: "" });
+
+/** Tags are split at commas only (a tag may contain spaces: "IPLC 专线"). */
+const TAG_SPLIT = /[,，\n]+/;
+/** Addresses are split at commas and white space. */
+const ADDR_SPLIT = /[\s,，]+/;
+
+function parts(text: string, split: RegExp): string[] {
+  return text
+    .split(split)
+    .map((t) => t.trim())
+    .filter(Boolean);
+}
+
+/** Every value, committed or still typed, without duplicates (what is sent). */
+export function chipValues(c: Chips, split: RegExp = TAG_SPLIT): string[] {
+  return [...new Set([...c.items, ...parts(c.draft, split)])];
+}
+export const tagValues = (c: Chips) => chipValues(c, TAG_SPLIT);
+export const addrValues = (c: Chips) => chipValues(c, ADDR_SPLIT);
 
 /** "IPLC, 原生" → ["IPLC", "原生"] (the panel trims and deduplicates). */
 export function splitTags(v: string): string[] {
-  return v
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean);
+  return parts(v, TAG_SPLIT);
+}
+
+/** An IPv4 / IPv6 address or network the panel accepts (entrances.rs `clean_cidrs`). */
+export function isIpOrCidr(v: string): boolean {
+  const [addr, len, extra] = v.split("/");
+  if (extra !== undefined || !addr) return false;
+  let max: number;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(addr)) {
+    if (addr.split(".").some((p) => Number(p) > 255 || (p.length > 1 && p.startsWith("0")))) return false;
+    max = 32;
+  } else if (addr.includes(":") && /^[0-9a-fA-F:.]+$/.test(addr)) {
+    try {
+      new URL(`http://[${addr}]/`);
+    } catch {
+      return false;
+    }
+    max = 128;
+  } else return false;
+  return len === undefined || (/^\d{1,3}$/.test(len) && Number(len) <= max);
+}
+
+/**
+ * Chips with a box to type the next one: Enter, a separator or leaving the
+ * box adds it; Backspace in an empty box removes the last one. Chips that
+ * `invalid` rejects are shown red. Enter never submits the dialog here.
+ */
+export function ChipInput({
+  value,
+  onChange,
+  label,
+  placeholder,
+  split = TAG_SPLIT,
+  invalid,
+  mono,
+  error,
+  chipTone = "primary",
+}: {
+  value: Chips;
+  onChange: (c: Chips) => void;
+  /** The box's accessible name ("添加标签"). */
+  label: string;
+  placeholder?: string;
+  split?: RegExp;
+  invalid?: (v: string) => boolean;
+  mono?: boolean;
+  error?: boolean;
+  chipTone?: "primary" | "neutral";
+}) {
+  const tr = useTr();
+  const commit = (draft: string, keepLast: boolean) => {
+    const all = draft.split(split);
+    const rest = keepLast ? (all.pop() ?? "") : "";
+    const add = all.map((t) => t.trim()).filter(Boolean);
+    const items = [...value.items];
+    for (const t of add) if (!items.includes(t)) items.push(t);
+    onChange({ items, draft: rest });
+  };
+  return (
+    <div
+      className={cn(
+        "flex min-h-8 flex-wrap items-center gap-1.5 rounded-md bg-card px-1.5 py-1 shadow-[0_0_0_0.5px_var(--input)] transition-shadow focus-within:shadow-[0_0_0_1px_var(--primary),0_0_0_4px_var(--ring)] pointer-coarse:min-h-10",
+        error && "shadow-[0_0_0_1px_var(--destructive),0_0_0_4px_var(--destructive-soft)]",
+      )}
+    >
+      {value.items.map((x) => {
+        const bad = invalid?.(x) ?? false;
+        return (
+          <span
+            key={x}
+            className={cn(
+              "inline-flex max-w-full items-center gap-1 rounded-[6px] py-0.5 pr-1 pl-1.5 text-footnote",
+              mono && "font-mono",
+              bad
+                ? "bg-destructive-soft text-destructive"
+                : chipTone === "primary"
+                  ? "bg-primary-soft text-primary"
+                  : "bg-secondary text-foreground",
+            )}
+          >
+            <span className="truncate">{x}</span>
+            <button
+              type="button"
+              className="hit-44 inline-flex size-4 items-center justify-center rounded-full opacity-70 hover:opacity-100"
+              aria-label={tr(`移除 ${x}`, `Remove ${x}`)}
+              onClick={() => onChange({ ...value, items: value.items.filter((y) => y !== x) })}
+            >
+              <X className="size-3" aria-hidden="true" />
+            </button>
+          </span>
+        );
+      })}
+      <input
+        aria-label={label}
+        aria-invalid={error || undefined}
+        value={value.draft}
+        placeholder={placeholder}
+        className={cn(
+          "h-6 min-w-24 flex-1 bg-transparent px-1 text-body outline-none placeholder:text-faint",
+          mono && "font-mono",
+        )}
+        onChange={(e) => {
+          const t = e.target.value;
+          if (split.test(t)) commit(t, true);
+          else onChange({ ...value, draft: t });
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (value.draft.trim()) commit(value.draft, false);
+          } else if (e.key === "Backspace" && value.draft === "" && value.items.length > 0) {
+            onChange({ ...value, items: value.items.slice(0, -1) });
+          }
+        }}
+        onBlur={() => value.draft.trim() && commit(value.draft, false)}
+      />
+    </div>
+  );
 }
 
 export function TagsField({
@@ -174,23 +355,30 @@ export function TagsField({
   onChange,
   className,
 }: {
-  value: string;
-  onChange: (v: string) => void;
+  value: Chips;
+  onChange: (v: Chips) => void;
   className?: string;
 }) {
   const tr = useTr();
-  const n = splitTags(value).length;
+  const n = tagValues(value).length;
   return (
     <Field
+      group
       className={className}
-      label={tr("标签（逗号分隔，用户可见）", "Tags (comma separated, shown to users)")}
+      label={tr("标签", "Tags")}
       error={n > 8 ? tr(`最多 8 个标签（现在 ${n} 个）`, `At most 8 tags (${n} now)`) : undefined}
       hint={tr(
-        "显示在订阅线路名里入口名称之后，也显示在门户线路列表里，只属于这个入口（最多 8 个）。",
-        "Shown after the entrance's name in subscription line names and in the portal's line list; this entrance only (at most 8).",
+        "最多 8 个，显示在订阅线路名与门户线路列表里，只属于这个入口",
+        "At most 8; shown in subscription line names and the portal's line list, this entrance only",
       )}
     >
-      <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="IPLC" />
+      <ChipInput
+        value={value}
+        onChange={onChange}
+        label={tr("添加标签", "Add a tag")}
+        placeholder={tr("添加…", "Add…")}
+        error={n > 8}
+      />
     </Field>
   );
 }

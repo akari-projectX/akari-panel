@@ -7,7 +7,7 @@
 import { AlertDialog as A } from "radix-ui";
 import { useMemo, useState } from "react";
 import { del, patch, post } from "../../shared/api";
-import { bytes, centsToYuanText, parseYuan, yuan } from "../../shared/format";
+import { bytes, centsToYuanText, parseYuan, pct, yuan } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { SectionTitle } from "../kit";
 import { useAction } from "../data";
@@ -15,7 +15,7 @@ import { navigate, setQuery, useRoute } from "../router";
 import { PERIODS, periodLabel, resetLabel } from "../terms";
 import type { NodeGroup, PlanView, ServerView } from "../types";
 import { useGroups, usePlanList, useServers } from "../servers";
-import { FixCount, num, shown, type NumRule } from "./node-common";
+import { FixCount, Summary, num, shown, type NumRule } from "./node-common";
 import {
   ArrowRightLeft,
   Layers,
@@ -28,10 +28,15 @@ import {
   ShieldCheck,
   Trash2,
   TriangleAlert,
+  Users,
+  Zap,
+  Gauge,
 } from "lucide-react";
+import { Meter } from "../../shared/ui/meter";
+import { cn } from "../../shared/cn";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Card, CardBody } from "../../shared/ui/card";
+import { Card } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Select, SwitchField, Textarea } from "../../shared/ui/form";
@@ -87,6 +92,7 @@ export function PlansPage() {
           )
         }
       />
+      <PlanSummary />
       <div className="mb-4">
         <Tabs
           value={tab}
@@ -99,6 +105,66 @@ export function PlansPage() {
       </div>
       {tab === "plans" ? <PlanList open={query.get("open")} /> : <GroupList open={query.get("group")} />}
     </>
+  );
+}
+
+/** Four tiles over both tabs (the nodes page's summary style). */
+function PlanSummary() {
+  const tr = useTr();
+  const plans = usePlanList();
+  const groups = useGroups();
+  if (plans.isPending || groups.isPending)
+    return (
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-[74px] rounded-xl" />
+        ))}
+      </div>
+    );
+  if (!plans.data || !groups.data) return null;
+  const list = plans.data;
+  const onSale = list.filter((p) => p.enabled && p.on_sale).length;
+  const disabled = list.filter((p) => !p.enabled).length;
+  const subs = list.reduce((n, p) => n + p.active_users, 0);
+  const full = list.filter((p) => p.capacity !== null && p.active_users >= p.capacity).length;
+  const unused = groups.data.filter((g) => g.plan_ids.length === 0).length;
+  const empty = list.filter((p) => p.enabled && p.group_ids.length === 0).length;
+  return (
+    <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <Summary
+        icon={Package}
+        label={tr("套餐", "Plans")}
+        value={list.length}
+        foot={tr(
+          `在售 ${onSale} · 未上架 ${list.length - onSale - disabled} · 停用 ${disabled}`,
+          `${onSale} on sale · ${list.length - onSale - disabled} off sale · ${disabled} disabled`,
+        )}
+      />
+      <Summary
+        icon={Users}
+        label={tr("生效订阅", "Active subscriptions")}
+        value={subs.toLocaleString()}
+        tone={full > 0 ? "warning" : undefined}
+        foot={full > 0 ? tr(`${full} 个套餐已售罄`, `${full} plans sold out`) : tr("没有售罄的套餐", "None sold out")}
+      />
+      <Summary
+        icon={Layers}
+        label={tr("节点组", "Node groups")}
+        value={groups.data.length}
+        foot={unused > 0 ? tr(`${unused} 个未被套餐使用`, `${unused} unused by plans`) : tr("都在使用中", "All in use")}
+      />
+      <Summary
+        icon={TriangleAlert}
+        label={tr("没有节点组的套餐", "Plans without node groups")}
+        value={empty}
+        tone={empty > 0 ? "danger" : undefined}
+        foot={
+          empty > 0
+            ? tr("用户买了也用不了", "Buyers would get nothing")
+            : tr("每个启用的套餐都有节点组", "Every enabled plan has groups")
+        }
+      />
+    </div>
   );
 }
 
@@ -199,70 +265,119 @@ function PlanList({ open }: { open: string | null }) {
           {list.map((p) => {
             const ents = new Set(p.group_ids.flatMap((g) => groupById.get(g)?.entrance_ids ?? []));
             const relays = [...ents].filter((e) => idx.get(e)?.relay).length;
+            const main = p.prices[0];
+            const fill = p.capacity ? pct(p.active_users, p.capacity) : null;
             return (
               <section key={p.id} aria-label={p.name}>
-                <Card className={p.enabled ? "" : "opacity-70"}>
-                  <CardBody>
-                    <div className="flex items-start gap-2">
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => setQuery({ open: p.id }, false)}
-                      >
-                        <div className="text-headline font-semibold hover:underline">{p.name}</div>
-                        <div className="mt-1 flex flex-wrap gap-1">
-                          {!p.enabled ? (
-                            <Badge>{tr("已停用", "Disabled")}</Badge>
-                          ) : p.on_sale ? (
-                            <Badge tone="success">{tr("在售", "On sale")}</Badge>
-                          ) : (
-                            <Badge tone="warning">{tr("未上架", "Off sale")}</Badge>
-                          )}
-                          {p.renewal_only && <Badge tone="outline">{tr("仅续费", "Renewal only")}</Badge>}
-                          {relays > 0 && <Badge tone="info">{tr("含中转", "Has relays")}</Badge>}
-                        </div>
-                      </button>
-                      <RowMenu label={tr(`套餐 ${p.name} 的操作`, `Actions of ${p.name}`)}>
-                        {(close) => (
-                          <>
-                            <MenuItem icon={Settings} onClick={() => (close(), setQuery({ open: p.id }, false))}>
-                              {tr("编辑", "Edit")}
-                            </MenuItem>
-                            <MenuItem icon={p.enabled ? Pause : Play} onClick={() => (close(), void toggle(p))}>
-                              {p.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}
-                            </MenuItem>
-                            <MenuItem icon={Trash2} danger onClick={() => (close(), void remove(p))}>
-                              {tr("删除", "Delete")}
-                            </MenuItem>
-                          </>
+                <Card className={cn("flex h-full flex-col overflow-hidden", !p.enabled && "opacity-70")}>
+                  <div className="flex items-start gap-3 px-4 pt-3.5">
+                    <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-primary-soft text-primary">
+                      <Package className="size-[18px]" aria-hidden="true" />
+                    </span>
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => setQuery({ open: p.id }, false)}
+                    >
+                      <div className="truncate text-headline font-semibold hover:underline">{p.name}</div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {!p.enabled ? (
+                          <Badge>{tr("已停用", "Disabled")}</Badge>
+                        ) : p.on_sale ? (
+                          <Badge tone="success" dot>
+                            {tr("在售", "On sale")}
+                          </Badge>
+                        ) : (
+                          <Badge tone="warning">{tr("未上架", "Off sale")}</Badge>
                         )}
-                      </RowMenu>
-                    </div>
-                    <ul className="mt-3 space-y-1 text-body">
-                      {p.prices.map((pp) => (
-                        <li key={pp.period} className="flex justify-between gap-3">
-                          <span className="text-muted-foreground">{periodLabel(pp.period, tr, pp.days)}</span>
-                          <span className="tnum font-medium">{yuan(pp.price_cents)}</span>
-                        </li>
-                      ))}
-                      {p.prices.length === 0 && <li className="text-muted-foreground">{tr("未定价", "No prices")}</li>}
-                    </ul>
-                    <div className="mt-3 grid grid-cols-2 gap-2 border-t border-separator pt-3 text-footnote text-muted-foreground">
-                      <span>{p.traffic_quota_bytes ? bytes(p.traffic_quota_bytes) : tr("不限流量", "Unlimited")}</span>
-                      <span>{resetLabel(p.period, tr)}</span>
-                      <span>{p.speed_limit_mbps ? `${p.speed_limit_mbps} Mbps` : tr("不限速", "No speed limit")}</span>
-                      <span>
+                        {p.renewal_only && <Badge tone="outline">{tr("仅续费", "Renewal only")}</Badge>}
+                        {relays > 0 && (
+                          <Badge tone="info">
+                            <ArrowRightLeft aria-hidden="true" />
+                            {tr("含中转", "Has relays")}
+                          </Badge>
+                        )}
+                      </div>
+                    </button>
+                    <RowMenu label={tr(`套餐 ${p.name} 的操作`, `Actions of ${p.name}`)}>
+                      {(close) => (
+                        <>
+                          <MenuItem icon={Settings} onClick={() => (close(), setQuery({ open: p.id }, false))}>
+                            {tr("编辑", "Edit")}
+                          </MenuItem>
+                          <MenuItem icon={p.enabled ? Pause : Play} onClick={() => (close(), void toggle(p))}>
+                            {p.enabled ? tr("停用", "Disable") : tr("启用", "Enable")}
+                          </MenuItem>
+                          <MenuItem icon={Trash2} danger onClick={() => (close(), void remove(p))}>
+                            {tr("删除", "Delete")}
+                          </MenuItem>
+                        </>
+                      )}
+                    </RowMenu>
+                  </div>
+                  <div className="px-4 pt-3">
+                    {main ? (
+                      <div className="flex flex-wrap items-baseline gap-x-1.5">
+                        <span className="tnum text-title2 font-semibold tracking-[-0.02em]">
+                          {yuan(main.price_cents)}
+                        </span>
+                        <span className="text-footnote text-muted-foreground">
+                          / {periodLabel(main.period, tr, main.days)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-body text-muted-foreground">{tr("未定价", "No prices")}</div>
+                    )}
+                    {p.prices.length > 1 && (
+                      <ul className="mt-1.5 flex flex-wrap gap-1" aria-label={tr("其他周期", "Other periods")}>
+                        {p.prices.slice(1).map((pp) => (
+                          <li key={pp.period}>
+                            <Badge tone="outline" className="tnum">
+                              {periodLabel(pp.period, tr, pp.days)} {yuan(pp.price_cents)}
+                            </Badge>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <ul className="grid gap-1.5 px-4 py-3 text-footnote text-muted-foreground sm:grid-cols-2">
+                    <li className="flex min-w-0 items-center gap-1.5">
+                      <Gauge className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+                      <span className="truncate">
+                        <span className="tnum font-medium text-foreground">
+                          {p.traffic_quota_bytes ? bytes(p.traffic_quota_bytes) : tr("不限流量", "Unlimited")}
+                        </span>{" "}
+                        · {resetLabel(p.period, tr)}
+                      </span>
+                    </li>
+                    <li className="flex min-w-0 items-center gap-1.5">
+                      <Zap className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+                      <span className="tnum truncate">
+                        {p.speed_limit_mbps ? `${p.speed_limit_mbps} Mbps` : tr("不限速", "No speed limit")}
+                      </span>
+                    </li>
+                    <li className="flex min-w-0 items-center gap-1.5 sm:col-span-2">
+                      <Layers className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+                      <span className="truncate">
                         {tr(
                           `${p.group_ids.length} 个节点组 · ${ents.size} 个入口`,
                           `${p.group_ids.length} groups · ${ents.size} entrances`,
                         )}
+                        {relays > 0 && tr(`（中转 ${relays}）`, ` (${relays} relays)`)}
                       </span>
-                      <span>
+                    </li>
+                  </ul>
+                  <div className="mt-auto border-t border-separator bg-window/60 px-4 py-2.5">
+                    <div className="flex justify-between gap-2 text-footnote text-muted-foreground">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Users className="size-3.5 text-faint" aria-hidden="true" />
                         {tr(`订阅 ${p.active_users}`, `${p.active_users} subscribers`)}
                         {p.capacity !== null && tr(` / 库存 ${p.capacity}`, ` / stock ${p.capacity}`)}
                       </span>
+                      {fill !== null && <span className="tnum font-semibold text-foreground">{fill}%</span>}
                     </div>
-                  </CardBody>
+                    {fill !== null && <Meter value={fill} className="mt-1.5" label={tr("库存占用", "Stock used")} />}
+                  </div>
                 </Card>
               </section>
             );
@@ -832,43 +947,53 @@ function GroupList({ open }: { open: string | null }) {
         <div className="grid gap-4 md:grid-cols-2">
           {groups.data.map((g) => (
             <section key={g.id} aria-label={g.name}>
-              <Card>
-                <CardBody>
-                  <div className="flex items-start gap-2">
-                    <button
-                      type="button"
-                      className="min-w-0 flex-1 text-left"
-                      onClick={() => setQuery({ group: g.id }, false)}
-                    >
-                      <div className="text-headline font-semibold hover:underline">{g.name}</div>
-                      {g.description && <div className="text-footnote text-muted-foreground">{g.description}</div>}
-                      <div className="mt-1 text-footnote text-muted-foreground">
-                        {tr("套餐：", "Plans: ")}
-                        {g.plan_ids.map((p) => planById.get(p)?.name ?? tr("已删除", "deleted")).join(", ") || "—"}
-                      </div>
-                    </button>
-                    <RowMenu label={tr(`节点组 ${g.name} 的操作`, `Actions of ${g.name}`)}>
-                      {(close) => (
-                        <>
-                          <MenuItem icon={Settings} onClick={() => (close(), setQuery({ group: g.id }, false))}>
-                            {tr("编辑", "Edit")}
-                          </MenuItem>
-                          <MenuItem icon={Trash2} danger onClick={() => (close(), void remove(g))}>
-                            {tr("删除", "Delete")}
-                          </MenuItem>
-                        </>
-                      )}
-                    </RowMenu>
-                  </div>
-                  <ul className="mt-3 space-y-1 text-body">
-                    {g.entrance_ids.map((id) => (
-                      <EntranceLine key={id} id={id} e={idx.get(id)} />
-                    ))}
-                    {g.entrance_ids.length === 0 && (
-                      <li className="text-muted-foreground">{tr("没有入口", "No entrances")}</li>
+              <Card className="flex h-full flex-col overflow-hidden">
+                <div className="flex items-start gap-3 px-4 py-3.5">
+                  <span className="inline-flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-primary-soft text-primary">
+                    <Layers className="size-[18px]" aria-hidden="true" />
+                  </span>
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => setQuery({ group: g.id }, false)}
+                  >
+                    <div className="truncate text-headline font-semibold hover:underline">{g.name}</div>
+                    {g.description && <div className="text-footnote text-muted-foreground">{g.description}</div>}
+                    <div className="mt-1 flex flex-wrap items-center gap-1 text-footnote text-muted-foreground">
+                      {tr("套餐", "Plans")}
+                      {g.plan_ids.length === 0
+                        ? " —"
+                        : g.plan_ids.map((p) => (
+                            <Badge key={p} tone="outline">
+                              {planById.get(p)?.name ?? tr("已删除", "deleted")}
+                            </Badge>
+                          ))}
+                    </div>
+                  </button>
+                  <RowMenu label={tr(`节点组 ${g.name} 的操作`, `Actions of ${g.name}`)}>
+                    {(close) => (
+                      <>
+                        <MenuItem icon={Settings} onClick={() => (close(), setQuery({ group: g.id }, false))}>
+                          {tr("编辑", "Edit")}
+                        </MenuItem>
+                        <MenuItem icon={Trash2} danger onClick={() => (close(), void remove(g))}>
+                          {tr("删除", "Delete")}
+                        </MenuItem>
+                      </>
                     )}
-                  </ul>
-                </CardBody>
+                  </RowMenu>
+                </div>
+                <ul
+                  className="mt-auto grid gap-1.5 border-t border-separator bg-window/60 px-4 py-2.5 text-body"
+                  aria-label={tr(`${g.name} 的入口`, `Entrances of ${g.name}`)}
+                >
+                  {g.entrance_ids.map((id) => (
+                    <EntranceLine key={id} id={id} e={idx.get(id)} />
+                  ))}
+                  {g.entrance_ids.length === 0 && (
+                    <li className="text-muted-foreground">{tr("没有入口", "No entrances")}</li>
+                  )}
+                </ul>
               </Card>
             </section>
           ))}

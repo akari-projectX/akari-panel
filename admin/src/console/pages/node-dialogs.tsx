@@ -24,7 +24,9 @@ import {
   WarningList,
   num,
   shown,
-  splitTags,
+  chips,
+  tagValues,
+  type Chips,
   type NumRule,
 } from "./node-common";
 import { Activity, Bell, Download, Gauge, Layers, Server } from "lucide-react";
@@ -303,7 +305,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
   );
 }
 
-type DirectForm = { host: string; port: string; rate: string; tags: string; groups: string[] };
+type DirectForm = { host: string; port: string; rate: string; tags: Chips; groups: string[] };
 
 export function CreateNodeDialog({
   servers,
@@ -328,7 +330,7 @@ export function CreateNodeDialog({
   const [mode, setMode] = useState<"template" | "json">("template");
   const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm());
   const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
-  const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: "", groups: [] });
+  const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: chips([]), groups: [] });
   const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
   const confirmFree = useConfirmFree();
@@ -345,7 +347,7 @@ export function CreateNodeDialog({
             "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
           )
         : undefined,
-    tags: splitTags(direct.tags).length > 8 ? "tags" : undefined,
+    tags: tagValues(direct.tags).length > 8 ? "tags" : undefined,
   };
   const count = tried ? Object.values(errors).filter(Boolean).length : 0;
   const submit = async () => {
@@ -368,7 +370,7 @@ export function CreateNodeDialog({
     if (port !== null) d.connect_port = port;
     if (rate !== 1) d.rate = rate;
     if (direct.groups.length) d.group_ids = direct.groups;
-    if (splitTags(direct.tags).length) d.tags = splitTags(direct.tags);
+    if (tagValues(direct.tags).length) d.tags = tagValues(direct.tags);
     if (Object.keys(d).length) body.direct = d;
     const r = await run(
       () => post<{ id: string; server_id: string; name: string } & Partial<Enrollment>>("/nodes", body),
