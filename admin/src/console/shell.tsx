@@ -18,7 +18,7 @@
 // (area), so switching sub-routes inside an area does not replay the
 // entrance animation; it carries data-page / data-ready (the page's data has
 // arrived) for the e2e timing suite.
-import { useIsFetching } from "@tanstack/react-query";
+import { useIsFetching, useQueryClient, type Query } from "@tanstack/react-query";
 import {
   Bell,
   ChevronLeft,
@@ -46,7 +46,7 @@ import { Kbd, MOD_KEY } from "../shared/ui/form";
 import { Menu, MenuItem, MenuSeparator, Popover } from "../shared/ui/menu";
 import { useToast } from "../shared/ui/toast";
 import { NAV, OPEN_LABELS, SUB_LABELS, TABS, navOf, pathOf, type NavItem } from "./nav";
-import { prefetchPage } from "./pages";
+import { prefetchIdle, prefetchOn } from "./pages";
 import { pushRecent } from "./recent";
 import { navigate, setQuery } from "./router";
 import { CrumbContext, useBadges, useMe, useSite, type Badges } from "./session";
@@ -56,6 +56,15 @@ import { CrumbContext, useBadges, useMe, useSite, type Badges } from "./session"
 const loadPalette = () => import("./palette");
 const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
 const BellPanel = lazy(() => import("./components/shell-bell").then((m) => ({ default: m.BellPanel })));
+
+/**
+ * What the open page still waits for (main[data-ready]): queries on screen
+ * that have no data yet. A background refetch of data already shown (the
+ * stale-time refresh on return, polling) does not hold the page back.
+ */
+const FIRST_LOAD = {
+  predicate: (q: Query) => q.state.data === undefined && q.getObserversCount() > 0,
+};
 
 /** The language toggle's Chinese half (the same in both languages). */
 const ZH = "中"; // i18n-ok: a language's own name
@@ -433,8 +442,7 @@ function Sidebar({
                           to={pathOf(it.id)}
                           aria-label={collapsed ? (n ? `${label} ${pending}` : label) : undefined}
                           aria-current={active ? "page" : undefined}
-                          onMouseEnter={() => prefetchPage(it.id)}
-                          onFocus={() => prefetchPage(it.id)}
+                          {...prefetchOn(it.id)}
                           className={cn(
                             "relative flex items-center rounded-[9px] text-body font-medium transition-colors duration-(--dur-hover)",
                             collapsed ? "h-9 w-full justify-center" : "h-8 gap-2.5 px-2",
@@ -568,12 +576,20 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
   const menuOpen = menu || demo === "account-menu";
 
   const navigation = useNavigation();
-  const fetching = useIsFetching();
+  const client = useQueryClient();
+  const loading = useIsFetching(FIRST_LOAD);
   // Ready = this page's chunk and its first data have arrived (latched per page).
   const [ready, setReady] = useState<string | null>(null);
   useEffect(() => {
-    if (navigation.state === "idle" && fetching === 0) setReady(page);
-  }, [navigation.state, fetching, page]);
+    if (navigation.state !== "idle" || ready === page) return;
+    // Ask the cache now, not the count this render saw: the page's queries
+    // start in its own effects, which run after that render (before this one).
+    if (client.isFetching(FIRST_LOAD) === 0) setReady(page);
+  }, [navigation.state, loading, page, ready, client]);
+  // Once the first page is ready, the likely next pages' chunks load in idle time.
+  useEffect(() => {
+    if (ready) prefetchIdle();
+  }, [ready]);
 
   const { group, crumbs, deep, view } = useCrumbs(page, object, tr);
   // «view · site 管理后台».
@@ -756,8 +772,7 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
                 key={t.id}
                 to={pathOf(t.id)}
                 aria-current={on ? "page" : undefined}
-                onMouseEnter={() => prefetchPage(t.id)}
-                onFocus={() => prefetchPage(t.id)}
+                {...prefetchOn(t.id)}
                 className={cn(
                   "relative flex h-[52px] flex-col items-center justify-center gap-0.5 text-micro font-medium transition-colors",
                   on ? "text-primary" : "text-faint",

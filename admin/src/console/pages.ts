@@ -35,3 +35,36 @@ export const SUB_PAGES: Record<string, Loader> = {
 export function prefetchPage(id: string): void {
   void PAGES[id]?.().catch(() => {});
 }
+
+/** Props for a link to a page: its chunk starts loading on hover, focus or touch (before the click). */
+export function prefetchOn(id: string) {
+  const go = () => prefetchPage(id);
+  return { onMouseEnter: go, onFocus: go, onTouchStart: go };
+}
+
+/**
+ * The pages most switched to (the phone's tab bar, and the two pages behind
+ * "更多" visited most), loaded one per idle period once the first page is
+ * ready, so a switch only renders (perf §3: switch ≤ 900 ms on a mid phone).
+ * Not on Save-Data / 2G connections. Once per session.
+ */
+const IDLE_PAGES = ["users", "orders", "tickets", "more", "nodes", "settings", "dashboard"];
+let idleStarted = false;
+
+export function prefetchIdle(): void {
+  if (idleStarted) return;
+  idleStarted = true;
+  const conn = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+  if (conn?.saveData || /2g/.test(conn?.effectiveType ?? "")) return;
+  const queue = [...IDLE_PAGES];
+  const idle = (f: () => void) =>
+    "requestIdleCallback" in window ? requestIdleCallback(f, { timeout: 3000 }) : setTimeout(f, 200);
+  const next = () => {
+    const id = queue.shift();
+    if (!id) return;
+    void PAGES[id]()
+      .catch(() => {})
+      .finally(() => idle(next));
+  };
+  idle(next);
+}

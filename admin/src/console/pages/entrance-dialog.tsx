@@ -29,7 +29,7 @@ import { ago, bytes, dateTime, daysBefore, siteToday } from "../../shared/format
 import { useLang, useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { LineChart, timeLabels } from "../../shared/ui/charts";
+import { LineChart, timeLabels } from "../../shared/ui/line-chart";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Field, Input, Select, Switch } from "../../shared/ui/form";

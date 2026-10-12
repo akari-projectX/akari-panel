@@ -40,7 +40,7 @@ import { useLang, useTr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, CardHeader, Group, Row } from "../../shared/ui/card";
-import { LineChart, timeLabels } from "../../shared/ui/charts";
+import { LineChart, timeLabels } from "../../shared/ui/line-chart";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Checkbox, Field, Input, Segmented, Select, Switch, SwitchField } from "../../shared/ui/form";
 import { Banner, KV } from "../../shared/ui/layout";

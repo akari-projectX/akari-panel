@@ -46,7 +46,7 @@ import { useLang, useTr, type Tr } from "../../shared/i18n";
 import { Badge, type Tone } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, Group, Row } from "../../shared/ui/card";
-import { LineChart } from "../../shared/ui/charts";
+import { LineChart } from "../../shared/ui/line-chart";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Segmented } from "../../shared/ui/form";
