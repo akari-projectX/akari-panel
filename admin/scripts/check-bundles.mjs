@@ -72,7 +72,7 @@ const code = [...consoleText, ...loginText].filter(([f]) => /\.(js|css)$/.test(f
 for (const [f, t] of code) {
   for (const abs of ["/admin/assets/", "/app/assets/"]) {
     // Quoted string or url( … ) starting with the absolute asset path.
-    const re = new RegExp(`(["'\`]|url\\(\\s*["']?)${abs.replace(/\//g, "\\/")}`);
+    const re = new RegExp(`(["'\`]|url\\(\\s*["']?)${abs.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}`);
     if (re.test(t)) problems.push(`${f}: absolute asset URL ${abs} (bypasses the admin prefix rewrite)`);
   }
   const here = dirname(f);

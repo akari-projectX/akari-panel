@@ -13,6 +13,8 @@ import {
   api,
   apiAs,
   apiJson,
+  accountMenu,
+  dialog,
   isMobile,
   nav,
   observe,
@@ -112,7 +114,7 @@ test("SH-05: Turnstile on sign-ins widens the sign-in page's CSP and gates the f
   expect(res?.headers()["content-security-policy"]).not.toContain("cloudflare");
 });
 
-test("SH-09 SH-10 SH-12 SH-16: sidebar, top bar, language, theme, badges, deep links and Back", async ({
+test("SH-09 SH-10 SH-12 SH-16: sidebar / tab bar, toolbar, language, theme, badges, deep links and Back", async ({
   page,
 }, info) => {
   const problems = watch(page);
@@ -127,10 +129,14 @@ test("SH-09 SH-10 SH-12 SH-16: sidebar, top bar, language, theme, badges, deep l
   ).toBe(201);
   await openConsole(page, "/users");
   if (isMobile(info)) {
-    await page.getByRole("button", { name: "菜单", exact: true }).click();
-    const drawer = page.getByRole("navigation", { name: "主导航" }).last();
-    await expect(drawer.getByRole("link", { name: /^工单/ })).toContainText(/\d/);
-    await drawer.getByRole("link", { name: "订单" }).click();
+    // Phone: no sidebar; a bottom tab bar (仪表盘/用户/订单/工单/更多) with the badge.
+    await expect(page.getByRole("navigation", { name: "主导航" })).toBeHidden();
+    const tabs = page.getByRole("navigation", { name: "标签栏" });
+    for (const t of ["仪表盘", "用户", "订单", "工单", "更多"])
+      await expect(tabs.getByRole("link", { name: new RegExp(`^${t}`) })).toBeVisible();
+    await expect(tabs.getByRole("link", { name: /^工单/ }).getByLabel(/条待处理/)).toBeVisible();
+    await expect(tabs.getByRole("link", { name: /^用户/ })).toHaveAttribute("aria-current", "page");
+    await tabs.getByRole("link", { name: /^订单/ }).click();
   } else {
     const side = page.getByRole("navigation", { name: "主导航" });
     await expect(side.getByLabel(/条待处理/)).toBeVisible();
@@ -141,28 +147,42 @@ test("SH-09 SH-10 SH-12 SH-16: sidebar, top bar, language, theme, badges, deep l
     await expect(page.locator("aside[data-collapsed=true]")).toBeVisible();
     await page.getByRole("button", { name: "展开侧边栏" }).click();
     await expect(page.locator("aside[data-collapsed=false]")).toBeVisible();
+    // Breadcrumb: group › page.
+    await expect(page.getByRole("navigation", { name: "当前位置" })).toContainText(/运营.*订单/);
   }
   await expect(page).toHaveURL(`${CONSOLE}/orders`);
   await expect(page.getByRole("heading", { level: 1, name: "订单" })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(`${CONSOLE}/users`);
   await expect(page.getByRole("heading", { level: 1, name: "用户" })).toBeVisible();
-  // Theme and language (remembered).
-  await page.getByRole("button", { name: "切换主题" }).click();
+  // Theme and language (remembered): the toolbar on a desktop, the account menu on a phone.
+  if (isMobile(info)) await accountMenu(page, "切换深色 / 浅色");
+  else await page.getByRole("button", { name: "切换主题" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await page.getByRole("button", { name: "English" }).click();
+  if (isMobile(info)) await accountMenu(page, "English");
+  else await page.getByRole("button", { name: "English" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();
-  await page.getByRole("button", { name: "中文" }).click();
-  await page
-    .getByRole("button", { name: "Toggle theme" })
-    .or(page.getByRole("button", { name: "切换主题" }))
-    .click();
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  if (isMobile(info)) {
+    // The More page lists every page and carries language and theme too.
+    await page.getByRole("navigation", { name: "Tab bar" }).getByRole("link", { name: /^More/ }).click();
+    const all = page.getByRole("navigation", { name: "All pages" });
+    for (const t of ["System status", "Coupons", "Nodes", "Settings", "Audit log"])
+      await expect(all.getByRole("link", { name: new RegExp(`^${t}`) })).toBeVisible();
+    await page.getByRole("button", { name: /^Language/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "更多" })).toBeVisible();
+    await page.getByRole("button", { name: /^深色模式/ }).click();
+  } else {
+    await page.getByRole("button", { name: "中文" }).click();
+    await page.getByRole("button", { name: "切换主题" }).click();
+  }
   await expect(page.locator("html")).not.toHaveClass(/dark/);
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   // The bell goes to the alert center.
-  await page.getByRole("button", { name: /告警（/ }).click();
+  await page.getByRole("link", { name: /告警（/ }).click();
   await expect(page).toHaveURL(`${CONSOLE}/alerts`);
   expect(problems).toEqual([]);
 });
@@ -186,7 +206,8 @@ test("SH-11: command palette — pages, actions, users by email, orders by numbe
   await openConsole(page, "");
   const open = async () => {
     if (isMobile(info)) await page.getByRole("button", { name: "搜索", exact: true }).click();
-    else await page.keyboard.press("Control+k");
+    else await page.keyboard.press("ControlOrMeta+k");
+    await expect(page.getByRole("combobox", { name: "搜索" })).toBeVisible();
   };
   await open();
   const box = page.getByRole("combobox", { name: "搜索" });
@@ -199,12 +220,14 @@ test("SH-11: command palette — pages, actions, users by email, orders by numbe
   await expect(page.getByRole("dialog", { name: "新建用户" })).toBeVisible();
   await page.keyboard.press("Escape");
   await open();
-  await box.fill(email.slice(0, 12));
+  // "@" searches users only.
+  await box.fill(`@${email.slice(0, 12)}`);
   await page.getByRole("option", { name: email }).click();
   await expect(page.getByRole("dialog", { name: email })).toBeVisible();
   await page.keyboard.press("Escape");
   await open();
-  await box.fill(order.out_trade_no);
+  // "#" searches orders only.
+  await box.fill(`#${order.out_trade_no}`);
   await page.getByRole("option", { name: order.out_trade_no }).click();
   await expect(page).toHaveURL(new RegExp(`/orders\\?open=${order.id}`));
   await expect(page.getByRole("dialog", { name: order.out_trade_no })).toBeVisible();
@@ -232,4 +255,91 @@ test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in 
     await apiJson("PUT", "/settings/site", { version: s2.version, timezone: null });
   }
   await (await api()).get(`${API}/me`);
+});
+
+test("SH-14: layers — Esc closes only the top one; typed changes ask before they are dropped", async ({
+  page,
+}, info) => {
+  const problems = watch(page);
+  await openConsole(page, "/users");
+  const openCreate = async () => {
+    if (isMobile(info)) await page.getByRole("button", { name: "搜索", exact: true }).click();
+    else await page.keyboard.press("ControlOrMeta+k");
+    await page.getByRole("combobox", { name: "搜索" }).fill("新建用户");
+    await page.getByRole("option", { name: "新建用户" }).click();
+  };
+  await openCreate();
+  const create = dialog(page, "新建用户");
+  await expect(create).toBeVisible();
+  // Untouched: Esc closes at once.
+  await page.keyboard.press("Escape");
+  await expect(create).toBeHidden();
+  // Typed: Esc asks; Esc on the question closes only the question.
+  await openCreate();
+  await expect(create).toBeVisible();
+  await create
+    .getByRole("textbox")
+    .first()
+    .fill(`${uniq(info, "dirty")}@e2e.test`);
+  await page.keyboard.press("Escape");
+  const ask = page.getByRole("alertdialog", { name: "放弃未保存的修改？" });
+  await expect(ask).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(ask).toBeHidden();
+  await expect(create).toBeVisible();
+  await expect(create.getByRole("textbox").first()).toHaveValue(/dirty/);
+  // Asked again; "放弃修改" drops the draft.
+  await page.keyboard.press("Escape");
+  await ask.getByRole("button", { name: "放弃修改" }).click();
+  await expect(create).toBeHidden();
+  expect(problems).toEqual([]);
+});
+
+test("SH-19: every page's chunks load under the admin prefix (no 404, no CSP report)", async ({ page }, info) => {
+  test.skip(isMobile(info), "same bundle; the desktop run covers it");
+  const problems = watch(page);
+  const bad: string[] = [];
+  page.on("response", (r) => {
+    const u = new URL(r.url());
+    if (
+      u.origin === ORIGIN &&
+      r.status() >= 400 &&
+      !u.pathname.startsWith(`/${PREFIX}/api/`) &&
+      !/favicon|\/brand\//.test(u.pathname)
+    )
+      bad.push(`${r.status()} ${u.pathname}`);
+    if (u.origin === ORIGIN && /\/assets\//.test(u.pathname) && !u.pathname.startsWith(`/${PREFIX}/admin/assets/`))
+      bad.push(`outside the prefix: ${u.pathname}`);
+  });
+  const pages = [
+    "",
+    "/status",
+    "/users",
+    "/orders",
+    "/coupons",
+    "/finance",
+    "/tickets",
+    "/content",
+    "/nodes",
+    "/plans",
+    "/alerts",
+    "/updates",
+    "/settings",
+    "/audit",
+    "/account",
+    "/more",
+  ];
+  await openConsole(page, "");
+  for (const p of pages) {
+    await page.goto(`${CONSOLE}${p}`);
+    await expect(page.locator("main[data-ready]")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  }
+  // Client-side switches too (chunks fetched on demand from the prefix).
+  for (const name of ["用户", "节点", "订单", "系统设置", "仪表盘"]) {
+    await nav(page, info, name);
+    await expect(page.locator("main[data-ready]")).toBeVisible({ timeout: 20_000 });
+  }
+  expect(bad).toEqual([]);
+  expect(problems).toEqual([]);
 });

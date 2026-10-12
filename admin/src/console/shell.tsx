@@ -11,7 +11,7 @@
 // arrived) for the e2e timing suite.
 import { useIsFetching } from "@tanstack/react-query";
 import { Bell, ChevronRight, Fingerprint, Languages, LogOut, Moon, PanelLeft, Search, Sun } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigation } from "react-router";
 import { logout } from "../shared/api";
 import { loadPage, loginBase } from "../shared/base";
@@ -23,9 +23,13 @@ import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../shared/ui/menu";
 import { useToast } from "../shared/ui/toast";
 import { ALL_NAV, MORE, NAV, TABS, pathOf, type NavItem } from "./nav";
 import { prefetchPage } from "./pages";
-import { CommandPalette } from "./palette";
 import { navigate } from "./router";
 import { CrumbContext, useBadges, useMe, useSite, type Badges } from "./session";
+
+// The command palette (cmdk) is its own chunk, loaded on first open (or
+// when the search pill is hovered / focused), not with the shell.
+const loadPalette = () => import("./palette");
+const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
 
 function readCollapsed() {
   try {
@@ -276,7 +280,13 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
   const site = useSite();
   const badges = useBadges();
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [palette, setPalette] = useState(false);
+  const [palette, setPaletteState] = useState(false);
+  // Mounted from the first open on (keeps its state; no load before it is wanted).
+  const [paletteMounted, setPaletteMounted] = useState(false);
+  const setPalette = useCallback((v: boolean | ((o: boolean) => boolean)) => {
+    setPaletteMounted(true);
+    setPaletteState(v);
+  }, []);
   const [crumb, setCrumb] = useState<string | null>(null);
   const navigation = useNavigation();
   const fetching = useIsFetching();
@@ -295,7 +305,7 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, []);
+  }, [setPalette]);
   useEffect(() => {
     try {
       localStorage.setItem("akari.admin.sidebar", collapsed ? "collapsed" : "expanded");
@@ -354,6 +364,8 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
             <button
               type="button"
               onClick={() => setPalette(true)}
+              onMouseEnter={() => void loadPalette()}
+              onFocus={() => void loadPalette()}
               className="flex h-8 w-[300px] items-center gap-2 rounded-full bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] px-3 text-body text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_9%,transparent)]"
             >
               <Search className="size-4" aria-hidden="true" />
@@ -456,7 +468,11 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
             );
           })}
         </nav>
-        <CommandPalette open={palette} onOpenChange={setPalette} onTheme={toggleTheme} />
+        {paletteMounted && (
+          <Suspense fallback={null}>
+            <CommandPalette open={palette} onOpenChange={setPalette} onTheme={toggleTheme} />
+          </Suspense>
+        )}
       </div>
     </CrumbContext.Provider>
   );
