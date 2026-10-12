@@ -19,6 +19,7 @@ import {
 } from "../protocol-form";
 import { Button } from "../../shared/ui/button";
 import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
+import { PORT, num, shown } from "./node-common";
 
 export type TemplateKind =
   | "vless_reality"
@@ -208,16 +209,24 @@ export function TemplateFields({
   form,
   onChange,
   nodeDomain = "",
+  tried = false,
 }: {
   form: TemplateForm;
   onChange: (f: TemplateForm) => void;
   nodeDomain?: string;
+  /** A save was tried: show the errors of untouched fields too. */
+  tried?: boolean;
 }) {
   const tr = useTr();
   const lang = useLang();
   const errText = useErrText();
   const catalog = useCatalog();
   const [check, setCheck] = useState<string | null>(null);
+  const portError = num(form.port, PORT, tr)[1];
+  const destError =
+    form.dest === "custom" && !form.customDest.trim()
+      ? tr("请填写自定义目标站点", "Enter the custom target")
+      : undefined;
   const set = (p: Partial<TemplateForm>) => onChange({ ...form, ...p });
   const t = form.template;
   const reality = t === "vless_reality" || t === "vless_reality_xhttp";
@@ -258,7 +267,7 @@ export function TemplateFields({
           ))}
         </Select>
       </Field>
-      <Field label={tr("端口", "Port")}>
+      <Field label={tr("端口", "Port")} error={shown(form.port, portError, tried)}>
         <Input inputMode="numeric" value={form.port} onChange={(e) => set({ port: e.target.value })} />
       </Field>
       {reality && (
@@ -275,7 +284,11 @@ export function TemplateFields({
             </Select>
           </Field>
           {form.dest === "custom" ? (
-            <Field label={tr("自定义目标（域名[:端口]）", "Custom target (host[:port])")} className="sm:col-span-2">
+            <Field
+              label={tr("自定义目标（域名[:端口]）", "Custom target (host[:port])")}
+              className="sm:col-span-2"
+              error={tried ? destError : undefined}
+            >
               <Input value={form.customDest} onChange={(e) => set({ customDest: e.target.value })} />
             </Field>
           ) : (
@@ -297,13 +310,13 @@ export function TemplateFields({
               {tr("检测目标站点", "Check target")}
             </Button>
             {check && (
-              <span role="status" className="pb-1.5 text-xs text-muted-foreground">
+              <span role="status" className="pb-1.5 text-footnote text-muted-foreground">
                 {check}
               </span>
             )}
           </div>
           {t === "vless_reality" && (
-            <label className="flex items-center gap-2 text-[13px] sm:col-span-4">
+            <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-4">
               <Checkbox checked={form.vision} onChange={(v) => set({ vision: v })} label="Vision" />
               {tr("启用 Vision 流控（推荐）", "Vision flow (recommended)")}
             </label>
@@ -327,7 +340,7 @@ export function TemplateFields({
         </Field>
       )}
       {t === "vmess_ws" && (
-        <label className="flex items-center gap-2 text-[13px] sm:col-span-2">
+        <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-2">
           <Checkbox checked={form.tls} onChange={(v) => set({ tls: v })} label="TLS" />
           {tr("启用 TLS", "Enable TLS")}
         </label>
@@ -353,7 +366,7 @@ export function TemplateFields({
             </Select>
           </Field>
           {!tlsRequired && (
-            <label className="flex items-center gap-2 text-[13px] sm:col-span-4">
+            <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-4">
               <Checkbox checked={form.tls} onChange={(v) => set({ tls: v })} label="TLS" />
               {tr("启用 TLS", "Enable TLS")}
             </label>
@@ -415,11 +428,25 @@ export function TemplateFields({
 }
 
 /** Raw xray inbound JSON (an object without tag). */
-export function JsonInbound({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function JsonInbound({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+}) {
   const tr = useTr();
   return (
-    <Field label={tr("Xray 入站 JSON（对象，不含 tag）", "Xray inbound JSON (an object, no tag)")}>
-      <Textarea rows={12} value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+    <Field label={tr("Xray 入站 JSON（对象，不含 tag）", "Xray inbound JSON (an object, no tag)")} error={error}>
+      <Textarea
+        rows={12}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        className="font-mono text-footnote"
+      />
     </Field>
   );
 }

@@ -1,7 +1,7 @@
 // Node and server forms (NOD-03…07, 09…14, 20): add server / node,
 // install command and bootstrap file, server edit (TLS domain check),
-// D5 quota, per-server alert rules, and the node drawer (basics, the
-// inbound, block rules status, traffic).
+// D5 quota, per-server alert rules, and the node dialog (display fields,
+// the inbound, block rules status, traffic) with one save for all of it.
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { get, patch, post, put } from "../../shared/api";
@@ -12,15 +12,30 @@ import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText }
 import { useAction } from "../data";
 import { parseRate } from "../rates";
 import { setQuery, useRoute } from "../router";
-import type { NodeGroup, ServerView } from "../types";
+import { holdersOf, useGroups, usePlanList } from "../servers";
+import { useCrumb } from "../session";
+import type { EntranceView, NodeGroup, ServerView } from "../types";
 import { JsonInbound, TemplateFields, newTemplateForm, parseInbound, toSpec, type TemplateForm } from "./inbound-form";
-import { Download } from "lucide-react";
+import {
+  FixCount,
+  GroupPicker,
+  PORT,
+  TagsField,
+  WarningList,
+  num,
+  shown,
+  splitTags,
+  type NumRule,
+} from "./node-common";
+import { Activity, Bell, Download, Gauge, Layers, Server } from "lucide-react";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Dialog, Drawer } from "../../shared/ui/dialog";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Segmented, Select, Switch } from "../../shared/ui/form";
 import { Callout, KV } from "../../shared/ui/layout";
-import { Skeleton } from "../../shared/ui/states";
+import { ErrorState, LoadingBlock } from "../../shared/ui/states";
+import { Tabs } from "../../shared/ui/tabs";
 
 type InstallView = {
   url: string;
@@ -63,8 +78,8 @@ function Countdown({ until }: { until: string }) {
 function InstallBody({ v }: { v: InstallView }) {
   const tr = useTr();
   return (
-    <div className="space-y-3 text-[13px]">
-      <div className="flex items-center justify-between gap-2">
+    <div className="space-y-3 text-body">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">
           {tr("在服务器上以 root 执行（一次性）", "Run on the server as root (single use)")}
         </span>
@@ -86,19 +101,11 @@ function InstallBody({ v }: { v: InstallView }) {
         </details>
       )}
       {v.pin && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-footnote break-all text-muted-foreground">
           {tr(`命令钉住了面板证书公钥：${v.pin}`, `The command pins the panel's key: ${v.pin}`)}
         </p>
       )}
-      {v.warnings.length > 0 && (
-        <Callout tone="warning">
-          <ul className="list-disc pl-4">
-            {v.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </Callout>
-      )}
+      <WarningList warnings={v.warnings} />
       <details>
         <summary className="cursor-pointer text-muted-foreground">{tr("卸载命令", "Uninstall command")}</summary>
         <div className="mt-2 flex items-start gap-2">
@@ -113,52 +120,73 @@ function InstallBody({ v }: { v: InstallView }) {
 function BootstrapBody({ e }: { e: Enrollment }) {
   const tr = useTr();
   return (
-    <div className="space-y-2 text-[13px]">
-      <div className="flex items-center justify-between">
+    <div className="space-y-2 text-body">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{tr("引导文件（含一次性注册令牌，不含私钥）", "Bootstrap file (a one-time token, no private key)")}</span>
         <Countdown until={e.expires_at} />
       </div>
-      <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px]">{e.bootstrap}</pre>
+      <pre className="max-h-48 overflow-auto rounded-md bg-window p-3 font-mono text-caption">{e.bootstrap}</pre>
       <div className="flex gap-2">
         <CopyButton text={e.bootstrap} />
         <Button size="sm" icon={Download} onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}>
           {tr("下载", "Download")}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-footnote text-muted-foreground">
         {tr("在服务器上执行：akari-agent -config <文件>", "On the server: akari-agent -config <file>")}
       </p>
     </div>
   );
 }
 
-/** Shows install material: a fresh install link / bootstrap token for an existing server, or what a create returned. */
-export function InstallDialog({ shown, onClose }: { shown: Shown; onClose: () => void }) {
+/**
+ * Install material: a fresh install link / bootstrap token for an existing
+ * server, or what a create returned. Shown once, so closing it by Esc, the
+ * scrim or the × asks first; "完成" closes at once.
+ */
+export function InstallDialog({ shown: what, onClose }: { shown: Shown; onClose: () => void }) {
   const tr = useTr();
-  const errText = useErrText();
+  const confirm = useConfirm();
+  const created = "created" in what;
   const [data, setData] = useState<{ install?: InstallView; enrollment?: Enrollment } | null>(
-    "created" in shown ? { install: shown.created.install, enrollment: shown.created } : null,
+    created ? { install: what.created.install, enrollment: what.created } : null,
   );
   const [error, setError] = useState<unknown>(null);
-  const started = useRef(false);
+  const [attempt, setAttempt] = useState(0);
+  // A request issues a new token (the previous unused one is replaced): one per attempt.
+  const issued = useRef(-1);
   useEffect(() => {
-    if ("created" in shown || started.current) return;
-    started.current = true;
+    if ("created" in what || issued.current === attempt) return;
+    issued.current = attempt;
     const req =
-      shown.mode === "install"
-        ? post<InstallView>(`/servers/${shown.server.id}/install`, { origin: location.origin }).then((install) => ({
+      what.mode === "install"
+        ? post<InstallView>(`/servers/${what.server.id}/install`, { origin: location.origin }).then((install) => ({
             install,
           }))
-        : post<Enrollment>(`/servers/${shown.server.id}/enroll-token`).then((enrollment) => ({ enrollment }));
+        : post<Enrollment>(`/servers/${what.server.id}/enroll-token`).then((enrollment) => ({ enrollment }));
     req.then(setData, setError);
-  }, [shown]);
-  const name = "created" in shown ? shown.created.name : shown.server.name;
-  const bootstrapOnly = !("created" in shown) && shown.mode === "bootstrap";
+  }, [what, attempt]);
+  const name = "created" in what ? what.created.name : what.server.name;
+  const bootstrapOnly = !("created" in what) && what.mode === "bootstrap";
+  const askClose = async () => {
+    if (!data) return onClose();
+    const ok = await confirm({
+      title: tr("关闭安装命令？", "Close the install command?"),
+      description: tr(
+        "它只显示这一次。关闭后若还没复制，需要重新生成（旧的未使用令牌随之作废）。",
+        "It is shown only once. If you have not copied it, you will have to issue a new one (the unused one is replaced).",
+      ),
+      confirmLabel: tr("关闭", "Close"),
+      tone: "warning",
+    });
+    if (ok) onClose();
+  };
   return (
     <Dialog
       open
-      wide
-      onClose={onClose}
+      size="lg"
+      icon={Download}
+      onClose={() => void askClose()}
       title={
         bootstrapOnly
           ? tr(`手动引导文件 · ${name}`, `Bootstrap file · ${name}`)
@@ -168,15 +196,28 @@ export function InstallDialog({ shown, onClose }: { shown: Shown; onClose: () =>
         "只显示这一次；关闭后可重新生成（旧的未使用令牌作废）。",
         "Shown once; you can issue a new one later (the unused one is replaced).",
       )}
-      footer={<Button onClick={onClose}>{tr("完成", "Done")}</Button>}
+      footer={
+        <Button variant="primary" onClick={onClose}>
+          {tr("完成", "Done")}
+        </Button>
+      }
     >
-      {!data && !error && <Skeleton className="h-24" />}
-      {!!error && <p className="text-[13px] text-destructive">{errText(error)}</p>}
+      {!data && !error && <LoadingBlock rows={4} />}
+      {!!error && (
+        <ErrorState
+          compact
+          error={error}
+          onRetry={() => {
+            setError(null);
+            setAttempt((a) => a + 1);
+          }}
+        />
+      )}
       {data?.install && <InstallBody v={data.install} />}
       {data?.enrollment &&
         (data.install ? (
           <details className="mt-3">
-            <summary className="cursor-pointer text-[13px] text-muted-foreground">
+            <summary className="cursor-pointer text-body text-muted-foreground">
               {tr("改用手动引导文件", "Use a bootstrap file instead")}
             </summary>
             <div className="mt-2">
@@ -195,8 +236,12 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [install, setInstall] = useState(true);
+  const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
+  const nameError = tried && !name.trim() ? tr("请填写名称", "Enter a name") : undefined;
   const submit = async () => {
+    setTried(true);
+    if (!name.trim()) return;
     const r = await run(
       () =>
         post<Enrollment>("/servers", {
@@ -204,7 +249,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
           tls_domain: domain.trim() || undefined,
           install: install ? { origin: location.origin } : undefined,
         }),
-      { ok: tr("服务器已添加", "Server added"), invalidate: [["servers"]] },
+      { ok: tr("服务器已添加", "Server added") },
     );
     if (r) {
       onClose();
@@ -214,6 +259,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
   return (
     <Dialog
       open
+      icon={Server}
       onClose={onClose}
       title={tr("添加服务器", "Add server")}
       description={tr(
@@ -223,16 +269,17 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
       onSubmit={submit}
       footer={
         <>
+          <FixCount n={nameError ? 1 : 0} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
+          <Button type="submit" variant="primary" loading={busy}>
             {tr("添加", "Add")}
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        <Field label={tr("名称（内部，唯一）", "Name (internal, unique)")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+      <div className="space-y-4">
+        <Field label={tr("名称（内部，唯一）", "Name (internal, unique)")} required error={nameError}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} data-autofocus />
         </Field>
         <Field
           label={tr("服务器域名（TLS，可选）", "Server domain (TLS, optional)")}
@@ -243,7 +290,7 @@ export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; 
         >
           <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="node1.example.com" />
         </Field>
-        <label className="flex items-center gap-2 text-[13px]">
+        <label className="flex min-h-9 items-center gap-2.5 text-body">
           <Checkbox
             checked={install}
             onChange={setInstall}
@@ -282,51 +329,50 @@ export function CreateNodeDialog({
   const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm());
   const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
   const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: "", groups: [] });
-  const [error, setError] = useState<unknown>(null);
+  const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
   const confirmFree = useConfirmFree();
+  const nodeDomain = serverId === "new" ? domain : (server?.tls_domain ?? "");
+  const spec = mode === "template" ? toSpec(tpl, tr, nodeDomain) : parseInbound(json, tr);
+  const errors = {
+    name: !name.trim() ? tr("请填写名称", "Enter a name") : undefined,
+    inbound: typeof spec === "string" ? spec : undefined,
+    port: num(direct.port, { ...PORT, optional: true }, tr)[1],
+    rate:
+      parseRate(direct.rate) === null
+        ? tr(
+            "请填写倍率：0–100，最多 3 位小数（留空不会当作 0）",
+            "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
+          )
+        : undefined,
+    tags: splitTags(direct.tags).length > 8 ? "tags" : undefined,
+  };
+  const count = tried ? Object.values(errors).filter(Boolean).length : 0;
   const submit = async () => {
+    setTried(true);
+    if (Object.values(errors).some(Boolean) || typeof spec === "string") return;
     const body: Record<string, unknown> = { name: name.trim(), region: region.trim() || undefined };
     if (serverId === "new") {
       body.tls_domain = domain.trim() || undefined;
       body.install = { origin: location.origin };
     } else body.server_id = serverId;
-    if (mode === "template") {
-      const spec = toSpec(tpl, tr, serverId === "new" ? domain : (server?.tls_domain ?? ""));
-      if (typeof spec === "string") return setError(new Error(spec));
-      body.template = spec;
-    } else {
-      const ib = parseInbound(json, tr);
-      if (typeof ib === "string") return setError(new Error(ib));
-      body.inbound = ib;
-    }
+    if (mode === "template") body.template = spec;
+    else body.inbound = spec;
     if (display.trim()) body.display_name = display.trim();
     if (!visible) body.visible = false;
-    const rate = parseRate(direct.rate);
-    if (rate === null)
-      return setError(
-        new Error(
-          tr(
-            "请填写直连入口的倍率：0–100，最多 3 位小数（留空不会当作 0）",
-            "Enter the direct entrance's multiplier: 0–100, at most 3 decimals (empty is not 0)",
-          ),
-        ),
-      );
+    const rate = parseRate(direct.rate) ?? 1;
     if (rate === 0 && !(await confirmFree(tr("直连入口", "the direct entrance")))) return;
     const d: Record<string, unknown> = {};
     if (direct.host.trim()) d.connect_host = direct.host.trim();
-    if (direct.port.trim()) d.connect_port = Number(direct.port);
+    const [port] = num(direct.port, { ...PORT, optional: true }, tr);
+    if (port !== null) d.connect_port = port;
     if (rate !== 1) d.rate = rate;
     if (direct.groups.length) d.group_ids = direct.groups;
     if (splitTags(direct.tags).length) d.tags = splitTags(direct.tags);
     if (Object.keys(d).length) body.direct = d;
-    setError(null);
     const r = await run(
       () => post<{ id: string; server_id: string; name: string } & Partial<Enrollment>>("/nodes", body),
-      {
-        ok: tr("节点已添加", "Node added"),
-        invalidate: [["servers"]],
-      },
+      { ok: tr("节点已添加", "Node added") },
     );
     if (r) {
       onClose();
@@ -345,25 +391,27 @@ export function CreateNodeDialog({
   return (
     <Dialog
       open
-      wide
+      size="lg"
+      icon={Layers}
       onClose={onClose}
       title={tr("添加落地节点", "Add a landing node")}
       description={tr(
-        "一个节点一种协议（D2）；同一台服务器跑多种协议就建多个节点。",
-        "One protocol per node (D2); several protocols on a machine = several nodes.",
+        "一个节点一种协议；同一台服务器跑多种协议就建多个节点。",
+        "One protocol per node; several protocols on a machine = several nodes.",
       )}
       onSubmit={submit}
       footer={
         <>
+          <FixCount n={count} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
+          <Button type="submit" variant="primary" loading={busy}>
             {tr("添加", "Add")}
           </Button>
         </>
       }
     >
       <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <Field label={tr("服务器", "Server")}>
             <Select value={serverId} onChange={(e) => setServerId(e.target.value)}>
               {servers.map((s) => (
@@ -376,7 +424,11 @@ export function CreateNodeDialog({
               </option>
             </Select>
           </Field>
-          <Field label={tr("名称（内部，唯一）", "Name (internal, unique)")}>
+          <Field
+            label={tr("名称（内部，唯一）", "Name (internal, unique)")}
+            required
+            error={shown("", errors.name, tried)}
+          >
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
           {serverId === "new" && (
@@ -390,10 +442,10 @@ export function CreateNodeDialog({
           <Field label={tr("显示名称（用户可见，可选）", "Display name (optional)")}>
             <Input value={display} onChange={(e) => setDisplay(e.target.value)} />
           </Field>
-          <div className="flex items-end gap-2 pb-2 text-[13px]">
+          <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-2">
             <Switch checked={visible} onChange={setVisible} label={tr("对用户显示", "Shown to users")} />
             {tr("对用户显示", "Shown to users")}
-          </div>
+          </label>
         </div>
         <SectionTitle
           actions={
@@ -411,17 +463,12 @@ export function CreateNodeDialog({
           {tr("入站", "Inbound")}
         </SectionTitle>
         {mode === "template" ? (
-          <TemplateFields
-            form={tpl}
-            onChange={setTpl}
-            nodeDomain={serverId === "new" ? domain : (server?.tls_domain ?? "")}
-          />
+          <TemplateFields form={tpl} onChange={setTpl} nodeDomain={nodeDomain} tried={tried} />
         ) : (
-          <JsonInbound value={json} onChange={setJson} />
+          <JsonInbound value={json} onChange={setJson} error={tried ? errors.inbound : undefined} />
         )}
         <SectionTitle>{tr("直连入口", "Direct entrance")}</SectionTitle>
-        <DirectFields value={direct} onChange={setDirect} groups={groups} />
-        <FormError error={error} />
+        <DirectFields value={direct} onChange={setDirect} groups={groups} errors={errors} tried={tried} />
       </div>
     </Dialog>
   );
@@ -431,153 +478,134 @@ function DirectFields({
   value,
   onChange,
   groups,
+  errors,
+  tried,
 }: {
   value: DirectForm;
   onChange: (v: DirectForm) => void;
   groups: NodeGroup[];
+  errors: { port?: string; rate?: string };
+  tried: boolean;
 }) {
   const tr = useTr();
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-3">
       <Field label={tr("连接地址（留空 = 服务器域名）", "Dial host (empty = server domain)")} className="sm:col-span-2">
         <Input value={value.host} onChange={(e) => onChange({ ...value, host: e.target.value })} />
       </Field>
-      <Field label={tr("连接端口（留空 = 入站端口）", "Dial port (empty = inbound's)")}>
+      <Field
+        label={tr("连接端口（留空 = 入站端口）", "Dial port (empty = inbound's)")}
+        error={shown(value.port, errors.port, tried)}
+      >
         <Input inputMode="numeric" value={value.port} onChange={(e) => onChange({ ...value, port: e.target.value })} />
       </Field>
-      <Field label={tr("倍率", "Multiplier")}>
+      <Field label={tr("倍率", "Multiplier")} error={shown(value.rate, errors.rate, tried)}>
         <Input inputMode="decimal" value={value.rate} onChange={(e) => onChange({ ...value, rate: e.target.value })} />
       </Field>
-      <TagsField value={value.tags} onChange={(v) => onChange({ ...value, tags: v })} />
-      <div className="sm:col-span-2">
+      <TagsField className="sm:col-span-2" value={value.tags} onChange={(v) => onChange({ ...value, tags: v })} />
+      <div className="sm:col-span-3">
         <GroupPicker groups={groups} value={value.groups} onChange={(g) => onChange({ ...value, groups: g })} />
       </div>
     </div>
   );
 }
 
-/** "IPLC, 原生" → ["IPLC", "原生"] (the panel trims and deduplicates). */
-export function splitTags(v: string): string[] {
-  return v
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
+type DomainCheck = {
+  addresses: string[];
+  expected: string[];
+  matches: boolean | null;
+  cloudflare: boolean;
+  error: string | null;
+};
 
-export function TagsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const tr = useTr();
-  return (
-    <Field
-      label={tr("标签（逗号分隔，用户可见）", "Tags (comma separated, shown to users)")}
-      hint={tr(
-        "显示在订阅线路名里入口名称之后，也显示在门户线路列表里，只属于这个入口（最多 8 个）。",
-        "Shown after the entrance's name in subscription line names and in the portal's line list; this entrance only (at most 8).",
-      )}
-    >
-      <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="IPLC" />
-    </Field>
-  );
-}
-
-export function GroupPicker({
-  groups,
-  value,
-  onChange,
-}: {
-  groups: NodeGroup[];
-  value: string[];
-  onChange: (v: string[]) => void;
-}) {
-  const tr = useTr();
-  return (
-    <fieldset>
-      <legend className="mb-1.5 text-[13px] font-medium">{tr("节点组", "Node groups")}</legend>
-      {groups.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          {tr("还没有节点组（在「套餐 → 节点组」创建）。", "No node groups yet (Plans → Node groups).")}
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {groups.map((g) => (
-            <label
-              key={g.id}
-              className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[13px]"
-            >
-              <Checkbox
-                checked={value.includes(g.id)}
-                label={g.name}
-                onChange={(on) => onChange(on ? [...value, g.id] : value.filter((x) => x !== g.id))}
-              />
-              {g.name}
-            </label>
-          ))}
-        </div>
-      )}
-    </fieldset>
-  );
-}
+const CAP: NumRule = { min: 1, max: 10_000_000, int: true, optional: true };
 
 export function ServerEditDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
   const tr = useTr();
   const errText = useErrText();
+  const confirm = useConfirm();
   const [name, setName] = useState(server.name);
   const [domain, setDomain] = useState(server.tls_domain ?? "");
   const [cap, setCap] = useState(
     server.traffic_max_rate_bytes_per_sec ? String(Math.round(server.traffic_max_rate_bytes_per_sec / 125000)) : "",
   );
-  const [check, setCheck] = useState<string | null>(null);
+  const [check, setCheck] = useState<{ text: string; tone: "info" | "warning" | "danger" | "success" } | null>(null);
+  const [checkRaw, setCheckRaw] = useState<string | null>(null);
+  const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
+  const [checking, setChecking] = useState(false);
   const nodeId = server.nodes[0]?.id;
+  const [capV, capError] = num(cap, CAP, tr);
+  const nameError = !name.trim() ? tr("请填写名称", "Enter a name") : undefined;
   const checkDomain = async () => {
-    setCheck(tr("检查中…", "Checking…"));
+    setChecking(true);
+    setCheck({ text: tr("检查中…", "Checking…"), tone: "info" });
+    setCheckRaw(null);
     try {
-      const v = await post<{
-        addresses: string[];
-        expected: string[];
-        matches: boolean | null;
-        cloudflare: boolean;
-        error: string | null;
-      }>("/inbound-templates/check-domain", { domain: domain.trim(), node_id: nodeId });
-      setCheck(
-        v.error
-          ? v.error
-          : v.cloudflare
-            ? tr(
-                "解析到 Cloudflare（橙云）：自动证书与直连都会失败",
-                "Resolves to Cloudflare (proxied): certificates and direct dialing fail",
-              )
-            : v.matches === false
-              ? tr(
-                  `域名未解析到本机 IP（${v.addresses.join(", ")} ≠ ${v.expected.join(", ")}）`,
-                  `Does not resolve to this server (${v.addresses.join(", ")} ≠ ${v.expected.join(", ")})`,
-                )
-              : tr(`解析正常：${v.addresses.join(", ")}`, `Resolves to ${v.addresses.join(", ")}`),
-      );
+      const v = await post<DomainCheck>("/inbound-templates/check-domain", { domain: domain.trim(), node_id: nodeId });
+      if (v.error) {
+        setCheck({ text: tr("无法解析这个域名", "The domain does not resolve"), tone: "danger" });
+        setCheckRaw(v.error);
+      } else if (v.cloudflare)
+        setCheck({
+          text: tr(
+            "解析到 Cloudflare（橙云）：自动证书与直连都会失败",
+            "Resolves to Cloudflare (proxied): certificates and direct dialing fail",
+          ),
+          tone: "danger",
+        });
+      else if (v.matches === false)
+        setCheck({
+          text: tr(
+            `域名未解析到本机 IP（${v.addresses.join(", ")} ≠ ${v.expected.join(", ")}）`,
+            `Does not resolve to this server (${v.addresses.join(", ")} ≠ ${v.expected.join(", ")})`,
+          ),
+          tone: "warning",
+        });
+      else
+        setCheck({
+          text: tr(`解析正常：${v.addresses.join(", ")}`, `Resolves to ${v.addresses.join(", ")}`),
+          tone: "success",
+        });
     } catch (e) {
-      setCheck(errText(e));
+      setCheck({ text: errText(e), tone: "danger" });
+    } finally {
+      setChecking(false);
     }
   };
   const submit = async () => {
+    setTried(true);
+    if (nameError || capError) return;
     const body: Record<string, unknown> = {};
     if (name.trim() !== server.name) body.name = name.trim();
     if (domain.trim() !== (server.tls_domain ?? "")) body.tls_domain = domain.trim() || null;
-    const capV = cap.trim() ? Number(cap) * 125000 : null;
-    if (capV !== server.traffic_max_rate_bytes_per_sec) body.traffic_max_rate_bytes_per_sec = capV;
+    const capBytes = capV === null ? null : capV * 125000;
+    if (capBytes !== server.traffic_max_rate_bytes_per_sec) body.traffic_max_rate_bytes_per_sec = capBytes;
     if (!Object.keys(body).length) return onClose();
-    const r = await run(() => patch(`/servers/${server.id}`, body), {
-      ok: tr("已保存", "Saved"),
-      invalidate: [["servers"]],
-    });
+    if ("tls_domain" in body) {
+      const ok = await confirm({
+        title: tr("修改服务器域名？", "Change the server domain?"),
+        description: tr(
+          "agent 会重建配置并断开在线连接；新域名的证书由 agent 自动申请。",
+          "The agent rebuilds its configuration and drops live connections; it obtains the new domain's certificate itself.",
+        ),
+        tone: "warning",
+      });
+      if (!ok) return;
+    }
+    const r = await run(() => patch(`/servers/${server.id}`, body), { ok: tr("已保存", "Saved") });
     if (r !== undefined) onClose();
   };
   return (
     <Dialog
       open
+      icon={Server}
       onClose={onClose}
       title={tr(`编辑服务器 ${server.name}`, `Edit ${server.name}`)}
       onSubmit={submit}
       footer={
         <>
+          <FixCount n={tried ? [nameError, capError].filter(Boolean).length : 0} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
           <Button type="submit" variant="primary" loading={busy}>
             {tr("保存", "Save")}
@@ -585,8 +613,8 @@ export function ServerEditDialog({ server, onClose }: { server: ServerView; onCl
         </>
       }
     >
-      <div className="space-y-3">
-        <Field label={tr("名称", "Name")}>
+      <div className="space-y-4">
+        <Field label={tr("名称", "Name")} required error={tried ? nameError : undefined}>
           <Input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field
@@ -598,57 +626,77 @@ export function ServerEditDialog({ server, onClose }: { server: ServerView; onCl
         >
           <div className="flex gap-2">
             <Input value={domain} onChange={(e) => setDomain(e.target.value)} />
-            <Button onClick={checkDomain} disabled={!domain.trim()}>
+            <Button onClick={checkDomain} disabled={!domain.trim()} loading={checking} className="shrink-0">
               {tr("检查解析", "Check DNS")}
             </Button>
           </div>
         </Field>
         {check && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {check}
-          </p>
+          <div role="status">
+            <Callout tone={check.tone}>
+              {check.text}
+              {checkRaw && (
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-footnote text-muted-foreground">
+                    {tr("详细信息", "Details")}
+                  </summary>
+                  <p className="font-mono text-caption break-all">{checkRaw}</p>
+                </details>
+              )}
+            </Callout>
+          </div>
         )}
         <Field
           label={tr(
             "计费速率上限（上下行合计 Mbps，留空 = 默认）",
             "Billing rate cap (upload + download Mbps; empty = default)",
           )}
+          error={shown(cap, capError, tried)}
           hint={tr(
             "这台服务器全部用户上行与下行之和的上限，超出部分不计费（防止 agent 被攻破后虚报）。按网卡带宽填写时请填带宽的 2 倍：1000 Mbps 全双工网卡填 2000，否则满载时会少计。默认 10000。",
             "Cap on the sum of all users' upload and download on this server; bytes above it are not billed (guards against a compromised agent over-reporting). If you size it by the NIC, enter twice its speed: 2000 for a 1000 Mbps full-duplex NIC, or a busy server is under-billed. Default 10000.",
           )}
         >
-          <Input inputMode="numeric" value={cap} onChange={(e) => setCap(e.target.value)} />
+          <Input inputMode="numeric" value={cap} onChange={(e) => setCap(e.target.value)} placeholder="10000" />
         </Field>
       </div>
     </Dialog>
   );
 }
 
+const GiB = 1024 ** 3;
+const QUOTA_GIB: NumRule = { min: 0, max: 1_000_000_000, above: true, optional: true };
+const RESET_DAY: NumRule = { min: 1, max: 31, int: true, optional: true };
+
 export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
   const tr = useTr();
   const q = server.traffic_quota;
-  const GiB = 1024 ** 3;
   const [mode, setMode] = useState<"both" | "up" | "down">(q.mode);
-  const [gib, setGib] = useState(q.bytes ? String(Math.round(q.bytes / GiB)) : "");
+  const [gib, setGib] = useState(q.bytes ? String(+(q.bytes / GiB).toFixed(3)) : "");
   const [day, setDay] = useState(q.reset_day ? String(q.reset_day) : "1");
+  const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
-  const newBytes = gib.trim() ? Number(gib) * GiB : null;
+  const [gibV, gibError] = num(gib, QUOTA_GIB, tr);
+  const [dayV, dayError] = num(day, RESET_DAY, tr);
+  const newBytes = gibV === null ? null : Math.round(gibV * GiB);
   const submit = async () => {
+    setTried(true);
+    if (gibError || dayError) return;
     const r = await run(
       () =>
         patch(`/servers/${server.id}`, {
           traffic_quota_bytes: newBytes,
           traffic_quota_mode: mode,
-          traffic_quota_reset_day: day ? Number(day) : null,
+          traffic_quota_reset_day: dayV,
         }),
-      { ok: tr("流量额度已保存", "Quota saved"), invalidate: [["servers"]] },
+      { ok: tr("流量额度已保存", "Quota saved") },
     );
     if (r !== undefined) onClose();
   };
   return (
     <Dialog
       open
+      icon={Gauge}
       onClose={onClose}
       title={tr(`流量额度 · ${server.name}`, `Traffic quota · ${server.name}`)}
       description={tr(
@@ -658,6 +706,7 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
       onSubmit={submit}
       footer={
         <>
+          <FixCount n={tried ? [gibError, dayError].filter(Boolean).length : 0} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
           <Button type="submit" variant="primary" loading={busy}>
             {tr("保存", "Save")}
@@ -665,7 +714,7 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
         </>
       }
     >
-      <div className="space-y-3">
+      <div className="space-y-4">
         <Field group label={tr("计费方式", "What counts")}>
           <Segmented
             value={mode}
@@ -677,11 +726,18 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
             ]}
           />
         </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={tr("每周期额度（GiB，留空 = 不限）", "Quota per period (GiB; empty = none)")}>
-            <Input inputMode="numeric" value={gib} onChange={(e) => setGib(e.target.value)} />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label={tr("每周期额度（GiB，留空 = 不限）", "Quota per period (GiB; empty = none)")}
+            error={shown(gib, gibError, tried)}
+          >
+            <Input inputMode="decimal" value={gib} onChange={(e) => setGib(e.target.value)} />
           </Field>
-          <Field label={tr("每月重置日（1–31，留空 = 不重置）", "Monthly reset day (1–31; empty = never)")}>
+          <Field
+            label={tr("每月重置日（1–31，留空 = 不重置）", "Monthly reset day (1–31; empty = never)")}
+            error={shown(day, dayError, tried)}
+            hint={tr("小月没有的日期按月末重置", "Short months reset on their last day")}
+          >
             <Input inputMode="numeric" value={day} onChange={(e) => setDay(e.target.value)} />
           </Field>
         </div>
@@ -689,7 +745,7 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
           items={[
             [tr("本周期已用", "Used this period"), bytes(q.used_bytes)],
             [tr("接收 / 发送", "Rx / tx"), `${bytes(q.rx_bytes)} / ${bytes(q.tx_bytes)}`],
-            [tr("下次重置", "Next reset"), dateTime(q.next_reset_at)],
+            [tr("下次重置", "Next reset"), q.next_reset_at ? dateTime(q.next_reset_at) : tr("不重置", "never")],
           ]}
         />
         {q.exceeded_at && newBytes !== null && newBytes > q.used_bytes && (
@@ -748,15 +804,18 @@ type Rules = {
   disk_percent: number | null;
   cert_days: number | null;
 };
-const NUM_KEYS = [
-  "offline_secs",
-  "cpu_percent",
-  "cpu_minutes",
-  "mem_percent",
-  "mem_minutes",
-  "disk_percent",
-  "cert_days",
-] as const;
+type NumKey =
+  "offline_secs" | "cpu_percent" | "cpu_minutes" | "mem_percent" | "mem_minutes" | "disk_percent" | "cert_days";
+/** The panel's ranges (alerts/mod.rs `Thresholds::check`); empty = the global value. */
+const THRESHOLDS: [NumKey, NumRule][] = [
+  ["offline_secs", { min: 30, max: 86_400, int: true, optional: true }],
+  ["cpu_percent", { min: 1, max: 100, int: true, optional: true }],
+  ["cpu_minutes", { min: 1, max: 60, int: true, optional: true }],
+  ["mem_percent", { min: 1, max: 100, int: true, optional: true }],
+  ["mem_minutes", { min: 1, max: 60, int: true, optional: true }],
+  ["disk_percent", { min: 1, max: 100, int: true, optional: true }],
+  ["cert_days", { min: 1, max: 90, int: true, optional: true }],
+];
 
 export function AlertRulesDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
   const tr = useTr();
@@ -764,12 +823,36 @@ export function AlertRulesDialog({ server, onClose }: { server: ServerView; onCl
     queryKey: ["servers", server.id, "alert-rules"],
     queryFn: () => get<Rules>(`/servers/${server.id}/alert-rules`),
   });
-  const [form, setForm] = useState<Rules | null>(null);
-  useEffect(() => {
-    if (q.data && !form) setForm(q.data);
-  }, [q.data, form]);
+  if (q.data) return <AlertRulesEditor server={server} rules={q.data} onClose={onClose} />;
+  return (
+    <Dialog
+      open
+      size="lg"
+      icon={Bell}
+      onClose={onClose}
+      title={tr(`告警规则 · ${server.name}`, `Alert rules · ${server.name}`)}
+      footer={<Button onClick={onClose}>{tr("关闭", "Close")}</Button>}
+    >
+      {q.isError ? <ErrorState compact error={q.error} onRetry={() => void q.refetch()} /> : <LoadingBlock rows={5} />}
+    </Dialog>
+  );
+}
+
+/** The loaded rules as strings while editing (an empty box is "use the global value", never NaN). */
+function AlertRulesEditor({ server, rules, onClose }: { server: ServerView; rules: Rules; onClose: () => void }) {
+  const tr = useTr();
+  const [muted, setMuted] = useState(rules.muted);
+  const [disabled, setDisabled] = useState<string[]>(rules.disabled);
+  const [text, setText] = useState<Record<NumKey, string>>(
+    () =>
+      Object.fromEntries(THRESHOLDS.map(([k]) => [k, rules[k] === null ? "" : String(rules[k])])) as Record<
+        NumKey,
+        string
+      >,
+  );
+  const [tried, setTried] = useState(false);
   const [run, busy] = useAction();
-  const label: Record<(typeof NUM_KEYS)[number], string> = {
+  const label: Record<NumKey, string> = {
     offline_secs: tr("离线多少秒告警", "Offline seconds"),
     cpu_percent: tr("CPU %", "CPU %"),
     cpu_minutes: tr("CPU 持续分钟", "CPU minutes"),
@@ -778,72 +861,75 @@ export function AlertRulesDialog({ server, onClose }: { server: ServerView; onCl
     disk_percent: tr("磁盘 %", "Disk %"),
     cert_days: tr("证书剩余天数", "Certificate days"),
   };
+  const parsed = THRESHOLDS.map(([k, rule]) => [k, ...num(text[k], rule, tr)] as const);
+  const bad = parsed.filter(([, , e]) => e).length;
   const submit = async () => {
-    if (!form) return;
-    const r = await run(() => put(`/servers/${server.id}/alert-rules`, form), {
+    setTried(true);
+    if (bad) return;
+    const body: Rules = { ...rules, muted, disabled };
+    for (const [k, v] of parsed) body[k] = v;
+    const r = await run(() => put(`/servers/${server.id}/alert-rules`, body), {
       ok: tr("告警规则已保存", "Alert rules saved"),
-      invalidate: [["servers"]],
     });
     if (r !== undefined) onClose();
   };
   return (
     <Dialog
       open
-      wide
+      size="lg"
+      icon={Bell}
       onClose={onClose}
+      onSubmit={submit}
       title={tr(`告警规则 · ${server.name}`, `Alert rules · ${server.name}`)}
       description={tr("留空 = 使用全局设置（告警 → 告警设置）。", "Empty = the global value (Alerts → settings).")}
-      onSubmit={submit}
       footer={
         <>
+          <FixCount n={tried ? bad : 0} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!form}>
+          <Button type="submit" variant="primary" loading={busy}>
             {tr("保存", "Save")}
           </Button>
         </>
       }
     >
-      {!form ? (
-        <Skeleton className="h-40" />
-      ) : (
-        <div className="space-y-3">
-          <label className="flex items-center gap-2 text-[13px]">
-            <Switch checked={form.muted} onChange={(v) => setForm({ ...form, muted: v })} label={tr("静音", "Mute")} />
-            {tr("静音此服务器的全部告警", "Mute every alert of this server")}
-          </label>
-          <fieldset>
-            <legend className="mb-1.5 text-[13px] font-medium">{tr("关闭的告警种类", "Kinds turned off")}</legend>
-            <div className="flex flex-wrap gap-2">
-              {ALERT_KINDS.map((k) => (
-                <label
-                  key={k}
-                  className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[13px]"
-                >
-                  <Checkbox
-                    checked={form.disabled.includes(k)}
-                    label={alertKindName(k, tr)}
-                    onChange={(on) =>
-                      setForm({ ...form, disabled: on ? [...form.disabled, k] : form.disabled.filter((x) => x !== k) })
-                    }
-                  />
-                  {alertKindName(k, tr)}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div className="grid gap-3 sm:grid-cols-4">
-            {NUM_KEYS.map((k) => (
-              <Field key={k} label={label[k]}>
-                <Input
-                  inputMode="numeric"
-                  value={form[k] ?? ""}
-                  onChange={(e) => setForm({ ...form, [k]: e.target.value.trim() ? Number(e.target.value) : null })}
+      <div className="space-y-4">
+        <label className="flex min-h-9 items-center gap-2.5 text-body">
+          <Switch checked={muted} onChange={setMuted} label={tr("静音", "Mute")} />
+          {tr("静音此服务器的全部告警", "Mute every alert of this server")}
+        </label>
+        <fieldset>
+          <legend className="mb-1.5 text-footnote font-medium text-muted-foreground">
+            {tr("关闭的告警种类", "Kinds turned off")}
+          </legend>
+          <div className="flex flex-wrap gap-2">
+            {ALERT_KINDS.map((k) => (
+              <label
+                key={k}
+                className="flex min-h-9 items-center gap-2 rounded-lg px-2.5 text-body ring-1 ring-border ring-inset"
+              >
+                <Checkbox
+                  checked={disabled.includes(k)}
+                  label={alertKindName(k, tr)}
+                  onChange={(on) => setDisabled(on ? [...disabled, k] : disabled.filter((x) => x !== k))}
                 />
-              </Field>
+                {alertKindName(k, tr)}
+              </label>
             ))}
           </div>
+        </fieldset>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {parsed.map(([k, , err]) => (
+            <Field key={k} label={label[k]} error={shown(text[k], err, tried)}>
+              <Input
+                inputMode="numeric"
+                value={text[k]}
+                placeholder={tr("全局", "global")}
+                onChange={(e) => setText({ ...text, [k]: e.target.value })}
+              />
+            </Field>
+          ))}
         </div>
-      )}
+      </div>
     </Dialog>
   );
 }
@@ -861,6 +947,7 @@ type FullNode = {
   server_name: string;
   tls_domain: string | null;
   inbound: Record<string, unknown> | null;
+  entrances: EntranceView[];
   warnings: string[];
 };
 type BlockStatus = {
@@ -871,181 +958,256 @@ type BlockStatus = {
   days: { day: string; rule_id: number; name: string; hits: number }[];
 };
 
-export function NodeDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+/** A node: its display fields and inbound in one form, block rules and traffic on their own tab. */
+export function NodeDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const q = useQuery({ queryKey: ["nodes", "full", id], queryFn: () => get<FullNode>(`/nodes/${id}`) });
-  const n = q.data;
-  return (
-    <Drawer
-      open
-      onClose={onClose}
-      width="sm:max-w-2xl"
-      title={n ? n.display_name || n.name : tr("节点", "Node")}
-      subtitle={n && `${n.server_name} · ${n.id}`}
-    >
-      {q.isPending && <Skeleton className="h-64" />}
-      <FormError error={q.error} />
-      {n && (
-        <>
-          {n.warnings.length > 0 && (
-            <Callout tone="warning">
-              <ul className="list-disc pl-4">
-                {n.warnings.map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            </Callout>
-          )}
-          <NodeBasics n={n} onSaved={() => void q.refetch()} />
-          <NodeInbound n={n} onSaved={() => void q.refetch()} />
-          <BlockRulesStatus id={id} />
-          <NodeTraffic id={id} />
-          <div className="mt-6">
-            <Button size="sm" onClick={() => setQuery({ open: `server:${n.server_id}` })}>
-              {tr("服务器状态", "Server status")}
-            </Button>
-          </div>
-        </>
-      )}
-    </Drawer>
-  );
+  useCrumb(q.data ? q.data.display_name || q.data.name : null);
+  if (!q.data)
+    return (
+      <Dialog
+        open
+        size="lg"
+        icon={Layers}
+        onClose={onClose}
+        title={tr("节点", "Node")}
+        footer={<Button onClick={onClose}>{tr("关闭", "Close")}</Button>}
+      >
+        {q.isError ? (
+          <ErrorState compact error={q.error} onRetry={() => void q.refetch()} />
+        ) : (
+          <LoadingBlock rows={6} />
+        )}
+      </Dialog>
+    );
+  return <NodeEditor key={q.data.id} n={q.data} onClose={onClose} />;
 }
 
-function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
+type NodeTab = "basic" | "inbound" | "traffic";
+const SORT: NumRule = { min: -2_147_483_648, max: 2_147_483_647, int: true };
+
+function NodeEditor({ n, onClose }: { n: FullNode; onClose: () => void }) {
   const tr = useTr();
-  const [f, setF] = useState({
+  const confirm = useConfirm();
+  const groups = useGroups();
+  const plans = usePlanList();
+  const [tab, setTab] = useState<NodeTab>("basic");
+  const start = {
     name: n.name,
     display_name: n.display_name ?? "",
     region: n.region ?? "",
     sort: String(n.sort),
     visible: n.visible,
-  });
-  const [run, busy] = useAction();
-  const save = async () => {
-    const r = await run(
-      () =>
-        patch(`/nodes/${n.id}`, {
-          name: f.name.trim(),
-          display_name: f.display_name.trim() || null,
-          region: f.region.trim() || null,
-          sort: Number(f.sort) || 0,
-          visible: f.visible,
-        }),
-      { ok: tr("已保存", "Saved"), invalidate: [["servers"]] },
-    );
-    if (r !== undefined) onSaved();
   };
-  return (
-    <>
-      <SectionTitle>{tr("展示", "Display")}</SectionTitle>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={tr("名称（内部）", "Name (internal)")}>
-          <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-        </Field>
-        <Field label={tr("显示名称", "Display name")}>
-          <Input value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} />
-        </Field>
-        <Field label={tr("地区", "Region")}>
-          <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
-        </Field>
-        <Field label={tr("排序", "Sort")}>
-          <Input inputMode="numeric" value={f.sort} onChange={(e) => setF({ ...f, sort: e.target.value })} />
-        </Field>
-        <div className="flex items-end gap-2 pb-2 text-[13px]">
-          <Switch
-            checked={f.visible}
-            onChange={(v) => setF({ ...f, visible: v })}
-            label={tr("对用户显示", "Shown to users")}
-          />
-          {tr("对用户显示", "Shown to users")}
-        </div>
-      </div>
-      <div className="mt-3">
-        <Button size="sm" variant="primary" loading={busy} onClick={save}>
-          {tr("保存展示设置", "Save display")}
-        </Button>
-      </div>
-    </>
-  );
-}
-
-function NodeInbound({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
-  const tr = useTr();
-  const errText = useErrText();
+  const [f, setF] = useState(start);
+  const initialJson = JSON.stringify(n.inbound ?? {}, null, 2);
   const [mode, setMode] = useState<"view" | "template" | "json">("view");
   const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm(String((n.inbound?.port as number | undefined) ?? 443)));
-  const [json, setJson] = useState(JSON.stringify(n.inbound ?? {}, null, 2));
+  const [json, setJson] = useState(initialJson);
+  const [tried, setTried] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [run, busy] = useAction();
+  const basicsChanged = JSON.stringify(f) !== JSON.stringify(start);
+  const inboundEdited = mode === "template" || (mode === "json" && json !== initialJson);
+  const nameError = !f.name.trim() ? tr("请填写名称", "Enter a name") : undefined;
+  const [sortV, sortError] = num(f.sort, SORT, tr);
+  const spec =
+    mode === "template" ? toSpec(tpl, tr, n.tls_domain ?? "") : mode === "json" ? parseInbound(json, tr) : null;
+  const inboundError = inboundEdited && typeof spec === "string" ? spec : undefined;
+  const basicErrors = [nameError, sortError].filter(Boolean).length;
+  const count = tried ? basicErrors + (inboundError ? 1 : 0) : 0;
+
   const save = async () => {
+    setTried(true);
     setError(null);
-    let inbound: Record<string, unknown>;
-    if (mode === "template") {
-      const spec = toSpec(tpl, tr, n.tls_domain ?? "");
-      if (typeof spec === "string") return setError(new Error(spec));
-      try {
-        const r = await post<{ inbound: Record<string, unknown> }>("/inbound-templates/render", {
-          template: spec,
-          tls_domain: n.tls_domain ?? undefined,
-        });
-        inbound = r.inbound;
-      } catch (e) {
-        return setError(e);
-      }
-    } else {
-      const v = parseInbound(json, tr);
-      if (typeof v === "string") return setError(new Error(v));
-      inbound = v;
-    }
-    const r = await run(() => put(`/nodes/${n.id}/inbound`, { inbound }), {
-      ok: tr("入站已保存，agent 将重建配置", "Inbound saved; the agent rebuilds"),
-      invalidate: [["servers"]],
-    });
-    if (r !== undefined) {
-      setMode("view");
-      onSaved();
-    }
-  };
-  return (
-    <>
-      <SectionTitle
-        actions={
-          <Segmented
-            size="sm"
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: "view", label: tr("查看", "View") },
-              { value: "template", label: tr("从模板替换", "Replace from template") },
-              { value: "json", label: tr("编辑 JSON", "Edit JSON") },
-            ]}
-          />
+    if (basicErrors) return setTab("basic");
+    if (inboundError) return setTab("inbound");
+    if (!basicsChanged && !inboundEdited) return onClose();
+    let inbound: Record<string, unknown> | null = null;
+    if (inboundEdited && spec && typeof spec !== "string") {
+      if (mode === "template") {
+        try {
+          const r = await post<{ inbound: Record<string, unknown> }>("/inbound-templates/render", {
+            template: spec,
+            tls_domain: n.tls_domain ?? undefined,
+          });
+          inbound = r.inbound;
+        } catch (e) {
+          setTab("inbound");
+          return setError(e);
         }
-      >
-        {tr("入站", "Inbound")}
-      </SectionTitle>
-      {mode === "view" && (
-        <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px]">
-          {n.inbound ? JSON.stringify(n.inbound, null, 2) : tr("（未配置）", "(none)")}
-        </pre>
-      )}
-      {mode === "template" && <TemplateFields form={tpl} onChange={setTpl} nodeDomain={n.tls_domain ?? ""} />}
-      {mode === "json" && <JsonInbound value={json} onChange={setJson} />}
-      {mode !== "view" && (
-        <div className="mt-3 space-y-2">
-          <Callout tone="warning">
-            {tr(
-              "协议不变时用户保留凭据；协议变化会重新发放凭据（客户端需更新订阅）。保存后 agent 重建入站。",
-              "Users keep their credentials when the protocol stays; a new protocol issues new ones (clients refresh the subscription). The agent rebuilds the inbound.",
-            )}
-          </Callout>
-          {!!error && <p className="text-[13px] text-destructive">{errText(error)}</p>}
-          <Button size="sm" variant="primary" loading={busy} onClick={save}>
-            {tr("保存入站", "Save inbound")}
+      } else inbound = spec;
+      const before = n.inbound?.protocol;
+      const after = inbound.protocol;
+      if (n.inbound && String(before) !== String(after)) {
+        const users =
+          groups.data && plans.data
+            ? holdersOf(
+                n.entrances.map((e) => e.id),
+                groups.data,
+                plans.data,
+              )
+            : null;
+        const ok = await confirm({
+          title: tr(
+            `把 ${n.name} 的协议从 ${String(before)} 换成 ${String(after)}？`,
+            `Switch ${n.name} from ${String(before)} to ${String(after)}?`,
+          ),
+          description: tr(
+            "协议变化会给这个节点的每个用户重新发放凭据：旧的订阅里的这条线路立即失效，用户刷新订阅后才能再连接。",
+            "A new protocol issues new credentials to every user of this node: the line in old subscriptions stops working until users refresh their subscription.",
+          ),
+          impacts: [
+            {
+              label: tr("受影响的用户（按当前套餐估算）", "Users affected (estimated from current plans)"),
+              value: users ?? tr("未知", "unknown"),
+            },
+            { label: tr("这个节点的入口", "Entrances of this node"), value: n.entrances.length },
+          ],
+          confirmLabel: tr("重新发放并保存", "Reissue and save"),
+          tone: "danger",
+        });
+        if (!ok) return;
+      }
+    }
+    const done = await run(
+      async () => {
+        if (basicsChanged)
+          await patch(`/nodes/${n.id}`, {
+            name: f.name.trim(),
+            display_name: f.display_name.trim() || null,
+            region: f.region.trim() || null,
+            sort: sortV ?? 0,
+            visible: f.visible,
+          });
+        if (inbound) await put(`/nodes/${n.id}/inbound`, { inbound });
+        return true;
+      },
+      { ok: inbound ? tr("入站已保存，agent 将重建配置", "Inbound saved; the agent rebuilds") : tr("已保存", "Saved") },
+    );
+    if (done) onClose();
+  };
+
+  return (
+    <Dialog
+      open
+      size="lg"
+      icon={Layers}
+      onClose={onClose}
+      dirty={basicsChanged || inboundEdited}
+      onSubmit={save}
+      title={tr(`节点 · ${n.display_name || n.name}`, `Node · ${n.display_name || n.name}`)}
+      description={
+        <span className="flex flex-wrap items-center gap-1.5">
+          {n.server_name}
+          {n.inbound?.protocol ? <Badge tone="outline">{String(n.inbound.protocol)}</Badge> : null}
+          {!n.enabled && <Badge>{tr("已停用", "Disabled")}</Badge>}
+        </span>
+      }
+      actions={
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={Activity}
+          // Switching dialogs would drop unsaved edits without asking.
+          disabled={basicsChanged || inboundEdited}
+          onClick={() => setQuery({ open: `server:${n.server_id}` })}
+        >
+          <span className="max-sm:sr-only">{tr("服务器状态", "Server status")}</span>
+        </Button>
+      }
+      tabs={
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          label={tr("节点", "Node")}
+          tabs={[
+            { value: "basic", label: tr("基本", "Basics") },
+            { value: "inbound", label: tr("入站", "Inbound") },
+            { value: "traffic", label: tr("审计与流量", "Rules and traffic") },
+          ]}
+        />
+      }
+      footer={
+        <>
+          <FixCount n={count} />
+          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <Button type="submit" variant="primary" loading={busy}>
+            {tr("保存", "Save")}
           </Button>
+        </>
+      }
+    >
+      <WarningList warnings={n.warnings} />
+      {tab === "basic" && (
+        <div className="mt-4 grid gap-4 first:mt-0 sm:grid-cols-2">
+          <Field label={tr("名称（内部）", "Name (internal)")} required error={tried ? nameError : undefined}>
+            <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+          </Field>
+          <Field label={tr("显示名称", "Display name")}>
+            <Input value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} />
+          </Field>
+          <Field label={tr("地区", "Region")}>
+            <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
+          </Field>
+          <Field label={tr("排序", "Sort")} error={shown(f.sort, sortError, tried)}>
+            <Input inputMode="numeric" value={f.sort} onChange={(e) => setF({ ...f, sort: e.target.value })} />
+          </Field>
+          <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-2">
+            <Switch
+              checked={f.visible}
+              onChange={(v) => setF({ ...f, visible: v })}
+              label={tr("对用户显示", "Shown to users")}
+            />
+            {tr(
+              "对用户显示（隐藏的节点照常服务，只是不出现在订阅与门户里）",
+              "Shown to users (a hidden node still serves; it is left out of subscriptions and the portal)",
+            )}
+          </label>
         </div>
       )}
-    </>
+      {tab === "inbound" && (
+        <div className="mt-4 space-y-3 first:mt-0">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-footnote font-semibold text-muted-foreground">{tr("入站", "Inbound")}</span>
+            <Segmented
+              size="sm"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "view", label: tr("查看", "View") },
+                { value: "template", label: tr("从模板替换", "Replace from template") },
+                { value: "json", label: tr("编辑 JSON", "Edit JSON") },
+              ]}
+            />
+          </div>
+          {mode === "view" && (
+            <pre className="max-h-72 overflow-auto rounded-md bg-window p-3 font-mono text-caption">
+              {n.inbound ? JSON.stringify(n.inbound, null, 2) : tr("（未配置）", "(none)")}
+            </pre>
+          )}
+          {mode === "template" && (
+            <TemplateFields form={tpl} onChange={setTpl} nodeDomain={n.tls_domain ?? ""} tried={tried} />
+          )}
+          {mode === "json" && <JsonInbound value={json} onChange={setJson} error={tried ? inboundError : undefined} />}
+          {mode !== "view" && (
+            <Callout tone="warning">
+              {tr(
+                "协议不变时用户保留凭据；协议变化会重新发放凭据（保存前会再确认，客户端需更新订阅）。保存后 agent 重建入站。",
+                "Users keep their credentials when the protocol stays; a new protocol issues new ones (you confirm before it is saved; clients refresh the subscription). The agent rebuilds the inbound.",
+              )}
+            </Callout>
+          )}
+          <FormError error={error} />
+        </div>
+      )}
+      {tab === "traffic" && (
+        <div className="mt-4 first:mt-0">
+          <BlockRulesStatus id={n.id} />
+          <NodeTraffic id={n.id} />
+        </div>
+      )}
+    </Dialog>
   );
 }
 
@@ -1056,33 +1218,45 @@ function BlockRulesStatus({ id }: { id: string }) {
     queryFn: () => get<BlockStatus>(`/nodes/${id}/block-rules`),
   });
   const d = q.data;
-  if (!d) return null;
   const byRule = new Map<string, number>();
-  for (const x of d.days) byRule.set(x.name, (byRule.get(x.name) ?? 0) + x.hits);
+  for (const x of d?.days ?? []) byRule.set(x.name, (byRule.get(x.name) ?? 0) + x.hits);
   return (
     <>
       <SectionTitle>{tr("审计规则", "Block rules")}</SectionTitle>
-      <div className="flex flex-wrap items-center gap-2 text-[13px]">
-        <Badge tone={d.enabled ? "success" : "neutral"}>{d.enabled ? tr("已开启", "On") : tr("关闭", "Off")}</Badge>
-        {!d.agent_supported && <Badge tone="warning">{tr("agent 不支持", "agent lacks support")}</Badge>}
-        {d.enabled && (
-          <Badge tone={d.in_sync ? "success" : "warning"}>
-            {d.in_sync ? tr("已生效", "applied") : tr("等待 agent 应用", "waiting for the agent")}
-          </Badge>
-        )}
-        {d.error && <span className="text-destructive">{d.error}</span>}
-      </div>
-      {byRule.size > 0 && (
-        <ul className="mt-2 text-[13px]">
-          {[...byRule].map(([name, hits]) => (
-            <li key={name} className="flex justify-between">
-              <span>{name}</span>
-              <span className="tabular-nums text-muted-foreground">
-                {tr(`近 7 天拦截 ${hits} 次`, `${hits} blocked in 7 days`)}
-              </span>
-            </li>
-          ))}
-        </ul>
+      {q.isPending && <LoadingBlock rows={2} />}
+      {q.isError && <ErrorState compact error={q.error} onRetry={() => void q.refetch()} />}
+      {d && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 text-body">
+            <Badge tone={d.enabled ? "success" : "neutral"}>{d.enabled ? tr("已开启", "On") : tr("关闭", "Off")}</Badge>
+            {!d.agent_supported && <Badge tone="warning">{tr("agent 不支持", "agent lacks support")}</Badge>}
+            {d.enabled && (
+              <Badge tone={d.in_sync ? "success" : "warning"}>
+                {d.in_sync ? tr("已生效", "applied") : tr("等待 agent 应用", "waiting for the agent")}
+              </Badge>
+            )}
+          </div>
+          {d.error && (
+            <details className="mt-2 text-body text-destructive">
+              <summary className="cursor-pointer">
+                {tr("agent 应用规则失败", "The agent failed to apply the rules")}
+              </summary>
+              <p className="font-mono text-caption break-all">{d.error}</p>
+            </details>
+          )}
+          {byRule.size > 0 && (
+            <ul className="mt-2 divide-y divide-separator rounded-lg text-body ring-1 ring-border ring-inset">
+              {[...byRule].map(([name, hits]) => (
+                <li key={name} className="flex justify-between gap-3 px-3 py-2">
+                  <span className="min-w-0 truncate">{name}</span>
+                  <span className="tnum shrink-0 text-muted-foreground">
+                    {tr(`近 7 天拦截 ${hits} 次`, `${hits} blocked in 7 days`)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </>
   );
@@ -1103,43 +1277,42 @@ function NodeTraffic({ id }: { id: string }) {
   const all: string[] = [];
   for (let i = 29; i >= 0; i--) all.push(daysBefore(to, i));
   const by = new Map((q.data?.days ?? []).map((r) => [r.day, r]));
+  const times = all.map((d) => `${d}T12:00:00Z`);
   return (
     <>
       <SectionTitle>{tr("节点流量（近 30 天）", "Node traffic (30 days)")}</SectionTitle>
-      <TrendChart
-        title={tr("每日流量", "Daily traffic")}
-        times={all.map((d) => `${d}T12:00:00Z`)}
-        {...timeLabels(all.map((d) => `${d}T12:00:00Z`))}
-        format={bytes}
-        series={[
-          {
-            label: tr("下载", "Down"),
-            values: all.map((d) => by.get(d)?.down_bytes ?? 0),
-            slot: 1,
-          },
-          {
-            label: tr("上传", "Up"),
-            values: all.map((d) => by.get(d)?.up_bytes ?? 0),
-            slot: 3,
-          },
-          {
-            label: tr("计费", "Billed"),
-            values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
-            slot: 4,
-          },
-        ]}
-      />
-      {(q.data?.top_users.length ?? 0) > 0 && (
+      {q.isError ? (
+        <ErrorState compact error={q.error} onRetry={() => void q.refetch()} />
+      ) : q.isPending ? (
+        <LoadingBlock rows={4} />
+      ) : (
         <>
-          <div className="mb-1 mt-3 text-xs font-medium text-muted-foreground">{tr("用量最高的用户", "Top users")}</div>
-          <ul className="divide-y divide-border rounded-md border border-border text-[13px]">
-            {q.data?.top_users.map((u) => (
-              <li key={u.user_id} className="flex justify-between px-3 py-1.5">
-                <span>{u.email ?? tr("已删除的用户", "Deleted user")}</span>
-                <span className="tabular-nums text-muted-foreground">{bytes(u.billed_bytes)}</span>
-              </li>
-            ))}
-          </ul>
+          <TrendChart
+            title={tr("每日流量", "Daily traffic")}
+            times={times}
+            {...timeLabels(times)}
+            format={bytes}
+            series={[
+              { label: tr("下载", "Down"), values: all.map((d) => by.get(d)?.down_bytes ?? 0), slot: 1 },
+              { label: tr("上传", "Up"), values: all.map((d) => by.get(d)?.up_bytes ?? 0), slot: 3 },
+              { label: tr("计费", "Billed"), values: all.map((d) => by.get(d)?.billed_bytes ?? 0), slot: 4 },
+            ]}
+          />
+          {q.data.top_users.length > 0 && (
+            <>
+              <div className="mt-3 mb-1 text-footnote font-medium text-muted-foreground">
+                {tr("用量最高的用户", "Top users")}
+              </div>
+              <ul className="divide-y divide-separator rounded-lg text-body ring-1 ring-border ring-inset">
+                {q.data.top_users.map((u) => (
+                  <li key={u.user_id} className="flex justify-between gap-3 px-3 py-2">
+                    <span className="min-w-0 truncate">{u.email ?? tr("已删除的用户", "Deleted user")}</span>
+                    <span className="tnum shrink-0 text-muted-foreground">{bytes(u.billed_bytes)}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </>
       )}
     </>
