@@ -583,7 +583,11 @@ function OrderBody({ o, events }: { o: Order; events: PayEvent[] }) {
             },
             { k: tr("付款方式", "Paid via"), v: <MethodTag o={o} /> },
             { k: tr("状态", "Status"), v: <OrdStatus state={st} /> },
-            { k: tr("订单号", "Order no."), v: <CopyText value={o.out_trade_no} label={tr("订单号", "order no.")} /> },
+            {
+              k: tr("订单号", "Order no."),
+              v: <CopyText value={o.out_trade_no} label={tr("订单号", "order no.")} />,
+              span: 2,
+            },
             {
               k: tr("交易号", "Trade no."),
               v: o.trade_no ? (

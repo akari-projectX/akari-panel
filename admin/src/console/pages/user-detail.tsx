@@ -1186,7 +1186,6 @@ function AccountCard({ user: u }: { user: Detail }) {
             span: 2,
           },
           { k: tr("用户 ID", "User ID"), v: <CopyText value={u.id} />, span: 2 },
-          { k: tr("余额", "Balance"), v: yuan(u.balance_cents) },
           {
             k: tr("最后使用", "Last used"),
             v: u.last_traffic_day ?? tr("从未", "never"),

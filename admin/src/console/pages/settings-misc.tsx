@@ -1009,7 +1009,9 @@ function KeysForm({ d }: { d: SettingsView }) {
                     {isNew && <Badge tone="primary">{tr("新添加", "New")}</Badge>}
                     {gone && <Badge tone="danger">{tr("保存时移除", "Removed on save")}</Badge>}
                   </div>
-                  <code className="font-mono text-footnote break-all text-muted-foreground">{k.key}</code>
+                  <code className="font-mono text-footnote text-muted-foreground" title={k.key}>
+                    ed25519:{k.key.length > 16 ? `${k.key.slice(0, 4)}…${k.key.slice(-6)}` : k.key}
+                  </code>
                 </div>
                 {gone ? (
                   <Button size="sm" variant="ghost" icon={Undo2} onClick={() => f.set("keys", [...keys, line])}>
