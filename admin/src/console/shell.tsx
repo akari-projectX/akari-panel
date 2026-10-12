@@ -37,7 +37,7 @@ import { DropdownMenu as M, Tooltip } from "radix-ui";
 import { Suspense, lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigation } from "react-router";
 import { logout } from "../shared/api";
-import { loadPage, loginBase } from "../shared/base";
+import { loadPage, signedOutUrl } from "../shared/base";
 import { cn } from "../shared/cn";
 import { useLang, useSetLang, useTr, type Tr } from "../shared/i18n";
 import { setTheme, useTheme } from "../shared/theme";
@@ -257,7 +257,7 @@ function AccountMenu({
   const signOut = async () => {
     try {
       await logout();
-      loadPage(loginBase);
+      loadPage(signedOutUrl);
     } catch {
       toast({ tone: "error", title: tr("退出失败，请重试", "Sign-out failed; try again") });
     }

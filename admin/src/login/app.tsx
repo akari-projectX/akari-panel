@@ -1,25 +1,48 @@
-// The admin sign-in page (W33-b, D1/D4/D7/W27) at /{prefix}/app: its own
-// small bundle with no console code. Email + password with the public
-// form guard (honeypot, minimum submit time, Turnstile when switched on for
-// logins), passkey login, and the "bind a passkey" prompt after a password
-// login. Only admins continue to the console.
+// The admin sign-in page (W33-b, D1/D4/D7/W27; v2 login-*) at /{prefix}/app:
+// its own small bundle with no console code. A quiet centred card under the
+// site's logo and name: the passkey button first (one step), then "or with
+// email and password" (the main button) with the public form guard
+// (honeypot, minimum submit time, Turnstile when switched on for logins).
+// States: wrong credentials (a red notice at the top, both inputs red, the
+// password cleared and focused), passkey busy (the passkey button spins, the
+// form is disabled, cancel), passkey-only (only the passkey button and the
+// recovery command), not an admin (the session ended, "use another
+// account"), session expired (`?next=`: where the sign-in returns to),
+// signed out (`?signed_out=1`), and the "bind a passkey" prompt after a
+// password login. Only admins continue to the console.
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, authGet, authPost, logout, post, type LoginAnswer } from "../shared/api";
-import { afterLogin, loadPage, prefixBase } from "../shared/base";
+import { adminBase, afterLogin, loadPage, prefixBase } from "../shared/base";
 import { errorTextWith, type ErrorTable } from "../shared/errors";
 import { useLang, useSetLang, useTr } from "../shared/i18n";
 import { createCredential, getAssertion, passkeysSupported } from "../shared/passkey";
 import { mergeOptions } from "./guard";
 import { useTheme } from "../shared/theme";
-import { ArrowRight, Eye, EyeOff, Fingerprint, Languages, LoaderCircle, Lock, Moon, Sun } from "lucide-react";
+import {
+  ArrowRight,
+  CircleAlert,
+  CircleCheck,
+  Eye,
+  EyeOff,
+  Fingerprint,
+  History,
+  KeyRound,
+  Languages,
+  LoaderCircle,
+  Moon,
+  ShieldCheck,
+  ShieldX,
+  Sun,
+  Terminal,
+} from "lucide-react";
+import type { ReactNode } from "react";
 import { cn } from "../shared/cn";
 import { BrandMark } from "../shared/ui/brand";
 import { Button } from "../shared/ui/button";
 import { Checkbox, Field, Input } from "../shared/ui/form";
-import { Callout } from "../shared/ui/layout";
 
-/** The sign-in card: frosted, on the soft colour fields (design login-*.png). */
-const card = "glass rounded-2xl bg-[color-mix(in_srgb,var(--card)_78%,transparent)] p-7 shadow-dialog max-sm:p-6";
+/** The sign-in card (design login-*.png). */
+const card = "rounded-[22px] bg-card p-6 shadow-dialog max-sm:p-5";
 
 // The codes the sign-in page can meet (the console has the full table;
 // scripts/check-error-codes.mjs keeps these in step with it).
@@ -152,6 +175,55 @@ function TurnstileBox({
   return <div ref={ref} data-testid="turnstile" className="w-full empty:hidden" />;
 }
 
+function Notice({
+  tone,
+  icon,
+  children,
+}: {
+  tone: "info" | "danger" | "success";
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      role={tone === "danger" ? "alert" : "status"}
+      className={cn(
+        "mb-4 flex gap-2.5 rounded-xl px-3 py-2.5 text-body [&>svg]:mt-px [&>svg]:size-4 [&>svg]:shrink-0",
+        tone === "info" && "bg-info-soft text-info",
+        tone === "danger" && "bg-destructive-soft text-destructive",
+        tone === "success" && "bg-success-soft text-success",
+      )}
+    >
+      {icon}
+      <div className="min-w-0 text-foreground/85">{children}</div>
+    </div>
+  );
+}
+
+function Recovery() {
+  const tr = useTr();
+  return (
+    <details
+      open
+      className="mt-5 rounded-xl bg-window px-3 py-2.5 text-footnote text-muted-foreground ring-1 ring-border ring-inset"
+    >
+      <summary className="cursor-default font-medium text-foreground">
+        {tr("丢失了全部通行密钥？", "Lost every passkey?")}
+      </summary>
+      <p className="mt-2">
+        {tr(
+          "请站点运维在服务器上运行下面的命令，为你的账户恢复密码登录，然后用密码登录并重新绑定通行密钥：",
+          "Ask the site's operator to run this on the server; it restores password sign-in for your account. Then sign in with the password and add a passkey again:",
+        )}
+      </p>
+      <code className="mt-2 flex items-center gap-2 rounded-md bg-card px-2.5 py-1.5 font-mono break-all text-foreground shadow-card">
+        <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
+        {tr("akari admin reset-login <邮箱>", "akari admin reset-login <email>")}
+      </code>
+    </details>
+  );
+}
+
 function BindPasskey({ onDone }: { onDone: () => void }) {
   const tr = useTr();
   const lang = useLang();
@@ -182,41 +254,73 @@ function BindPasskey({ onDone }: { onDone: () => void }) {
       setBusy(false);
     }
   };
+  const only = tr("之后只用通行密钥登录", "From now on, sign in with a passkey only");
   return (
-    <div className={card}>
-      <div className="mb-4 flex size-11 items-center justify-center rounded-full bg-primary-soft text-primary">
-        <Fingerprint className="size-[22px]" aria-hidden="true" />
-      </div>
-      <h2 className="text-title3 font-semibold">{tr("绑定通行密钥", "Add a passkey")}</h2>
-      <p className="mt-1.5 text-body text-muted-foreground">
-        {tr(
-          "你刚刚用密码登录。绑定通行密钥后，可以用指纹、面容或安全密钥登录，比密码更安全。",
-          "You just signed in with a password. With a passkey you sign in with fingerprint, face or a security key — safer than a password.",
-        )}
-      </p>
-      <label className="mt-4 flex items-start gap-2.5 text-body">
-        <span className="pt-0.5">
-          <Checkbox
-            checked={disablePassword}
-            onChange={setDisablePassword}
-            label={tr("绑定后关闭此账户的密码登录", "Turn off password sign-in for this account")}
-          />
+    <div>
+      <div className="flex flex-col items-center text-center">
+        <span className="mb-3 inline-flex size-12 items-center justify-center rounded-2xl bg-primary-soft text-primary">
+          <KeyRound className="size-6" aria-hidden="true" />
         </span>
-        <span>{tr("绑定后关闭此账户的密码登录", "Turn off password sign-in for this account")}</span>
-      </label>
+        <h1 className="text-headline font-semibold">{tr("为这个账户绑定通行密钥", "Add a passkey to this account")}</h1>
+        <p className="mt-1.5 text-body text-muted-foreground">
+          {tr(
+            "下次用指纹、面容或设备密码一步登录，不怕密码泄露。只需要 10 秒。",
+            "Next time sign in in one step with fingerprint, face or the device PIN — a leaked password no longer matters. Takes 10 seconds.",
+          )}
+        </p>
+      </div>
+      <div className="mt-5 flex gap-2.5 rounded-xl bg-window p-3 ring-1 ring-border ring-inset">
+        <span className="pt-0.5">
+          <Checkbox id="bind-only" checked={disablePassword} onChange={setDisablePassword} label={only} />
+        </span>
+        <label htmlFor="bind-only" className="text-body">
+          <span className="font-medium">{only}</span>
+          <span className="mt-0.5 block text-footnote text-muted-foreground">
+            {tr(
+              "关闭这个账户的密码登录。丢失全部通行密钥时，可在服务器上运行 ",
+              "Turns password sign-in off for this account. If every passkey is lost, run ",
+            )}
+            <code className="font-mono text-foreground">akari admin reset-login</code>
+            {tr(" 恢复。", " on the server to recover.")}
+          </span>
+        </label>
+      </div>
       {error && (
         <p role="alert" className="mt-3 text-body text-destructive">
           {error}
         </p>
       )}
-      <div className="mt-5 space-y-2">
-        <Button variant="primary" size="lg" className="w-full" icon={Fingerprint} loading={busy} onClick={bind}>
-          {tr("现在绑定", "Add passkey now")}
-        </Button>
-        <Button variant="ghost" size="lg" className="w-full" onClick={onDone} disabled={busy}>
-          {tr("稍后（下次登录还会提示）", "Later (ask again next time)")}
-        </Button>
-      </div>
+      <Button variant="primary" size="lg" className="mt-5 w-full" icon={Fingerprint} loading={busy} onClick={bind}>
+        {tr("绑定通行密钥", "Add passkey")}
+      </Button>
+      <Button variant="ghost" size="lg" className="mt-2 w-full text-muted-foreground" onClick={onDone} disabled={busy}>
+        {tr("以后再说", "Not now")}
+      </Button>
+      <p className="mt-2 text-center text-footnote text-faint">
+        {tr("之后也可以在「我的账户」里添加。", "You can also add one later in My account.")}
+      </p>
+    </div>
+  );
+}
+
+function NotAdmin({ email, onAgain }: { email: string; onAgain: () => void }) {
+  const tr = useTr();
+  return (
+    <div role="alert" className="flex flex-col items-center text-center">
+      <span className="mb-3 inline-flex size-12 items-center justify-center rounded-full bg-warning-soft text-warning">
+        <ShieldX className="size-6" aria-hidden="true" />
+      </span>
+      <h1 className="text-headline font-semibold">{tr("不是管理员账户", "Not an admin account")}</h1>
+      <p className="mt-1.5 text-body text-muted-foreground">
+        {email ? <b className="font-medium break-all text-foreground">{email}</b> : tr("这个账户", "This account")}
+        {tr(
+          " 是普通用户账户，不能进入管理后台。这次登录已结束，账户没有受到影响。用户请在门户登录。",
+          " is a user account and cannot enter the admin console. This sign-in has ended; the account is not affected. Users sign in on the portal.",
+        )}
+      </p>
+      <Button variant="primary" size="lg" className="mt-5 w-full" onClick={onAgain}>
+        {tr("换个账户登录", "Use another account")}
+      </Button>
     </div>
   );
 }
@@ -251,7 +355,14 @@ export function LoginApp() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passkeyOnly, setPasskeyOnly] = useState(false);
+  const [notAdmin, setNotAdmin] = useState<string | null>(null);
   const [bind, setBind] = useState(false);
+  const pwInput = useRef<HTMLInputElement>(null);
+  const abort = useRef<AbortController | null>(null);
+  const search = useRef(new URLSearchParams(location.search));
+  const [signedOut, setSignedOut] = useState(search.current.get("signed_out") === "1");
+  const next = search.current.get("next");
+  const nextView = next && afterLogin(location.search) === next ? next.slice(adminBase.length + 1) : null;
   const goConsole = useCallback(() => loadPage(afterLogin(location.search)), []);
   // The form token's age is checked against the minimum submit time: a fast
   // (autofilled) submission waits out the rest instead of being refused.
@@ -299,8 +410,8 @@ export function LoginApp() {
 
   const siteName = opts?.site_name;
   useEffect(() => {
-    if (siteName) document.title = `${siteName} · ${lang === "en" ? "Admin sign-in" : "管理后台登录"}`;
-  }, [siteName, lang]);
+    if (siteName) document.title = `${siteName} · ${tr("管理后台登录", "Admin sign-in")}`;
+  }, [siteName, tr]);
   const favicon = opts?.branding?.favicon_url;
   useEffect(() => {
     if (!favicon) return;
@@ -310,17 +421,20 @@ export function LoginApp() {
     document.head.appendChild(link);
     return () => link.remove();
   }, [favicon]);
+  // Wrong credentials: the password is cleared and focused.
+  useEffect(() => {
+    if (badCreds) pwInput.current?.focus();
+  }, [badCreds]);
 
-  const finish = async (answer: LoginAnswer) => {
+  const finish = async (answer: LoginAnswer, who: string) => {
     if (answer.role !== "admin") {
       await logout().catch(() => {});
       // The token was spent on this attempt: the next one needs a fresh one.
       setCaptchaReset((n) => n + 1);
       loadOptions();
       setBusy(null);
-      setError(
-        tr("这不是管理员账户。用户请在门户登录。", "This is not an admin account. Users sign in on the portal."),
-      );
+      setPassword("");
+      setNotAdmin(who);
       return;
     }
     if (answer.passkey_prompt && opts?.passkey && passkeysSupported()) {
@@ -337,6 +451,7 @@ export function LoginApp() {
     setBusy("password");
     setError(null);
     setBadCreds(false);
+    setSignedOut(false);
     const wait = (opts?.guard?.form_min_secs ?? 0) * 1000 + 300 - (Date.now() - loadedAt.current);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     try {
@@ -345,7 +460,7 @@ export function LoginApp() {
         password,
         guard: { form_token: opts?.guard?.form_token ?? null, website, turnstile: captcha || null },
       });
-      await finish(answer);
+      await finish(answer, email.trim());
     } catch (err) {
       setBusy(null);
       setCaptchaReset((n) => n + 1);
@@ -354,8 +469,8 @@ export function LoginApp() {
         setPasskeyOnly(true);
         setError(null);
       } else if (err instanceof ApiError && err.status === 401) {
+        setPassword("");
         setBadCreds(true);
-        setError(tr("邮箱或密码错误", "Wrong email or password"));
       } else setError(errorText(err, lang));
     }
   };
@@ -363,15 +478,20 @@ export function LoginApp() {
   const onPasskey = async () => {
     setBusy("passkey");
     setError(null);
+    setBadCreds(false);
+    setSignedOut(false);
+    const ctl = new AbortController();
+    abort.current = ctl;
     try {
       const { state, options } = await authPost<{ state: string; options: Record<string, unknown> }>(
         "/passkey/options",
       );
-      const credential = await getAssertion(options);
+      const credential = await getAssertion(options, ctl.signal);
       const answer = await authPost<LoginAnswer>("/passkey/login", { state, credential });
-      await finish({ ...answer, passkey_prompt: false });
+      await finish({ ...answer, passkey_prompt: false }, "");
     } catch (err) {
       setBusy(null);
+      if (ctl.signal.aborted) return;
       setError(
         err instanceof ApiError && err.status === 401
           ? tr("通行密钥无效或未注册", "This passkey is not valid here")
@@ -379,21 +499,37 @@ export function LoginApp() {
             ? errorText(err, lang)
             : tr("已取消或设备不支持通行密钥", "Cancelled, or this device has no passkey"),
       );
+    } finally {
+      abort.current = null;
     }
   };
 
   const turnstile = opts?.guard?.turnstile?.login && turnstileAllowed ? opts.guard.turnstile : null;
   const logo = opts?.branding?.logo_url;
   const passkeyOk = !!opts?.passkey && passkeysSupported();
-
   const name = opts?.site_name ?? "Akari";
+  const formBusy = busy !== null;
+
+  const passkeyButton = (
+    <Button
+      variant={passkeyOnly ? "primary" : "outline"}
+      size="lg"
+      className="w-full [&_svg]:size-[18px]"
+      icon={busy === "passkey" ? undefined : Fingerprint}
+      onClick={onPasskey}
+      disabled={formBusy}
+    >
+      {busy === "passkey" && <LoaderCircle className="animate-spin" aria-hidden="true" />}
+      {busy === "passkey"
+        ? tr("等待通行密钥…", "Waiting for the passkey…")
+        : tr("使用通行密钥登录", "Sign in with a passkey")}
+    </Button>
+  );
+
   return (
-    <div className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-background px-4 py-10">
-      {/* Soft colour fields behind the card (CSS gradients, no images). */}
+    <div className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-4 py-10">
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-40 -left-32 size-[560px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--chart-1)_30%,transparent),transparent)] blur-2xl" />
-        <div className="absolute -right-40 -bottom-48 size-[620px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--brand-mark-foreground)_26%,transparent),transparent)] blur-2xl" />
-        <div className="absolute top-1/3 left-1/2 size-[420px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--chart-7)_14%,transparent),transparent)] blur-2xl" />
+        <div className="absolute -top-48 left-1/2 size-[720px] -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--primary)_14%,transparent),transparent)]" />
       </div>
       <div className="absolute top-4 right-4 flex gap-1">
         <Button
@@ -402,7 +538,7 @@ export function LoginApp() {
           className="rounded-full"
           icon={Languages}
           onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-          aria-label={lang === "zh" ? "English" : "中文"}
+          aria-label={lang === "zh" ? "English" : "中文"} // i18n-ok: the other language's own name
         />
         <Button
           variant="ghost"
@@ -413,167 +549,208 @@ export function LoginApp() {
           aria-label={tr("切换主题", "Toggle theme")}
         />
       </div>
-      <main className="relative w-full max-w-[400px]">
-        {bind ? (
-          <BindPasskey onDone={goConsole} />
-        ) : (
-          <div className={card}>
-            <div className="mb-6 flex flex-col items-center text-center">
-              <BrandMark name={name} logoUrl={logo ? `${prefixBase}/${logo}` : null} size={52} />
-              <h1 className="mt-4 text-title2 font-bold tracking-[-0.02em]">
-                {tr(`登录 ${name} 管理后台`, `Sign in to ${name} admin console`)}
-              </h1>
-              <p className="mt-1 text-body text-muted-foreground">{tr("仅限管理员登录", "Administrators only")}</p>
-            </div>
-            {passkeyOk && (
-              <Button
-                variant="primary"
-                size="lg"
-                className="w-full [&_svg]:size-[18px]"
-                icon={Fingerprint}
-                onClick={onPasskey}
-                loading={busy === "passkey"}
-                disabled={busy === "password"}
-              >
-                {tr("使用通行密钥登录", "Sign in with a passkey")}
-              </Button>
-            )}
-            {passkeyOnly ? (
-              <div className="mt-4">
-                <Callout tone="info">
+      <main className="relative w-full max-w-[380px]">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <BrandMark name={name} logoUrl={logo ? `${prefixBase}/${logo}` : null} size={48} />
+          <div className="mt-3 text-title3 font-semibold tracking-[-0.015em]">{name}</div>
+          <div className="text-body text-muted-foreground">{tr("管理后台", "Admin console")}</div>
+        </div>
+        <div className={card}>
+          {bind ? (
+            <BindPasskey onDone={goConsole} />
+          ) : notAdmin !== null ? (
+            <NotAdmin
+              email={notAdmin}
+              onAgain={() => {
+                setNotAdmin(null);
+                setEmail("");
+              }}
+            />
+          ) : (
+            <>
+              <h1 className="mb-4 text-headline font-semibold">{tr("登录", "Sign in")}</h1>
+              {nextView && !badCreds && !error && (
+                <Notice tone="info" icon={<History />}>
+                  {tr("登录已过期，请重新登录。登录后回到 ", "Your session ended; sign in again. You return to ")}
+                  <b className="font-mono font-semibold break-all">{nextView}</b>
+                  {tr("。", ".")}
+                </Notice>
+              )}
+              {signedOut && (
+                <Notice tone="success" icon={<CircleCheck />}>
+                  {tr("已退出登录。", "Signed out.")}
+                </Notice>
+              )}
+              {badCreds && (
+                <Notice tone="danger" icon={<CircleAlert />}>
                   {tr(
-                    "此账户只允许通行密钥登录。丢失设备时，请在服务器上运行 akari admin reset-login <邮箱> 恢复。",
-                    "This account signs in with a passkey only. Lost the device? Run akari admin reset-login <email> on the server.",
+                    "邮箱或密码不正确。连续失败几次后会要求人机验证。",
+                    "Wrong email or password. After several failures a human check may be required.",
                   )}
-                </Callout>
-              </div>
-            ) : (
-              <>
-                {passkeyOk && (
-                  <div className="my-5 flex items-center gap-3 text-footnote text-faint">
-                    <span className="h-px flex-1 bg-border" />
-                    {tr("或使用邮箱", "or use your email")}
-                    <span className="h-px flex-1 bg-border" />
-                  </div>
-                )}
-                <form className="grid gap-3.5" onSubmit={onPassword} noValidate>
-                  <Field label={tr("邮箱", "Email")}>
-                    <Input
-                      id="email"
-                      type="email"
-                      autoComplete="username webauthn"
-                      value={email}
-                      onChange={(e) => {
-                        setEmail(e.target.value);
-                        setBadCreds(false);
-                      }}
-                      aria-invalid={badCreds || undefined}
-                      className="h-10 rounded-[10px]"
-                      required
-                    />
-                  </Field>
-                  <Field label={tr("密码", "Password")}>
-                    <div className="relative">
+                </Notice>
+              )}
+              {error && (
+                <Notice tone="danger" icon={<CircleAlert />}>
+                  {error}
+                </Notice>
+              )}
+              {passkeyOnly ? (
+                <>
+                  <p className="mb-4 text-body text-muted-foreground">
+                    {tr(
+                      "此账户只能用通行密钥登录。使用这台设备上保存的通行密钥，或插入安全密钥。",
+                      "This account signs in with a passkey only. Use a passkey saved on this device, or insert a security key.",
+                    )}
+                  </p>
+                  {passkeyOk ? (
+                    passkeyButton
+                  ) : (
+                    <p className="text-body text-warning">
+                      {tr("这个浏览器或站点不支持通行密钥。", "This browser or site does not support passkeys.")}
+                    </p>
+                  )}
+                  <Recovery />
+                </>
+              ) : (
+                <>
+                  {passkeyOk && (
+                    <>
+                      {passkeyButton}
+                      {busy === "passkey" && (
+                        <p className="mt-2 text-center text-footnote text-muted-foreground">
+                          {tr("请在浏览器弹出的窗口里确认。", "Confirm in the browser's window. ")}
+                          <button
+                            type="button"
+                            className="text-primary hover:underline"
+                            onClick={() => abort.current?.abort()}
+                          >
+                            {tr("取消", "Cancel")}
+                          </button>
+                        </p>
+                      )}
+                      <div className="my-5 flex items-center gap-3 text-footnote text-faint">
+                        <span className="h-px flex-1 bg-separator" />
+                        {tr("或用邮箱和密码", "or with email and password")}
+                        <span className="h-px flex-1 bg-separator" />
+                      </div>
+                    </>
+                  )}
+                  <form className="grid gap-3.5" onSubmit={onPassword} noValidate>
+                    <Field label={tr("邮箱", "Email")}>
                       <Input
-                        id="password"
-                        type={showPw ? "text" : "password"}
-                        autoComplete="current-password"
-                        value={password}
+                        id="email"
+                        type="email"
+                        autoComplete="username webauthn"
+                        value={email}
+                        disabled={busy === "passkey"}
                         onChange={(e) => {
-                          setPassword(e.target.value);
+                          setEmail(e.target.value);
                           setBadCreds(false);
                         }}
                         aria-invalid={badCreds || undefined}
-                        className="h-10 rounded-[10px] pr-10"
+                        className="h-10 rounded-[10px]"
                         required
                       />
-                      <button
-                        type="button"
-                        onClick={() => setShowPw((v) => !v)}
-                        aria-label={showPw ? tr("隐藏密码", "Hide password") : tr("显示密码", "Show password")}
-                        aria-pressed={showPw}
-                        className="absolute top-1/2 right-1 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-faint hover:text-foreground"
-                      >
-                        {showPw ? (
-                          <EyeOff className="size-4" aria-hidden="true" />
-                        ) : (
-                          <Eye className="size-4" aria-hidden="true" />
-                        )}
-                      </button>
-                    </div>
-                  </Field>
-                  {opts?.guard?.honeypot && (
-                    <div aria-hidden="true" className="absolute -left-[9999px] h-px w-px overflow-hidden">
-                      <label>
-                        Website
-                        <input
-                          name="website"
-                          tabIndex={-1}
-                          autoComplete="off"
-                          value={website}
-                          onChange={(e) => setWebsite(e.target.value)}
+                    </Field>
+                    <Field label={tr("密码", "Password")}>
+                      <div className="relative">
+                        <Input
+                          id="password"
+                          ref={pwInput}
+                          type={showPw ? "text" : "password"}
+                          autoComplete="current-password"
+                          value={password}
+                          disabled={busy === "passkey"}
+                          onChange={(e) => {
+                            setPassword(e.target.value);
+                            setBadCreds(false);
+                          }}
+                          aria-invalid={badCreds || undefined}
+                          className="h-10 rounded-[10px] pr-10"
+                          required
                         />
-                      </label>
-                    </div>
-                  )}
-                  {turnstile && (
-                    <>
-                      <TurnstileBox
-                        siteKey={turnstile.site_key}
-                        onToken={onCaptcha}
-                        onFail={setCaptchaFailed}
-                        resetKey={captchaReset}
-                        theme={theme}
-                        lang={lang}
-                      />
-                      {!captcha && !captchaFailed && (
-                        <p role="status" className="flex items-center gap-2 text-body text-muted-foreground">
-                          <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-                          {tr("正在进行人机验证…", "Verifying you are human…")}
-                        </p>
-                      )}
-                      {captchaFailed && (
-                        <div role="alert" className="flex items-center gap-3 text-body text-destructive">
-                          <span>
-                            {tr(
-                              "人机验证加载失败，请刷新重试",
-                              "Human verification could not load, reload and try again",
-                            )}
-                          </span>
-                          <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
-                            {tr("重试", "Retry")}
-                          </Button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                  <Button
-                    type="submit"
-                    variant={passkeyOk ? "secondary" : "primary"}
-                    size="lg"
-                    className="mt-1 w-full"
-                    loading={busy === "password"}
-                    disabled={busy === "passkey" || !email || !password || (wantTurnstile && (!turnstile || !captcha))}
-                  >
-                    {tr("登录", "Sign in")}
-                    {busy !== "password" && <ArrowRight aria-hidden="true" />}
-                  </Button>
-                </form>
-              </>
-            )}
-            {error && (
-              <p role="alert" className={cn("mt-4 text-body text-destructive", badCreds && "text-center")}>
-                {error}
-              </p>
-            )}
-          </div>
-        )}
-        <p className="mt-5 flex items-center justify-center gap-1.5 text-center text-footnote text-muted-foreground">
-          <Lock className="size-3.5" aria-hidden="true" />
-          {tr(
-            "后台地址只有管理员知道 · 人机验证仅在需要时出现",
-            "Only admins know this address · verification appears only when needed",
+                        <button
+                          type="button"
+                          onClick={() => setShowPw((v) => !v)}
+                          aria-label={showPw ? tr("隐藏密码", "Hide password") : tr("显示密码", "Show password")}
+                          aria-pressed={showPw}
+                          className="absolute top-1/2 right-1 inline-flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-faint hover:text-foreground"
+                        >
+                          {showPw ? (
+                            <EyeOff className="size-4" aria-hidden="true" />
+                          ) : (
+                            <Eye className="size-4" aria-hidden="true" />
+                          )}
+                        </button>
+                      </div>
+                    </Field>
+                    {opts?.guard?.honeypot && (
+                      <div aria-hidden="true" className="absolute -left-[9999px] h-px w-px overflow-hidden">
+                        <label>
+                          Website
+                          <input
+                            name="website"
+                            tabIndex={-1}
+                            autoComplete="off"
+                            value={website}
+                            onChange={(e) => setWebsite(e.target.value)}
+                          />
+                        </label>
+                      </div>
+                    )}
+                    {turnstile && (
+                      <div className="grid gap-1.5">
+                        <TurnstileBox
+                          siteKey={turnstile.site_key}
+                          onToken={onCaptcha}
+                          onFail={setCaptchaFailed}
+                          resetKey={captchaReset}
+                          theme={theme}
+                          lang={lang}
+                        />
+                        {!captcha && !captchaFailed && (
+                          <p role="status" className="flex items-center gap-2 text-body text-muted-foreground">
+                            <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                            {tr("正在确认你是真人…", "Checking that you are human…")}
+                          </p>
+                        )}
+                        {captchaFailed && (
+                          <div role="alert" className="flex items-center gap-3 text-body text-destructive">
+                            <span>
+                              {tr(
+                                "人机验证加载失败，请刷新重试",
+                                "Human verification could not load, reload and try again",
+                              )}
+                            </span>
+                            <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
+                              {tr("重试", "Retry")}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      size="lg"
+                      className="mt-1 w-full"
+                      loading={busy === "password"}
+                      disabled={
+                        busy === "passkey" || !email || !password || (wantTurnstile && (!turnstile || !captcha))
+                      }
+                    >
+                      {tr("登录", "Sign in")}
+                      {busy !== "password" && <ArrowRight aria-hidden="true" />}
+                    </Button>
+                  </form>
+                </>
+              )}
+            </>
           )}
+        </div>
+        <p className="mt-5 flex items-center justify-center gap-1.5 text-center text-footnote text-faint">
+          <ShieldCheck className="size-3.5" aria-hidden="true" />
+          {tr("仅限管理员 · 由 Akari 驱动", "Administrators only · powered by Akari")}
         </p>
       </main>
     </div>

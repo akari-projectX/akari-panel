@@ -9,6 +9,10 @@ export type Tr = (zh: string, en: string) => string;
 const KEY = "akari.admin.lang";
 
 function initialLang(): Lang {
+  // `?lang=en|zh` shows one page in that language without remembering it
+  // (links to a page in a given language; the design-compare shots).
+  const q = new URLSearchParams(location.search).get("lang");
+  if (q === "zh" || q === "en") return q;
   try {
     const s = localStorage.getItem(KEY);
     if (s === "zh" || s === "en") return s;

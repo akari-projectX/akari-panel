@@ -25,7 +25,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ApiError, del, get, logout, patch, post, put } from "../../shared/api";
-import { loadPage, loginBase } from "../../shared/base";
+import { loadPage, signedOutUrl } from "../../shared/base";
 import { cn } from "../../shared/cn";
 import { dateOnly, dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
@@ -169,7 +169,7 @@ function IdentityCard({ data }: { data?: Passkeys }) {
           onClick={async () => {
             setLeaving(true);
             await logout().catch(() => undefined);
-            loadPage(loginBase);
+            loadPage(signedOutUrl);
           }}
         >
           {tr("退出登录", "Sign out")}

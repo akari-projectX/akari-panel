@@ -8,7 +8,7 @@ import { ChevronRight, Languages, LogOut, Moon, Search, Sun } from "lucide-react
 import { useState } from "react";
 import { Link } from "react-router";
 import { get, logout } from "../../shared/api";
-import { loadPage, loginBase } from "../../shared/base";
+import { loadPage, signedOutUrl } from "../../shared/base";
 import { cn } from "../../shared/cn";
 import { useLang, useSetLang, useTr, type Lang } from "../../shared/i18n";
 import { setTheme, useTheme, type Theme } from "../../shared/theme";
@@ -156,7 +156,7 @@ export function MorePage() {
             onClick={async () => {
               setLeaving(true);
               await logout().catch(() => undefined);
-              loadPage(loginBase);
+              loadPage(signedOutUrl);
             }}
             className="flex h-12 items-center justify-center gap-2 rounded-xl bg-card text-callout font-medium text-destructive shadow-card active:bg-accent disabled:opacity-60"
           >

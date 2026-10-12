@@ -32,7 +32,7 @@ import {
 import { Dialog as D } from "radix-ui";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { get, logout, qs } from "../shared/api";
-import { loadPage, loginBase } from "../shared/base";
+import { loadPage, signedOutUrl } from "../shared/base";
 import { dateOnly, yuan } from "../shared/format";
 import { useLang, useSetLang, useTr } from "../shared/i18n";
 import { Kbd, MOD_KEY } from "../shared/ui/form";
@@ -238,7 +238,7 @@ export function CommandPalette({
         onOpenChange(false);
         void logout()
           .catch(() => undefined)
-          .finally(() => loadPage(loginBase));
+          .finally(() => loadPage(signedOutUrl));
       },
     },
   ];
