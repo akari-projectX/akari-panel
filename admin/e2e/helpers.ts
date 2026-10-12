@@ -77,6 +77,26 @@ export async function signIn(page: Page, email = ADMIN, pw = ADMIN_PW, next = ""
   await page.locator("form button[type=submit]").click();
   await page.waitForURL(new RegExp(`/${PREFIX}/admin`), { timeout: 20_000 });
   await expect(page.getByRole("button", { name: /账户菜单|Account menu/ })).toBeVisible();
+  await reportOverflow(page, path);
+}
+
+/** Diagnostics: a page wider than the viewport (a phone then zooms out and taps miss). Logged, not failed. */
+export async function reportOverflow(page: Page, label: string): Promise<void> {
+  const r = await page.evaluate(() => {
+    const vw = window.innerWidth;
+    if (document.documentElement.scrollWidth <= vw + 1) return null;
+    let worst = "";
+    let right = vw;
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      const b = el.getBoundingClientRect();
+      if (b.right > right + 1 && b.width > 0) {
+        right = b.right;
+        worst = `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 80)} "${(el.textContent ?? "").slice(0, 40)}"`;
+      }
+    }
+    return { vw, sw: document.documentElement.scrollWidth, worst };
+  });
+  if (r) console.log(`OVERFLOW ${label}: scrollWidth ${r.sw} > ${r.vw}: ${r.worst}`);
 }
 
 /** Open a console path with the cached admin session (no UI sign-in per test). */
@@ -85,6 +105,26 @@ export async function openConsole(page: Page, path = ""): Promise<void> {
   await page.context().addCookies(state.cookies);
   await page.goto(`${CONSOLE}${path}`);
   await expect(page.getByRole("button", { name: /账户菜单|Account menu/ })).toBeVisible();
+  await reportOverflow(page, path);
+}
+
+/** Diagnostics: a page wider than the viewport (a phone then zooms out and taps miss). Logged, not failed. */
+export async function reportOverflow(page: Page, label: string): Promise<void> {
+  const r = await page.evaluate(() => {
+    const vw = window.innerWidth;
+    if (document.documentElement.scrollWidth <= vw + 1) return null;
+    let worst = "";
+    let right = vw;
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      const b = el.getBoundingClientRect();
+      if (b.right > right + 1 && b.width > 0) {
+        right = b.right;
+        worst = `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 80)} "${(el.textContent ?? "").slice(0, 40)}"`;
+      }
+    }
+    return { vw, sw: document.documentElement.scrollWidth, worst };
+  });
+  if (r) console.log(`OVERFLOW ${label}: scrollWidth ${r.sw} > ${r.vw}: ${r.worst}`);
 }
 
 /** Forget the cached admin session (after something ended every admin session). */

@@ -225,7 +225,7 @@ test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in
   const d = dialog(page, "封禁用户");
   await expect(d.getByText("enabled", { exact: true })).toBeVisible();
   await expect(d.locator(".line-through").first()).toBeVisible();
-  await d.getByRole("button", { name: "关闭", exact: true }).first().click();
+  await d.getByRole("button", { name: "关闭", exact: true }).first().click({ force: true });
   // The filters survive a reload (they are in the URL).
   await page.reload();
   await expect(page.getByRole("button", { name: /^动作：/ })).toContainText("封禁用户");

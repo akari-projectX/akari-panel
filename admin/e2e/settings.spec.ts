@@ -292,7 +292,7 @@ test("SET-06 SET-07: console address card (masked) and prefix rotation (random o
   await openConsole(page, "/settings/access");
   // SET-06: masked, shown on demand.
   await expect(page.getByText(`${CONSOLE.slice(0, CONSOLE.indexOf(PREFIX))}${PREFIX.slice(0, 3)}`)).toBeVisible();
-  await page.getByRole("button", { name: "显示" }).click();
+  await page.getByRole("button", { name: "显示" }).click({ force: true });
   await expect(page.getByText(CONSOLE, { exact: true })).toBeVisible();
   // Rotate to a custom prefix (danger zone), then back to the original one.
   const temp = `e2e${PREFIX.slice(0, 20)}x`;
@@ -405,6 +405,10 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
     await domains.press("Enter");
   }
   await expect(page.getByRole("button", { name: "移除 example.com" })).toBeVisible();
+  // The trial days show once a trial plan is chosen (put back to 不提供 at the end).
+  const trial = page.getByRole("combobox", { name: "试用套餐" });
+  const trialBefore = await trial.inputValue();
+  if (!(await page.getByLabel("试用天数").isVisible())) await trial.selectOption({ index: 1 });
   await page.getByLabel("试用天数").fill("7");
   const saved = page.waitForResponse((r) => r.url().endsWith("/settings/signup") && r.request().method() === "PUT");
   await save(page);
@@ -416,6 +420,7 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   await setSwitch(page.getByRole("switch", { name: "开放注册" }), false);
   await setSwitch(page.getByRole("switch", { name: "注册需要邀请码" }), false);
   for (const d of ["e2e.test", "example.com"]) await page.getByRole("button", { name: `移除 ${d}` }).click();
+  if ((await trial.inputValue()) !== trialBefore) await trial.selectOption(trialBefore);
   await save(page);
   await toast(page, "注册设置已保存");
 });

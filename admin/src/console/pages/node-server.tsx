@@ -1095,6 +1095,8 @@ export function useNodeTraffic(id: string) {
   return useQuery({
     queryKey: ["traffic", "node", id],
     queryFn: () => get<NodeTraffic>(`/nodes/${id}/traffic?from=${from}&to=${to}`),
+    // Opened again after new traffic landed (e.g. a node dialog reopened): read it anew.
+    refetchOnMount: "always",
   });
 }
 
