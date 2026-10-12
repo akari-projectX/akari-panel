@@ -1617,6 +1617,9 @@ function LoginMethods({ id, disabled }: { id: string; disabled: boolean }) {
               "此账户只允许通行密钥登录。用户丢失设备时，用「重置登录方式」恢复密码登录。",
               "Passkeys only. When the user loses the device, 重置登录方式 brings the password back.",
             )) +
+          (d.password_login_disabled
+            ? tr("账户已选择只用通行密钥登录。", " The account chose passkey-only sign-in.")
+            : "") +
           (d.available
             ? ""
             : tr("（通行密钥需要 https 主域名，当前不可用）", " (passkeys need an https main domain; unavailable)"))

@@ -691,11 +691,7 @@ export function SelectionBar({
             : tr(`已选 ${n.toLocaleString()} 个`, `${n.toLocaleString()} selected`)}
         </span>
         {total !== undefined && !allMatching && onAll && total > count && (
-          <button
-            type="button"
-            onClick={onAll}
-            className="text-body whitespace-nowrap text-primary hover:underline max-sm:hidden"
-          >
+          <button type="button" onClick={onAll} className="text-body whitespace-nowrap text-primary hover:underline">
             {tr(`选择全部匹配的 ${total.toLocaleString()} 个`, `Select all ${total.toLocaleString()} matching`)}
           </button>
         )}

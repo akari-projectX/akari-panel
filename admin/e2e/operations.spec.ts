@@ -109,15 +109,15 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
     pricing: { on_sale: false, prices: [{ period: "month", price_cents: 10000 }] },
   });
   await apiJson("POST", "/orders/manual", { user_id: b.id, plan_id: plan.id, period: "month", reason: "commission" });
-  // FIN-04: the commission (credited by the next settlement pass); filters are in the URL.
+  // FIN-04: the commission ledger (day groups; credited by the next settlement pass);
+  // the rules banner links to the settings; filters are in the URL.
   await openConsole(page, "/finance/commissions");
-  await expect(page.getByRole("link", { name: "系统设置 → 邀请返利" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "去设置" })).toHaveAttribute("href", /settings\/commission/);
   await page.getByLabel("邀请人邮箱").fill(inviter);
   await expect(row(page, inviter)).toContainText("¥10.00");
   await expect(page).toHaveURL(/email=/);
   await expect(async () => {
     await page.reload();
-    await page.getByLabel("邀请人邮箱").fill(inviter);
     await expect(row(page, inviter)).toContainText("已入账", { timeout: 2000 });
   }).toPass({ timeout: 30_000 });
   // The inviter asks for 5 yuan in USDT on TRC20.
@@ -126,49 +126,65 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
     data: { amount_cents: 500, chain: "trc20", address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t" },
   });
   expect(w.status(), await w.text()).toBeLessThan(300);
-  // FIN-01/02: review — approve one with the USDT paid + hash, reject the other.
+  // FIN-01/02: the review queue (stat strip, oldest first) — approve one with the
+  // USDT paid + a hash checked per chain, reject the other.
   await openConsole(page, "/finance");
-  await page.getByLabel("用户邮箱（精确）").fill(inviter);
+  await expect(page).toHaveURL(/\/finance\/withdrawals/);
+  await page.getByLabel("按用户邮箱筛选").fill(inviter);
   await expect(row(page, "¥5.00")).toContainText("TRC20");
-  await expect(row(page, "¥5.00")).toContainText("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
   await expect(row(page, "¥5.00")).toContainText("≈ 0.69 USDT");
-  await row(page, "¥5.00").getByRole("button", { name: "通过", exact: true }).click();
-  const ap = dialog(page, "通过提现");
+  await expect(row(page, "¥5.00")).toContainText("等待");
+  await openRow(page, "¥5.00");
+  const ap = page.getByRole("form", { name: "确认已打款" });
+  await expect(page.getByText("TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t").first()).toBeVisible();
   await ap.getByLabel("实付 USDT").fill("0.69");
-  // The hash is checked before anything is sent.
-  await ap.getByLabel("交易哈希（txid）").fill("not a hash");
+  // The hash is checked (per chain) before anything is sent.
+  await ap.getByLabel("交易哈希").fill("not a hash");
   await ap.getByRole("button", { name: "确认已打款" }).click();
   await expect(ap.getByText(/格式不对/)).toBeVisible();
-  await ap.getByLabel("交易哈希（txid）").fill("0xe2e0000000000000000000000000000000000000000000000000000000000001");
+  await ap.getByLabel("交易哈希").fill("0xe2e0000000000000000000000000000000000000000000000000000000000001");
+  await expect(ap.getByText(/TRC20 交易哈希应为/)).toBeVisible();
+  const txid = "e2e0000000000000000000000000000000000000000000000000000000000001";
+  await ap.getByLabel("交易哈希").fill(txid);
   await ap.getByRole("button", { name: "确认已打款" }).click();
   await toast(page, "已标记为已打款");
-  // The pending list drops it without a reload.
+  // The pending queue drops it without a reload.
   await expect(row(page, "¥5.00")).toHaveCount(0);
   const w2 = await me.post(`${ORIGIN}/api/v1/me/withdrawals`, {
     data: { amount_cents: 200, chain: "trc20", address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t" },
   });
   expect(w2.status(), await w2.text()).toBeLessThan(300);
   await page.reload();
-  await page.getByLabel("用户邮箱（精确）").fill(inviter);
-  await row(page, "¥2.00").getByRole("button", { name: "拒绝", exact: true }).click();
-  const rj = dialog(page, "拒绝提现");
-  await rj.getByLabel("拒绝原因（用户可见）").fill("e2e reject");
-  await rj.getByRole("button", { name: "拒绝", exact: true }).click();
+  await openRow(page, "¥2.00");
+  await page.getByRole("button", { name: "拒绝…" }).click();
+  const rj = page.getByRole("group", { name: "拒绝这笔提现" });
+  await rj.getByLabel("原因（用户可见）").selectOption({ label: "其他" });
+  await rj.getByRole("button", { name: "拒绝并退回" }).click();
+  await expect(rj.getByText("选了「其他」，请写说明")).toBeVisible();
+  await rj.getByLabel("说明（必填）").fill("e2e reject");
+  await expect(rj).toContainText("将退回该用户的余额");
+  await rj.getByRole("button", { name: "拒绝并退回" }).click();
   await toast(page, "已拒绝");
   await page.getByRole("group", { name: "提现状态" }).getByRole("button", { name: /^全部/ }).click();
-  await expect(row(page, "¥5.00")).toContainText("已打款");
-  await expect(row(page, "¥5.00")).toContainText("0xe2e0");
-  await expect(row(page, "¥5.00").getByRole("button", { name: "复制哈希" })).toBeVisible();
-  await expect(row(page, "¥2.00")).toContainText("已拒绝");
-  // FIN-03: balances — find anyone, adjust.
+  await expect(row(page, "¥5.00")).toContainText("e2e0000");
+  await expect(row(page, "¥2.00")).toContainText("e2e reject");
+  await openRow(page, "¥5.00");
+  await expect(page.getByText(txid).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "复制哈希" }).first()).toBeVisible();
+  // FIN-03: balances — find anyone (with the latest entry), open the ledger, adjust.
   await openConsole(page, "/finance/balances");
   await page.getByLabel("按邮箱查找任意用户").fill(inviter);
   await expect(row(page, inviter)).toContainText("¥5.00");
-  await row(page, inviter).getByRole("button", { name: "调整", exact: true }).click();
-  const adj = dialog(page, "调整余额");
+  await openRow(page, inviter);
+  const lg = dialog(page, "余额明细");
+  await expect(lg).toContainText("邀请返利");
+  await lg.getByRole("button", { name: "人工调整" }).click();
+  const adj = dialog(page, "人工调整余额");
   await adj.getByLabel("金额（元）").fill("1");
   await adj.getByLabel("原因（必填，写入审计）").fill("e2e credit");
   await adj.getByRole("button", { name: "确认调整" }).click();
   await toast(page, "余额已调整");
+  await expect(lg).toContainText("e2e credit");
+  await lg.getByRole("button", { name: "关闭" }).first().click();
   await expect(row(page, inviter)).toContainText("¥6.00");
 });
