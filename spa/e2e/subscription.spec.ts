@@ -30,10 +30,12 @@ test('#27 #30 D11: the link is the panel\'s random subscription path, it works, 
   expect(r.status).toBe(200);
   expect(await r.text()).toContain('proxies:');
 
-  await open(page, '/account?tab=security');
-  await page.getByRole('button', { name: '重置订阅' }).click();
+  /* 设置页「订阅链接」一行重置；新链接回仪表盘取（设置页只管重置，导入只在仪表盘） */
+  await open(page, '/account#subscription');
+  await page.locator('#subscription').getByRole('button', { name: '重置', exact: true }).click();
   await page.getByRole('button', { name: '确认重置' }).click();
   await expect(page.getByText('订阅已重置').first()).toBeVisible();
+  await open(page, '/');
   const next = await copiedLink(page);
   expect(next).not.toBe(link);
   expect((await fetch(`${process.env.E2E_API}${url.pathname}`)).status).toBe(404);
@@ -69,11 +71,14 @@ test('#28 #29 W30: formats and import buttons follow the site switches', async (
 
 test('#31 the current plan: quota, reset period and next reset, expiry, speed', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
+  /* 套餐详情在商店的「当前套餐」（设置页只有一行摘要，2026-10-12 裁决） */
   await open(page, '/account');
-  await expect(page.getByText('E2E 标准').first()).toBeVisible();
-  await expect(page.getByText('100 GB').first()).toBeVisible();
-  await expect(page.getByText('每月重置流量')).toBeVisible();
-  await expect(page.getByText('300 Mbps')).toBeVisible();
+  await expect(page.locator('#account').getByText(/E2E 标准 · .* 到期/)).toBeVisible();
+  await open(page, '/shop');
+  await expect(page.getByText('当前套餐 · E2E 标准')).toBeVisible();
+  await expect(page.getByText(/\/ 100 GB/).first()).toBeVisible();
+  await expect(page.getByText(/重置流量，剩余/)).toBeVisible();
+  await expect(page.getByText(/300 Mbps/).first()).toBeVisible();
 });
 
 test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect now, status with a legend', async ({ page }) => {

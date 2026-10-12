@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { AlertDialog as AlertPrimitive, Dialog as DialogPrimitive } from 'radix-ui';
 import { XIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -107,9 +107,12 @@ const TONE: Record<Tone, { disc: string; button: string }> = {
 };
 
 export function ConfirmDialog({
-  trigger, tone = 'warning', icon, title, description, consequences, confirmLabel, cancelLabel, pending, onConfirm,
+  trigger, open, onOpenChange, tone = 'warning', icon, title, description, consequences, confirmLabel, cancelLabel, pending, error, onConfirm,
 }: {
-  trigger: ReactNode;
+  /** 打开它的按钮；不给时由 open / onOpenChange 控制（从下拉菜单里打开的确认） */
+  trigger?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (o: boolean) => void;
   tone?: Tone;
   icon: ReactNode;
   title: ReactNode;
@@ -119,13 +122,33 @@ export function ConfirmDialog({
   confirmLabel: ReactNode;
   cancelLabel?: ReactNode;
   pending?: boolean;
-  onConfirm: () => void;
+  /** 上一次确认失败的原因：留在弹窗里显示（不在遮罩外弹 toast） */
+  error?: ReactNode;
+  /**
+   * 确认。返回 Promise 时弹窗等它完成：成功才关，抛错就留着（调用方把原因放进 error）——
+   * 「重置中」这类进行中的状态因此看得见，失败也不会出现在弹窗关掉之后。
+   */
+  onConfirm: () => void | Promise<unknown>;
 }) {
   const tr = useT();
   const t = TONE[tone];
+  const [inner, setInner] = useState(false);
+  const isOpen = open ?? inner;
+  const setOpen = (o: boolean) => {
+    if (pending && !o) return;
+    if (open === undefined) setInner(o);
+    onOpenChange?.(o);
+  };
+  const confirm = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    try {
+      await onConfirm();
+      setOpen(false);
+    } catch { /* 留在弹窗里，原因由调用方经 error 给出 */ }
+  };
   return (
-    <AlertPrimitive.Root>
-      <AlertPrimitive.Trigger asChild>{trigger}</AlertPrimitive.Trigger>
+    <AlertPrimitive.Root open={isOpen} onOpenChange={setOpen}>
+      {trigger && <AlertPrimitive.Trigger asChild>{trigger}</AlertPrimitive.Trigger>}
       <AlertPrimitive.Portal>
         <AlertPrimitive.Overlay data-slot="panel-overlay" className={overlay} />
         <AlertPrimitive.Content
@@ -153,12 +176,13 @@ export function ConfirmDialog({
               ))}
             </ul>
           )}
+          {error && <p role="alert" className="state-in mt-4 text-[13px] leading-[1.6] text-danger">{error}</p>}
           <div className="mt-6 grid grid-cols-2 gap-2.5">
             <AlertPrimitive.Cancel asChild>
-              <Button variant="outline" className="h-10">{cancelLabel ?? tr('取消')}</Button>
+              <Button variant="outline" className="h-10" disabled={pending}>{cancelLabel ?? tr('取消')}</Button>
             </AlertPrimitive.Cancel>
             <AlertPrimitive.Action asChild>
-              <Button className={cn('h-10', t.button)} disabled={pending} onClick={onConfirm}>{confirmLabel}</Button>
+              <Button className={cn('h-10', t.button)} disabled={pending} onClick={confirm}>{confirmLabel}</Button>
             </AlertPrimitive.Action>
           </div>
         </AlertPrimitive.Content>
@@ -227,9 +251,10 @@ export function FlowDialog({
  */
 export function FlowFooter({ summary, children }: { summary?: ReactNode; children: ReactNode }) {
   return (
-    <div className="sticky bottom-0 -mx-6 mt-auto flex items-center gap-4 border-t border-border bg-popover/95 px-6 py-3.5 backdrop-blur supports-backdrop-filter:bg-popover/85 sm:-mx-7 sm:px-7 sm:pb-4">
-      <div className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-muted-foreground">{summary}</div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+    <div className="sticky bottom-0 -mx-6 mt-auto flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-border bg-popover/95 px-6 py-3.5 backdrop-blur supports-backdrop-filter:bg-popover/85 sm:-mx-7 sm:px-7 sm:pb-4">
+      <div className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-muted-foreground empty:hidden">{summary}</div>
+      {/* 手机上按钮等宽铺满（和确认弹窗同一手感）；桌面靠右 */}
+      <div className="grid flex-1 auto-cols-fr grid-flow-col gap-2 sm:flex sm:flex-none sm:shrink-0 sm:items-center [&>button]:h-10 sm:[&>button]:h-9">{children}</div>
     </div>
   );
 }

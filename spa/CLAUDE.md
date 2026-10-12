@@ -48,7 +48,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `/traffic` | 流量明细（站点时区的日界；按线路 = 每个入口一行，显示此刻倍率与时段规则，不显示计费 ÷ 原始的混合比值） | full |
 | `/tickets` | 工单 | full、renewal、banned |
 | `/help`、`/announcements` | 知识库、公告 | full、renewal |
-| `/account` | 账号（未验证时「验证这个邮箱」弹窗）、更换邮箱（新地址 + 当前密码 / 通行密钥 + 验证码）、语言（= 邮件语言）、注销（危险弹窗：`/me/delete-impact` 列出会失去的内容 + 密码或通行密钥 + 勾选不可恢复）；`?tab=security`：密码、通行密钥、只用通行密钥、订阅与重置。验证当前邮箱的弹窗是 `components/verify-email-dialog`（仪表盘提醒条也用它），确认是本人的输入是 `components/holder-confirm` + `hooks/use-holder-confirm` | full、renewal |
+| `/account` | 设置（2026-10-12 用户裁决，走查 `design/portal-settings-audit-2026-10`）：**单页 + 分区锚点导航**（`components/settings/setting-row` 的 `SettingsNav`：桌面左侧吸顶竖排，手机页头下吸顶横排；旧链接 `?tab=security` → `#security`）。只放能改的东西，每项一行 `SettingRow`（左名称 + 说明，右当前值 + 操作）：`#account` 邮箱（已验证 / 未验证 +「验证」「更换」：`verify-email-dialog`、`settings/change-email-dialog` 两步弹窗；站点没开发信（`/auth/options.mail`）时两个按钮都不出现）、套餐一行摘要（详情在商店「当前套餐」）；`#security` 密码（`settings/password-dialog`，无密码账户用通行密钥设置第一个）、通行密钥（`settings/passkeys`：删除与开启「只用通行密钥」走确认弹窗，手机行内操作收进「⋯」）、退出所有设备（`/auth/logout`）；`#subscription` 订阅链接状态（正常 / 旧格式（可重置）/ 续费后可用）+ 重置，导入只在仪表盘；`#preferences` 界面语言（= 邮件语言，只在主动切换时同步，`AuthCtxValue.setMailLocale`）、明暗（浅 / 深 / 跟随系统，默认跟随）；`#danger` 注销（`settings/delete-account-dialog`：影响清单、可提现提示 + 去钱包、被阻止时给去处链接只留「知道了」）。确认本人的输入是 `components/holder-confirm` + `hooks/use-holder-confirm`（登录方式取不到时说明 + 重试，不默认给密码框） | full、renewal |
 | `/login`、`/register`、`/forgot`、`/reset` | 登录（密码 / 通行密钥）、注册（PoW 或邮箱验证码，`?invite=` 预填）、申请重置链接、按 `#token=` 设新密码 | 未登录 |
 | `/deleted` | 注销之后的结果页（会话已清掉；路由 state 带是否匿名化保留） | 公开 |
 | `/terms`、`/privacy` | 条款、隐私：知识库里 slug 为 `terms` / `privacy` 的已发布文章（公开接口 `GET /api/v1/pages/{slug}`）；没写时显示中性缺省文案（门户不内置任何法律文本）；品牌设置里配了外链时页脚直接指向外链 | 公开 |
@@ -62,6 +62,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 - **会话**：httpOnly + SameSite=Strict cookie，前端不存令牌；sessionStorage 里的 `/me` 副本去掉 `sub_token`/`sub_url`。
 - **错误**：按 `code` 显示（`useErrorText`），不显示 `error` 原文；统一拒绝（404 空 body）不带信息。`scripts/check-error-codes.mjs` 读 `../src/error_codes.txt`：命名空间 auth/account/signup/shop/order/coupon/balance/withdrawal/invite/ticket/request 与 `kb.query_long` 的每个码都要有 `CODE_KEYS`，多余/重复映射也失败（后台的码由后台应用检查）。新增用户可见的码 → 这里加文案。
 - **文案**：所有界面中文经 `tr()`/`tp()`；`scripts/check-i18n.mjs` 要求每个含汉字的字符串都有英文条目、词典里没有没人用的条目（`--fix` 删掉）。改了中文文案要重跑字体子集（见「字体」）。
+- **表单**：一律 `noValidate`，不用浏览器原生校验气泡；字段用 `components/text-field`（标签 + 输入 + 常驻帮助 / 内联错误，`aria-invalid` + `aria-describedby`，密码框带显示 / 隐藏），校验与服务端错误码 → 字段用 `lib/form-errors`（`useFieldErrors`：提交时聚焦第一个出错的字段；`fieldOf` 把能对应字段的错误码画在字段下面，其余才用 toast）。区块加载失败（`data-state` 的 `LoadError`）同样按错误码显示。
 - **金额**：整数分，`lib/format.ts` 的 `yuan`/`formatMoney`/`parseYuan` 不经过浮点；前端不算价，报价全部来自 `/me/shop`；余额本身不为负（佣金追回不够时记欠款）。
 - **时间**：RFC 3339，按全站时区显示（`/me`、`/auth/options` 的 `timezone`）。
 - **退款显示**：`MyOrderView` 的 `refund_route`（original 原路退回 / balance 退到余额 / manual 支付渠道后台退款后登记）、`refund_balance_cents`/`refund_external_cents`、`refund_pending`（原路退款等渠道确认）、`refund_effect`（P1：none/cancel/rollback/restore）。

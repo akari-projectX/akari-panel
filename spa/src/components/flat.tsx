@@ -9,13 +9,15 @@ import { PageNotices } from '@/components/account-banners';
 
 /** 区块：标题 + 右侧操作 + 顶部细分隔线 */
 export function Section({
-  title, desc, extra, children, className, style,
+  id, title, desc, extra, children, className, style,
 }: {
+  /** 锚点（设置页分区、仪表盘 #subscribe）。直接给 section，别在外面再包一层 div：会打断 .sec + .sec 的分隔线 */
+  id?: string;
   title?: ReactNode; desc?: ReactNode; extra?: ReactNode;
   children: ReactNode; className?: string; style?: CSSProperties;
 }) {
   return (
-    <section className={cn('sec', className)} style={style}>
+    <section id={id} className={cn('sec', className)} style={style}>
       {(title || extra) && (
         <div className="sec-head">
           <div>

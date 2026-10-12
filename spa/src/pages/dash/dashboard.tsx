@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo, useState } from 'react';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
+import { useHashScroll } from '@/hooks/use-hash-scroll';
 import { Ban, BookOpen, ChevronRight, Headphones, Megaphone, TrendingUp, Wifi, Zap } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
@@ -75,6 +76,7 @@ function BannedNotice() {
 
 function Overview({ full }: { full: boolean }) {
   const enter = useEnter();
+  useHashScroll();
   const tr = useT();
   const tp = useTp();
   const nav = useNavigate();
@@ -258,8 +260,8 @@ function Overview({ full }: { full: boolean }) {
         </Section>
       )}
 
-      {/* ── 订阅 + 公告 ── */}
-      <Section>
+      {/* ── 订阅 + 公告（#subscribe：付款结果弹窗的「查看订阅」直达这里） ── */}
+      <Section id="subscribe">
         <Split
           left={
             <>

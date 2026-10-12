@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Sk } from '@/components/loading';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
+import { useErrorText } from '@/lib/errors';
 
 /**
  * 区块级的三种状态：在加载、加载失败、没有数据。
@@ -48,14 +49,15 @@ export function LoadError({
   error, onRetry, className,
 }: { error?: Error; onRetry?: () => void; className?: string }) {
   const tr = useT();
+  const errText = useErrorText();
   return (
     <div className={cn('state-in flex flex-col items-center justify-center gap-4 py-14 text-center', className)}>
       <AlertCircle className="size-6 text-faint" />
       <div>
         <p className="text-sm font-medium">{tr('这一块没能加载出来')}</p>
-        {/* 后端的报错信息本身就是给用户看的中文，原样呈现比换成套话有用 */}
+        {/* 按错误码给文案（lib/errors）；面板的 error 原文是英文开发者信息，不给用户看 */}
         <p className="mt-1.5 max-w-[46ch] text-[12.5px] leading-[1.8] text-muted-foreground">
-          {error?.message || tr('请稍后重试。')}
+          {error ? errText(error) : tr('请稍后重试。')}
         </p>
       </div>
       {onRetry && (

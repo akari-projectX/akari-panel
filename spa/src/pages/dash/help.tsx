@@ -162,7 +162,7 @@ function ListView() {
 
       {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
       <div {...enter({ delay: 0.05 })} className="mt-8 space-y-4">
-        <form onSubmit={handleSearchSubmit} role="search" className="relative">
+        <form noValidate onSubmit={handleSearchSubmit} role="search" className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"

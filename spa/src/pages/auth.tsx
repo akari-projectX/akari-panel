@@ -1,19 +1,19 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, Eye, EyeOff, KeyRound, MailCheck } from 'lucide-react';
+import { ArrowLeft, Check, KeyRound, MailCheck } from 'lucide-react';
 import { useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/loading';
 import GuardFields from '@/components/form-guard';
+import TextField from '@/components/text-field';
 import { ApiError, authApi, type LoginResult } from '@/api';
 import { solvePow } from '@/api/pow';
 import { isUserCancel, webauthnSupported } from '@/api/webauthn';
 import { usePending } from '@/hooks/use-api';
 import { safeRedirect, useAuth } from '@/lib/auth';
 import { useErrorText } from '@/lib/errors';
+import { digits, fieldOf, isCode, isEmail, useFieldErrors } from '@/lib/form-errors';
 import { useFormGuard } from '@/lib/form-guard';
 import { R } from '@/lib/routes';
 import { useSite } from '@/lib/site';
@@ -48,43 +48,12 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ---------- 表单字段 ---------- */
-function Field({
-  label, hint, type = 'text', ...rest
-}: React.ComponentProps<typeof Input> & { label: string; hint?: React.ReactNode }) {
-  const tr = useT();
-  const generatedId = useId();
-  const id = rest.id ?? generatedId;
-  const [show, setShow] = useState(false);
-  const isPwd = type === 'password';
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-baseline justify-between">
-        <Label htmlFor={id} className="text-[13px] font-medium">{label}</Label>
-        {hint}
-      </div>
-      <div className="relative">
-        <Input
-          {...rest}
-          id={id}
-          type={isPwd && show ? 'text' : type}
-          className={cn('h-11 rounded-xl text-[15px] shadow-none', isPwd && 'pr-10', rest.className)}
-        />
-        {isPwd && (
-          <button
-            type="button"
-            onClick={() => setShow((v) => !v)}
-            aria-controls={id}
-            aria-label={show ? tr('隐藏密码') : tr('显示密码')}
-            className="absolute top-1/2 right-3 -translate-y-1/2 text-faint transition-colors hover:text-foreground"
-          >
-            {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-          </button>
-        )}
-      </div>
-    </div>
-  );
+/* ---------- 表单字段 ----------
+ * 登录注册页用 TextField 的大号：标签 + 输入框 + 下方的内联错误。表单一律 noValidate（不用浏览器气泡），
+ * 提交时用 lib/form-errors 校验并聚焦第一个出错的字段；能对应到字段的服务端错误码也画在字段下面。
+ */
+function Field(props: React.ComponentProps<typeof TextField>) {
+  return <TextField large {...props} />;
 }
 
 function Title({ h, sub }: { h: string; sub: string }) {
@@ -118,17 +87,18 @@ const mailLocale = (l: string): 'zh' | 'en' => (l === 'en' ? 'en' : 'zh');
  * 发码是一次带防护的公开表单提交：面板对任何地址都答 ok，不能据此判断邮箱是否已注册。
  */
 function CodeField({
-  value, onChange, onSend, disabled,
+  value, onChange, onSend, disabled, error, id,
 }: {
   value: string;
   onChange: (v: string) => void;
+  error?: string;
+  id: string;
   /** 发码；返回 true 才进入冷却 */
   onSend: () => Promise<boolean>;
   disabled?: boolean;
 }) {
   const tr = useT();
   const tp = useTp();
-  const id = useId();
   const [until, setUntil] = useState(0);
   const [left, setLeft] = useState(0);
   const [sending, run] = usePending();
@@ -151,22 +121,21 @@ function CodeField({
   });
 
   return (
-    <div className="space-y-2">
-      <Label htmlFor={id} className="text-[13px] font-medium">{tr('邮箱验证码')}</Label>
-      <div className="flex gap-2.5">
-        <Input
-          id={id} value={value} onChange={(e) => onChange(e.target.value)}
-          inputMode="numeric" autoComplete="one-time-code" maxLength={6} required placeholder={tr('六位数字')}
-          className="h-11 rounded-xl text-[15px] shadow-none"
+    <div className="flex items-start gap-2.5">
+      <div className="min-w-0 flex-1">
+        <Field
+          id={id} label={tr('邮箱验证码')} error={error}
+          value={value} onChange={(e) => onChange(digits(e.target.value))}
+          inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder={tr('六位数字')}
         />
-        <Button
-          type="button" variant="outline" disabled={disabled || sending || left > 0}
-          onClick={send} className="h-11 shrink-0 rounded-xl px-3.5 text-[13px] font-medium shadow-none"
-        >
-          {sending && <Spinner size={14} tone="current" />}
-          {left > 0 ? tp('{n} 秒', { n: left }) : tr('发送验证码')}
-        </Button>
       </div>
+      <Button
+        type="button" variant="outline" disabled={disabled || sending || left > 0}
+        onClick={send} className="mt-[29px] h-11 shrink-0 rounded-xl px-3.5 text-[13px] font-medium shadow-none"
+      >
+        {sending && <Spinner size={14} tone="current" />}
+        {left > 0 ? tp('{n} 秒', { n: left }) : tr('发送验证码')}
+      </Button>
     </div>
   );
 }
@@ -219,6 +188,7 @@ export function Login() {
   const [loading, run] = usePending();
   /* 仅通行密钥账户用密码登录会被拒（403 auth.passkey_required）：把通行密钥按钮突出出来 */
   const [needPasskey, setNeedPasskey] = useState(false);
+  const f = useFieldErrors(['email', 'password'] as const);
 
   const canPasskey = site.passkey && webauthnSupported();
   const to = safeRedirect(sp.get('redirect'));
@@ -226,13 +196,18 @@ export function Login() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!f.check({
+      email: !email.trim() ? tr('请输入邮箱') : !isEmail(email) ? tr('请输入有效的邮箱地址') : undefined,
+      password: !password && tr('请输入密码'),
+    })) return;
     run(async () => {
       try {
         await finish(await authApi.login(email.trim(), password, await guard.build()), to);
       } catch (err) {
-        if (err instanceof ApiError && err.code === 'auth.passkey_required') setNeedPasskey(true);
-        /* 面板对所有登录失败都答同一个 401，不区分邮箱不存在还是密码错 */
-        toast.error(err instanceof ApiError && err.status === 401 ? tr('邮箱或密码错误') : errText(err));
+        if (err instanceof ApiError && err.code === 'auth.passkey_required') { setNeedPasskey(true); return; }
+        /* 面板对所有登录失败都答同一个 401，不区分邮箱不存在还是密码错：画在密码下面 */
+        if (err instanceof ApiError && err.status === 401) f.set('password', tr('邮箱或密码错误'));
+        else toast.error(errText(err));
       } finally {
         guard.after();
       }
@@ -260,13 +235,15 @@ export function Login() {
         </div>
       )}
 
-      <form onSubmit={submit} className="relative space-y-5">
+      <form noValidate onSubmit={submit} className="relative space-y-5">
         <Field
-          label={tr('邮箱')} type="email" required autoComplete="username webauthn" placeholder="you@example.com"
+          {...f.field('email', 'login-email')}
+          label={tr('邮箱')} type="email" autoComplete="username webauthn" placeholder="you@example.com"
           value={email} onChange={(e) => setEmail(e.target.value)}
         />
         <Field
-          label={tr('密码')} type="password" required autoComplete="current-password" placeholder={tr('输入密码')}
+          {...f.field('password', 'login-password')}
+          label={tr('密码')} type="password" autoComplete="current-password" placeholder={tr('输入密码')}
           value={password} onChange={(e) => setPassword(e.target.value)}
           hint={site.resetOpen && (
             <Link to={R.forgot} className="text-[12.5px] text-muted-foreground transition-colors hover:text-brand">{tr('忘记密码')}</Link>
@@ -319,6 +296,21 @@ export function Register() {
   /* 邀请链接形如 /register?invite=XXXX（面板的 link_base），带进来就预填上 */
   const [invite, setInvite] = useState(sp.get('invite')?.trim() ?? '');
   const [phase, setPhase] = useState<Phase>('idle');
+  const f = useFieldErrors(['email', 'password', 'invite', 'code'] as const);
+  /* 面板的错误码 → 字段（其余的用 toast） */
+  const FIELD_CODES = {
+    'signup.invalid_email': 'email', 'signup.domain_not_allowed': 'email', 'signup.unavailable': 'email',
+    'account.password_too_short': 'password', 'account.password_too_long': 'password',
+    'signup.invalid_invite': 'invite', 'signup.invite_required': 'invite',
+    'signup.invalid_code': 'code',
+  } as const;
+  const emailError = () => (!email.trim() ? tr('请输入邮箱') : !isEmail(email) ? tr('请输入有效的邮箱地址') : undefined);
+  const inviteError = () => (site.inviteRequired && !invite.trim() ? tr('请填写邀请码') : undefined);
+  const showServerError = (err: unknown) => {
+    const k = fieldOf(err, FIELD_CODES);
+    if (k) f.set(k, errText(err));
+    else toast.error(errText(err));
+  };
 
   const rules = [
     { label: '至少 8 位', ok: pwd.length >= 8 },
@@ -328,7 +320,8 @@ export function Register() {
 
   /* 发码：面板对任何地址都答 ok（地址已注册的话收到的是一封「已注册」的邮件） */
   const sendCode = async (): Promise<boolean> => {
-    if (!email.trim()) { toast.error(tr('请先填写邮箱')); return false; }
+    const ee = emailError();
+    if (ee) { f.set('email', ee); return false; }
     try {
       await authApi.registerCode({
         email: email.trim(),
@@ -339,7 +332,7 @@ export function Register() {
       toast.success(tr('如果这个邮箱可以注册，验证码已经发出'), { description: tr('请查收邮件，也看看垃圾邮件箱') });
       return true;
     } catch (e) {
-      toast.error(errText(e));
+      showServerError(e);
       return false;
     } finally {
       guard.after();
@@ -349,6 +342,12 @@ export function Register() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (phase !== 'idle') return;
+    if (!f.check({
+      email: emailError(),
+      password: !pwd ? tr('请设置密码') : pwd.length < 8 ? tr('密码至少 8 位') : undefined,
+      invite: inviteError(),
+      code: site.emailVerify && !isCode(code) && tr('请输入 6 位数字验证码'),
+    })) return;
     try {
       let pow: { challenge: string; nonce: string } | undefined;
       if (!site.emailVerify) {
@@ -370,7 +369,7 @@ export function Register() {
       toast.success(tr('注册成功'), result.trial ? { description: tr('已赠送试用套餐，现在就可以使用') } : undefined);
       nav(R.dashboard, { replace: true });
     } catch (err) {
-      toast.error(errText(err));
+      showServerError(err);
     } finally {
       guard.after();
       setPhase('idle');
@@ -380,7 +379,7 @@ export function Register() {
   /* 用通行密钥注册：不填邮箱和密码，账号建好后在弹窗里绑定邮箱（面板：待绑定邮箱状态） */
   const passkeySignup = async () => {
     if (phase !== 'idle') return;
-    if (site.inviteRequired && !invite.trim()) { toast.error(tr('请填写邀请码')); return; }
+    if (!f.check({ invite: inviteError() })) return;
     try {
       setPhase('pow');
       const ch = await authApi.registerChallenge();
@@ -397,7 +396,11 @@ export function Register() {
       nav(R.dashboard, { replace: true });
     } catch (err) {
       /* 用户在系统弹窗里点了取消，不算错误 */
-      if (!isUserCancel(err)) toast.error(errText(err));
+      if (isUserCancel(err)) return;
+      /* 这条路没有邮箱：signup.unavailable 等不对应任何字段，邀请码的错误除外 */
+      const k = fieldOf(err, { 'signup.invalid_invite': 'invite', 'signup.invite_required': 'invite' } as const);
+      if (k) f.set(k, errText(err));
+      else toast.error(errText(err));
     } finally {
       guard.after();
       setPhase('idle');
@@ -433,9 +436,10 @@ export function Register() {
     <Shell>
       <Title h="创建账号" sub={tr('注册后即可取得订阅链接')} />
 
-      <form onSubmit={submit} className="relative space-y-5">
+      <form noValidate onSubmit={submit} className="relative space-y-5">
         <Field
-          label={tr('邮箱')} type="email" required autoComplete="email" placeholder="you@example.com"
+          {...f.field('email', 'register-email')}
+          label={tr('邮箱')} type="email" autoComplete="email" placeholder="you@example.com"
           value={email} onChange={(e) => setEmail(e.target.value)}
           hint={domains.length > 0 && (
             <span className="text-[12px] text-muted-foreground">
@@ -446,7 +450,8 @@ export function Register() {
 
         <div className="space-y-2.5">
           <Field
-            label={tr('密码')} type="password" required minLength={8} autoComplete="new-password"
+            {...f.field('password', 'register-password')}
+            label={tr('密码')} type="password" autoComplete="new-password"
             placeholder={tr('设置一个安全的密码')}
             value={pwd} onChange={(e) => setPwd(e.target.value)}
           />
@@ -466,14 +471,17 @@ export function Register() {
 
         {/* 没强制要求时邀请码也留着：从邀请链接进来的人得有地方填 */}
         <Field
+          {...f.field('invite', 'register-invite')}
           label={site.inviteRequired ? tr('邀请码') : `${tr('邀请码')}（${tr('选填')}）`}
-          required={site.inviteRequired}
           placeholder={tr('填写邀请码')}
           value={invite} onChange={(e) => setInvite(e.target.value)}
         />
 
         {site.emailVerify && (
-          <CodeField value={code} onChange={setCode} onSend={sendCode} disabled={!guard.ready || guard.unavailable} />
+          <CodeField
+            id={f.field('code', 'register-code').id} error={f.errors.code}
+            value={code} onChange={(v) => { setCode(v); f.dismiss('code'); }} onSend={sendCode} disabled={!guard.ready || guard.unavailable}
+          />
         )}
 
         <GuardFields guard={guard} />
@@ -543,15 +551,18 @@ export function Forgot() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [loading, run] = usePending();
+  const f = useFieldErrors(['email'] as const);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!f.check({ email: !email.trim() ? tr('请输入邮箱') : !isEmail(email) ? tr('请输入有效的邮箱地址') : undefined })) return;
     run(async () => {
       try {
         await authApi.resetRequest(email.trim(), await guard.build());
         setSent(true);
       } catch (err) {
-        toast.error(errText(err));
+        if (fieldOf(err, { 'signup.invalid_email': 'email' } as const)) f.set('email', errText(err));
+        else toast.error(errText(err));
       } finally {
         guard.after();
       }
@@ -586,9 +597,10 @@ export function Forgot() {
   return (
     <Shell>
       <Title h="找回密码" sub={tr('填写登录邮箱，我们会把重置链接发给你。')} />
-      <form onSubmit={submit} className="relative space-y-5">
+      <form noValidate onSubmit={submit} className="relative space-y-5">
         <Field
-          label={tr('邮箱')} type="email" required autoComplete="email" placeholder="you@example.com"
+          {...f.field('email', 'forgot-email')}
+          label={tr('邮箱')} type="email" autoComplete="email" placeholder="you@example.com"
           value={email} onChange={(e) => setEmail(e.target.value)}
         />
         <GuardFields guard={guard} />
@@ -629,6 +641,7 @@ export function Reset() {
   const [pwd, setPwd] = useState('');
   const [confirm, setConfirm] = useState('');
   const [loading, run] = usePending();
+  const f = useFieldErrors(['pwd', 'confirm'] as const);
 
   /* 令牌读到之后就从地址栏抹掉，免得被截图、被浏览器历史同步走 */
   useEffect(() => {
@@ -637,14 +650,19 @@ export function Reset() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (pwd !== confirm) { toast.error(tr('两次输入的新密码不一致')); return; }
+    if (!f.check({
+      pwd: !pwd ? tr('请输入新密码') : pwd.length < 8 ? tr('新密码至少 8 位') : undefined,
+      confirm: !confirm ? tr('请再次输入新密码') : confirm !== pwd ? tr('两次输入的新密码不一致') : undefined,
+    })) return;
     run(async () => {
       try {
         await authApi.reset(token, pwd);
         toast.success(tr('密码已重置，请用新密码登录'), { description: tr('所有设备上的登录都已结束') });
         nav(R.login, { replace: true });
       } catch (err) {
-        toast.error(errText(err));
+        const k = fieldOf(err, { 'account.password_too_short': 'pwd', 'account.password_too_long': 'pwd' } as const);
+        if (k) f.set(k, errText(err));
+        else toast.error(errText(err));
       }
     });
   };
@@ -663,14 +681,17 @@ export function Reset() {
   return (
     <Shell>
       <Title h="设置新密码" sub={tr('设好之后，所有设备上的登录都会结束。')} />
-      <form onSubmit={submit} className="space-y-5">
+      <form noValidate onSubmit={submit} className="space-y-5">
         <Field
-          label={tr('新密码')} type="password" required minLength={8} autoComplete="new-password" placeholder={tr('至少 8 位')}
+          {...f.field('pwd', 'reset-password')}
+          label={tr('新密码')} type="password" autoComplete="new-password" help={tr('至少 8 位')}
           value={pwd} onChange={(e) => setPwd(e.target.value)}
         />
         <Field
-          label={tr('确认新密码')} type="password" required minLength={8} autoComplete="new-password" placeholder={tr('再次输入新密码')}
+          {...f.field('confirm', 'reset-confirm')}
+          label={tr('确认新密码')} type="password" autoComplete="new-password" placeholder={tr('再次输入新密码')}
           value={confirm} onChange={(e) => setConfirm(e.target.value)}
+          onBlur={() => { if (confirm && confirm !== pwd) f.set('confirm', tr('两次输入的新密码不一致'), false); }}
         />
         <Button type="submit" disabled={loading} className="h-11 w-full rounded-xl text-[15px]">
           {loading && <Spinner size={16} tone="current" />}

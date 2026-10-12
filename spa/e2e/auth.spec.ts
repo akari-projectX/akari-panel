@@ -17,6 +17,27 @@ test('#1 #2 wrong password = the uniform answer; a full account lands on the das
   await expect(page).toHaveURL(/\/$/);
 });
 
+test('forms validate inline (no browser bubbles): errors under the fields, the first one focused', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByText('请输入邮箱', { exact: true })).toBeVisible();
+  await expect(page.getByText('请输入密码', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('邮箱', { exact: true })).toBeFocused();
+  await expect(page.getByLabel('邮箱', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+  /* 改了那个字段，它的错误就消失 */
+  await page.getByLabel('邮箱', { exact: true }).fill('not-an-address');
+  await expect(page.getByText('请输入邮箱', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+  await expect(page.getByText('请输入有效的邮箱地址')).toBeVisible();
+
+  await page.goto('/register');
+  await page.getByLabel('邮箱', { exact: true }).fill(freshEmail('inline'));
+  await page.getByLabel('密码', { exact: true }).fill('short');
+  await page.getByRole('button', { name: '创建账号' }).click();
+  await expect(page.getByText('密码至少 8 位')).toBeVisible();
+  await expect(page.getByLabel('密码', { exact: true })).toBeFocused();
+});
+
 test('#2 D4: admin credentials get the same answer as a wrong password; no console address anywhere', async ({ page }) => {
   await login(page, process.env.E2E_ADMIN_EMAIL ?? '', process.env.E2E_ADMIN_PASSWORD ?? '');
   await expect(page.getByText('邮箱或密码错误')).toBeVisible();
@@ -341,10 +362,37 @@ test('#3 #4 #5 #24 #25 passkeys: offered after a password login, then sign-in wi
     /* 账户页：通行密钥列表、改名、恢复密码登录 */
     await page.getByRole('button', { name: '使用通行密钥登录' }).click();
     await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
-    await open(page, '/account?tab=security');
-    await expect(page.getByText('只用通行密钥登录')).toBeVisible();
-    await page.getByRole('switch', { name: '只用通行密钥登录' }).click();
+    await open(page, '/account#security');
+    const only = page.getByRole('switch', { name: '只用通行密钥登录' });
+    await expect(only).toBeChecked();
+    /* 删除最后一个当前可用的通行密钥：确认弹窗写明「只用通行密钥」会随之失效（这里取消） */
+    const row = page.locator('#security ul.divide-y > li').first();
+    if (info.project.name === 'mobile') {
+      await row.getByRole('button', { name: /的操作$/ }).click();
+      await page.getByRole('menuitem', { name: '删除' }).click();
+    } else {
+      await row.getByRole('button', { name: /^删除 / }).click();
+    }
+    const del = page.getByRole('alertdialog', { name: /^删除通行密钥/ });
+    await expect(del.getByText('设备里保存的那一份需要在设备上自行删除')).toBeVisible();
+    await expect(del.getByText(/这是最后一个可用的通行密钥/)).toBeVisible();
+    await del.getByRole('button', { name: '取消' }).click();
+    await expect(del).toHaveCount(0);
+    /* 关掉直接生效；再打开要先确认 */
+    await only.click();
     await expect(page.getByText('已恢复密码登录')).toBeVisible();
+    await expect(only).not.toBeChecked();
+    await only.click();
+    const ask = page.getByRole('alertdialog', { name: '只用通行密钥登录？' });
+    await expect(ask.getByText('通行密钥全部丢失时，需要联系管理员恢复')).toBeVisible();
+    await ask.getByRole('button', { name: '取消' }).click();
+    await expect(only).not.toBeChecked();
+    await only.click();
+    await ask.getByRole('button', { name: '确认开启' }).click();
+    await expect(page.getByText('已改为只用通行密钥登录').first()).toBeVisible();
+    await expect(only).toBeChecked();
+    await only.click();
+    await expect(page.getByText('已恢复密码登录').first()).toBeVisible();
     await page.context().clearCookies();
     await signIn(page, email);
   } finally {

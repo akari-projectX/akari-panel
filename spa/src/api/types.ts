@@ -59,6 +59,8 @@ export type AuthOptions = {
   passkey_register: boolean;
   /** 全站时区（IANA 名）：日期一律按它显示 */
   timezone: string;
+  /** 站点开着发信：关着时门户不出现更换 / 验证邮箱（第一步就会被拒 account.mail_off） */
+  mail: boolean;
 };
 
 /** POST /auth/login、/auth/passkey/login、/auth/register 的答复 */

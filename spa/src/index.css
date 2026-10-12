@@ -551,6 +551,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 /* --- 区块：靠留白分隔，不画线 --- */
 .sec { padding-block: 44px; container-type: inline-size; }
+/* 锚点跳转（hooks/use-hash-scroll）时让出吸顶的页头 */
+.sec[id] { scroll-margin-top: 80px; }
 .sec + .sec { border-top: 1px solid var(--border); }
 .sec-head {
   display: flex; align-items: flex-end; justify-content: space-between;
@@ -576,6 +578,47 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
   font-size: 13px; color: var(--muted-foreground); margin-top: 6px;
   font-weight: 400; letter-spacing: -0.004em;
 }
+
+/*
+ * --- 设置页（pages/dash/account，2026-10 设置页走查）---
+ * 桌面：左侧吸顶的分区导航 + 右侧内容（最宽约 760px）；手机：页头下面吸顶的一条横向导航。
+ * 区块标题在这里用正文色 15.5px（不是别处的灰色微标签：设置页靠区块分组扫读）。
+ * 设置行：左 1/3 名称 + 说明，右 2/3 当前值 + 操作（最后一个元素靠右），与名称顶对齐；手机上下两层。
+ */
+.settings-page { display: grid; gap: 0 56px; margin-top: 8px; }
+@media (min-width: 1024px) { .settings-page { grid-template-columns: 184px minmax(0, 760px); } }
+.settings-nav {
+  position: sticky; top: 64px; z-index: 10; margin-inline: -16px; padding: 10px 16px;
+  background: color-mix(in srgb, var(--background) 95%, transparent); border-bottom: 1px solid var(--border);
+}
+.settings-nav ul { display: flex; gap: 4px; }
+.settings-nav-link {
+  display: block; white-space: nowrap; border-radius: 9999px; padding: 6px 12px;
+  font-size: 13px; color: var(--muted-foreground); transition: color var(--dur-hover), background-color var(--dur-hover);
+}
+.settings-nav-link:hover { color: var(--foreground); }
+.settings-nav-link[aria-current] { color: var(--foreground); background: var(--muted); font-weight: 500; }
+@media (min-width: 1024px) {
+  .settings-nav { top: 96px; align-self: start; margin: 44px 0 0; padding: 0; background: none; border: 0; }
+  .settings-nav ul { flex-direction: column; overflow: visible; }
+  .settings-nav-link { border-radius: 8px; padding: 7px 12px; }
+}
+.settings-page .sec-title { font-size: 15.5px; letter-spacing: -0.01em; color: var(--foreground); }
+.settings-page .sec-head { margin-bottom: 14px; }
+.settings-page .sec { padding-block: 36px; }
+.settings-page .sec[id] { scroll-margin-top: 128px; }
+@media (min-width: 1024px) { .settings-page .sec[id] { scroll-margin-top: 80px; } }
+.settings-page .sec.settings-danger {
+  margin-top: 36px; padding: 24px 20px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: 14px;
+}
+.settings-danger .sec-title { color: var(--danger); }
+.set-row { display: grid; gap: 10px 32px; padding-block: 16px; border-bottom: 1px solid var(--border); }
+.set-row:last-child { border-bottom: 0; padding-bottom: 0; }
+@media (min-width: 640px) { .set-row:not(.set-row-block) { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); align-items: start; } }
+.set-row-t { font-size: 14.5px; font-weight: 500; color: var(--foreground); }
+.set-row-d { margin-top: 3px; font-size: 13px; line-height: 1.65; color: var(--muted-foreground); }
+.set-row-r { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0; min-height: 36px; }
+.set-row-r > :last-child { margin-left: auto; }
 
 /* --- 指标：数字在上、标签在下、无分隔线 --- */
 .statrow { display: flex; flex-wrap: wrap; gap: 56px 72px; }

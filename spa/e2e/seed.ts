@@ -104,6 +104,8 @@ for (const p of PROJECTS) {
   await user(`passkey-${p}@e2e.test`, false);
   await user(`reset-${p}@e2e.test`, false);
   await user(`logout-${p}@e2e.test`, false);
+  await user(`legacy-${p}@e2e.test`);
+  await user(`settings-${p}@e2e.test`);
 }
 const expired = await user('expired@e2e.test');
 const quota = await user('quota@e2e.test');
