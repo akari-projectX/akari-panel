@@ -6,7 +6,7 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "build": "tsc --noEmit && rm -rf dist && ADMIN_ENTRY=login vite build && ADMIN_ENTRY=console vite build && node scripts/check-bundles.mjs && node scripts/bundle-report.mjs",
+    "build": "tsc --noEmit && rm -rf dist && ADMIN_ENTRY=login vite build && ADMIN_ENTRY=console vite build && node scripts/check-bundles.mjs && node scripts/bundle-report.mjs && node scripts/precompress.mjs",
     "test": "vitest run",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",

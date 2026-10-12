@@ -65,12 +65,31 @@ async function ready(page: Page, id: string): Promise<void> {
   await expect(page.locator(`main[data-page="${id}"][data-ready]`)).toBeVisible({ timeout: 60_000 });
 }
 
+/** Where the first screen's time goes: every request (start → end, bytes on the wire), relative to navigation start. */
+type Timeline = { readyMs: number; requests: { name: string; start: number; end: number; kb: number }[] };
+const timelines: Record<string, Timeline> = {};
+
 /** First screen: goto → ready, and the LCP the browser reports. */
-async function firstScreen(page: Page): Promise<{ ready: number; lcp: number }> {
+async function firstScreen(page: Page, label?: string): Promise<{ ready: number; lcp: number }> {
   const t0 = Date.now();
   await page.goto(CONSOLE);
   await ready(page, "dashboard");
   const readyMs = Date.now() - t0;
+  if (label)
+    timelines[label] = {
+      readyMs,
+      requests: await page.evaluate(() =>
+        [...performance.getEntriesByType("navigation"), ...performance.getEntriesByType("resource")].map((e) => {
+          const r = e as PerformanceResourceTiming;
+          return {
+            name: r.name.replace(/^https?:\/\/[^/]+/, "").replace(/^\/[^/]+\//, "/"),
+            start: Math.round(r.startTime),
+            end: Math.round(r.responseEnd),
+            kb: Math.round((r.transferSize || 0) / 102.4) / 10,
+          };
+        }),
+      ),
+    };
   const lcp = await page.evaluate(
     () =>
       new Promise<number>((resolve) => {
@@ -133,7 +152,7 @@ async function measure(browser: Browser, bigList: boolean, add: Add): Promise<vo
     const lcp: number[] = [];
     const sw: Record<string, number[]> = {};
     for (let run = 0; run < RUNS; run++) {
-      const f = await firstScreen(page);
+      const f = await firstScreen(page, run === 0 ? `${env}-cold` : run === 1 ? `${env}-warm` : undefined);
       fsReady.push(f.ready);
       lcp.push(f.lcp);
       for (const [name, id] of SWITCHES) {
@@ -194,6 +213,18 @@ test("perf: first screen, page switches, big list (report-only)", async ({ brows
   const out = join(HERE, "..", "test-results");
   mkdirSync(out, { recursive: true });
   writeFileSync(join(out, "perf.json"), JSON.stringify(results, null, 2));
+  writeFileSync(join(out, "perf-timeline.json"), JSON.stringify(timelines, null, 2));
+  for (const [label, t] of Object.entries(timelines))
+    console.log(
+      `perf timeline ${label}: ready ${t.readyMs} ms\n` +
+        t.requests
+          .sort((a, b) => a.start - b.start)
+          .map(
+            (r) =>
+              `  ${String(r.start).padStart(5)}–${String(r.end).padStart(5)} ms ${String(r.kb).padStart(7)} KB ${r.name}`,
+          )
+          .join("\n"),
+    );
   const rows = results.map(
     (r) =>
       `| ${r.env} | ${r.metric} | ${r.first} | ${r.median} | ${r.budget ?? "—"} | ${r.over ? "over (report-only)" : "ok"} |`,

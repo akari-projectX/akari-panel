@@ -1091,12 +1091,18 @@ fn forbidden_html(html: &str) -> Option<(usize, &'static str)> {
             found = Some((at, what));
         }
     };
-    // Tags: `<name` followed by whitespace, `/` or `>`.
+    // Tags: `<name` followed by whitespace, `/` or `>`; `<script` followed
+    // by anything (no legitimate mail markup starts so, and the rendered
+    // mail must never contain the string — fuzz/content).
     for tag in FORBIDDEN_TAGS {
         let needle = format!("<{tag}");
         let mut from = 0;
         while let Some(i) = lower[from..].find(&needle) {
             let end = from + i + needle.len();
+            if tag == "script" {
+                hit(from + i, "<script>、<iframe>、<form> 等标签");
+                break;
+            }
             match bytes.get(end) {
                 None | Some(b'>' | b'/') => {
                     hit(from + i, "<script>、<iframe>、<form> 等标签");
@@ -1500,6 +1506,9 @@ mod tests {
             "<a href=\"data:text/html,<b>x</b>\">{code}</a>",
             "<style>@import url(https://x/a.css);</style>{code}",
             "<meta http-equiv=\"refresh\" content=\"0;url=https://x\">{code}",
+            // Any `<script…` (fuzz/content: the mail must never contain it).
+            "<p>{code} <scripted>z</scripted></p>",
+            "{code} {site<script}",
         ] {
             assert!(
                 html_err(REG, bad)
@@ -1511,7 +1520,7 @@ mod tests {
         // Look-alikes that are fine: a word that merely starts with a tag
         // name or contains "on", and text about scripts.
         for fine in [
-            "<p>{code} <formal>x</formal> <linked>y</linked> <scripted>z</scripted></p>",
+            "<p>{code} <formal>x</formal> <linked>y</linked></p>",
             "<p>{code} Please confirm: one, two, only this</p>",
             "<p style=\"font-weight:600\">{code} javascript is not mentioned as a scheme</p>",
         ] {

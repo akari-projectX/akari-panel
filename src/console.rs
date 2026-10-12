@@ -17,7 +17,7 @@
 //! the sign-in page; `app_entry` hands those requests to `spa::index`.
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderValue, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -76,15 +76,61 @@ async fn turnstile_login(state: &AppState) -> bool {
 }
 
 /// `/{prefix}/app/assets/*`: the sign-in page's fingerprinted assets.
-pub async fn login_asset(entry: Entry, Path((_, rel)): Path<(String, String)>) -> Response {
+pub async fn login_asset(
+    entry: Entry,
+    headers: HeaderMap,
+    Path((_, rel)): Path<(String, String)>,
+) -> Response {
     if entry.0 != Some(Via::Admin) {
         return reject::not_found();
     }
     let key = format!("assets/{rel}");
-    match LoginAssets::get(&key) {
-        Some(file) => file_response(&key, file.data.to_vec(), IMMUTABLE),
+    match encoded::<LoginAssets>(&key, &headers) {
+        Some((data, enc)) => file_response(&key, data, enc, IMMUTABLE),
         None => reject::not_found(),
     }
+}
+
+/// The asset `key` of `A`, brotli or gzip when the client accepts it and
+/// the build wrote a pre-compressed copy (`admin/scripts/precompress.mjs`:
+/// `<key>.br` / `<key>.gz`). The copies themselves are never served by
+/// name. Without this the panel sent every chunk uncompressed when no
+/// compressing proxy sits in front (and the phone timing measured that).
+fn encoded<A: RustEmbed>(
+    key: &str,
+    headers: &HeaderMap,
+) -> Option<(Vec<u8>, Option<&'static str>)> {
+    if key.ends_with(".br") || key.ends_with(".gz") {
+        return None;
+    }
+    let accept = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let plain = A::get(key)?;
+    for (enc, ext) in [("br", "br"), ("gzip", "gz")] {
+        if accepts(accept, enc)
+            && let Some(f) = A::get(&format!("{key}.{ext}"))
+        {
+            return Some((f.data.to_vec(), Some(enc)));
+        }
+    }
+    Some((plain.data.to_vec(), None))
+}
+
+/// Whether an `Accept-Encoding` value accepts `enc` (a listed token whose
+/// q is not 0; `*` is not honoured — identity is always fine).
+fn accepts(accept: &str, enc: &str) -> bool {
+    accept.split(',').any(|t| {
+        let mut parts = t.split(';');
+        parts
+            .next()
+            .is_some_and(|n| n.trim().eq_ignore_ascii_case(enc))
+            && parts.all(|q| {
+                let q = q.trim().to_ascii_lowercase();
+                !(q.starts_with("q=") && q[2..].trim().parse::<f32>().is_ok_and(|v| v == 0.0))
+            })
+    })
 }
 
 /// `/{prefix}/admin` and `/{prefix}/admin/<view>`: the console's index,
@@ -111,14 +157,15 @@ pub async fn console_index(
 /// `/{prefix}/admin/assets/*`: same gate as the index; never cached.
 pub async fn console_asset(
     Path((_, rel)): Path<(String, String)>,
+    headers: HeaderMap,
     session: Result<AuthUser, ApiError>,
 ) -> Response {
     if !is_admin(&session) {
         return reject::not_found();
     }
     let key = format!("assets/{rel}");
-    match ConsoleAssets::get(&key) {
-        Some(file) => file_response(&key, file.data.to_vec(), CONSOLE_CACHE),
+    match encoded::<ConsoleAssets>(&key, &headers) {
+        Some((data, enc)) => file_response(&key, data, enc, CONSOLE_CACHE),
         None => reject::not_found(),
     }
 }
@@ -151,20 +198,31 @@ fn html_response(html: String, cache: &'static str) -> Response {
         .into_response()
 }
 
-fn file_response(key: &str, data: Vec<u8>, cache: &'static str) -> Response {
+fn file_response(
+    key: &str,
+    data: Vec<u8>,
+    encoding: Option<&'static str>,
+    cache: &'static str,
+) -> Response {
     let mime = mime_guess::from_path(key)
         .first_or_octet_stream()
         .to_string();
     let mime = HeaderValue::from_str(&mime)
         .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-    (
+    let mut res = (
         [
             (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, HeaderValue::from_static(cache)),
+            (header::VARY, HeaderValue::from_static("Accept-Encoding")),
         ],
         data,
     )
-        .into_response()
+        .into_response();
+    if let Some(enc) = encoding {
+        res.headers_mut()
+            .insert(header::CONTENT_ENCODING, HeaderValue::from_static(enc));
+    }
+    res
 }
 
 #[cfg(test)]
@@ -204,6 +262,46 @@ mod tests {
         LoginAssets::iter()
             .find(|k| k.starts_with("assets/"))
             .map(|k| format!("/test/app/{k}"))
+    }
+
+    #[test]
+    fn accept_encoding_tokens() {
+        assert!(accepts("gzip, deflate, br, zstd", "br"));
+        assert!(accepts("GZIP;q=0.5", "gzip"));
+        assert!(!accepts("gzip;q=0, br;q=0.0", "gzip"));
+        assert!(!accepts("br;q=0", "br"));
+        assert!(!accepts("", "br"));
+        assert!(!accepts("brotli", "br"));
+    }
+
+    /// Pre-compressed copies (when `make admin` ran): chosen by
+    /// Accept-Encoding, never served by name.
+    #[test]
+    fn precompressed_assets() {
+        let Some(key) = ConsoleAssets::iter()
+            .find(|k| k.ends_with(".js") && ConsoleAssets::get(&format!("{k}.br")).is_some())
+        else {
+            return;
+        };
+        let raw = ConsoleAssets::get(&key).unwrap().data.to_vec();
+        let mut h = HeaderMap::new();
+        assert_eq!(
+            encoded::<ConsoleAssets>(&key, &h).unwrap(),
+            (raw.clone(), None)
+        );
+        h.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        let (br, enc) = encoded::<ConsoleAssets>(&key, &h).unwrap();
+        assert_eq!(enc, Some("br"));
+        assert!(br.len() < raw.len());
+        h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        let (gz, enc) = encoded::<ConsoleAssets>(&key, &h).unwrap();
+        assert_eq!(enc, Some("gzip"));
+        assert_eq!(&gz[..2], [0x1f, 0x8b], "gzip magic");
+        assert!(encoded::<ConsoleAssets>(&format!("{key}.br"), &h).is_none());
+        assert!(encoded::<ConsoleAssets>(&format!("{key}.gz"), &h).is_none());
     }
 
     fn header(r: &crate::testdb::http::Resp, name: header::HeaderName) -> &str {
