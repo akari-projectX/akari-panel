@@ -1,20 +1,43 @@
-// 系统设置 → 收款与返利：支付方式 (SET-19, W24/R40) and 邀请返利 (FIN-05,
-// moved here from the finance page). Payment methods: "添加" opens a kind
-// chooser, then the editor dialog (a form from the kind's schema; secrets
-// write-only, keys readable from a file that never leaves the browser);
-// order (arrows) and enabled go through the save bar; test per method;
-// delete in the danger zone (typed name). Keys and accounts are the owner's
-// (R47): other admins see the section read-only.
+// 系统设置 → 收款与返利 (v2): 支付方式 (SET-19, W24/R40) and 邀请返利
+// (FIN-05, moved here from the finance page).
+// Payment methods are an ordered list of cards (= the portal's order): ↑↓ /
+// drag, the kind's glyph tile, name + state (启用 / 不可用 with the reason /
+// 停用) + sandbox, the kind and account, this month's collected money and
+// orders, 测试 / 编辑 / the enable switch. Order and enabling go through the
+// save bar (disabling confirms with this month's money); any admin may
+// reorder, enable, disable and rename (R47), keys and accounts are the
+// owner's: locked fields are grey read-only values with a lock. "添加渠道"
+// = a kind chooser (radio cards; the built-in balance channel shown as not
+// selectable) → the schema-built editor (secrets write-only, keys readable
+// from a file that never leaves the browser, numbers checked while typing,
+// 测试连接 in the footer, "N 处需要修正"). Delete in the danger zone: one
+// select + 删除…; methods used by orders say why they cannot be deleted.
+// Commissions: a live example ("被邀请用户付 ¥108.00 → 邀请人得 …"), unit
+// inputs, the USDT networks as checkable chips.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, CreditCard, GripVertical, Lock, Plus, Trash2 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  CircleAlert,
+  CreditCard,
+  FlaskConical,
+  GripVertical,
+  Lock,
+  Pencil,
+  Plus,
+  Trash2,
+  Wallet,
+} from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router";
 import { del, get, post, put } from "../../shared/api";
 import { cn } from "../../shared/cn";
-import { centsToYuanText, parseYuan } from "../../shared/format";
-import { useTr } from "../../shared/i18n";
+import { centsToYuanText, parseYuan, yuan } from "../../shared/format";
+import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { Group, Tile } from "../../shared/ui/card";
+import { Card, Group, Tile } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Select, Switch, SwitchField, Textarea, secretInputProps } from "../../shared/ui/form";
@@ -22,23 +45,29 @@ import { Callout } from "../../shared/ui/layout";
 import { MenuItem, RowMenu } from "../../shared/ui/menu";
 import { EmptyState } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
-import { settled, useAction } from "../data";
-import { CopyButton, Mono, useErrText } from "../kit";
-import { useMe } from "../session";
-import { fresh } from "./settings-data";
-import { PAY_TILE_DEFAULT, PAY_TILES } from "./settings-ia";
+import { RadioCards, UnitInput } from "../components/inputs";
+import { CopyText } from "../components/kit";
 import {
+  DangerRow,
   DangerZone,
   FieldRow,
-  InfoRow,
   Loaded,
+  OwnerNotice,
+  Panel,
+  ReadValue,
+  SRow,
   SwitchRow,
   Warnings,
   intError,
   intOf,
   useDraft,
+  useOwner,
   useSavePart,
 } from "../components/settings-kit";
+import { settled, useAction } from "../data";
+import { CopyButton, useErrText } from "../kit";
+import { fresh } from "./settings-data";
+import { PAY_TILE_DEFAULT, PAY_TILES } from "./settings-ia";
 
 // ---------------------------------------------------------------------------
 // 支付方式
@@ -67,8 +96,36 @@ type Method = {
   notify_url: string | null;
   active: boolean;
   warnings: string[];
+  /** This site-calendar month: paid orders' channel money and count (refunds not deducted). */
+  month_cents?: number;
+  month_count?: number;
+  /** Any order ever used it (then it cannot be deleted). */
+  used?: boolean;
 };
 type Payments = { kinds: Kind[]; methods: Method[]; warnings: string[] };
+
+/** English names of the server's (Chinese) schema labels and kinds. */
+const FIELD_EN: Record<string, string> = {
+  environment: "Environment",
+  gateway_url: "Gateway URL (custom only)",
+  app_id: "APPID",
+  seller_id: "Seller PID (optional, 2088…)",
+  app_private_key: "App private key",
+  alipay_public_key: "Alipay public key",
+  order_timeout_minutes: "Order lifetime (minutes, 5–120)",
+  refund_original: "Allow refunds to the original payment (from the console straight back to Alipay)",
+};
+const OPTION_EN: Record<string, string> = { production: "Production", sandbox: "Sandbox", custom: "Custom gateway" };
+const KIND_EN: Record<string, string> = { alipay_f2f: "Alipay face-to-face" };
+const KIND_DESC = (id: string, tr: Tr) =>
+  ({
+    alipay_f2f: tr(
+      "支付宝当面付（扫码）：公钥模式 RSA2，支持沙箱与原路退款",
+      "Alipay face-to-face (QR): public-key RSA2, sandbox and refunds to the original payment",
+    ),
+  })[id];
+const fieldLabel = (f: FieldSpec, tr: Tr) => tr(f.label, FIELD_EN[f.name] ?? f.label);
+const kindLabel = (id: string, label: string, tr: Tr) => tr(label, KIND_EN[id] ?? label);
 
 /** The non-secret config as stored (a PUT without secrets keeps them). */
 function keptConfig(kind: Kind | undefined, m: Method): Record<string, unknown> {
@@ -87,13 +144,12 @@ export function PaymentsSection() {
 
 function PaymentList({ p }: { p: Payments }) {
   const tr = useTr();
-  const me = useMe();
-  const owner = me.is_owner;
+  const owner = useOwner();
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [run] = useAction();
   const [choosing, setChoosing] = useState(false);
-  const [editing, setEditing] = useState<{ kind: Kind; method: Method | null } | null>(null);
+  const [editing, setEditing] = useState<{ kind: Kind; method: Method | null; fromChooser?: boolean } | null>(null);
   const kindOf = (id: string) => p.kinds.find((k) => k.id === id);
   const sorted = [...p.methods].sort((a, b) => a.sort - b.sort || a.id.localeCompare(b.id));
   const f = useDraft({
@@ -106,6 +162,7 @@ function PaymentList({ p }: { p: Payments }) {
     ...v.order.filter((id) => byId.has(id)),
     ...sorted.map((m) => m.id).filter((id) => !v.order.includes(id)),
   ];
+  const baseOrder = sorted.map((m) => m.id);
   const move = (i: number, dir: -1 | 1) => {
     const j = i + dir;
     if (j < 0 || j >= order.length) return;
@@ -120,15 +177,26 @@ function PaymentList({ p }: { p: Payments }) {
     save: async () => {
       const off = order.filter((id) => byId.get(id)!.enabled && v.enabled[id] === false).map((id) => byId.get(id)!);
       if (off.length) {
+        const left = order.filter((id) => (v.enabled[id] ?? byId.get(id)!.enabled) && byId.get(id)!.active).length;
         const ok = await confirm({
           title: tr(
-            `停用 ${off.map((m) => m.display_name).join("、")}？`,
-            `Disable ${off.map((m) => m.display_name).join(", ")}?`,
+            `停用「${off.map((m) => m.display_name).join(tr("、", ", "))}」？`,
+            `Disable ${off.map((m) => `"${m.display_name}"`).join(", ")}?`,
           ),
-          impact: tr(
-            "不能再用它下单；未付款订单的通知与对账也会停止",
-            "No new orders with it; notices and reconciliation of unpaid orders stop",
+          description: tr(
+            "门户的付款页不再显示它，不能再用它下单；它的未付款订单的通知与对账也会停止。",
+            "The portal's payment page no longer offers it and no new orders use it; notices and reconciliation of its unpaid orders stop.",
           ),
+          impacts: [
+            ...off.map((m) => ({
+              label: tr(`本月经「${m.display_name}」收款`, `Collected through "${m.display_name}" this month`),
+              value: tr(
+                `${yuan(m.month_cents ?? 0)} · ${m.month_count ?? 0} 笔`,
+                `${yuan(m.month_cents ?? 0)} · ${m.month_count ?? 0} orders`,
+              ),
+            })),
+            { label: tr("保存后可用的渠道", "Usable channels after saving"), value: left },
+          ],
           tone: "warning",
           confirmLabel: tr("停用并保存", "Disable and save"),
         });
@@ -172,126 +240,95 @@ function PaymentList({ p }: { p: Payments }) {
   const notify = p.methods.filter((m) => m.notify_url);
   return (
     <>
+      {!owner && (
+        <OwnerNotice
+          what={tr("新建、删除渠道和修改密钥与账号", "creating and deleting channels and changing keys and accounts")}
+        />
+      )}
       <Warnings items={p.warnings} />
-      <Group
-        title={tr("收款渠道", "Payment channels")}
-        footer={
-          owner
-            ? tr(
-                "拖动（或用 ↑↓ 键）调整门户里的显示顺序；启停与顺序在保存栏保存。",
-                "Drag (or use ↑↓) to set the order on the portal; enabling and order are saved in the save bar.",
-              )
-            : tr(
-                "新建、删除、启停、排序以及密钥与账号只有所有者能改；你可以查看与测试。",
-                "Only the owner creates, deletes, enables, orders and changes keys and accounts; you can view and test.",
-              )
+      <Panel
+        title={tr("收款渠道 · 按门户里的显示顺序", "Payment channels · in the portal's order")}
+        action={
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={Plus}
+            className="-mb-1 text-primary"
+            disabled={!owner}
+            onClick={() => setChoosing(true)}
+          >
+            {tr("添加渠道", "Add a channel")}
+            {!owner && <Lock className="!size-3" aria-hidden="true" />}
+          </Button>
         }
-      >
-        {order.length === 0 && (
-          <EmptyState
-            icon={CreditCard}
-            title={tr("还没有支付方式", "No payment methods yet")}
-            description={tr("添加一个支付方式后，用户才能在线付款。", "Users can pay online once a method is added.")}
-          />
+        footer={tr(
+          "启停、排序与改名任何管理员都能做（启停与排序走保存栏）；密钥、账号与新建删除只有所有者能做。",
+          "Any admin may enable, disable, reorder and rename (enabling and order through the save bar); keys, accounts, creating and deleting are the owner's.",
         )}
-        {order.map((id, i) => {
-          const m = byId.get(id)!;
-          const on = v.enabled[id] ?? m.enabled;
-          return (
-            <PaymentRow
-              key={id}
-              m={m}
-              on={on}
-              owner={owner}
-              first={i === 0}
-              last={i === order.length - 1}
-              dragging={dragging === id}
-              onDrag={(x) => setDragging(x ? id : null)}
-              onDrop={() => dropOn(id)}
-              onMove={(dir) => move(i, dir)}
-              onToggle={(x) => f.set("enabled", { ...v.enabled, [id]: x })}
-              onEdit={() => {
-                const k = kindOf(m.kind);
-                if (k) setEditing({ kind: k, method: m });
-              }}
+      >
+        {order.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={CreditCard}
+              title={tr("还没有支付方式", "No payment methods yet")}
+              description={tr("添加一个支付方式后，用户才能在线付款。", "Users can pay online once a method is added.")}
             />
-          );
-        })}
-        {owner && (
-          <div className="px-4 py-2.5">
-            <Button size="sm" variant="soft" icon={Plus} onClick={() => setChoosing(true)}>
-              {tr("添加渠道", "Add a channel")}
-              <Lock className="!size-3 opacity-70" aria-hidden="true" />
-            </Button>
+          </Card>
+        ) : (
+          <div className="grid gap-2">
+            {order.map((id, i) => {
+              const m = byId.get(id)!;
+              const on = v.enabled[id] ?? m.enabled;
+              return (
+                <PaymentCard
+                  key={id}
+                  m={m}
+                  on={on}
+                  changed={baseOrder.indexOf(id) !== i || on !== m.enabled}
+                  first={i === 0}
+                  last={i === order.length - 1}
+                  dragging={dragging === id}
+                  onDrag={(x) => setDragging(x ? id : null)}
+                  onDrop={() => dropOn(id)}
+                  onMove={(dir) => move(i, dir)}
+                  onToggle={(x) => f.set("enabled", { ...v.enabled, [id]: x })}
+                  onEdit={() => {
+                    const k = kindOf(m.kind);
+                    if (k) setEditing({ kind: k, method: m });
+                  }}
+                />
+              );
+            })}
           </div>
         )}
-      </Group>
+      </Panel>
       {notify.length > 0 && (
         <Group
           title={tr("支付通知地址", "Payment notice URLs")}
           footer={tr(
-            "填到支付平台的「授权回调 / 异步通知地址」。地址里含后台前缀，不要公开。",
-            "Enter it as the platform's callback / notify URL. It contains the console prefix: keep it private.",
+            "填到支付平台的「授权回调 / 异步通知地址」。地址里的域名是首选主域名；地址含后台前缀，不要公开。",
+            "Enter it as the platform's callback / notify URL. Its domain is the preferred main domain; it contains the console prefix: keep it private.",
           )}
         >
           {notify.map((m) => (
-            <InfoRow
-              key={m.id}
-              label={<span className="block font-mono text-footnote break-all">{m.notify_url}</span>}
-              description={notify.length > 1 ? m.display_name : undefined}
-            >
-              <CopyButton text={m.notify_url!} />
-            </InfoRow>
+            <SRow key={m.id} label={m.display_name} wide>
+              <CopyText
+                value={m.notify_url!}
+                className="max-w-full sm:max-w-md"
+                label={tr(`${m.display_name} 的通知地址`, `the notice URL of ${m.display_name}`)}
+              />
+            </SRow>
           ))}
         </Group>
       )}
-      {owner && p.methods.length > 0 && (
-        <DangerZone>
-          {p.methods.map((m) => (
-            <InfoRow
-              key={m.id}
-              label={
-                <span className="flex items-center gap-1.5">
-                  {tr(`删除「${m.display_name}」`, `Delete "${m.display_name}"`)}
-                  <Lock className="size-3 text-faint" aria-label={tr("仅所有者", "Owner only")} />
-                </span>
-              }
-              description={tr(
-                "只能删除从未被订单使用过的支付方式；用过的请停用。",
-                "Only methods no order ever used can be deleted; disable used ones instead.",
-              )}
-            >
-              <Button
-                size="sm"
-                variant="destructive-soft"
-                icon={Trash2}
-                aria-label={tr(`删除 ${m.display_name}`, `Delete ${m.display_name}`)}
-                onClick={() =>
-                  void confirm({
-                    title: tr(`删除支付方式 ${m.display_name}？`, `Delete the payment method ${m.display_name}?`),
-                    impact: tr(
-                      "用户不能再选择它；它的密钥一并删除",
-                      "Users can no longer pick it; its keys are deleted",
-                    ),
-                    typeToConfirm: m.display_name,
-                    confirmLabel: tr("删除", "Delete"),
-                    action: () => del(`/settings/payments/${m.id}`),
-                  })
-                }
-              >
-                {tr("删除", "Delete")}
-              </Button>
-            </InfoRow>
-          ))}
-        </DangerZone>
-      )}
+      {p.methods.length > 0 && <DeleteMethod methods={sorted} owner={owner} />}
       {choosing && (
         <KindChooser
           kinds={p.kinds}
           onClose={() => setChoosing(false)}
           onPick={(k) => {
             setChoosing(false);
-            setEditing({ kind: k, method: null });
+            setEditing({ kind: k, method: null, fromChooser: true });
           }}
         />
       )}
@@ -302,14 +339,94 @@ function PaymentList({ p }: { p: Payments }) {
           owner={owner}
           nextSort={nextSort}
           onClose={() => setEditing(null)}
+          onBack={
+            editing.fromChooser
+              ? () => {
+                  setEditing(null);
+                  setChoosing(true);
+                }
+              : undefined
+          }
         />
       )}
     </>
   );
 }
 
+/** Danger zone: pick a method, 删除… (only methods no order ever used). */
+function DeleteMethod({ methods, owner }: { methods: Method[]; owner: boolean }) {
+  const tr = useTr();
+  const confirm = useConfirm();
+  const [id, setId] = useState(methods.find((m) => !m.used)?.id ?? methods[0].id);
+  const m = methods.find((x) => x.id === id) ?? methods[0];
+  return (
+    <DangerZone>
+      <DangerRow
+        label={tr("删除收款渠道", "Delete a payment channel")}
+        locked={!owner}
+        description={tr(
+          "只能删除从未被订单使用过的渠道；用过的请停用。历史订单保留渠道名称。",
+          "Only channels no order ever used can be deleted; disable used ones instead. Past orders keep the channel's name.",
+        )}
+        action={
+          <>
+            <Select
+              aria-label={tr("要删除的渠道", "Channel to delete")}
+              className="w-44"
+              value={m.id}
+              disabled={!owner}
+              onChange={(e) => setId(e.target.value)}
+            >
+              {methods.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.display_name}
+                </option>
+              ))}
+            </Select>
+            <Button
+              size="sm"
+              variant="destructive-soft"
+              icon={Trash2}
+              disabled={!owner || !!m.used}
+              onClick={() =>
+                void confirm({
+                  title: tr(`删除渠道「${m.display_name}」？`, `Delete the channel "${m.display_name}"?`),
+                  description: tr(
+                    "删除后无法恢复，它的密钥一并删除；再添加需要重新填写账号与密钥。",
+                    "This cannot be undone and deletes its keys; adding it again means entering the account and keys anew.",
+                  ),
+                  impacts: [
+                    { label: tr("使用过它的订单", "Orders that used it"), value: 0 },
+                    {
+                      label: tr("当前状态", "Now"),
+                      value: m.enabled ? tr("启用", "On") : tr("停用", "Off"),
+                    },
+                  ],
+                  typeToConfirm: m.display_name,
+                  confirmLabel: tr("删除渠道", "Delete the channel"),
+                  action: () => del(`/settings/payments/${m.id}`),
+                })
+              }
+            >
+              {tr("删除…", "Delete…")}
+            </Button>
+          </>
+        }
+      />
+      {m.used && (
+        <p className="px-4 pb-3 text-footnote text-muted-foreground">
+          {tr(
+            `「${m.display_name}」已被订单使用，不能删除，可以停用。`,
+            `"${m.display_name}" has been used by orders: it cannot be deleted, disable it instead.`,
+          )}
+        </p>
+      )}
+    </DangerZone>
+  );
+}
+
 /** The coloured tile of a payment kind (system-settings style; colours are tile data like the IA's). */
-function KindTile({ kind, size = 32 }: { kind: string; size?: number }) {
+function KindTile({ kind, size = 36 }: { kind: string; size?: number }) {
   const t = PAY_TILES[kind];
   return (
     <Tile color={t?.tint ?? PAY_TILE_DEFAULT} size={size}>
@@ -318,10 +435,10 @@ function KindTile({ kind, size = 32 }: { kind: string; size?: number }) {
   );
 }
 
-function PaymentRow({
+function PaymentCard({
   m,
   on,
-  owner,
+  changed,
   first,
   last,
   dragging,
@@ -333,7 +450,7 @@ function PaymentRow({
 }: {
   m: Method;
   on: boolean;
-  owner: boolean;
+  changed: boolean;
   first: boolean;
   last: boolean;
   dragging: boolean;
@@ -344,6 +461,7 @@ function PaymentRow({
   onEdit: () => void;
 }) {
   const tr = useTr();
+  const owner = useOwner();
   const toast = useToast();
   const errText = useErrText();
   const [testing, setTesting] = useState(false);
@@ -356,7 +474,7 @@ function PaymentRow({
       toast({
         tone: r.ok ? "success" : "error",
         title: r.ok ? tr("连接正常", "Connection works") : tr("连接测试失败", "The connection test failed"),
-        description: r.sub_code ? `${r.message}（${r.sub_code}）` : r.message,
+        description: r.sub_code ? `${r.message}${tr(`（${r.sub_code}）`, ` (${r.sub_code})`)}` : r.message,
       });
     } catch (e) {
       toast({ tone: "error", title: errText(e) });
@@ -365,11 +483,16 @@ function PaymentRow({
     }
   };
   const app = typeof m.config.app_id === "string" && m.config.app_id ? m.config.app_id : null;
+  const unusable = on && m.enabled && !m.active;
   return (
-    <div
-      className={cn("px-4 py-3 transition-opacity", dragging && "opacity-50")}
+    <Card
+      className={cn(
+        "relative flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3 transition-opacity",
+        !on && "opacity-75",
+        dragging && "opacity-50",
+      )}
       data-method={m.display_name}
-      draggable={owner}
+      draggable
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = "move";
         onDrag(true);
@@ -381,43 +504,78 @@ function PaymentRow({
         onDrop();
       }}
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        {owner && (
-          <button
-            type="button"
-            className="-ml-1 inline-flex size-6 cursor-grab items-center justify-center rounded-sm text-faint hover:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none active:cursor-grabbing pointer-coarse:hidden"
-            aria-label={tr(`调整顺序 ${m.display_name}（↑↓）`, `Reorder ${m.display_name} (↑↓)`)}
-            title={tr("拖动或用 ↑↓ 键调整顺序", "Drag or press ↑↓ to reorder")}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowUp" && !first) {
-                e.preventDefault();
-                onMove(-1);
-              } else if (e.key === "ArrowDown" && !last) {
-                e.preventDefault();
-                onMove(1);
-              }
-            }}
-          >
-            <GripVertical className="size-4" aria-hidden="true" />
-          </button>
-        )}
-        <KindTile kind={m.kind} />
-        <div className="min-w-0 flex-1 basis-40">
-          <div className="text-body font-semibold">{m.display_name}</div>
-          <div className="flex flex-wrap items-center gap-1.5 text-footnote text-muted-foreground">
-            <span className="truncate">
-              {m.kind_label}
-              {app && tr(` · 应用 ${app.slice(0, 7)}…`, ` · app ${app.slice(0, 7)}…`)}
-            </span>
-            {m.config.environment === "sandbox" && <Badge tone="info">{tr("沙箱", "Sandbox")}</Badge>}
-          </div>
+      {changed && (
+        <span className="absolute inset-y-3 left-0 w-[3px] rounded-r-full bg-primary" data-changed>
+          <span className="sr-only">{tr("已修改", "Edited")}</span>
+        </span>
+      )}
+      <div className="flex flex-col items-center pointer-coarse:hidden">
+        <button
+          type="button"
+          aria-label={tr(`上移 ${m.display_name}`, `Move ${m.display_name} up`)}
+          disabled={first}
+          onClick={() => onMove(-1)}
+          className="rounded-sm text-faint hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none disabled:opacity-30"
+        >
+          <ArrowUp className="size-3.5" aria-hidden="true" />
+        </button>
+        <span
+          className="cursor-grab text-faint active:cursor-grabbing"
+          title={tr("拖动调整顺序", "Drag to reorder")}
+          aria-hidden="true"
+        >
+          <GripVertical className="size-3.5" />
+        </span>
+        <button
+          type="button"
+          aria-label={tr(`下移 ${m.display_name}`, `Move ${m.display_name} down`)}
+          disabled={last}
+          onClick={() => onMove(1)}
+          className="rounded-sm text-faint hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none disabled:opacity-30"
+        >
+          <ArrowDown className="size-3.5" aria-hidden="true" />
+        </button>
+      </div>
+      <KindTile kind={m.kind} />
+      <div className="min-w-0 flex-1 basis-40">
+        <div className="flex flex-wrap items-center gap-1.5 text-body font-semibold">
+          {m.display_name}
+          {!on ? (
+            <Badge tone="outline">{tr("停用", "Off")}</Badge>
+          ) : unusable ? (
+            <Badge tone="warning">
+              <CircleAlert aria-hidden="true" />
+              {tr("不可用", "Unusable")}
+            </Badge>
+          ) : (
+            <Badge tone="success" dot>
+              {tr("启用", "On")}
+            </Badge>
+          )}
+          {m.config.environment === "sandbox" && <Badge tone="info">{tr("沙箱", "Sandbox")}</Badge>}
         </div>
-        <Badge tone={!m.enabled ? "outline" : m.active ? "success" : "warning"} dot={m.enabled}>
-          {!m.enabled ? tr("停用", "Off") : m.active ? tr("启用", "On") : tr("不可用", "Unusable")}
-        </Badge>
+        <div className="mt-0.5 truncate text-footnote text-muted-foreground">
+          {kindLabel(m.kind, m.kind_label, tr)}
+          {app && tr(` · 应用 ${app}`, ` · app ${app}`)}
+        </div>
+        {m.warnings.length > 0 && (
+          <div className="mt-0.5 text-footnote text-warning">{m.warnings.join(tr("；", "; "))}</div>
+        )}
+      </div>
+      <div className="text-right max-md:hidden">
+        <div className="text-caption text-faint">{tr("本月", "This month")}</div>
+        <div className="tnum text-footnote font-medium">
+          {yuan(m.month_cents ?? 0)}
+          <span className="font-normal text-faint">
+            {tr(` · ${m.month_count ?? 0} 笔`, ` · ${m.month_count ?? 0} orders`)}
+          </span>
+        </div>
+      </div>
+      <div className="flex items-center gap-1.5 max-sm:w-full max-sm:justify-end">
         <Button
           size="sm"
-          variant="outline"
+          variant="ghost"
+          icon={FlaskConical}
           loading={testing}
           aria-label={tr(`测试连接 ${m.display_name}`, `Test ${m.display_name}`)}
           onClick={() => void test()}
@@ -426,67 +584,85 @@ function PaymentRow({
         </Button>
         <Button
           size="sm"
-          variant="ghost"
+          variant="outline"
+          icon={Pencil}
           onClick={onEdit}
           aria-label={tr(`编辑 ${m.display_name}`, `Edit ${m.display_name}`)}
         >
-          {owner ? tr("编辑", "Edit") : tr("查看", "View")}
+          {tr("编辑", "Edit")}
         </Button>
-        {owner && (
-          <span className="pointer-fine:hidden">
-            <RowMenu label={tr(`调整顺序 ${m.display_name}`, `Reorder ${m.display_name}`)}>
-              {() => (
-                <>
-                  <MenuItem icon={ArrowUp} disabled={first} onClick={() => onMove(-1)}>
-                    {tr("上移", "Move up")}
-                  </MenuItem>
-                  <MenuItem icon={ArrowDown} disabled={last} onClick={() => onMove(1)}>
-                    {tr("下移", "Move down")}
-                  </MenuItem>
-                </>
-              )}
-            </RowMenu>
-          </span>
-        )}
-        <Switch
-          label={tr(`启用 ${m.display_name}`, `Enable ${m.display_name}`)}
-          checked={on}
-          disabled={!owner}
-          onChange={onToggle}
-        />
+        <span className="pointer-fine:hidden">
+          <RowMenu label={tr(`调整顺序 ${m.display_name}`, `Reorder ${m.display_name}`)}>
+            {() => (
+              <>
+                <MenuItem icon={ArrowUp} disabled={first} onClick={() => onMove(-1)}>
+                  {tr("上移", "Move up")}
+                </MenuItem>
+                <MenuItem icon={ArrowDown} disabled={last} onClick={() => onMove(1)}>
+                  {tr("下移", "Move down")}
+                </MenuItem>
+              </>
+            )}
+          </RowMenu>
+        </span>
+        <Switch label={tr(`启用 ${m.display_name}`, `Enable ${m.display_name}`)} checked={on} onChange={onToggle} />
       </div>
-      {m.warnings.length > 0 && (
-        <p className="mt-1.5 text-footnote text-warning sm:pl-[4.25rem]">{m.warnings.join("；")}</p>
-      )}
-    </div>
+      {!owner && <span className="sr-only">{tr("密钥与账号仅所有者可修改", "Keys and account: owner only")}</span>}
+    </Card>
   );
 }
 
+/** Step 1 of adding: the kind (radio cards; the built-in balance channel is listed, not selectable). */
 function KindChooser({ kinds, onClose, onPick }: { kinds: Kind[]; onClose: () => void; onPick: (k: Kind) => void }) {
   const tr = useTr();
+  const [k, setK] = useState(kinds[0]?.id ?? "");
+  const kind = kinds.find((x) => x.id === k);
   return (
     <Dialog
       open
-      size="sm"
-      icon={CreditCard}
+      size="md"
+      icon={Wallet}
       onClose={onClose}
       title={tr("添加支付方式", "Add a payment method")}
-      description={tr("选择渠道类型。", "Choose the kind of channel.")}
-      footer={<Button onClick={onClose}>{tr("取消", "Cancel")}</Button>}
+      description={tr(
+        "先选类型，下一步按类型填写账号与密钥。",
+        "Choose the kind first; the next step asks for its account and keys.",
+      )}
+      onSubmit={() => kind && onPick(kind)}
+      footer={
+        <>
+          <div className="flex-1" />
+          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <Button type="submit" variant="primary" disabled={!kind}>
+            {tr("下一步", "Next")}
+          </Button>
+        </>
+      }
     >
-      <div className="grid gap-2">
-        {kinds.map((k) => (
-          <button
-            key={k.id}
-            type="button"
-            onClick={() => onPick(k)}
-            className="flex min-h-12 items-center gap-3 rounded-xl bg-window px-4 py-2.5 text-left text-body font-medium ring-1 ring-border transition-colors ring-inset hover:bg-accent"
-          >
-            <CreditCard className="size-4 text-primary" aria-hidden="true" />
-            {k.label}
-          </button>
-        ))}
-      </div>
+      <RadioCards<string>
+        value={k}
+        onChange={setK}
+        cols={1}
+        label={tr("渠道类型", "Kind")}
+        items={[
+          ...kinds.map((x) => ({
+            value: x.id,
+            title: kindLabel(x.id, x.label, tr),
+            desc: KIND_DESC(x.id, tr),
+            icon: <KindTile kind={x.id} size={20} />,
+          })),
+          {
+            value: "__balance",
+            title: tr("余额", "Balance"),
+            desc: undefined,
+            icon: <Wallet />,
+            disabled: tr(
+              "内置渠道，已存在：用户用账户余额付款",
+              "Built in, always there: users pay from their balance",
+            ),
+          },
+        ]}
+      />
     </Dialog>
   );
 }
@@ -497,17 +673,22 @@ function MethodDialog({
   owner,
   nextSort,
   onClose,
+  onBack,
 }: {
   kind: Kind;
   method: Method | null;
   owner: boolean;
   nextSort: number;
   onClose: () => void;
+  onBack?: () => void;
 }) {
   const tr = useTr();
-  const [name, setName] = useState(method?.display_name ?? kind.label);
+  const toast = useToast();
+  const errText = useErrText();
+  const [name, setName] = useState(method?.display_name ?? kindLabel(kind.id, kind.label, tr));
   const [enabled, setEnabled] = useState(method?.enabled ?? false);
   const [shown, setShown] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(() => {
     const v: Record<string, string> = {};
     for (const f of kind.schema) {
@@ -529,32 +710,44 @@ function MethodDialog({
   const [run, busy] = useAction();
   const cfg = method?.config ?? {};
   const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
+  // Number errors show while typing; missing required values once a save was tried.
   const errors: Record<string, string> = {};
   if (!name.trim()) errors.__name = tr("请填写名称", "Enter a name");
-  for (const f of kind.schema) {
-    const raw = (values[f.name] ?? "").trim();
-    const isSet = !!cfg[`${f.name}_set`];
-    if (f.type === "number" && raw && !/^\d+$/.test(raw)) errors[f.name] = tr("请输入整数", "Enter a whole number");
-    else if (f.required && !raw && f.type !== "bool" && !(f.secret && isSet)) errors[f.name] = tr("必填", "Required");
-  }
-  const save = async () => {
-    setShown(true);
-    if (Object.keys(errors).length) return;
-    const config: Record<string, unknown> = {};
+  if (owner)
     for (const f of kind.schema) {
       const raw = (values[f.name] ?? "").trim();
-      if (f.secret && !raw) continue;
-      config[f.name] =
-        f.type === "number"
-          ? raw === ""
-            ? null
-            : Number(raw)
-          : f.type === "bool"
-            ? raw === "true"
-            : raw === ""
-              ? null
-              : raw;
+      const isSet = !!cfg[`${f.name}_set`];
+      if (f.type === "number" && raw && !/^\d+$/.test(raw)) errors[f.name] = tr("请输入整数", "Enter a whole number");
+      else if (shown && f.required && !raw && f.type !== "bool" && !(f.secret && isSet))
+        errors[f.name] = tr("必填", "Required");
     }
+  const nErr = Object.keys(errors).length;
+  const save = async () => {
+    setShown(true);
+    const missing = owner
+      ? kind.schema.some(
+          (f) =>
+            f.required && f.type !== "bool" && !(values[f.name] ?? "").trim() && !(f.secret && cfg[`${f.name}_set`]),
+        )
+      : false;
+    if (nErr || missing) return;
+    let config: Record<string, unknown> = {};
+    if (owner)
+      for (const f of kind.schema) {
+        const raw = (values[f.name] ?? "").trim();
+        if (f.secret && !raw) continue;
+        config[f.name] =
+          f.type === "number"
+            ? raw === ""
+              ? null
+              : Number(raw)
+            : f.type === "bool"
+              ? raw === "true"
+              : raw === ""
+                ? null
+                : raw;
+      }
+    else if (method) config = keptConfig(kind, method);
     const body = { display_name: name.trim(), sort: method?.sort ?? nextSort, enabled, config };
     const r = await run(
       () =>
@@ -565,7 +758,30 @@ function MethodDialog({
     );
     if (r !== undefined) onClose();
   };
-  const ro = !owner;
+  const test = async () => {
+    if (!method) return;
+    setTesting(true);
+    try {
+      const r = await post<{ ok: boolean; message: string; sub_code: string | null }>(
+        `/settings/payments/${method.id}/test`,
+      );
+      toast({
+        tone: r.ok ? "success" : "error",
+        title: r.ok ? tr("连接正常", "Connection works") : tr("连接测试失败", "The connection test failed"),
+        description: tr(`用已保存的配置测试：${r.message}`, `Tested with the saved configuration: ${r.message}`),
+      });
+    } catch (e) {
+      toast({ tone: "error", title: errText(e) });
+    } finally {
+      setTesting(false);
+    }
+  };
+  const lockedLabel = (f: FieldSpec) => (
+    <span className="inline-flex items-center gap-1">
+      {fieldLabel(f, tr)}
+      <Lock className="size-3 text-faint" role="img" aria-label={tr("仅所有者", "Owner only")} />
+    </span>
+  );
   return (
     <Dialog
       open
@@ -575,132 +791,174 @@ function MethodDialog({
       title={
         method
           ? tr(`编辑 ${method.display_name}`, `Edit ${method.display_name}`)
-          : tr(`添加 ${kind.label}`, `Add ${kind.label}`)
+          : tr(`添加 ${kind.label}`, `Add ${kindLabel(kind.id, kind.label, tr)}`)
       }
-      description={ro ? tr("仅所有者可修改", "Owner only") : kind.label}
-      onSubmit={ro ? undefined : () => void save()}
+      description={KIND_DESC(kind.id, tr) ?? kindLabel(kind.id, kind.label, tr)}
+      onSubmit={() => void save()}
       footer={
-        ro ? (
-          <Button onClick={onClose}>{tr("关闭", "Close")}</Button>
-        ) : (
-          <>
-            {shown && Object.keys(errors).length > 0 && (
-              <span className="mr-auto text-footnote text-destructive">
-                {tr(`${Object.keys(errors).length} 处需要修正`, `${Object.keys(errors).length} to fix`)}
-              </span>
-            )}
-            <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-            <Button type="submit" variant="primary" loading={busy}>
-              {tr("保存", "Save")}
+        <>
+          {onBack && (
+            <Button variant="ghost" icon={ArrowLeft} onClick={onBack}>
+              {tr("换类型", "Other kind")}
             </Button>
-          </>
-        )
+          )}
+          {method && (
+            <Button variant="outline" icon={FlaskConical} loading={testing} onClick={() => void test()}>
+              {tr("测试连接", "Test the connection")}
+            </Button>
+          )}
+          <div className="flex-1" />
+          {nErr > 0 && (
+            <span className="text-footnote text-destructive max-sm:hidden">
+              {tr(`${nErr} 处需要修正`, `${nErr} to fix`)}
+            </span>
+          )}
+          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <Button type="submit" variant="primary" loading={busy} disabled={nErr > 0}>
+            {method ? tr("保存", "Save") : tr("添加", "Add")}
+          </Button>
+        </>
       }
     >
-      <fieldset disabled={ro} className="grid gap-3.5">
-        <Field label={tr("名称（用户可见）", "Name (shown to users)")} error={shown ? errors.__name : undefined}>
-          <Input data-autofocus value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <SwitchField label={tr("启用", "Enabled")} checked={enabled} onChange={setEnabled} disabled={ro} />
-        {kind.schema.map((f) => {
-          const fp =
-            f.name === "app_private_key"
-              ? (cfg.app_key_fingerprint as string | undefined)
-              : (cfg[`${f.name}_fingerprint`] as string | undefined);
-          const isSet = !!cfg[`${f.name}_set`];
-          const err = shown ? errors[f.name] : undefined;
-          if (f.type === "bool")
-            return (
-              <SwitchField
-                key={f.name}
-                label={f.label}
-                checked={values[f.name] === "true"}
-                onChange={(v) => set(f.name, String(v))}
-                disabled={ro}
-              />
-            );
-          if (f.type === "select")
-            return (
-              <Field key={f.name} label={f.label} error={err}>
-                <Select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}>
-                  {f.options?.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            );
-          if (f.type === "key")
-            return (
-              <Field
-                key={f.name}
-                label={f.label}
-                error={err}
-                hint={
-                  isSet || fp
-                    ? tr(
-                        `已设置${fp ? `（指纹 ${fp.slice(0, 16)}…）` : ""}；留空 = 不修改`,
-                        `Set${fp ? ` (fingerprint ${fp.slice(0, 16)}…)` : ""}; empty = keep`,
-                      )
-                    : tr(
-                        "粘贴 PEM，或从文件读取（文件不离开浏览器）",
-                        "Paste the PEM or read it from a file (it never leaves the browser)",
-                      )
-                }
-              >
-                <Textarea
-                  rows={4}
-                  className="font-mono"
-                  spellCheck={false}
-                  value={values[f.name]}
-                  onChange={(e) => set(f.name, e.target.value)}
-                  placeholder="-----BEGIN …"
-                />
-                {!ro && (
+      <div className="grid gap-5">
+        {!owner && <OwnerNotice what={tr("密钥与账号", "keys and the account")} />}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label={tr("名称（用户可见）", "Name (shown to users)")} error={errors.__name}>
+            <Input data-autofocus value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <SwitchField label={tr("启用", "Enabled")} checked={enabled} onChange={setEnabled} />
+        </div>
+        <div className="grid gap-4 border-t border-separator pt-4 sm:grid-cols-2">
+          {kind.schema.map((f) => {
+            const fp =
+              f.name === "app_private_key"
+                ? (cfg.app_key_fingerprint as string | undefined)
+                : (cfg[`${f.name}_fingerprint`] as string | undefined);
+            const isSet = !!cfg[`${f.name}_set`];
+            const err = errors[f.name];
+            if (!owner) {
+              const shownValue =
+                f.secret || f.type === "key"
+                  ? isSet || fp || values[f.name]
+                    ? tr("已设置 ••••••••", "Set ••••••••")
+                    : "—"
+                  : f.type === "select"
+                    ? (() => {
+                        const o = f.options?.find((x) => x.value === values[f.name]);
+                        return o ? tr(o.label, OPTION_EN[o.value] ?? o.label) : values[f.name] || "—";
+                      })()
+                    : f.type === "bool"
+                      ? values[f.name] === "true"
+                        ? tr("开", "On")
+                        : tr("关", "Off")
+                      : values[f.name] || "—";
+              return (
+                <Field
+                  key={f.name}
+                  group
+                  label={lockedLabel(f)}
+                  hint={tr("仅所有者可修改", "Owner only")}
+                  className={cn((f.type === "key" || f.type === "bool") && "sm:col-span-2")}
+                >
+                  <ReadValue mono={f.type === "text" || f.type === "key"}>{shownValue}</ReadValue>
+                </Field>
+              );
+            }
+            if (f.type === "bool")
+              return (
+                <div key={f.name} className="sm:col-span-2">
+                  <SwitchField
+                    label={fieldLabel(f, tr)}
+                    checked={values[f.name] === "true"}
+                    onChange={(v) => set(f.name, String(v))}
+                  />
+                </div>
+              );
+            if (f.type === "select")
+              return (
+                <Field key={f.name} label={fieldLabel(f, tr)} error={err}>
+                  <Select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}>
+                    {f.options?.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {tr(o.label, OPTION_EN[o.value] ?? o.label)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              );
+            if (f.type === "key")
+              return (
+                <Field
+                  key={f.name}
+                  label={fieldLabel(f, tr)}
+                  error={err}
+                  className="sm:col-span-2"
+                  hint={
+                    isSet || fp
+                      ? tr(
+                          `已设置${fp ? tr(`（指纹 ${fp.slice(0, 16)}…）`, ` (fingerprint ${fp.slice(0, 16)}…)`) : ""}；留空 = 不修改`,
+                          `Set${fp ? ` (fingerprint ${fp.slice(0, 16)}…)` : ""}; empty = keep`,
+                        )
+                      : tr(
+                          "粘贴 PEM，或从文件读取（文件不离开浏览器）",
+                          "Paste the PEM or read it from a file (it never leaves the browser)",
+                        )
+                  }
+                >
+                  <Textarea
+                    rows={4}
+                    className="font-mono text-footnote"
+                    spellCheck={false}
+                    value={values[f.name]}
+                    onChange={(e) => set(f.name, e.target.value)}
+                    placeholder={isSet || fp ? tr("••••（已设置）", "•••• (set)") : "-----BEGIN …"}
+                  />
                   <input
                     type="file"
-                    aria-label={tr(`从文件读取 ${f.label}`, `Read ${f.label} from a file`)}
+                    aria-label={tr(`从文件读取 ${f.label}`, `Read ${fieldLabel(f, tr)} from a file`)}
                     className="mt-1 text-footnote"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (file) set(f.name, await file.text());
                     }}
                   />
-                )}
+                </Field>
+              );
+            return (
+              <Field
+                key={f.name}
+                label={fieldLabel(f, tr)}
+                error={err}
+                hint={f.secret && isSet ? tr("已设置；留空 = 不修改", "Set; empty = keep") : undefined}
+              >
+                <Input
+                  {...(f.secret ? secretInputProps : { type: "text", autoComplete: "off" })}
+                  inputMode={f.type === "number" ? "numeric" : undefined}
+                  className={cn(f.type === "number" && "tnum", f.type === "text" && "font-mono text-footnote")}
+                  value={values[f.name]}
+                  onChange={(e) => set(f.name, e.target.value)}
+                />
               </Field>
             );
-          return (
-            <Field
-              key={f.name}
-              label={f.label}
-              error={err}
-              hint={f.secret && isSet ? tr("已设置；留空 = 不修改", "Set; empty = keep") : undefined}
-            >
-              <Input
-                {...(f.secret ? secretInputProps : { type: "text", autoComplete: "off" })}
-                inputMode={f.type === "number" ? "numeric" : undefined}
-                value={values[f.name]}
-                onChange={(e) => set(f.name, e.target.value)}
-              />
-            </Field>
-          );
-        })}
+          })}
+        </div>
         {typeof cfg.app_public_key === "string" && (
-          <Field label={tr("应用公钥（上传到支付宝开放平台）", "App public key (upload to the Alipay console)")}>
-            <div className="flex items-start gap-2">
-              <Textarea rows={3} readOnly className="font-mono" value={cfg.app_public_key} />
-              <CopyButton text={cfg.app_public_key} />
-            </div>
-          </Field>
-        )}
-        {method?.notify_url && (
-          <div className="text-body">
-            {tr("异步通知地址：", "Notify URL: ")}
-            <Mono>{method.notify_url}</Mono>
+          <div className="grid gap-1.5 border-t border-separator pt-4">
+            <Field label={tr("应用公钥（上传到支付宝开放平台）", "App public key (upload to the Alipay console)")}>
+              <div className="flex items-start gap-2">
+                <Textarea rows={3} readOnly className="font-mono text-footnote" value={cfg.app_public_key} />
+                <CopyButton text={cfg.app_public_key} />
+              </div>
+            </Field>
           </div>
         )}
-      </fieldset>
+        {method?.notify_url && (
+          <div className="grid gap-1 text-body">
+            <span className="text-footnote font-medium text-muted-foreground">{tr("异步通知地址", "Notify URL")}</span>
+            <CopyText value={method.notify_url} label={tr("通知地址", "the notify URL")} />
+          </div>
+        )}
+      </div>
     </Dialog>
   );
 }
@@ -729,6 +987,9 @@ const CHAINS: [string, string][] = [
   ["ton", "TON"],
 ];
 
+/** The example order of the live preview (¥108.00). */
+const EXAMPLE_CENTS = 10_800;
+
 export function CommissionSection() {
   const q = useQuery({ queryKey: ["commission-settings"], queryFn: () => get<Commission>("/commission-settings") });
   return <Loaded q={q}>{(c) => <CommissionForm c={c} />}</Loaded>;
@@ -753,21 +1014,29 @@ function CommissionForm({ c }: { c: Commission }) {
     usdt: centsToYuanText(c.usdt_rate_cents),
   });
   const v = f.value!;
-  const rateError = f.isEdited("rate") ? intError(v.rate, 0, 100, tr) : undefined;
-  const holdError = f.isEdited("hold") ? intError(v.hold, 0, 365, tr) : undefined;
+  const rateError = intError(v.rate, 0, 100, tr);
+  const holdError = intError(v.hold, 0, 365, tr);
   const minCents = parseYuan(v.min);
   const minError =
-    f.isEdited("min") && (minCents === null || minCents < 1)
-      ? tr("请输入金额（元），至少 0.01", "Enter an amount in yuan, at least 0.01")
+    minCents === null || minCents < 1
+      ? tr("请输入金额（元），至少 0.01，最多两位小数", "Enter an amount in yuan, at least 0.01, two decimals at most")
       : undefined;
   const usdtCents = v.usdt.trim() ? parseYuan(v.usdt) : null;
   const usdtError =
-    f.isEdited("usdt") && v.usdt.trim() && (usdtCents === null || usdtCents < 1)
-      ? tr("请输入金额（元），或留空", "Enter an amount in yuan, or leave empty")
+    v.usdt.trim() && (usdtCents === null || usdtCents < 1)
+      ? tr("请输入金额（元，最多两位小数），或留空", "Enter an amount in yuan (two decimals at most), or leave empty")
       : undefined;
+  const chainsError =
+    v.enabled && v.chains.length === 0
+      ? tr(
+          "开启返利时至少选一个网络，否则用户无法提现",
+          "Pick at least one network while commissions are on, or nobody can withdraw",
+        )
+      : undefined;
+  const errors = [rateError, holdError, minError, usdtError, chainsError].filter(Boolean).length;
   useSavePart({
     count: f.edited.length,
-    errors: [rateError, holdError, minError, usdtError].filter(Boolean).length,
+    errors,
     discard: f.reset,
     save: async () => {
       const r = await run(
@@ -789,6 +1058,9 @@ function CommissionForm({ c }: { c: Commission }) {
       return true;
     },
   });
+  const rate = rateError ? null : intOf(v.rate);
+  const earn = rate === null ? null : Math.floor((EXAMPLE_CENTS * rate) / 100);
+  const hold = holdError ? "?" : v.hold.trim();
   return (
     <>
       {signup.data && !signup.data.register_enabled && (
@@ -799,6 +1071,28 @@ function CommissionForm({ c }: { c: Commission }) {
           )}
         </Callout>
       )}
+      <Card className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3" aria-live="polite">
+        <div className="min-w-0 flex-1">
+          <div className="text-caption text-faint">{tr("按当前填写的值", "With the values as entered")}</div>
+          <div className="mt-0.5 text-body">
+            {!v.enabled ? (
+              tr("邀请返利已关闭：不产生新的返利。", "Commissions are off: no new ones are earned.")
+            ) : (
+              <>
+                {tr("被邀请用户付 ", "An invitee pays ")}
+                <b className="tnum">{yuan(EXAMPLE_CENTS)}</b>
+                {tr(" → 邀请人得 ", " → the inviter earns ")}
+                <b className="tnum text-primary">{earn === null ? "—" : yuan(earn)}</b>
+                {v.first ? tr("（仅首单）", " (first order only)") : tr("（每一单）", " (every order)")}
+                {tr(`，${hold} 天后可提现`, `, withdrawable after ${hold} days`)}
+              </>
+            )}
+          </div>
+        </div>
+        <Button asChild size="sm" variant="ghost">
+          <Link to="/finance/commissions">{tr("返利记录", "Commission records")}</Link>
+        </Button>
+      </Card>
       <Group
         title={tr("返利", "Commissions")}
         footer={tr(
@@ -808,19 +1102,25 @@ function CommissionForm({ c }: { c: Commission }) {
       >
         <SwitchRow
           label={tr("开启邀请返利", "Invite commissions on")}
+          description={tr(
+            "关闭后不再产生新返利，已有的不受影响",
+            "When off no new commissions are earned; existing ones stay",
+          )}
+          changed={f.isEdited("enabled")}
           checked={v.enabled}
           onChange={(x) => f.set("enabled", x)}
         />
         <FieldRow
           label={tr("返利比例（%）", "Rate (%)")}
-          description={tr("0–100 的整数", "A whole number 0–100")}
+          description={tr("按实付金额计算，0–100 的整数", "Of the amount paid, a whole number 0–100")}
           error={rateError}
+          changed={f.isEdited("rate")}
         >
           {(a) => (
-            <Input
+            <UnitInput
               {...a}
-              inputMode="numeric"
-              className="tnum text-right sm:w-24"
+              unit="%"
+              invalid={!!rateError}
               value={v.rate}
               onChange={(e) => f.set("rate", e.target.value)}
             />
@@ -829,15 +1129,24 @@ function CommissionForm({ c }: { c: Commission }) {
         <SwitchRow
           label={tr("只算首单", "First order only")}
           description={tr("每个被邀请人只有第一笔付款产生返利", "Only an invitee's first payment earns a commission")}
+          changed={f.isEdited("first")}
           checked={v.first}
           onChange={(x) => f.set("first", x)}
         />
-        <FieldRow label={tr("冻结天数", "Hold days")} description={tr("0–365 天", "0–365 days")} error={holdError}>
+        <FieldRow
+          label={tr("冻结天数", "Hold days")}
+          description={tr(
+            "期间订单退款则返利自动撤销，0–365 天",
+            "A refund within it cancels the commission, 0–365 days",
+          )}
+          error={holdError}
+          changed={f.isEdited("hold")}
+        >
           {(a) => (
-            <Input
+            <UnitInput
               {...a}
-              inputMode="numeric"
-              className="tnum text-right sm:w-24"
+              unit={tr("天", "d")}
+              invalid={!!holdError}
               value={v.hold}
               onChange={(e) => f.set("hold", e.target.value)}
             />
@@ -847,54 +1156,86 @@ function CommissionForm({ c }: { c: Commission }) {
       <Group
         title={tr("提现（USDT）", "Withdrawals (USDT)")}
         footer={tr(
-          "提现只支持 USDT：用户选择网络并填写地址，管理员在交易所手动打款后回填交易哈希。",
-          "Withdrawals are USDT only: users pick a network and address; admins pay by hand and record the transaction hash.",
+          "提现申请在「资金 › 提现」里审核：用户选择网络并填写地址，管理员在交易所手动打款后回填交易哈希。参考汇率只用于在门户显示折合 USDT。",
+          "Withdrawals are reviewed in Finance › Withdrawals: users pick a network and address; admins pay by hand and record the transaction hash. The reference rate only shows the USDT equivalent on the portal.",
         )}
       >
-        <FieldRow label={tr("最低提现（元）", "Minimum withdrawal (yuan)")} error={minError}>
+        <FieldRow
+          label={tr("最低提现（元）", "Minimum withdrawal (yuan)")}
+          error={minError}
+          changed={f.isEdited("min")}
+        >
           {(a) => (
-            <Input
+            <UnitInput
               {...a}
               inputMode="decimal"
-              className="tnum text-right sm:w-28"
+              unit="¥"
+              invalid={!!minError}
               value={v.min}
               onChange={(e) => f.set("min", e.target.value)}
             />
           )}
         </FieldRow>
+        <div className="relative px-4 py-3">
+          {f.isEdited("chains") && (
+            <span className="absolute inset-y-2 left-0 w-[3px] rounded-r-full bg-primary" data-changed />
+          )}
+          <div className="text-body font-medium">{tr("可选的 USDT 网络", "USDT networks offered")}</div>
+          <div className="mt-0.5 text-footnote text-muted-foreground">
+            {tr(
+              "用户提现时选择，收款地址按网络校验格式",
+              "Users pick one when withdrawing; addresses are checked per network",
+            )}
+          </div>
+          <div
+            className="mt-2.5 flex flex-wrap gap-2"
+            role="group"
+            aria-label={tr("可选的 USDT 网络", "USDT networks offered")}
+          >
+            {CHAINS.map(([id, name]) => {
+              const on = v.chains.includes(id);
+              return (
+                <label
+                  key={id}
+                  className={cn(
+                    "flex min-h-8 items-center gap-2 rounded-full pr-3 pl-2 text-body shadow-[0_0_0_0.5px_var(--input)]",
+                    on && "bg-primary-soft shadow-[0_0_0_1px_var(--primary)]",
+                  )}
+                >
+                  <Checkbox
+                    checked={on}
+                    label={name}
+                    onChange={(x) => f.set("chains", x ? [...v.chains, id] : v.chains.filter((y) => y !== id))}
+                  />
+                  {name}
+                  {id === "plasma" && <span className="text-caption text-faint">{tr("免手续费", "no fee")}</span>}
+                </label>
+              );
+            })}
+          </div>
+          {chainsError && (
+            <p className="mt-1.5 text-footnote text-destructive" role="alert">
+              {chainsError}
+            </p>
+          )}
+        </div>
         <FieldRow
           label={tr("参考汇率（元/USDT）", "Reference rate (yuan per USDT)")}
-          description={tr("可空，仅用于显示", "Optional, display only")}
+          description={tr("1 USDT = ¥，可空，仅用于显示", "1 USDT = ¥, optional, display only")}
           error={usdtError}
+          changed={f.isEdited("usdt")}
         >
           {(a) => (
-            <Input
+            <UnitInput
               {...a}
               inputMode="decimal"
-              className="tnum text-right sm:w-28"
+              unit="¥"
+              invalid={!!usdtError}
               value={v.usdt}
               onChange={(e) => f.set("usdt", e.target.value)}
             />
           )}
         </FieldRow>
-        <div className="px-4 py-2.5">
-          <div className="mb-2 text-body font-medium">{tr("可选 USDT 网络", "USDT networks offered")}</div>
-          <div className="flex flex-wrap gap-2">
-            {CHAINS.map(([id, name]) => (
-              <label
-                key={id}
-                className="flex min-h-9 items-center gap-2 rounded-lg bg-window px-2.5 text-body ring-1 ring-border ring-inset"
-              >
-                <Checkbox
-                  checked={v.chains.includes(id)}
-                  label={name}
-                  onChange={(on) => f.set("chains", on ? [...v.chains, id] : v.chains.filter((x) => x !== id))}
-                />
-                {name}
-              </label>
-            ))}
-          </div>
-        </div>
       </Group>
     </>
   );

@@ -2144,6 +2144,9 @@ mp_mail diag@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings/mail")" = "200" ] \
   && [ "$(last_json "d['provider'] == 'smtp' and d['providers'] == ['smtp', 'resend'] and d['api_key_set'] is False")" = "True" ] \
   || { echo "FAIL: mail settings provider view"; cat /tmp/akari-smoke/last; exit 1; }
+# Admin redesign (settings v2): the mail status strip's 24-hour counts, the newest dead letter, sent per kind.
+[ "$(last_json "isinstance(d['sent_24h'], int) and isinstance(d['dead_24h'], int) and d['dead_24h'] >= 0 and isinstance(d['sent_30d'], dict) and all(isinstance(n, int) for n in d['sent_30d'].values()) and 'last_dead_error' in d and 'last_dead_at' in d")" = "True" ] \
+  || { echo "FAIL: mail settings 24h / 30d counts"; cat /tmp/akari-smoke/last; exit 1; }
 # Reset links need the main domain (never the request's Host): set it for
 # this section only (IP literal; the host gate keeps accepting 127.0.0.1).
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
@@ -2284,6 +2287,10 @@ last_json "d['active'] and d['config']['app_private_key_set'] and d['notify_url'
   && last_json "d['ok'] and d['result']=='keys_ok'" | matches True || { echo "FAIL: 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'payment_method.create' AND after::text LIKE '%changed%' AND after::text NOT LIKE '%PRIVATE%'")" = "1" ] \
   || { echo "FAIL: payment method audit"; exit 1; }
+# The list's per-method usage (admin redesign): this month's paid money/orders, ever used.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] \
+  && last_json "[(m['month_cents'], m['month_count'], m['used']) for m in d['methods'] if m['id'] == '$METHOD'] == [(0, 0, False)]" | matches True \
+  || { echo "FAIL: payment method usage"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT get_byte(secrets_enc, 0) = 1 AND position(convert_to('MII', 'UTF8') IN secrets_enc) = 0 FROM payment_methods WHERE id = '$METHOD'")" = "t" ] \
   || { echo "FAIL: payment secrets not sealed"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
@@ -3191,6 +3198,9 @@ echo "branding: ok"
   && last_json "d['code']" | matches -x 'mail_template.placeholder_missing' || { echo "FAIL: template without {link} accepted"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/test/zh" '{"version":0,"subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   || { echo "FAIL: save template"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] \
+  && last_json "[(r['updated_at'] is not None, bool(r['updated_by'])) for r in d if r['kind'] == 'test' and r['locale'] == 'zh'] == [(True, True)]" | matches True \
+  || { echo "FAIL: template updated_at / updated_by"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   && last_json "d['text']" | matches -F '冒烟自定义正文' || { echo "FAIL: template preview"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/settings/mail-templates/test/zh")" = "200" ] && last_json "d['reset']" | matches True || { echo "FAIL: restore default"; exit 1; }

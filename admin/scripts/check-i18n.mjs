@@ -15,7 +15,7 @@
 // protocols.gen.ts (twins pinned by protocol-form.test.ts) are skipped.
 // `npm run check`; `--list` prints every hit, otherwise the first 40 and a
 // per-file count.
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -36,7 +36,6 @@ function* files(dir) {
 // FIELD_EN / `label` in protocol-form.ts, pinned by protocol-form.test.ts.
 const SKIP = new Set(["shared/errors.gen.ts", "console/protocols.gen.ts"]);
 const KEEP_PROPS = new Set(["keywords", "keys", "glyph"]);
-const BASELINE_FILE = join(here, "i18n-baseline.json");
 
 function calleeText(call, sf) {
   return call.expression.getText(sf);
@@ -125,35 +124,6 @@ for (const file of files(root)) {
   visit(sf);
 }
 
-// Ratchet: files written before SH-13 was enforced may keep at most their
-// recorded count (scripts/i18n-baseline.json); every other file, and any
-// growth, fails. Shrink the baseline when you fix a file
-// (`node scripts/check-i18n.mjs --write-baseline` rewrites it from the
-// current state — only ever to lower numbers).
-const byFileAll = new Map();
-for (const h of hits) byFileAll.set(h.rel, (byFileAll.get(h.rel) ?? 0) + 1);
-if (process.argv.includes("--write-baseline")) {
-  writeFileSync(BASELINE_FILE, JSON.stringify(Object.fromEntries([...byFileAll].sort()), null, 2) + "\n");
-  console.log(`check-i18n: baseline written (${hits.length} literals in ${byFileAll.size} files)`);
-  process.exit(0);
-}
-let baseline = {};
-try {
-  baseline = JSON.parse(readFileSync(BASELINE_FILE, "utf8"));
-} catch {
-  /* no baseline: every hit fails */
-}
-const over = process.argv.includes("--list")
-  ? [...hits]
-  : hits.filter((h) => (byFileAll.get(h.rel) ?? 0) > (baseline[h.rel] ?? 0));
-const tolerated = hits.length - over.length;
-hits.length = 0;
-hits.push(...over);
-if (tolerated && !hits.length)
-  console.log(
-    `check-i18n: ${tolerated} known literal(s) in the baseline (scripts/i18n-baseline.json); fix and shrink it`,
-  );
-
 if (hits.length) {
   const list = process.argv.includes("--list");
   const byFile = new Map();
@@ -163,4 +133,4 @@ if (hits.length) {
   if (!list) for (const [f, n] of byFile) console.error(`  ${n}\tsrc/${f}`);
   process.exit(1);
 }
-if (!tolerated) console.log("check-i18n: every Chinese literal has an English twin");
+console.log("check-i18n: every Chinese literal has an English twin");

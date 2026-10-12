@@ -28,6 +28,8 @@ export const PAGES: Record<string, Loader> = {
  * segment, so the sidebar highlights the parent). Own chunks, like PAGES.
  */
 export const SUB_PAGES: Record<string, Loader> = {
+  // The full-width template editor (v2: /settings/templates; the older address stays).
+  "settings/templates": () => import("./pages/mail-templates").then((m) => m.MailTemplatesPage),
   "settings/mail-templates": () => import("./pages/mail-templates").then((m) => m.MailTemplatesPage),
 };
 
