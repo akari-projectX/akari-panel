@@ -266,7 +266,28 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain list cards (added in a d
   await expect(bar(page)).toHaveCount(0);
 });
 
-test("SET-06 SET-07: console address (masked) and prefix rotation, the IP allowlist", async ({ page }) => {
+test("SET-09: retention days — a shorter period is flagged in the row and confirmed on save with a typed 删除旧数据 (cancelled here)", async ({
+  page,
+}) => {
+  await openConsole(page, "/settings/retention");
+  const audit = page.getByLabel("审计日志保留天数");
+  await audit.fill("40");
+  await expect(page.getByText("保存后将删除更早的数据")).toBeVisible();
+  await expect(page.getByText("不受这里控制的数据")).toBeVisible();
+  await save(page);
+  const c = page.getByRole("alertdialog");
+  await expect(c).toContainText("缩短保留期");
+  await expect(c.getByRole("button", { name: "缩短并删除" })).toBeDisabled();
+  await c.getByLabel("确认文字").fill("删除旧数据");
+  await expect(c.getByRole("button", { name: "缩短并删除" })).toBeEnabled();
+  await c.getByRole("button", { name: "取消" }).click();
+  await bar(page).getByRole("button", { name: "放弃" }).click();
+  await expect(bar(page)).toHaveCount(0);
+});
+
+test("SET-06 SET-07: console address card (masked) and prefix rotation (random or custom, typed confirmation, the done state), the IP allowlist as a list", async ({
+  page,
+}) => {
   await openConsole(page, "/settings/access");
   // SET-06: masked, shown on demand.
   await expect(page.getByText(`${CONSOLE.slice(0, CONSOLE.indexOf(PREFIX))}${PREFIX.slice(0, 3)}`)).toBeVisible();
@@ -280,10 +301,12 @@ test("SET-06 SET-07: console address (masked) and prefix rotation, the IP allowl
   ]) {
     await page.getByRole("button", { name: "轮换前缀…" }).click();
     const d = dialog(page, "轮换后台前缀");
-    await d.getByLabel("新前缀（留空 = 随机生成）").fill(to);
+    await d.getByRole("radio", { name: /自定义/ }).click();
+    await d.getByLabel("自定义前缀").fill(to);
+    await expect(d).toContainText(`/${to}/admin`);
+    await expect(d.getByRole("button", { name: "轮换前缀" })).toBeDisabled();
+    await d.getByLabel(/输入「轮换」以确认/).fill("轮换");
     await d.getByRole("button", { name: "轮换前缀" }).click();
-    await expect(page.getByRole("alertdialog")).toContainText("旧地址立即失效");
-    await confirmDialog(page, "轮换", "轮换");
     await expect(dialog(page, "新的后台地址")).toContainText(`/${to}/admin`);
     await dialog(page, "新的后台地址").getByRole("button", { name: "前往新地址" }).click();
     await expect(page).toHaveURL(new RegExp(`/${to}/(admin/settings/access|app)`));
@@ -295,24 +318,24 @@ test("SET-06 SET-07: console address (masked) and prefix rotation, the IP allowl
     await expect(page.getByRole("heading", { name: "后台入口" })).toBeVisible();
     expect((await page.request.get(page.url().replace(`/${to}/`, `/${from}/`))).status()).toBe(404);
   }
-  // SET-07: an allowlist without this address is flagged in place and refused by the server.
-  const hint = await page.getByText(/你的地址：.*（保存时必须包含它）/).innerText();
-  const mine = hint
-    .replace(/^你的地址：/, "")
-    .replace(/（.*$/, "")
-    .trim();
-  const allow = page.getByLabel("后台 IP 白名单（每行一个地址或 CIDR；留空 = 任意地址）");
-  await allow.fill("203.0.113.7");
-  await expect(page.getByText(/白名单不包含你的地址/)).toBeVisible();
-  await save(page);
-  await confirmDialog(page);
-  await expect(page.locator("[data-sonner-toast]").filter({ hasNotText: "白名单已保存" }).first()).toBeVisible();
-  await allow.fill(`${mine}\n203.0.113.7`);
+  // SET-07: a list without this address is an error in place (the save is blocked) with "添加我的地址".
+  const mine = await page.locator("[data-your-ip]").getAttribute("data-your-ip");
+  expect(mine).toBeTruthy();
+  const add = page.getByLabel("添加地址或网段");
+  await add.fill("10.0.0.300");
+  await expect(page.getByText("不是有效的 IP 地址或 CIDR 网段")).toBeVisible();
+  await add.fill("203.0.113.7");
+  await page.getByRole("button", { name: "添加", exact: true }).click();
+  await expect(page.getByText(/不在白名单里/)).toBeVisible();
+  await expect(bar(page)).toContainText("1 处需要修正");
+  await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "添加我的地址" }).click();
+  await expect(page.locator(`[data-allow="${mine}"]`)).toContainText("包含你的地址");
   await save(page);
   await expect(dialog(page)).toContainText("akari settings unset admin-allow");
   await confirmDialog(page);
   await toast(page, "白名单已保存");
-  await allow.fill("");
+  for (const x of [mine!, "203.0.113.7"]) await page.getByRole("button", { name: `移除 ${x}` }).click();
   await save(page);
   await confirmDialog(page);
   await toast(page, "白名单已保存");

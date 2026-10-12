@@ -304,8 +304,8 @@ export const shots: Shot[] = [
     name: "settings-access-self-excluded",
     open: async (page) => {
       await goto(page, "/settings/access");
-      const list = page.getByLabel(/IP 白名单/).first();
-      await list.fill("192.0.2.0/24");
+      await page.getByLabel("添加地址或网段").fill("192.0.2.0/24");
+      await page.getByRole("button", { name: "添加", exact: true }).click();
       await expect(page.getByRole("region", { name: "保存栏" })).toBeVisible();
     },
   },
