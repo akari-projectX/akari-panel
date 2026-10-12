@@ -102,14 +102,14 @@
 
 | 编号 | 功能 | 接口 | 来源 | 处理 |
 |---|---|---|---|---|
-| ORD-01 | 订单表：订单号、用户、套餐/周期、类型、金额、优惠/余额/退款、方式（人工/赠送徽章）、状态、时间；"已付款但未开通"顶部提示（数量来自单独的 `unfulfilled` 请求，不按已加载的页统计） | `GET /orders` | 旧 + W33-a | 实现 |
-| ORD-02 | 筛选（都在 URL 里）：状态分段（含未开通）、付款方式（含人工）、一个搜索框（含 @ = 用户邮箱，否则订单号/交易号）；加载更早（keyset），页脚"已加载 N 笔"/全部加载后"共 N 笔"；无匹配时空状态说明原因并给"清除筛选""人工订单" | `?status&email&out_trade_no&unfulfilled&via&before` | 旧 | 实现 |
-| ORD-03 | 订单详情弹窗：金额拆分（原价 → 优惠券 → 换套餐抵扣 → 余额 → 实付）、支付事件（来源/结果/渠道状态译成文案，原始值折叠）、开通结果/错误（同样折叠原文）、退款信息与撤销效果；操作在底栏 | `GET /orders/{id}` | 旧 + P1 | 实现 |
-| ORD-04 | 人工确认付款（待付款；已过期/已取消的订单另有说明与警告）/ 重试开通（原因必填） | `POST /orders/{id}/fulfil` | 旧 | 实现 |
-| ORD-05 | 退款：先取预览（将撤销的订阅效果），三种去向（分段选择；方式未开启原路退款时不提供并说明）① 原路退回支付宝（可部分）② 退到余额 ③ 仅登记（已在商家平台手动退，填实际金额，超出实付在字段下提示）；"仅退款、保留套餐"（默认不勾）；原因必填；输入订单号后 6 位确认；原路退款待确认（202）显示"处理中" | `GET /orders/{id}/refund-preview`、`POST /orders/{id}/refund` | P1 + 原路退款 | 实现 |
-| ORD-06 | 自动退款（售罄 / 套餐停用 / 已另购）的订单可识别（退款原因显示） | `GET /orders/{id}` | 中-2 | 实现 |
-| ORD-07 | 新建人工订单：按邮箱找用户（搜索中 / 无匹配提示）→ 套餐 + 有价格的周期 → 预计成交价 → 赠送 / 原因（不传金额） | `POST /orders/manual` | Ops | 实现 |
-| ORD-08 | 导出订单 CSV（日期范围、状态、方式）：先校验日期（起 ≤ 止、≤366 天），经 API 取文件后保存，被拒时在弹窗里显示错误 | `GET /orders/export.csv` | Ops | 实现 |
+| ORD-01 | 订单账本（v2）：按站点日分组，吸顶日标题（今天/昨天 · 日期 星期 · 当天笔数 · 退款 · 净收，来自 `/orders/summary` 按日合计，不按已加载的行统计）；每行 时间、套餐 · 周期 + 类型小标（新购/续费/换套餐/重置包）、订单号、用户、方式（人工/赠送徽章）、状态、实付 + 小字（券/抵扣/余额/退款）；已取消/已过期划线；页头今日笔数与净收；"N 笔已付款但未开通"横幅（数量来自单独的计数请求）+"处理" | `GET /orders`、`GET /orders/summary` | 旧 + W33-a + v2 | 实现 |
+| ORD-02 | 筛选（都在 URL 里 `?status&via&q`）：状态分段带计数（全部/待支付/已付款/未开通/已退款/已过期/已取消，计数来自 summary）、付款方式（含人工）、一个搜索框（@ 开头或含 @ = 用户邮箱包含，否则订单号/交易号包含）+ 解释性筛选标签；旧链接 `?email`/`?no`/`?unfulfilled=1` 自动换成新参数；加载更早（keyset），页脚"已加载 N 条 · 加载更早"/全部加载后"共 N 条 · 已全部加载"；无数据 / 无匹配（说明原因 + 清除筛选）/ 出错（重试）/ 加载骨架 | `?status&q&refunded&unfulfilled&via&before` | 旧 + v2 | 实现 |
+| ORD-03 | 订单详情弹窗（lg）：状态主区（大字状态 + 解释 + 下一步）、收据式金额（原价 → 优惠券 → 换套餐抵扣 → 赠送 → 实付，其后余额部分与退款）、用户链接/方式/状态/订单号与交易号（可复制）/人工原因；"经过"时间线（支付事件的来源/结果/渠道状态译成文案，原始数据折叠）；开通失败块（尝试次数、原因、直达修复处的链接、原始错误折叠）；退款块（金额、去向、时间、对套餐的效果、原因）；底栏 退款（不可用时说明）/ 打开用户 / 主操作 | `GET /orders/{id}` | 旧 + P1 + v2 | 实现 |
+| ORD-04 | 人工确认付款（待支付/已过期/已取消；已过期/已取消顶部黄色警告）/ 重试开通（显示上次失败原因），叠在详情上的小弹窗，原因必填（字段下报错 + "1 处需要修正"） | `POST /orders/{id}/fulfil` | 旧 | 实现 |
+| ORD-05 | 退款弹窗：先取预览（加载骨架 + "正在计算…"；列出将撤销的套餐效果、优惠券次数、余额部分），"仅退款，保留套餐"（默认不勾，勾选后清单划掉）；三张去向卡片 ① 原路退回（可部分；方式未开启/人工订单时卡片禁用并写原因）② 退到余额 ③ 仅登记（填实际金额，超出实付字段下提示）；原因必填；输入订单号后 6 位确认；按钮写出金额；提交后弹窗内显示结果（原路 202 = "已提交，渠道处理中"） | `GET /orders/{id}/refund-preview`、`POST /orders/{id}/refund` | P1 + 原路退款 | 实现 |
+| ORD-06 | 自动退款（售罄 / 套餐停用 / 已另购）的订单可识别（状态主区"已自动退款"+ 原因，退款块"自动退款 · 原因"） | `GET /orders/{id}` | 中-2 | 实现 |
+| ORD-07 | 新建人工订单（三步，步骤条可点回）：① 按邮箱开头找用户（转圈"正在查找…"/ 无匹配说明 + 去用户页；结果显示当前套餐、到期、余额）② 套餐卡片 + 有价格的周期卡片（带价格）→ 预计成交价（续费/新购/换套餐）③ 赠送开关 + 原因（必填）+ 一句话总结（金额由服务端计算，不传金额） | `POST /orders/manual` | Ops | 实现 |
+| ORD-08 | 导出订单 CSV（小弹窗）：快捷范围（本月/上月/近 30 天/今年）、开始/结束（结束早于开始、超过 366 天在字段下报错，提示"共 N 天"）、状态分段、方式；经 API 取文件后保存，被拒时错误横幅显示在弹窗内；成功 toast 文件名 | `GET /orders/export.csv` | Ops | 实现 |
 
 ## 6. 优惠券
 
@@ -298,7 +298,7 @@
 | `GET/POST /users/batch`、`POST /users/batch/preview`、`GET /users/batch/{id}`、`POST …/cancel` | USR-24…26 |
 | `POST /users/delete/preview`、`/users/delete` | USR-27 |
 | `GET /users/export.csv`、`/orders/export.csv`、`/traffic/export.csv` | USR-28、ORD-08、DSH-03（流量导出） |
-| `GET /orders`、`GET /orders/{id}`、`POST /orders/{id}/fulfil`、`/refund`、`GET /orders/{id}/refund-preview`、`POST /orders/manual` | ORD-* |
+| `GET /orders`、`GET /orders/summary`、`GET /orders/{id}`、`POST /orders/{id}/fulfil`、`/refund`、`GET /orders/{id}/refund-preview`、`POST /orders/manual` | ORD-* |
 | `GET/POST /coupons`、`GET/PATCH/DELETE /coupons/{id}`、`/coupon-batches*` | CPN-* |
 | `GET /balances`、`/commissions`、`GET/PUT /commission-settings`、`GET /withdrawals`、`POST …/approve`、`/reject` | FIN-* |
 | `GET /tickets`、`GET /tickets/{id}`、`POST …/replies`、`/close`、`/reopen`、`PUT …/assignee`、`GET /admins` | TKT-* |
