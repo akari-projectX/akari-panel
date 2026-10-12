@@ -81,6 +81,34 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 - **体积**：`scripts/bundle-report.mjs` 读 Vite 清单，报首屏 JS/CSS（gzip）、全部 JS/CSS、字体与每个分包；CI `spa-size` job 同时构建基线分支，差值写进任务摘要（`continue-on-error`，不是必需检查）。新的重页面/重依赖照旧用 `lazyRetry` 拆出去，特效代码（撒花等）按需加载。
 - **性能**：`e2e/perf/perf.spec.ts`（`playwright.perf.config.ts`）在 e2e 跑完后对同一个真实面板测：冷启动（新上下文、空缓存）登录页与仪表盘的 FCP、LCP、TTI（简化：FCP 之后最后一个长任务结束）、内容就绪，以及仪表盘出发的客户端切页耗时（含切页动画）；画像 desktop（不限速）与 mobile-mid（Pixel 7 + CPU 4× + 150 ms RTT、1.6 Mbps），各取 5 次中位数。`E2E_PERF_OUT=<目录>` 才跑（CI e2e job 设了，结果在任务摘要），测量失败只出警告。动效照常播放（验收用例则全部在 reduced motion 下跑）。
 
+## 动效（全站口径，后台改版照此对齐）
+
+令牌只在两处定义、两边一起改：CSS `src/index.css` 顶部 `:root`，JS `src/lib/motion.ts` 的 `DUR`。
+
+| 令牌 | 值 | 用在 |
+|---|---|---|
+| `--ease-out` | `cubic-bezier(.22,1,.36,1)` | 一切进场与位移（快起慢收） |
+| `--ease-in` | `cubic-bezier(.4,0,1,1)` | 退场 |
+| `--ease-spring` | `cubic-bezier(.34,1.56,.64,1)` | 带回弹：成功图标弹出、按钮松手 |
+| `--dur-press` | 120 ms | 按下（按钮、开关、`.press` 缩到 0.97） |
+| `--dur-hover` | 200 ms | 悬停变色；弹出层打开 |
+| `--dur-exit` / `DUR.exit` | 140 ms | 离开：旧页面、关闭的弹层 |
+| `--dur-fast` / `DUR.fast` | 260 ms | 小件：列表行、切页外壳 |
+| `--dur-base` / `DUR.base` | 420 ms | 块级：标题、统计条、卡片、区块 |
+| `--dur-slow` / `DUR.slow` | 700 ms | 首屏大件、对勾描画 |
+| `DUR.roll` | 600 ms | 数字从旧值滚到新值（`components/count-up`） |
+| `DUR.celebrate` | 1.3 s | 付款成功撒花（`lib/confetti`，按需加载） |
+
+- **入场**：`lib/motion` 的 `useEnter()` / `enterProps()` 打 `data-enter`，错峰 `stagger(i)`（每项 45 ms，最多 8 项）；块级上浮 12px，行与小件 `NUDGE` 6px，一律向上不左右滑。关键帧叫 `akari-rise`——**不能叫 `enter` / `exit`**（tw-animate-css 的同名关键帧会把它顶掉，全站入场曾因此全部失效）。切页进来时没有 `data-enter` 的区块（`.sec`）由 CSS 错峰浮起。
+- **切页**：`PageTransition` 旧页淡出下沉 4px（EXIT）→ 新页上浮 8px 淡入（FAST）。
+- **按下**：按钮、开关、`.press` 缩到 0.97，松手回弹；带下拉的按钮不缩。
+- **数字**：统计条的数字用 `CountUp`（直接写 DOM、不重渲染）；金额给 `fmt: formatMoney`（值是分，逐分滚动）。
+- **复制成功**：对勾加 `pop-in`。骨架屏延迟 120 ms 淡入（`load-in`），内容到后按入场替换。
+- **弹窗**（`components/ui/panels`：阅读 / 确认 / 流程 / 结果）：任何宽度都居中（2026-10-12 用户要求，不再贴底），四边 12px；`.panel` 跟随可见视口（`lib/visual-viewport` 写 `--vv-h`/`--vv-top`，软键盘弹出时挪到键盘上方）、限高 = 可见视口 − 上下 max(12px, 安全区)，超出在弹窗内部滚动、头尾不动；进场淡入 + 0.96 放大 + 上浮 8px，退场更快。
+- **付款结果**（`components/pay-result`）：订单页轮询到已付款 / 超时，或商店当场付清（余额、优惠、折算全额抵扣、免费订单）带 `state.paid` 跳到订单页时弹出：成功 = 圆环 + 对勾描画、一次性撒花、金额 / 套餐 / 到期、「查看订阅」「返回仪表盘」；付了但没能开通 = 退回余额；超时 = 时钟轻摇 +「重新选购」。只弹一次（刷新不再出现）。
+- **减少动效**（`prefers-reduced-motion`）：位移、缩放、描线、撒花全部关闭，内容直接到位；弹出层进退场缩成 1 ms（Radix 要等 animationend）；加载指示器只放慢。**e2e 一律在 reduced motion 下跑**（`playwright.config.ts`），性能报告则照常播放动效。
+- 只动 `transform` / `opacity`（独立属性 `translate` / `scale` 优先，不覆盖元素自己的 transform）；唯一例外是结果图标的描线（56px SVG 的 `stroke-dashoffset`，只重绘不布局）。不引入动效库；特效代码按需加载。
+
 ## 字体
 
 全平台用 **Noto Sans SC**（SIL OFL 1.1；原文 `fonts-src/noto/OFL.txt`，随产物发布于 `assets/licenses/NotoSansSC-OFL.txt`，并进 `make third-party` 清单）。只收需要的字：`scripts/subset-akari-font.py`（需 fonttools + brotli；`collect-text.mjs` 从源码字符串统计界面用字 + 常用 3500 字 + `fonts-src/akari/extra-chars.txt`，按字频切约 110 片，`unicode-range` 按实际字形写）。**改了界面中文文案就重跑**，否则新字会落到系统字体。

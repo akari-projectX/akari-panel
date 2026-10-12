@@ -157,15 +157,21 @@ html { -webkit-tap-highlight-color: transparent; }
    =================================================================== */
 :root {
   /*
-   * 动效口径，和 src/lib/motion.ts 同一套值，两边改要一起改：
-   *   --ease-out 进场与位移；--ease-in 退场
-   *   --dur-hover 悬停变色、底色；--dur-fast 小位移（下划线、箭头）；--dur-base 块级位移；--dur-exit 离开
+   * 动效令牌（全站唯一口径；和 src/lib/motion.ts 的 DUR 同一套值，两边改要一起改；说明见 spa/CLAUDE.md「动效」）：
+   *   --ease-out    进场与位移（快起慢收）        --ease-in  退场（慢起快走）
+   *   --ease-spring 带一点回弹：成功图标弹出、按钮松手、对勾
+   *   --dur-press   按下（按钮、开关缩到 .97）     --dur-hover 悬停变色、底色；弹出层打开
+   *   --dur-fast    小件：行、数字跳变、切页外壳  --dur-base  块级：标题、统计条、卡片
+   *   --dur-slow    首屏大件、付款成功的对勾      --dur-exit  离开：旧页面、关闭的弹层
    */
   --ease-out: cubic-bezier(.22, 1, .36, 1);
   --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
+  --dur-press: .12s;
   --dur-hover: .2s;
   --dur-fast: .26s;
   --dur-base: .42s;
+  --dur-slow: .7s;
   --dur-exit: .14s;
 
   /*
@@ -260,11 +266,16 @@ html { -webkit-tap-highlight-color: transparent; }
  * 位移用独立的 translate / scale 属性、填充用 backwards：播完不留任何样式，
  * 元素自己的 transform、悬停时的 hover:-translate-y-* 都不受影响。
  */
-@keyframes enter {
+/*
+ * 关键帧不能叫 enter / exit：tw-animate-css（弹出层的 animate-in / animate-out）用的就是这两个名字，
+ * 同名时构建只留一份——以前留下的是 tw-animate 的那份（不透明度、位移都读 --tw-enter-*，默认 1 和 0），
+ * 全站的 data-enter 入场因此什么都没播：卡片、列表、标题都是直接蹦出来的。
+ */
+@keyframes akari-rise {
   from { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
 }
 [data-enter='wait'] { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
-[data-enter='in'] { animation: enter var(--enter-dur, .42s) var(--ease-out) var(--enter-delay, 0s) backwards; }
+[data-enter='in'] { animation: akari-rise var(--enter-dur, .42s) var(--ease-out) var(--enter-delay, 0s) backwards; }
 [data-leave='true'] {
   opacity: 0; translate: 0 var(--enter-y, 12px); pointer-events: none;
   transition: opacity var(--dur-exit) var(--ease-in), translate var(--dur-exit) var(--ease-in);
@@ -274,17 +285,102 @@ html { -webkit-tap-highlight-color: transparent; }
 [data-grow='wait'] { scale: 0 1; }
 [data-grow='in'] { animation: grow-x var(--grow-dur, 1.1s) var(--grow-ease, var(--ease-out)) var(--grow-delay, 0s) backwards; }
 
-/* 操作成功的图标「弹出」：带一点回弹，和原来的弹簧手感接近 */
+/* 操作成功的图标「弹出」：带一点回弹，和原来的弹簧手感接近；复制成功的对勾也用它 */
 @keyframes pop-in { from { opacity: 0; scale: .6; } }
-.pop-in { animation: pop-in .42s cubic-bezier(.34, 1.56, .64, 1) backwards; }
+.pop-in { animation: pop-in var(--dur-base) var(--ease-spring) backwards; }
+
+/*
+ * 结果图标（components/pay-result）：圆底先弹出（--ease-spring），圆环描一圈，对勾随后画出来；
+ * 超时的时钟轻轻左右摇两下。描线只动 stroke-dashoffset（一个 56px 的 SVG 重绘，不触发布局），其余只动 scale / translate。
+ */
+.result-mark {
+  display: grid; place-items: center; width: 76px; height: 76px; border-radius: 9999px;
+  animation: pop-in var(--dur-base) var(--ease-spring) backwards;
+}
+.result-mark svg { width: 56px; height: 56px; fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.result-mark.is-success { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.result-mark.is-warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.result-mark.is-muted { color: var(--muted-foreground); background: var(--muted); }
+.result-mark .ring { opacity: .3; }
+.draw-in { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-in var(--dur-slow) var(--ease-out) .08s forwards; }
+.result-mark .tick { animation-duration: var(--dur-base); animation-delay: .34s; }
+@keyframes draw-in { to { stroke-dashoffset: 0; } }
+.shake-x { animation: pop-in var(--dur-base) var(--ease-spring) backwards, shake-x .56s var(--ease-out) .3s; }
+@keyframes shake-x { 20% { translate: -5px 0; } 40% { translate: 4px 0; } 60% { translate: -3px 0; } 80% { translate: 1.5px 0; } }
+.result-summary > div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; }
+.result-summary > div + div { border-top: 1px solid var(--border); }
+.result-summary dt { color: var(--muted-foreground); }
+.result-summary dd { min-width: 0; text-align: right; font-weight: 500; overflow-wrap: anywhere; }
+
+/*
+ * 按下：按钮、开关、可点的卡片（.press）缩到 .97，松手按 --ease-spring 回弹。
+ * 只动 scale（独立属性，不碰元素自己的 transform）；带下拉的按钮（aria-haspopup）不缩，菜单是贴着它弹出的。
+ */
+[data-slot='button']:not(:disabled):not([aria-haspopup]), [data-slot='switch'], .press {
+  transition-property: color, background-color, border-color, box-shadow, opacity, scale;
+  transition-duration: var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-base);
+  transition-timing-function: var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-spring);
+}
+:is([data-slot='button']:not(:disabled):not([aria-haspopup]), [data-slot='switch']:not([data-disabled]), .press):active {
+  scale: .97;
+  transition-duration: var(--dur-press);
+  transition-timing-function: var(--ease-out);
+}
+
+/*
+ * 弹窗的位置与限高（components/ui/panels）：任何宽度都居中。
+ * 跟着可见视口（--vv-h / --vv-top，lib/visual-viewport；没有时回落到 100dvh）：弹出软键盘时挪到键盘上方；
+ * 上下至少留 12px，刘海 / 底部横条的安全区更大时让出安全区。放在 components 层：弹窗上的 sm:max-h-* 照样生效。
+ */
+@layer components {
+  .panel {
+    top: calc(var(--vv-top, 0px) + var(--vv-h, 100dvh) / 2);
+    max-height: calc(var(--vv-h, 100dvh) - 2 * max(12px, env(safe-area-inset-top), env(safe-area-inset-bottom)));
+  }
+}
 
 /* 复制按钮上扫过的一道光 */
 @keyframes sweep { from { translate: -140% 0; } to { translate: 140% 0; } }
 
-/* 切页：旧页面淡出（EXIT），新页面上浮淡入（FAST），见 components/page-transition */
-@keyframes page-in { from { opacity: 0; translate: 0 6px; } }
+/* 切页：旧页面淡出并略微下沉（EXIT），新页面上浮淡入（FAST），见 components/page-transition */
+@keyframes page-in { from { opacity: 0; translate: 0 8px; } }
 .page-in { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
-.page-out { opacity: 0; pointer-events: none; transition: opacity var(--dur-exit) var(--ease-in); }
+.page-out {
+  opacity: 0; translate: 0 4px; pointer-events: none;
+  transition: opacity var(--dur-exit) var(--ease-in), translate var(--dur-exit) var(--ease-in);
+}
+
+/*
+ * 切页进来时，自己没有入场动画的区块（钱包、邀请、设置、订单详情这类页面的 .sec）错峰浮起：
+ * 和用 lib/motion 的 enter() 的页面同一个手感，又不必给每个区块编号。
+ * 已经有 data-enter 子元素的区块不再整体动——两层叠在一起会发飘。刷新后的第一页由启动画面的淡出接手，不播。
+ */
+.page-in .sec:not(:has([data-enter])) { animation: akari-rise var(--dur-base) var(--ease-out) backwards; --enter-y: 10px; }
+.page-in .sec:nth-of-type(2) { animation-delay: .05s; }
+.page-in .sec:nth-of-type(3) { animation-delay: .1s; }
+.page-in .sec:nth-of-type(4) { animation-delay: .15s; }
+.page-in .sec:nth-of-type(n + 5) { animation-delay: .2s; }
+
+/* 提示条（sonner）：进退场沿用站内曲线；它自己的减少动效处理照旧 */
+html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
+
+/*
+ * 系统要求减少动效（prefers-reduced-motion）：关掉一切位移、缩放与装饰性动画，内容直接到位。
+ * 保留的只有：加载指示器（放慢，见「加载」一节）、明暗淡化这类纯透明度的瞬时变化。
+ * 弹出层的进退场缩成 1ms（不是 none：Radix 要等 animationend 才卸载退场中的内容）。
+ * e2e 与截图都在这个模式下跑（playwright.config.ts），时序因此稳定。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-enter], [data-grow], .page-in, .pop-in, .draw-in, .shake-x, .result-mark, .sec { animation: none !important; }
+  .draw-in { stroke-dashoffset: 0; }
+  [data-enter='wait'] { opacity: 1; translate: none; scale: none; }
+  [data-grow='wait'] { scale: none; }
+  [data-leave='true'], .page-out { transition: none; translate: none; }
+  [data-slot$='-content'], [data-slot$='-overlay'] { --tw-duration: 1ms !important; }
+  :is([data-slot='button'], [data-slot='switch'], .press):active { scale: none; }
+  [data-slot='switch-thumb'] { transition: none; }
+  ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+}
 
 
 /* 暗色：底色偏冷（和落地页首屏的夜色同一族），品牌蓝提亮一档才压得住深底 */

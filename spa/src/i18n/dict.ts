@@ -117,6 +117,11 @@ export const EN: Record<string, string> = {
 
   /* ── 订单 / 套餐名 ── */
   '支付成功，套餐已生效': 'Payment received — your plan is active',
+  '支付成功': 'Payment successful',
+  '查看订阅': 'View subscription',
+  '返回仪表盘': 'Back to dashboard',
+  '重新选购': 'Choose a plan again',
+  '订购套餐': 'Plan',
 
   /* ── 补齐 ── */
   '简体中文': '简体中文',

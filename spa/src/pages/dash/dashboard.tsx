@@ -216,7 +216,7 @@ function Overview({ full }: { full: boolean }) {
             },
             {
               /* 单一余额：佣金入账就进余额（佣金追回后可以是负数），可提现的是其中一部分 */
-              k: tr('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—',
+              k: tr('账户余额'), v: balance.data ? balance.data.balance_cents : '—', fmt: formatMoney,
               x: balance.data ? tp('其中可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) }) : tr('下单时可以抵扣'),
             },
           ]}
