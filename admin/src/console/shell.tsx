@@ -59,11 +59,12 @@ const BellPanel = lazy(() => import("./components/shell-bell").then((m) => ({ de
 
 /**
  * What the open page still waits for (main[data-ready]): queries on screen
- * that have no data yet. A background refetch of data already shown (the
- * stale-time refresh on return, polling) does not hold the page back.
+ * that have no data yet, except details marked `meta: SECONDARY` (data.ts).
+ * A background refetch of data already shown (the stale-time refresh on
+ * return, polling) does not hold the page back either.
  */
 const FIRST_LOAD = {
-  predicate: (q: Query) => q.state.data === undefined && q.getObserversCount() > 0,
+  predicate: (q: Query) => q.state.data === undefined && q.getObserversCount() > 0 && !q.meta?.secondary,
 };
 
 /** The language toggle's Chinese half (the same in both languages). */

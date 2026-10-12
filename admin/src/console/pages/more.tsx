@@ -16,6 +16,7 @@ import { Tile } from "../../shared/ui/card";
 import { Segmented } from "../../shared/ui/form";
 import { PageHeader } from "../../shared/ui/layout";
 import { Spin } from "../components/kit";
+import { SECONDARY } from "../data";
 import { NAV, pathOf } from "../nav";
 import { prefetchOn } from "../pages";
 import { useBadges, useMe, useSite } from "../session";
@@ -36,6 +37,7 @@ export function MorePage() {
   const keys = useQuery({
     queryKey: ["passkeys"],
     queryFn: () => get<{ passkeys: { current: boolean }[] }>("/me/passkeys"),
+    meta: SECONDARY,
   });
   const [leaving, setLeaving] = useState(false);
   const nKeys = keys.data?.passkeys.filter((p) => p.current).length;

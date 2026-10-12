@@ -16,6 +16,7 @@ import { Button } from "../../shared/ui/button";
 import { Card, Tile } from "../../shared/ui/card";
 import { ErrorState, Skeleton } from "../../shared/ui/states";
 import { CopyText } from "../components/kit";
+import { SECONDARY } from "../data";
 import { useAccess, useAuthSettings, useSettings } from "./settings-data";
 import { SECTIONS, SETTINGS_IA, type Section, type SectionId } from "./settings-ia";
 
@@ -112,8 +113,13 @@ export function useOverview() {
   const block = useQuery(q<BlockS>(["block-rules"], "/block-rules")).data;
   const upd = useQuery(q<UpdatesS>(["agent-updates"], "/agent-updates")).data;
   const brand = useQuery(q<BrandingS>(["settings", "branding"], "/settings/branding")).data;
-  // The main domain's served certificate (system status probes it through the proxy).
-  const status = useQuery({ ...q<StatusS>(["system-status"], "/system/status"), staleTime: 60_000 }).data;
+  // The main domain's served certificate (system status probes it through the
+  // proxy, the slowest call here): a detail, the overview is ready without it.
+  const status = useQuery({
+    ...q<StatusS>(["system-status"], "/system/status"),
+    staleTime: 60_000,
+    meta: SECONDARY,
+  }).data;
   const d = st.data;
   const sum: Partial<Record<SectionId, Kv[]>> = {};
   const attn: Attn[] = [];
@@ -495,6 +501,7 @@ export function useLastEdit(action: string | undefined) {
     queryFn: () => get<{ entries: AuditEntry[] }>(`/audit?limit=1&action=${encodeURIComponent(action ?? "")}`),
     enabled: !!action,
     staleTime: 30_000,
+    meta: SECONDARY,
   }).data?.entries[0];
 }
 
@@ -504,6 +511,7 @@ function RecentChanges() {
     queryKey: ["audit", "recent-settings"],
     queryFn: () => get<{ entries: AuditEntry[] }>("/audit?limit=3&action=settings."),
     staleTime: 30_000,
+    meta: SECONDARY,
   });
   const list = r.data?.entries ?? [];
   if (r.isError || (r.data && list.length === 0)) return null;

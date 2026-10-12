@@ -25,6 +25,7 @@ import { SearchField } from "../components/kit";
 import { WEEKDAYS } from "../components/ops-bits";
 import { OrdStatus, orderState } from "../components/status";
 import { useDebounced } from "../kit";
+import { SECONDARY } from "../data";
 import { useQS } from "../router";
 import { periodLabel } from "../terms";
 import { OrderDialog } from "./orders-detail";
@@ -350,6 +351,8 @@ export function OrdersPage() {
     queryFn: () => get<Summary>(`/orders/summary${qs({ ...filters, ...span })}`),
     enabled: !list.isPending,
     placeholderData: (prev) => prev,
+    // Day totals and segment counts decorate the list; the page is ready with the list.
+    meta: SECONDARY,
   });
   // The banner: every paid-but-not-fulfilled order, whatever the filters.
   const attention = useQuery({
