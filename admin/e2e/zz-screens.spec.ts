@@ -28,9 +28,18 @@ import * as people from "./screens/people";
 import * as settings from "./screens/settings";
 import { buildCtx, type Ctx, type Device, type Shot, type Theme } from "./screens/shared";
 import * as support from "./screens/support";
+import * as supportContent from "./screens/support-content";
 
 type Area = { shots: Shot[]; setup?: (c: Ctx) => Promise<void> };
-const AREAS: Record<string, Area> = { ops, people, commerce, nodes, settings, support };
+const AREAS: Record<string, Area> = {
+  ops,
+  people,
+  commerce,
+  nodes,
+  settings,
+  support,
+  "support-content": supportContent,
+};
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "test-results", "screens");
 const VP = {

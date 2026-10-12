@@ -514,8 +514,9 @@ function Context({ t, admins }: { t: TicketDetail; admins: Admin[] }) {
   const used = u?.subscription?.traffic_used_bytes ?? u?.traffic_used_bytes ?? 0;
   const total = u?.subscription ? u.subscription.traffic_total_bytes : (u?.traffic_limit_bytes ?? null);
   const [prio, prioTone] = prioName(t.priority, tr);
+  // data-nodirty: picking an assignee in the ⓘ dialog is not an unsaved edit (分配 applies it).
   return (
-    <div className="divide-y divide-separator">
+    <div className="divide-y divide-separator" data-nodirty>
       <section className="p-4" aria-label={tr("用户", "User")}>
         {user.isPending ? (
           <div className="grid gap-2">
