@@ -51,10 +51,7 @@ test("ALR-01 ALR-02 ALR-05: alert center, acknowledge (row and bulk), alert deta
   );
   await openConsole(page, "/alerts");
   // The thresholds and channels are a settings section now.
-  await expect(page.getByRole("link", { name: "告警通道与阈值" })).toHaveAttribute(
-    "href",
-    /\/settings\/alert-channels$/,
-  );
+  await expect(page.getByRole("link", { name: "告警通道与阈值" })).toHaveAttribute("href", /\/settings\/alerts$/);
   // ALR-01: firing list, counts by kind, filters (in the URL).
   await expect(page.getByText(/CPU 过高 · \d/)).toBeVisible();
   await page.getByLabel("服务器", { exact: true }).selectOption({ label: name });

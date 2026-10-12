@@ -343,6 +343,7 @@ jobs:
           path: |
             spa/test-results
             admin/playwright-report
+            admin/test-results/*/error-context.md
             /tmp/akari-e2e-portal/*.log
             /tmp/akari-e2e/*.log
           retention-days: 7

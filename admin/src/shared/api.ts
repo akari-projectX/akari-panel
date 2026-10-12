@@ -55,7 +55,9 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, body.error ?? res.statusText, body);
   }
   const method = (init?.method ?? "GET").toUpperCase();
-  if (onWrite && method !== "GET" && method !== "HEAD") {
+  // Signing out is not a data write: refetching after it would only meet
+  // 401s and race the caller's own move to the sign-in page.
+  if (onWrite && method !== "GET" && method !== "HEAD" && !url.startsWith(`${authBase}/logout`)) {
     const path = url.startsWith(apiBase)
       ? url.slice(apiBase.length)
       : url.startsWith(authBase)
