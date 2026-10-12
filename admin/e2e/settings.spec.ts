@@ -238,7 +238,7 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain list cards (added in a d
   await page.getByLabel("信任 Cloudflare（读取 CF-Connecting-IP）").selectOption("");
   await save(page);
   await expect(dialog(page)).toContainText("以下地方会受影响");
-  await confirmDialog(page, sub);
+  await confirmDialog(page, sub, "移除并保存");
   await toast(page, "域名设置已保存");
   await expect(page.locator(`[data-domain="${sub}"]`)).toHaveCount(0);
   // SET-09 (Cloudflare ranges): edited in a dialog, saved in the bar, then back to the shipped list.

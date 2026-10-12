@@ -511,7 +511,8 @@ function ServerBody({ s }: { s: ServerView }) {
 function NodesTab({ s }: { s: ServerView }) {
   const tr = useTr();
   const [, patchQs] = useQS();
-  if (!s.enrolled && !s.deleting_at)
+  // Not installed and nothing on it yet: the next step. Nodes made first ("先建节点") are listed.
+  if (!s.enrolled && !s.deleting_at && s.nodes.length === 0)
     return (
       <Card>
         <EmptyState

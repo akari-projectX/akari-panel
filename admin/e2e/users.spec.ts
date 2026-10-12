@@ -38,10 +38,12 @@ async function user(email: string, extra: Record<string, unknown> = {}): Promise
 }
 
 async function search(page: Page, text: string) {
-  await page.getByLabel("搜索邮箱或 ID").fill(text);
+  const box = page.getByLabel("搜索邮箱或 ID");
+  const before = await box.inputValue();
+  await box.fill(text);
   // The box reaches the URL (and the list) after a debounce; a selection made
   // before that would belong to the old view and be dropped.
-  await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe(text);
+  if (before !== text) await expect.poll(() => new URL(page.url()).searchParams.get("q")).toBe(text);
 }
 
 async function openUser(page: Page, email: string) {

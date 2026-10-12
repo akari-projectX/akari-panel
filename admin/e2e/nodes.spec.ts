@@ -136,7 +136,7 @@ test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers �
   await toast(page, "告警规则已保存");
   // NOD-08: status and latency (监控).
   await tab(page, "监控").click();
-  await expect(page.getByText("机器状态")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "机器状态" })).toBeVisible();
   await expect(page.getByText("还没有测速结果。")).toBeVisible();
   // NOD-07: delete (type the name) → back to the list, which follows at once.
   await menu(page, `服务器 ${name} 的操作`, "删除服务器");

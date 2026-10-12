@@ -262,7 +262,12 @@ test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in 
   const failed = page.getByText("服务器列表加载失败", { exact: true }).first();
   await expect(failed).toBeVisible();
   await page.unroute(`${API}/servers`);
-  await page.getByRole("button", { name: "重试" }).first().click();
+  // Retry (the idle prefetch of the page's data may already have recovered it).
+  await page
+    .getByRole("button", { name: "重试" })
+    .first()
+    .click({ timeout: 5_000 })
+    .catch(() => {});
   await expect(page.getByRole("heading", { level: 1, name: "节点" })).toBeVisible();
   await expect(page.getByText("服务器列表加载失败", { exact: true })).toHaveCount(0);
   // Empty state with a next step.

@@ -214,11 +214,11 @@ test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in
   await page.getByLabel("动作代码或前缀").fill("user.ban");
   await page.getByLabel("动作代码或前缀").press("Enter");
   await expect(page).toHaveURL(/action=user\.ban/);
-  const r = page.locator("[data-row]", { hasText: u.id.slice(0, 8) }).first();
+  const r = page.locator("[data-row]", { hasText: email }).first();
   await expect(r).toContainText(ADMIN);
   await expect(r).toContainText("封禁用户");
   // The object links to the user.
-  await expect(r.getByRole("link", { name: /用户/ })).toHaveAttribute("href", new RegExp(`/users\\?open=${u.id}`));
+  await expect(r.getByRole("link", { name: email })).toHaveAttribute("href", new RegExp(`/users\\?open=${u.id}`));
   // AUD-02: the changed fields, before → after, in the entry's dialog (?open=).
   await r.getByText(/^\d{2}:\d{2}$/).click();
   await expect(page).toHaveURL(/[?&]open=\d+/);
@@ -229,7 +229,7 @@ test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in
   // The filters survive a reload (they are in the URL).
   await page.reload();
   await expect(page.getByRole("button", { name: /^动作：/ })).toContainText("封禁用户");
-  await expect(page.locator("[data-row]", { hasText: u.id.slice(0, 8) }).first()).toContainText("封禁用户");
+  await expect(page.locator("[data-row]", { hasText: email }).first()).toContainText("封禁用户");
   // Load older pages of everything (the audit log is append-only: enough real entries for a second page).
   for (let i = 0; i < 26; i++) {
     await apiJson("POST", `/users/${u.id}/unban`);
