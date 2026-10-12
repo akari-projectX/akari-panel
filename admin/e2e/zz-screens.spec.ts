@@ -26,6 +26,7 @@ import * as nodes from "./screens/nodes";
 import * as ops from "./screens/ops";
 import * as people from "./screens/people";
 import * as settings from "./screens/settings";
+import { seed, stopSeed } from "./screens/seed";
 import { buildCtx, type Ctx, type Device, type Shot, type Theme } from "./screens/shared";
 import * as support from "./screens/support";
 import * as supportContent from "./screens/support-content";
@@ -112,6 +113,14 @@ test("screens: the v2 design shots from the real app", async ({ browser }, info)
   const failed: string[] = [];
 
   const c = await buildCtx(info);
+  // Representative data first (screens/seed.ts), so default shots are not empty.
+  const seedStart = Date.now();
+  try {
+    failed.push(...(await seed(c)));
+  } catch (e) {
+    failed.push(`seed: ${(e as Error).message.split("\n")[0]}`);
+  }
+  console.log(`screens: seeded in ${Math.round((Date.now() - seedStart) / 1000)}s`);
   const shots: Shot[] = [];
   for (const [name, area] of Object.entries(AREAS)) {
     if (only && !only.includes(name)) continue;
@@ -132,7 +141,9 @@ test("screens: the v2 design shots from the real app", async ({ browser }, info)
   const variants = (["desktop", "mobile"] as const).flatMap((d) =>
     (["light", "dark"] as const).map((t) => [d, t] as const),
   );
-  const counts = await Promise.all(variants.map(([d, t]) => take(browser, d, t, shots, c, deadline, failed)));
+  const counts = await Promise.all(variants.map(([d, t]) => take(browser, d, t, shots, c, deadline, failed))).finally(
+    stopSeed,
+  );
   const taken = counts.reduce((a, b) => a + b, 0);
   const summary = `${taken} screenshots of ${shots.length} shots in ${Math.round((Date.now() - start) / 1000)}s`;
   console.log(`screens: ${summary}`);

@@ -5,6 +5,7 @@
 ## 文件
 
 - `shared.ts`：类型 `Shot` / `Ctx`、打开辅助（`go(path)`、`goto(page, path)`、`goDialog(c => path)`、`need(id, "说明")`、`ready`）、公共数据 `buildCtx`（自建一个用户 + 套餐 + 人工订单、一个节点 + 中转入口；`ctx.userId`、`planId`、`orderId`、`nodeId`、`serverId`、`entranceId`）。
+- `seed.ts`：在任何镜头之前造一份"像样的"数据（`seed(ctx)`，约 10–20 秒）：两台在线服务器（Valkey 心跳 blob、24 小时分钟指标 + 7 天小时指标、30 天入口流量含中转；在线 = status online 且 90 秒内刷新，所以拍摄期间每 20 秒续一次，`stopSeed()` 结束）、节点组 + 三个套餐、15 个客户（注册日期、用量、到期、最后登录各不相同）、60 天内约 40 张订单（新购 / 续费 / 换套餐；支付宝与人工；待付款、已过期、已取消、已退款、一张已付款未开通）、两张优惠券及兑换、邀请返利（已入账 / 冻结 / 已撤销）、提现（待审 / 已通过 / 已拒绝）、共享用户的通行密钥、system 审计行、有已上传的 linux/amd64 发布时一个进行中的灰度。只用真实 API，API 造不出的状态（过去的时间、网关付款、agent）用 SQL 写，遵守表的 CHECK 与不变量（余额只经 `balance_ledger`）。每次运行带随机标记，互不冲突。把 id 放进 `ctx.extra`（`liveServer`、`unfulfilledOrder`、`pendingOrder`、`inviter`、`rollout`）。
 - `<区域>.ts`：`ops`、`people`、`commerce`、`nodes`、`settings`、`support`（与 `prototype/scripts/shots/*.json` 同名；`support.json` 的 tickets-/content- 镜头在 `support-content.ts`）。每个文件导出：
   - `shots: Shot[]`——`{ name, open(page, ctx, device), full?, devices? }`；
   - 可选 `setup(ctx)`——为本区镜头造数据（经 `apiJson`），把 id 放进 `ctx.extra`。

@@ -55,7 +55,11 @@ export const shots: Shot[] = [
     name: "plans-impact-confirm",
     open: async (page, c) => {
       const d = (await editor(page, plan(c), "traffic")).getByRole("dialog").first();
-      await d.getByLabel("流量", { exact: true }).fill("300");
+      // The field's name also carries its suffix and hint ("流量 GiB 留空 = 不限流量").
+      await d
+        .getByRole("textbox", { name: /^流量(?!重置)/ })
+        .first()
+        .fill("300");
       await d.getByRole("button", { name: "保存" }).click();
       await expect(page.getByRole("dialog", { name: "这次改动会影响现有用户" })).toBeVisible();
     },

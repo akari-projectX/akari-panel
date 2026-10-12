@@ -138,7 +138,7 @@ const detailShots: Shot[] = [
     open: async (page) => {
       await goto(page, "/users?new=1");
       const d = page.getByRole("dialog");
-      await d.getByLabel("邮箱", { exact: true }).fill("not-an-email");
+      await d.locator('input[type="email"]').fill("not-an-email");
       await d.getByRole("button", { name: "创建用户" }).click();
       await expect(d.getByText(/需要修正/)).toBeVisible();
     },
@@ -294,7 +294,7 @@ async function detailSetup(ctx: Ctx): Promise<void> {
 
 // ---- finance ---------------------------------------------------------------
 
-/** Open the first pending withdrawal (the FIN spec or the portal made one), else not taken. */
+/** Open the first pending withdrawal (seed.ts makes one), else not taken. */
 async function firstPending(page: Page) {
   await goto(page, "/finance/withdrawals");
   const r = page.locator("[data-row]:visible").first();

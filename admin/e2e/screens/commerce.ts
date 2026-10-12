@@ -2,8 +2,8 @@
 // and plan shots live in commerce-coupons.ts / commerce-plans.ts; this file
 // is the area the screens spec loads. Not taken (cannot be reproduced with
 // real data, or prototype demos): orders-ledger-empty / -error / -loading /
-// -loadmore, orders-detail-unfulfilled / -refund-pending / -autorefund /
-// -pending, orders-confirm-expired, orders-retry-dialog,
+// -loadmore, orders-detail-refund-pending / -autorefund,
+// orders-confirm-expired, orders-retry-dialog,
 // orders-refund-loading / -usdt / -done, orders-export-error.
 import { expect, type Page } from "@playwright/test";
 
@@ -42,6 +42,14 @@ const orders: Shot[] = [
   },
   { name: "orders-ledger-nomatch", open: go("/orders?q=A9999-no-such-order") },
   { name: "orders-detail-completed-coupon", open: goDialog((c) => `/orders?open=${need(c.orderId, "order")}`) },
+  {
+    name: "orders-detail-unfulfilled",
+    open: goDialog((c) => `/orders?open=${need(c.extra.unfulfilledOrder, "unfulfilled order")}`),
+  },
+  {
+    name: "orders-detail-pending",
+    open: goDialog((c) => `/orders?open=${need(c.extra.pendingOrder, "pending order")}`),
+  },
   { name: "orders-detail-gift", open: goDialog((c) => `/orders?open=${need(c.extra.giftOrder, "gift order")}`) },
   { name: "orders-refund-dialog", open: refundDialog },
   {

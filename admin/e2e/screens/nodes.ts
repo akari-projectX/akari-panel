@@ -1,6 +1,7 @@
 // Servers, nodes, entrances (v2 shots/nodes.json). The shared ctx has a
 // server without an agent (ctx.serverId) with one node (ctx.nodeId) and a
-// relay entrance (ctx.entranceId). Not taken (need an agent, a failure or a
+// relay entrance (ctx.entranceId); the server-page tabs use the seeded
+// online server (seed.ts, ctx.extra.liveServer). Not taken (need an agent, a failure or a
 // state the e2e panel cannot reach on demand): nodes-fleet-empty / -loading /
 // -error, nodes-server-offline, nodes-server-quota, nodes-server-quota-exceeded,
 // nodes-server-probe-cooldown, nodes-server-monitor-error,
@@ -12,6 +13,8 @@ import { apiJson } from "../helpers";
 import { go, goDialog, goto, need, type Ctx, type Device, type Shot } from "./shared";
 
 const sid = (c: Ctx) => need(c.serverId, "server");
+/** The seeded online server (seed.ts: heartbeat, metrics, traffic), else the shared one. */
+const live = (c: Ctx) => c.extra.liveServer ?? sid(c);
 const nid = (c: Ctx) => need(c.nodeId, "node");
 const eid = (c: Ctx) => need(c.entranceId, "relay entrance");
 const dlg = (page: Page) => page.getByRole("dialog").last();
@@ -49,11 +52,12 @@ export const shots: Shot[] = [
   { name: "nodes-fleet-full", open: go("/nodes"), full: true },
   { name: "nodes-fleet-search", open: go("/nodes?q=IPLC") },
   { name: "nodes-fleet-nomatch", open: go(`/nodes?q=${encodeURIComponent("首尔 Vultr")}`) },
-  { name: "nodes-server-nodes", open: async (page, c) => goto(page, `/nodes/${sid(c)}`), full: true },
+  { name: "nodes-server-nodes", open: async (page, c) => goto(page, `/nodes/${live(c)}`), full: true },
   {
     name: "nodes-server-collapsed",
     open: async (page, c) => {
-      await goto(page, `/nodes/${sid(c)}`);
+      // A pending server shows the install guide instead of its nodes.
+      await goto(page, `/nodes/${live(c)}`);
       await page
         .getByRole("button", { name: /^收起 .* 的入口$/ })
         .first()
@@ -62,12 +66,12 @@ export const shots: Shot[] = [
     full: true,
   },
   { name: "nodes-server-pending", open: async (page, c) => goto(page, `/nodes/${sid(c)}`) },
-  { name: "nodes-server-monitor", open: async (page, c) => goto(page, `/nodes/${sid(c)}?tab=monitor`), full: true },
-  { name: "nodes-server-quota-tab", open: async (page, c) => goto(page, `/nodes/${sid(c)}?tab=quota`) },
+  { name: "nodes-server-monitor", open: async (page, c) => goto(page, `/nodes/${live(c)}?tab=monitor`), full: true },
+  { name: "nodes-server-quota-tab", open: async (page, c) => goto(page, `/nodes/${live(c)}?tab=quota`) },
   {
     name: "nodes-server-quota-invalid",
     open: async (page, c) => {
-      await goto(page, `/nodes/${sid(c)}?tab=quota`);
+      await goto(page, `/nodes/${live(c)}?tab=quota`);
       await page.getByRole("textbox", { name: /^每月重置日/ }).fill("32");
       await expect(page.getByText("请输入 1–31 的整数")).toBeVisible();
     },
@@ -75,12 +79,12 @@ export const shots: Shot[] = [
   {
     name: "nodes-server-alerts",
     open: async (page, c) => {
-      await goto(page, `/nodes/${sid(c)}?tab=alerts`);
+      await goto(page, `/nodes/${live(c)}?tab=alerts`);
       await page.getByRole("textbox", { name: /^离线多少秒告警/ }).fill("5");
     },
     full: true,
   },
-  { name: "nodes-server-settings", open: async (page, c) => goto(page, `/nodes/${sid(c)}?tab=settings`), full: true },
+  { name: "nodes-server-settings", open: async (page, c) => goto(page, `/nodes/${live(c)}?tab=settings`), full: true },
   { name: "nodes-add-server", open: goDialog(() => "/nodes?new=server") },
   { name: "nodes-add-server-command", open: async (page, _c, device) => addServer(page, device) },
   {
@@ -114,7 +118,7 @@ export const shots: Shot[] = [
   {
     name: "nodes-tls-confirm",
     open: async (page, c) => {
-      await goto(page, `/nodes/${sid(c)}?tab=settings`);
+      await goto(page, `/nodes/${live(c)}?tab=settings`);
       await page.getByRole("textbox", { name: /^TLS 域名/ }).fill("node.example.com");
       await page.getByRole("button", { name: /^保存并重建/ }).click();
       await alert(page);
@@ -123,7 +127,7 @@ export const shots: Shot[] = [
   {
     name: "nodes-delete-server",
     open: async (page, c) => {
-      await goto(page, `/nodes/${sid(c)}?tab=settings`);
+      await goto(page, `/nodes/${live(c)}?tab=settings`);
       await page.getByRole("button", { name: "删除服务器…" }).click();
       await alert(page);
     },

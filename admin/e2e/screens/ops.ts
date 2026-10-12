@@ -4,7 +4,8 @@
 // host), status-mail-empty (the queue is never empty there),
 // status-diagnose-running (a single request, no stable frame), *-loading,
 // *-error, *-stale, alerts-calm (other specs leave alerts firing),
-// alerts-outbox-empty (never empty there), updates-checking / -nokey /
+// alerts-outbox-empty (never empty there), updates-no-rollout (seed.ts
+// starts a rollout when a release is uploaded), updates-checking / -nokey /
 // -check-error / -no-releases / -error / -paused / -delete-inuse /
 // -upload-progress / -upload-error (transient or need a state the CI data
 // does not have), audit-empty / -loading / -error. status-diagnose-ok / -failed: only the one matching the
@@ -31,9 +32,10 @@ export async function setup(c: Ctx): Promise<void> {
     `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at, resolved_at, acked_at, acked_by) VALUES ('${id}', 'disk', 'resolved', '91%', '磁盘已用 91%', now() - interval '3 hours', now() - interval '2 hours', now() - interval '170 minutes', 'admin') RETURNING id`,
   ).split("\n")[0];
   sql(
-    `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error) ` +
-      `VALUES (${c.extra.alertFiring}, 'webhook', 'firing', '{"title":"${name} CPU 过高"}', 'dead', 3, '502 Bad Gateway'), ` +
-      `(${c.extra.alertFiring}, 'email', 'firing', '{"title":"${name} CPU 过高"}', 'sent', 1, NULL)`,
+    `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error, sent_at) ` +
+      `VALUES (${c.extra.alertFiring}, 'webhook', 'firing', '{"title":"${name} CPU 过高"}', 'dead', 3, '502 Bad Gateway', NULL), ` +
+      // A sent row needs its sent_at (CHECK alert_notifications_sent_at).
+      `(${c.extra.alertFiring}, 'email', 'firing', '{"title":"${name} CPU 过高"}', 'sent', 1, NULL, now() - interval '24 minutes')`,
   );
 }
 
@@ -58,8 +60,8 @@ const diagnose = (want: "ok" | "failed") => async (page: Page) => {
 
 export const shots: Shot[] = [
   { name: "dashboard-default", open: go(""), full: true },
-  { name: "dashboard-orders-30d", open: go("/?metric=orders&range=30d") },
-  { name: "dashboard-traffic-today", open: go("/?metric=traffic&range=today") },
+  { name: "dashboard-orders-30d", open: go("?metric=orders&range=30d") },
+  { name: "dashboard-traffic-today", open: go("?metric=traffic&range=today") },
   { name: "status-overview", open: go("/status"), full: true },
   {
     name: "status-overview-jobs-open",
