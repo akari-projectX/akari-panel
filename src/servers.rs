@@ -531,7 +531,10 @@ pub struct ServerView {
     #[serde(flatten)]
     pub machine: MachineView,
     /// The server's nodes: {id, name, display_name, enabled, visible, sort,
-    /// region, tags, protocol, port, block_rules_enabled, entrances}.
+    /// region, tags, protocol, port, transport (the inbound's
+    /// `streamSettings.network`, null = xray's default), security
+    /// (`streamSettings.security`, null = none), block_rules_enabled,
+    /// entrances}.
     pub nodes: Value,
     /// Last heartbeat (Valkey, ~15 s cadence, 10 min TTL), passed through
     /// as stored.
@@ -550,7 +553,10 @@ fn nodes_json_sql() -> String {
          'display_name', nodes.display_name, 'enabled', nodes.enabled, \
          'visible', nodes.visible, 'sort', nodes.sort, 'region', nodes.region, \
          'tags', nodes.tags, 'protocol', nodes.inbound->>'protocol', \
-         'port', nodes.inbound->'port', 'block_rules_enabled', nodes.block_rules_enabled, \
+         'port', nodes.inbound->'port', \
+         'transport', nodes.inbound->'streamSettings'->>'network', \
+         'security', nodes.inbound->'streamSettings'->>'security', \
+         'block_rules_enabled', nodes.block_rules_enabled, \
          'entrances', {}) ORDER BY nodes.sort, nodes.created_at, nodes.id) \
          FROM nodes WHERE nodes.server_id = s.id), '[]'::jsonb)",
         crate::entrances::ENTRANCES_JSON_SQL

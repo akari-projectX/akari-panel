@@ -11,8 +11,9 @@ import { TrendChart, timeLabels } from "../../shared/ui/charts";
 import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText } from "../kit";
 import { useAction } from "../data";
 import { parseRate } from "../rates";
-import { setQuery, useRoute } from "../router";
-import { holdersOf, useGroups, usePlanList } from "../servers";
+import { navigate, setQuery, useRoute } from "../router";
+import { holdersOf, useGroups, usePlanList, useServers } from "../servers";
+import { EntranceDialog, RelayDialog } from "./entrance-dialog";
 import { useCrumb } from "../session";
 import type { EntranceView, NodeGroup, ServerView } from "../types";
 import { JsonInbound, TemplateFields, newTemplateForm, parseInbound, toSpec, type TemplateForm } from "./inbound-form";
@@ -763,7 +764,7 @@ export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: 
   );
 }
 
-const ALERT_KINDS = [
+export const ALERT_KINDS = [
   "offline",
   "cpu",
   "memory",
@@ -1113,7 +1114,7 @@ function NodeEditor({ n, onClose }: { n: FullNode; onClose: () => void }) {
           icon={Activity}
           // Switching dialogs would drop unsaved edits without asking.
           disabled={basicsChanged || inboundEdited}
-          onClick={() => setQuery({ open: `server:${n.server_id}` })}
+          onClick={() => navigate(`/nodes/${n.server_id}?tab=monitor`)}
         >
           <span className="max-sm:sr-only">{tr("服务器状态", "Server status")}</span>
         </Button>
@@ -1316,6 +1317,72 @@ function NodeTraffic({ id }: { id: string }) {
             </>
           )}
         </>
+      )}
+    </>
+  );
+}
+
+/**
+ * Every dialog of the nodes area, mounted from the URL: `?new=server|node|relay`
+ * (`&server=` preselects, `&for=<node>` the relay's node), `?node=<id>`,
+ * `?entrance=<id>`, `?action=install|enroll` (on a server page).
+ */
+export function NodesDialogs({ serverId }: { serverId?: string }) {
+  const { query } = useRoute();
+  const servers = useServers();
+  const groups = useGroups();
+  const [shown, setShown] = useState<Shown | null>(null);
+  const list = servers.data ?? [];
+  const creating = query.get("new");
+  const action = query.get("action");
+  const server = serverId ? list.find((s) => s.id === serverId) : undefined;
+  const nodeId = query.get("node");
+  const entId = query.get("entrance");
+  const forId = query.get("for");
+  let ent: { e: EntranceView; n: ServerView["nodes"][number]; s: ServerView } | null = null;
+  let forNode: ServerView["nodes"][number] | undefined;
+  for (const s of list)
+    for (const n of s.nodes) {
+      if (n.id === forId) forNode = n;
+      for (const e of n.entrances) if (e.id === entId) ent = { e, n, s };
+    }
+  return (
+    <>
+      {creating === "server" && <CreateServerDialog onClose={() => setQuery({ new: null })} onShown={setShown} />}
+      {creating === "node" && servers.isSuccess && (
+        <CreateNodeDialog
+          servers={list}
+          groups={groups.data ?? []}
+          onClose={() => setQuery({ new: null, server: null })}
+          onShown={setShown}
+        />
+      )}
+      {creating === "relay" && servers.isSuccess && (
+        <RelayDialog
+          node={forNode}
+          servers={forNode ? undefined : list}
+          groups={groups.data ?? []}
+          onClose={() => setQuery({ new: null, for: null })}
+        />
+      )}
+      {server && (action === "install" || action === "enroll") && (
+        <InstallDialog
+          key={action}
+          shown={{ server, mode: action === "install" ? "install" : "bootstrap" }}
+          onClose={() => setQuery({ action: null })}
+        />
+      )}
+      {shown && <InstallDialog shown={shown} onClose={() => setShown(null)} />}
+      {nodeId && <NodeDialog id={nodeId} onClose={() => setQuery({ node: null, ntab: null })} />}
+      {ent && (
+        <EntranceDialog
+          key={ent.e.id}
+          entrance={ent.e}
+          node={ent.n}
+          server={ent.s}
+          groups={groups.data ?? []}
+          onClose={() => setQuery({ entrance: null, etab: null })}
+        />
       )}
     </>
   );
