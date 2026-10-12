@@ -151,7 +151,7 @@ export function useAction() {
         const text = errorText(e, lang);
         toast({
           tone: "error",
-          title: opts.errorPrefix ? `${opts.errorPrefix}：${text}` : text,
+          title: opts.errorPrefix ? `${opts.errorPrefix}${lang === "en" ? ": " : "："}${text}` : text,
           description: errorCode(e) || undefined,
         });
         return undefined;
