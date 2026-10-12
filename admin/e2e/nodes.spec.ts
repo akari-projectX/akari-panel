@@ -461,8 +461,8 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   const section = (name: string) => d.getByRole("navigation", { name: "套餐设置分区" }).getByRole("button", { name });
   await d.getByLabel("名称").fill(plan);
   await section("流量与限速").click();
-  await d.getByLabel("流量", { exact: true }).fill("100");
-  await d.getByLabel("限速", { exact: true }).fill("50");
+  await d.getByRole("textbox", { name: /^流量(?!重置)/ }).fill("100");
+  await d.getByRole("textbox", { name: /^限速/ }).fill("50");
   await section("价格").click();
   await d.getByLabel("月付价格").fill("10");
   await section("库存与上架").click();
@@ -481,7 +481,7 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   await card.getByRole("button", { name: plan, exact: true }).click();
   d = dialog(page, `编辑「${plan}」`);
   await section("流量与限速").click();
-  await d.getByLabel("限速", { exact: true }).fill("5x");
+  await d.getByRole("textbox", { name: /^限速/ }).fill("5x");
   await section("基本").click();
   await d.getByRole("button", { name: "保存" }).click();
   await expect(d.getByText("请输入整数")).toBeVisible();
@@ -503,7 +503,7 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   await card.getByRole("button", { name: plan, exact: true }).click();
   d = dialog(page, `编辑「${plan}」`);
   await section("流量与限速").click();
-  await d.getByLabel("流量", { exact: true }).fill("50");
+  await d.getByRole("textbox", { name: /^流量(?!重置)/ }).fill("50");
   await d.getByRole("button", { name: "保存" }).click();
   const impact = dialog(page, "这次改动会影响现有用户");
   await expect(impact).toContainText("1 个生效订阅");
