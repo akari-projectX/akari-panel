@@ -6,7 +6,7 @@ import { Command } from "cmdk";
 import {
   ArrowRight,
   CornerDownLeft,
-  ListFilter,
+  Ban,
   Mail,
   Moon,
   Plus,
@@ -68,48 +68,38 @@ export function CommandPalette({
     const actions = tr("常用操作", "Actions");
     const pages = tr("页面", "Pages");
     const fixed: Cmd[] = [
-      { id: "a-user", group: actions, label: tr("新建用户", "New user"), icon: Plus, run: go("/users?new=1") },
+      // The design's five first (new user, relay, never-used, test mail, theme), then the rest.
       {
-        id: "a-node",
+        id: "a-user",
         group: actions,
-        label: tr("添加落地节点", "Add a node"),
-        icon: Server,
-        run: go("/nodes?new=node"),
-      },
-      {
-        id: "a-server",
-        group: actions,
-        label: tr("添加服务器", "Add a server"),
-        icon: Server,
-        run: go("/nodes?new=server"),
-      },
-      {
-        id: "a-never",
-        group: actions,
-        label: tr("筛选从未使用的账号", "Filter never-used accounts"),
-        icon: ListFilter,
-        run: go("/users?never_used=1"),
-      },
-      {
-        id: "a-mail",
-        group: actions,
-        label: tr("测试发信", "Send a test mail"),
-        icon: Mail,
-        run: go("/settings/mail"),
-      },
-      {
-        id: "a-order",
-        group: actions,
-        label: tr("新建人工订单", "New manual order"),
-        icon: Receipt,
-        run: go("/orders?new=1"),
+        label: tr("新建用户", "New user"),
+        hint: tr("用户", "Users"),
+        icon: Plus,
+        run: go("/users?new=1"),
       },
       {
         id: "a-relay",
         group: actions,
         label: tr("添加中转入口", "Add a relay entrance"),
+        hint: tr("节点", "Nodes"),
         icon: Route,
         run: go("/nodes"),
+      },
+      {
+        id: "a-never",
+        group: actions,
+        label: tr("筛选从未使用的账号", "Filter never-used accounts"),
+        hint: tr("用户", "Users"),
+        icon: Ban,
+        run: go("/users?never_used=1"),
+      },
+      {
+        id: "a-mail",
+        group: actions,
+        label: tr("发送测试邮件", "Send a test mail"),
+        hint: tr("设置 · 邮件", "Settings · Mail"),
+        icon: Mail,
+        run: go("/settings/mail"),
       },
       {
         id: "a-theme",
@@ -120,6 +110,30 @@ export function CommandPalette({
           onTheme();
           onOpenChange(false);
         },
+      },
+      {
+        id: "a-node",
+        group: actions,
+        label: tr("添加落地节点", "Add a node"),
+        hint: tr("节点", "Nodes"),
+        icon: Server,
+        run: go("/nodes?new=node"),
+      },
+      {
+        id: "a-server",
+        group: actions,
+        label: tr("添加服务器", "Add a server"),
+        hint: tr("节点", "Nodes"),
+        icon: Server,
+        run: go("/nodes?new=server"),
+      },
+      {
+        id: "a-order",
+        group: actions,
+        label: tr("新建人工订单", "New manual order"),
+        hint: tr("订单", "Orders"),
+        icon: Receipt,
+        run: go("/orders?new=1"),
       },
       ...ALL_NAV.map((n) => ({
         id: `p-${n.id}`,

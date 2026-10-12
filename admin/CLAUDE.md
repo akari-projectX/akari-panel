@@ -31,7 +31,7 @@
 - `src/console/`：
   - `routes.tsx` + `pages.ts`：`createBrowserRouter`（basename = 后台前缀下的 `/admin`），每个页面一个懒加载路由；侧栏/标签栏悬停或聚焦时预取（`prefetchPage`）。`router.tsx`：`navigate`/`setQuery`/`useRoute`/`useQueryParam`（URL 即视图，查询串即筛选与打开的对象）。
   - `data.ts`：**统一的数据层**——每次成功写请求按 API 路径的实体表（`ENTITIES`）让相关查询失效并重取（未登记的根一律重取，宁多一次请求不留旧数据）；窗口回到前台时重取；`useAction()` 执行写操作 + 成功提示 + 错误映射，等重取落地后才返回，每个按钮自己的 busy。查询键以实体名开头（`["users", …]`、`["user", id]`）。
-  - `shell.tsx`：桌面 = 浮起的毛玻璃侧栏（分组导航、待处理计数、可折叠并记住 `akari.admin.sidebar`、底部账户卡片菜单）+ 工具栏（面包屑（`useCrumb` 可显示打开的对象）、搜索 / ⌘K、语言、主题、告警铃铛）；手机 = 顶栏（标题、搜索、铃铛、账户菜单）+ **底部标签栏 仪表盘 / 用户 / 订单 / 工单 / 更多**（`nav.ts` 的 `TABS`），"更多"页（`pages/more.tsx`）列出全部页面并带语言与主题。`main[data-page][data-ready]` 标出页面数据已到（e2e 计时用）。
+  - `shell.tsx`：桌面 = 浮起的毛玻璃侧栏（分组导航、待处理计数、可折叠并记住 `akari.admin.sidebar`、底部账户卡片菜单）+ 工具栏（按设计稿：左侧搜索 / ⌘K，右侧主题、告警铃铛；语言在账户菜单；`useCrumb` 目前不显示）；手机 = 顶栏（站点标识、搜索、铃铛、账户菜单）+ **底部标签栏 仪表盘 / 用户 / 订单 / 工单 / 更多**（`nav.ts` 的 `TABS`），"更多"页（`pages/more.tsx`）列出全部页面并带语言与主题。`main[data-page][data-ready]` 标出页面数据已到（e2e 计时用）。
   - `palette.tsx`：cmdk 命令面板（独立 chunk，首次打开时加载）：页面、常用操作、`@` 只搜用户、`#` 只搜订单。
   - `kit.tsx`（FormError、useDebounced、CopyButton、Mono、StatusBadge、Stat）、`session.tsx`（`useMe`/`useSite`/`useBadges`/`useCrumb`）、`servers.ts`（服务器列表与状态）、`pages/*`（每个导航项一个页面；`protocols.gen.ts` 由 `make gen-protocols` 从 `proto/protocols.toml` 生成）。
 

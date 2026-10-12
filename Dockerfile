@@ -49,6 +49,8 @@ WORKDIR /src/admin
 COPY admin/package.json admin/package-lock.json ./
 RUN npm ci
 COPY admin/ ./
+# The console shows the panel version (vite.config.ts reads ../Cargo.toml).
+COPY Cargo.toml /src/Cargo.toml
 RUN npm run build
 
 FROM ${RUST_IMAGE} AS chef

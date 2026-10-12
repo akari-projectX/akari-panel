@@ -46,13 +46,15 @@ function Tip({
 }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="glass rounded-lg bg-popover px-3 py-2 text-footnote shadow-pop">
-      <div className="mb-1 font-medium">{labelFormat(String(label))}</div>
+    <div className="glass min-w-36 rounded-lg bg-popover px-3 py-2 text-footnote shadow-pop">
+      <div className="mb-1 font-medium text-muted-foreground">{labelFormat(String(label))}</div>
       {payload.map((p) => (
         <div key={String(p.dataKey)} className="flex items-center gap-2">
           <span className="size-2 rounded-full" style={{ background: p.color }} aria-hidden="true" />
           <span className="text-muted-foreground">{String(p.name)}</span>
-          <span className="tnum ml-auto pl-3 font-medium">{p.value == null ? "—" : format(Number(p.value))}</span>
+          <span className="tnum ml-auto pl-3 font-semibold text-foreground">
+            {p.value == null ? "—" : format(Number(p.value))}
+          </span>
         </div>
       ))}
     </div>
@@ -75,6 +77,7 @@ export function TrendChart({
   height = 176,
   className,
   legend = "total",
+  hideCaption,
 }: {
   title: string;
   times: string[];
@@ -89,6 +92,11 @@ export function TrendChart({
   className?: string;
   /** Legend numbers: the series totals, or the latest value. */
   legend?: "total" | "latest" | "none";
+  /**
+   * The title and legend live in the card header (stat.tsx `Legend`): the
+   * caption stays for screen readers only.
+   */
+  hideCaption?: boolean;
 }) {
   const tr = useTr();
   const id = useId().replace(/:/g, "");
@@ -154,7 +162,7 @@ export function TrendChart({
   );
   return (
     <figure className={cn("grid gap-2", className)}>
-      <figcaption className="flex flex-wrap items-center gap-x-4 gap-y-1">
+      <figcaption className={cn("flex flex-wrap items-center gap-x-4 gap-y-1", hideCaption && "sr-only")}>
         <span className="text-body font-medium">{title}</span>
         {legend !== "none" &&
           series.map((s) => {
@@ -174,7 +182,7 @@ export function TrendChart({
         <div style={{ height }} aria-hidden="true">
           <ResponsiveContainer width="100%" height="100%">
             {kind === "bar" ? (
-              <BarChart {...common} barCategoryGap="22%">
+              <BarChart {...common} barCategoryGap="28%">
                 {grid}
                 {x}
                 {y}
@@ -216,7 +224,7 @@ export function TrendChart({
                     fill={`url(#${id}-g${j})`}
                     connectNulls={false}
                     dot={false}
-                    activeDot={{ r: 3.5, strokeWidth: 0 }}
+                    activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--card)" }}
                     isAnimationActive={false}
                   />
                 ))}

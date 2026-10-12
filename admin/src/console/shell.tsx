@@ -1,16 +1,19 @@
-// The console shell (2026-10 redesign, macOS-like):
-// - desktop (≥1024px): a floating frosted sidebar (grouped navigation with
-//   pending counts, collapsible and remembered, the account card at the
-//   bottom) and a frosted toolbar (breadcrumb, search / Ctrl+K, language,
-//   theme, alerts bell);
-// - phone: a frosted top bar (page title, search, bell, account menu) and
-//   a bottom tab bar (dashboard, users, orders, tickets, more — SPRINT
+// The console shell (2026-10 redesign, macOS-like; screenshots in
+// design/admin-redesign-2026-10/):
+// - desktop (≥1024px): a floating frosted sidebar (brand header with the
+//   panel version and the collapse chevron, grouped navigation with pending
+//   counts, collapsible and remembered, the account card at the bottom) and
+//   a frosted toolbar (search / Ctrl+K on the left; theme and the alerts
+//   bell on the right). Language, theme and sign-out are in the account
+//   menu;
+// - phone: a frosted top bar (brand, search, bell, account menu) and a
+//   bottom tab bar (dashboard, users, orders, tickets, more — SPRINT
 //   admin-redesign-1012 ⑦); "More" lists every page;
 // - the command palette (Ctrl/⌘ K).
 // The main area carries data-page / data-ready (the page's data has
 // arrived) for the e2e timing suite.
 import { useIsFetching } from "@tanstack/react-query";
-import { Bell, ChevronRight, Fingerprint, Languages, LogOut, Moon, PanelLeft, Search, Sun } from "lucide-react";
+import { Bell, ChevronsLeft, ChevronsRight, Fingerprint, Languages, LogOut, Moon, Search, Sun } from "lucide-react";
 import { Suspense, lazy, useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigation } from "react-router";
 import { logout } from "../shared/api";
@@ -18,13 +21,14 @@ import { loadPage, loginBase } from "../shared/base";
 import { cn } from "../shared/cn";
 import { useLang, useSetLang, useTr } from "../shared/i18n";
 import { useTheme } from "../shared/theme";
+import { BrandMark } from "../shared/ui/brand";
 import { Kbd, MOD_KEY } from "../shared/ui/form";
 import { Menu, MenuItem, MenuLabel, MenuSeparator } from "../shared/ui/menu";
 import { useToast } from "../shared/ui/toast";
-import { ALL_NAV, MORE, NAV, TABS, pathOf, type NavItem } from "./nav";
+import { NAV, TABS, pathOf, type NavItem } from "./nav";
 import { prefetchPage } from "./pages";
 import { navigate } from "./router";
-import { CrumbContext, useBadges, useMe, useSite, type Badges } from "./session";
+import { useBadges, useMe, useSite, type Badges } from "./session";
 
 // The command palette (cmdk) is its own chunk, loaded on first open (or
 // when the search pill is hovered / focused), not with the shell.
@@ -46,27 +50,10 @@ function count(it: NavItem, b: Badges | undefined): number {
   return 0;
 }
 
-/** The site mark: the uploaded logo, else the first letter on the brand square. */
+/** The site mark: the uploaded logo, else the Akari seal (shared/ui/brand). */
 export function AppMark({ size = 28 }: { size?: number }) {
   const site = useSite();
-  if (site.logoUrl)
-    return (
-      <img
-        src={site.logoUrl}
-        alt=""
-        className="shrink-0 rounded-[8px] object-contain"
-        style={{ width: size, height: size }}
-      />
-    );
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-flex shrink-0 items-center justify-center rounded-[8px] bg-primary font-semibold text-primary-foreground shadow-[inset_0_0.5px_0_rgb(255_255_255/0.25),0_1px_2px_rgb(0_0_0/0.2)]"
-      style={{ width: size, height: size, fontSize: size * 0.48 }}
-    >
-      {site.siteName.slice(0, 1).toUpperCase()}
-    </span>
-  );
+  return <BrandMark name={site.siteName} logoUrl={site.logoUrl} size={size} />;
 }
 
 /** Account menu (sidebar card on a desktop, avatar on a phone): account, theme, language, sign out. */
@@ -114,7 +101,7 @@ function Avatar({ email, size = 28 }: { email: string; size?: number }) {
   return (
     <span
       aria-hidden="true"
-      className="inline-flex shrink-0 items-center justify-center rounded-full bg-linear-to-b from-[#60a5fa] to-[#2563eb] font-semibold text-white uppercase"
+      className="inline-flex shrink-0 items-center justify-center rounded-full bg-linear-to-b from-[color-mix(in_srgb,var(--primary),white_32%)] to-primary font-semibold text-primary-foreground uppercase"
       style={{ width: size, height: size, fontSize: size * 0.42 }}
     >
       {email.slice(0, 1)}
@@ -145,14 +132,33 @@ function Sidebar({
         collapsed ? "w-[64px]" : "w-[232px]",
       )}
     >
-      <div className={cn("flex items-center gap-2.5 px-4 pt-4 pb-3", collapsed && "justify-center px-0")}>
+      <div
+        className={cn("flex items-center gap-2.5 px-4 pt-4 pb-3", collapsed && "flex-col justify-center gap-1.5 px-0")}
+      >
         <AppMark />
         {!collapsed && (
           <div className="min-w-0 flex-1 leading-tight">
             <div className="truncate text-headline font-semibold tracking-[-0.01em]">{site.siteName}</div>
-            <div className="text-caption text-muted-foreground">{tr("管理后台", "Admin console")}</div>
+            <div className="truncate text-caption text-muted-foreground">
+              {tr("管理后台", "Admin console")}
+              {__PANEL_VERSION__ && ` · v${__PANEL_VERSION__}`}
+            </div>
           </div>
         )}
+        <button
+          type="button"
+          onClick={onCollapse}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? tr("展开侧边栏", "Expand sidebar") : tr("收起侧边栏", "Collapse sidebar")}
+          title={collapsed ? tr("展开侧边栏", "Expand sidebar") : tr("收起侧边栏", "Collapse sidebar")}
+          className="hit-44 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-faint transition-colors hover:bg-accent hover:text-foreground"
+        >
+          {collapsed ? (
+            <ChevronsRight className="size-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronsLeft className="size-3.5" aria-hidden="true" />
+          )}
+        </button>
       </div>
       <nav className="scroll-thin flex-1 overflow-y-auto px-2.5 pb-3" aria-label={tr("主导航", "Main navigation")}>
         {NAV.map((g) => (
@@ -210,23 +216,7 @@ function Sidebar({
           </div>
         ))}
       </nav>
-      <div className={cn("m-2.5 mt-0 grid gap-1.5", collapsed && "m-1.5")}>
-        <button
-          type="button"
-          onClick={onCollapse}
-          aria-expanded={!collapsed}
-          className={cn(
-            "flex h-8 items-center gap-2.5 rounded-[9px] px-2 text-body text-muted-foreground transition-colors hover:bg-accent",
-            collapsed && "justify-center px-0",
-          )}
-        >
-          <PanelLeft className="size-4" aria-hidden="true" />
-          {collapsed ? (
-            <span className="sr-only">{tr("展开侧边栏", "Expand sidebar")}</span>
-          ) : (
-            tr("收起侧边栏", "Collapse sidebar")
-          )}
-        </button>
+      <div className={cn("m-2.5 mt-0 grid", collapsed && "m-1.5")}>
         <AccountMenu
           onTheme={onTheme}
           trigger={
@@ -273,8 +263,6 @@ function BellButton({ firing }: { firing: number }) {
 
 export function Shell({ page, children }: { page: string; children: ReactNode }) {
   const tr = useTr();
-  const lang = useLang();
-  const setLang = useSetLang();
   const [theme, toggleTheme] = useTheme();
   const me = useMe();
   const site = useSite();
@@ -287,7 +275,6 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
     setPaletteMounted(true);
     setPaletteState(v);
   }, []);
-  const [crumb, setCrumb] = useState<string | null>(null);
   const navigation = useNavigation();
   const fetching = useIsFetching();
   // Ready = this page's chunk and its first data have arrived (latched per page).
@@ -313,167 +300,129 @@ export function Shell({ page, children }: { page: string; children: ReactNode })
       /* storage blocked */
     }
   }, [collapsed]);
-  const setCrumbStable = useCallback((c: string | null) => setCrumb(c), []);
 
-  const current = [...ALL_NAV, MORE].find((n) => n.id === page);
-  const group = NAV.find((g) => g.items.some((i) => i.id === page));
   const firing = badges.data?.alerts_firing ?? 0;
   const inMore = !TABS.some((t) => t.id === page);
+  const iconButton =
+    "hit-44 inline-flex size-8 items-center justify-center rounded-full transition-colors hover:bg-accent";
 
   return (
-    <CrumbContext.Provider value={setCrumbStable}>
-      <div className="min-h-dvh bg-window lg:bg-background">
-        <Sidebar page={page} collapsed={collapsed} onCollapse={() => setCollapsed((v) => !v)} onTheme={toggleTheme} />
-        <div
-          className={cn(
-            "min-h-dvh transition-[margin] duration-(--dur-base) ease-(--ease-out) lg:bg-window lg:shadow-[-0.5px_0_0_var(--border)]",
-            collapsed ? "lg:ml-[80px]" : "lg:ml-[248px]",
-          )}
-        >
-          {/* Desktop toolbar */}
-          <header className="glass sticky top-0 z-20 hidden h-13 items-center gap-2 border-b border-separator bg-(--glass-toolbar) px-6 lg:flex">
-            <nav
-              aria-label={tr("当前位置", "Breadcrumb")}
-              className="flex min-w-0 items-center gap-1.5 text-body text-muted-foreground"
-            >
-              <span className="truncate">{site.siteName}</span>
-              {group && (
-                <>
-                  <ChevronRight className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-                  <span className="truncate">{tr(group.zh, group.en)}</span>
-                </>
-              )}
-              <ChevronRight className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-              {crumb ? (
-                <>
-                  <Link to={pathOf(page)} className="truncate hover:text-foreground">
-                    {current ? tr(current.zh, current.en) : ""}
-                  </Link>
-                  <ChevronRight className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
-                  <span className="truncate font-medium text-foreground" aria-current="page">
-                    {crumb}
-                  </span>
-                </>
-              ) : (
-                <span className="truncate font-medium text-foreground" aria-current="page">
-                  {current ? tr(current.zh, current.en) : ""}
-                </span>
-              )}
-            </nav>
-            <div className="flex-1" />
-            <button
-              type="button"
-              onClick={() => setPalette(true)}
-              onMouseEnter={() => void loadPalette()}
-              onFocus={() => void loadPalette()}
-              className="flex h-8 w-[300px] items-center gap-2 rounded-full bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] px-3 text-body text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_9%,transparent)]"
-            >
-              <Search className="size-4" aria-hidden="true" />
-              <span className="flex-1 text-left">{tr("搜索或跳转…", "Search or jump to…")}</span>
-              <Kbd>{MOD_KEY} K</Kbd>
-            </button>
-            <button
-              type="button"
-              onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-              aria-label={lang === "zh" ? "English" : "中文"}
-              className="inline-flex size-8 items-center justify-center rounded-full transition-colors hover:bg-accent"
-            >
-              <Languages className="size-[18px]" aria-hidden="true" />
-            </button>
+    <div className="min-h-dvh bg-window lg:bg-background">
+      <Sidebar page={page} collapsed={collapsed} onCollapse={() => setCollapsed((v) => !v)} onTheme={toggleTheme} />
+      <div
+        className={cn(
+          "min-h-dvh transition-[margin] duration-(--dur-base) ease-(--ease-out) lg:bg-window lg:shadow-[-0.5px_0_0_var(--border)]",
+          collapsed ? "lg:ml-[80px]" : "lg:ml-[248px]",
+        )}
+      >
+        {/* Desktop toolbar: search on the left, theme and bell on the right. */}
+        <header className="glass sticky top-0 z-20 hidden h-13 items-center gap-2 border-b border-separator bg-(--glass-toolbar) px-6 lg:flex">
+          <button
+            type="button"
+            onClick={() => setPalette(true)}
+            onMouseEnter={() => void loadPalette()}
+            onFocus={() => void loadPalette()}
+            className="flex h-8 w-[300px] max-w-full items-center gap-2 rounded-full bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] px-3 text-body text-faint transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_9%,transparent)]"
+          >
+            <Search className="size-4" aria-hidden="true" />
+            <span className="flex-1 text-left">{tr("搜索或跳转…", "Search or jump to…")}</span>
+            <Kbd>{MOD_KEY} K</Kbd>
+          </button>
+          <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
               onClick={toggleTheme}
               aria-label={tr("切换主题", "Toggle theme")}
-              className="inline-flex size-8 items-center justify-center rounded-full transition-colors hover:bg-accent"
+              className={iconButton}
             >
               {theme === "dark" ? (
-                <Sun className="size-[18px]" aria-hidden="true" />
+                <Moon className="size-4" aria-hidden="true" />
               ) : (
-                <Moon className="size-[18px]" aria-hidden="true" />
+                <Sun className="size-4" aria-hidden="true" />
               )}
             </button>
             <BellButton firing={firing} />
-          </header>
+          </div>
+        </header>
 
-          {/* Phone top bar */}
-          <header className="glass sticky top-0 z-20 flex h-12 items-center gap-2 border-b border-separator bg-(--glass-toolbar) px-3 pt-[env(safe-area-inset-top)] lg:hidden">
-            <AppMark size={24} />
-            <span className="min-w-0 truncate text-headline font-semibold">
-              {current ? tr(current.zh, current.en) : site.siteName}
-            </span>
-            <div className="ml-auto flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setPalette(true)}
-                aria-label={tr("搜索", "Search")}
-                className="hit-44 inline-flex size-8 items-center justify-center rounded-full hover:bg-accent"
-              >
-                <Search className="size-[18px]" aria-hidden="true" />
-              </button>
-              <BellButton firing={firing} />
-              <AccountMenu
-                onTheme={toggleTheme}
-                trigger={
-                  <button
-                    type="button"
-                    aria-label={tr("账户菜单", "Account menu")}
-                    className="hit-44 inline-flex size-8 items-center justify-center rounded-full"
-                  >
-                    <Avatar email={me.email} size={26} />
-                  </button>
-                }
-              />
-            </div>
-          </header>
+        {/* Phone top bar */}
+        <header className="glass sticky top-0 z-20 flex h-12 items-center gap-2 border-b border-separator bg-(--glass-toolbar) px-4 pt-[env(safe-area-inset-top)] lg:hidden">
+          <AppMark size={24} />
+          <span className="min-w-0 truncate text-headline font-semibold">{site.siteName}</span>
+          <div className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPalette(true)}
+              aria-label={tr("搜索", "Search")}
+              className={iconButton}
+            >
+              <Search className="size-[18px]" aria-hidden="true" />
+            </button>
+            <BellButton firing={firing} />
+            <AccountMenu
+              onTheme={toggleTheme}
+              trigger={
+                <button
+                  type="button"
+                  aria-label={tr("账户菜单", "Account menu")}
+                  className="hit-44 inline-flex size-8 items-center justify-center rounded-full"
+                >
+                  <Avatar email={me.email} size={24} />
+                </button>
+              }
+            />
+          </div>
+        </header>
 
-          <main
-            key={page}
-            data-page={page}
-            data-ready={ready === page || undefined}
-            className="page-in mx-auto max-w-[1360px] px-4 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:px-6 lg:px-8 lg:pt-6 lg:pb-12"
-          >
-            {children}
-          </main>
-        </div>
-
-        {/* Phone tab bar */}
-        <nav
-          aria-label={tr("标签栏", "Tab bar")}
-          className="glass fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-separator bg-[color-mix(in_srgb,var(--window)_93%,transparent)] pb-[env(safe-area-inset-bottom)] lg:hidden"
+        <main
+          key={page}
+          data-page={page}
+          data-ready={ready === page || undefined}
+          className="page-in mx-auto max-w-[1360px] px-4 pt-4 pb-[calc(88px+env(safe-area-inset-bottom))] sm:px-6 lg:px-8 lg:pt-6 lg:pb-12"
         >
-          {TABS.map((t) => {
-            const on = t.id === "more" ? inMore : t.id === page;
-            const n = count(t, badges.data);
-            return (
-              <Link
-                key={t.id}
-                to={pathOf(t.id)}
-                aria-current={on ? "page" : undefined}
-                className={cn(
-                  "relative flex h-[52px] flex-col items-center justify-center gap-0.5 text-micro font-medium",
-                  on ? "text-primary" : "text-faint",
-                )}
-              >
-                <t.icon className="size-[22px] stroke-[1.8]" aria-hidden="true" />
-                {tr(t.zh, t.en)}
-                {n > 0 && (
-                  <span
-                    className="tnum absolute top-1 left-1/2 ml-2 rounded-full bg-destructive px-1 text-micro leading-4 font-semibold text-white"
-                    aria-label={tr(`${n} 条待处理`, `${n} pending`)}
-                  >
-                    {n}
-                  </span>
-                )}
-              </Link>
-            );
-          })}
-        </nav>
-        {paletteMounted && (
-          <Suspense fallback={null}>
-            <CommandPalette open={palette} onOpenChange={setPalette} onTheme={toggleTheme} />
-          </Suspense>
-        )}
+          {children}
+        </main>
       </div>
-    </CrumbContext.Provider>
+
+      {/* Phone tab bar */}
+      <nav
+        aria-label={tr("标签栏", "Tab bar")}
+        className="glass fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-separator bg-[color-mix(in_srgb,var(--window)_93%,transparent)] pb-[env(safe-area-inset-bottom)] lg:hidden"
+      >
+        {TABS.map((t) => {
+          const on = t.id === "more" ? inMore : t.id === page;
+          const n = count(t, badges.data);
+          return (
+            <Link
+              key={t.id}
+              to={pathOf(t.id)}
+              aria-current={on ? "page" : undefined}
+              onMouseEnter={() => prefetchPage(t.id)}
+              onFocus={() => prefetchPage(t.id)}
+              className={cn(
+                "relative flex h-[52px] flex-col items-center justify-center gap-0.5 text-micro font-medium transition-colors",
+                on ? "text-primary" : "text-faint",
+              )}
+            >
+              <t.icon className="size-[22px] stroke-[1.8]" aria-hidden="true" />
+              {tr(t.zh, t.en)}
+              {n > 0 && (
+                <span
+                  className="tnum absolute top-1 left-1/2 ml-2 rounded-full bg-destructive px-1 text-micro leading-4 font-semibold text-white"
+                  aria-label={tr(`${n} 条待处理`, `${n} pending`)}
+                >
+                  {n}
+                </span>
+              )}
+            </Link>
+          );
+        })}
+      </nav>
+      {paletteMounted && (
+        <Suspense fallback={null}>
+          <CommandPalette open={palette} onOpenChange={setPalette} onTheme={toggleTheme} />
+        </Suspense>
+      )}
+    </div>
   );
 }

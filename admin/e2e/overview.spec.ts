@@ -27,30 +27,34 @@ test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: tiles, traffic, needs-attention
   const { order } = await apiJson<{ order: { out_trade_no: string } }>("GET", `/orders/${id}`);
   await openConsole(page, "");
   await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
-  for (const t of ["今日营收", "有效订阅", "当前在线用户", "服务器在线"])
+  // KPI cards; the period control (default 7 天, in the URL) switches the revenue window.
+  for (const t of ["7 天净营收", "有效订阅", "当前在线用户", "服务器在线"])
     await expect(page.getByText(t, { exact: true })).toBeVisible();
+  await page.getByRole("group", { name: "时间范围" }).getByRole("button", { name: "今日" }).click();
+  await expect(page).toHaveURL(/[?&]range=today/);
+  await expect(page.getByText("今日净营收", { exact: true })).toBeVisible();
   await expect(page.getByText(/¥42\.00/).first()).toBeVisible();
   // Net revenue: collected, refunded (channel money, by refund day), net.
   await expect(page.locator('[data-revenue-window="today"]')).toContainText(/实收¥[\d.]+退款¥[\d.]+净额-?¥[\d.]+/);
   await expect(page.locator("[data-revenue-split]")).toContainText(/余额、抵扣、优惠券部分不算营收/);
-  await expect(page.getByText("近 14 天全网流量（计费）")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "全网流量" })).toBeVisible();
   await expect(page.getByText("流量最多的节点")).toBeVisible();
   // Other specs leave history of deleted nodes behind: more than one row is fine.
   await expect(page.getByText("已删除的节点").first()).toBeVisible();
   // Latest orders → the order dialog.
-  await page.getByRole("button", { name: new RegExp(order.out_trade_no) }).click();
+  await page.getByRole("link", { name: new RegExp(order.out_trade_no) }).click();
   await expect(page).toHaveURL(new RegExp(`/orders\\?open=${id}`));
   await expect(dialog(page, order.out_trade_no)).toBeVisible();
   await page.keyboard.press("Escape");
   // Needs attention → the filtered view.
   await page.goto(CONSOLE);
-  await page.getByRole("button", { name: /待审核提现/ }).click();
+  await page.getByRole("link", { name: /待审核提现/ }).click();
   await expect(page).toHaveURL(/\/finance\?status=pending/);
   await page.goBack();
-  await page.getByRole("button", { name: /已付款未开通的订单/ }).click();
+  await page.getByRole("link", { name: /已付款未开通的订单/ }).click();
   await expect(page).toHaveURL(/\/orders\?unfulfilled=1/);
   await page.goBack();
-  await page.getByRole("button", { name: /发送失败的邮件/ }).click();
+  await page.getByRole("link", { name: /发送失败的邮件/ }).click();
   await expect(page).toHaveURL(/\/status\?mail=dead/);
   await page.goBack();
   // Refresh (and the 30 s poll) re-reads.
