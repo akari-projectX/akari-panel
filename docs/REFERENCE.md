@@ -294,7 +294,8 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | 取消待支付订单（先向支付宝查询并关闭） |
 | GET | /api/v1/plan-prices | admin | 每个套餐及其 `on_sale` 标记和价格，`payments_enabled` |
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` 替换该套餐的价格（W7 的周期类型） |
-| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&via&before&limit`（keyset；`via=manual` = 管理员创建/确认；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）和 `user_email`（当前地址，删除后为 null） |
+| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&refunded&via&q&before&limit`（keyset；`q` = 后台账本的单一搜索框：以 `@` 开头（或含 `@`）= 买家当前邮箱包含该串，否则 = 订单号/交易号包含该串，不区分大小写，`%`/`_` 按字面，最长 100 字符；`refunded=true|false` = 已退款/未退款；`via=manual` = 管理员创建/确认；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）和 `user_email`（当前地址，删除后为 null） |
+| GET | /api/v1/orders/summary | admin | 后台账本（改版）：`?status&email&out_trade_no&unfulfilled&refunded&via&q&from&to`（与列表同样的筛选与校验）→ `{counts: {all, pending, paid, unfulfilled, refunded, expired, cancelled}, days: [{day, orders, paid_cents, refund_cents}]}`。`counts` 忽略状态类筛选（每个分段显示自己的数量）；`days` = `from..to`（站点时区的日，两者同给或都不给，≤366 天）内按下单日分组、套用全部筛选：笔数、已付订单的渠道实收 `amount_cents`、这些订单的渠道退款 `refund_gateway_cents`（无论何时退的）。一个 REPEATABLE READ 只读事务内两条聚合查询 |
 | POST | /api/v1/orders/manual | admin | 运维：`{user_id, plan_id, period, gift?, reason}` → 经由唯一的支付路径产生一个已支付订单（`paid_via` manual；金额 = 来自 SQL 的该周期价格，赠送为 0，绝不取自客户端；履约失败 = 409 且不保留任何内容） |
 | GET | /api/v1/orders/export.csv | admin | 运维：订单 CSV `?from&to&status&via`（按站点时区的天：本地午夜；≤366，默认最近 30 天；有审计） |
 | GET | /api/v1/users/export.csv | admin | 运维：带列表筛选条件的用户 CSV `?q&plan_id&status&role&sort`（流式，UTF-8 BOM，防公式注入；有审计） |
@@ -303,7 +304,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/users/batch/preview | admin | 运维：`{selection: {ids} \| {filter}}` → `{total, admins, sample}` |
 | GET/POST | /api/v1/users/batch | admin | 运维：最近的任务 / 创建 `{selection, action: {kind: extend_expiry {days} (periodic subscriptions only)\|reset_traffic\|ban {reason}\|unban\|set_plan {plan_id, period, days?}\|cancel_plan\|add_balance\|send_email, …}}` → 202 + 任务（后台运行，每个用户经现有的 `apply_*` 执行一次，按用户审计） |
 | GET | /api/v1/users/batch/{id} | admin | 运维：任务进度 + 条目（失败/跳过的在前）；`POST …/cancel` 跳过仍待处理的部分 |
-| GET/POST | /api/v1/coupon-batches | admin | 运维：批次 / 生成 `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
+| GET/POST | /api/v1/coupon-batches | admin | 运维：批次（`codes`/`used`/`redeemed`，后台改版加 `codes_used` = 已被用过的码数）/ 生成 `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
 | POST | /api/v1/coupon-batches/{id}/revoke | admin | 运维：停用该批次的所有码（仅一次） |
 | GET | /api/v1/coupon-batches/{id}/export.csv | admin | 运维：该批次的码，CSV 格式（有审计） |
 | GET | /api/v1/orders/{id} | admin | 订单 + 支付事件 |
@@ -311,7 +312,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance, external_cents?, keep_plan?, original?, original_cents?}`：对已支付订单退款一次（余额部分退回；支付宝金额：① `original` = 经支付宝退款（`alipay.trade.refund`，全额或其中 `original_cents`，幂等的 `out_request_no`；确认时 200，结果未知时 202 `{pending}`——对账循环会查询并重试，被拒绝时 502 `order_admin.refund_gateway_failed`——不动任何资金；该支付方式的 `refund_original` 开关，默认开），② `to_balance`，③ 否则 `external_cents` = 在支付宝后台已退的金额，订单有支付宝金额时必填；记为 `refund_balance_cents` + `refund_external_cents` = `refund_cents`）；归还优惠券使用次数（低-2）；撤销待结算的佣金，追回已入账的佣金（中-4：立即从邀请人余额扣回，余下部分记为欠款，与后续佣金冲抵）；P1：撤销该订单对订阅的影响（新购 → 取消，续期 → 收回该期限，切换 → 恢复原套餐，重置包 → 仅退钱），除非带 `keep_plan` |
 | GET | /api/v1/orders/{id}/refund-preview | admin | P1：`{balance_part_cents, amount_cents, effect, original_available, original_request}`——此刻退款会产生的结果（`effect.kind` none/cancel/rollback/restore）；不可退款时 409 |
 | GET/POST | /api/v1/coupons | admin | W16：优惠券 / 创建 `{code, kind percent\|fixed, value, plan_ids?, periods?, min_amount_cents?, starts_at?, ends_at?, max_uses?, per_user_limit?, new_users_only?, enabled?}` |
-| GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16：优惠券 + 兑换记录 / 更新（code 不可改）/ 删除（仅限从未使用过的） |
+| GET/PATCH/DELETE | /api/v1/coupons/{id} | admin | W16：优惠券 + 兑换记录（最近 200 条，带订单的 `plan_name`/`period`）/ 更新（code 不可改）/ 删除（仅限从未使用过的）。列表与详情的优惠券（后台改版，只读）带 `redeemed_7d`（近 7 天兑现次数，按兑现时刻；退款后不计）与 `discount_cents_total`（已兑现订单的优惠合计） |
 | GET | /api/v1/balances | admin | W16：有余额的客户（`{user_id, email, …}`），`?email` 可查找任何人 |
 | GET/POST | /api/v1/users/{id}/balance | admin | W16：余额 + 流水 / 调整 `{amount_cents (signed), reason}`（不会低于 0） |
 | GET | /api/v1/commissions | admin | W16：佣金 `?status&email&limit`（`email` = 邀请人的）；行：`inviter_label`/`inviter_email`、`invitee_label`/`invitee_email` |

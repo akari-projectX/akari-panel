@@ -64,6 +64,7 @@ pub fn routes() -> Router<AppState> {
             put(catalog::set_prices),
         )
         .route("/{prefix}/api/v1/orders", get(list_orders))
+        .route("/{prefix}/api/v1/orders/summary", get(orders_summary))
         .route(
             "/{prefix}/api/v1/orders/manual",
             post(super::manual::create),
@@ -1006,23 +1007,57 @@ pub struct ListOrdersQuery {
     pub unfulfilled: Option<bool>,
     /// Ops: paid_via (`manual` = admin-created or admin-confirmed).
     pub via: Option<String>,
+    /// Admin redesign: one search box. `@…` (or anything with an `@`) =
+    /// the buyer's current email contains it; else the order or provider
+    /// trade number contains it. Case-insensitive, at most `MAX_Q` chars.
+    pub q: Option<String>,
+    /// true = refunded (any route); false = not refunded.
+    pub refunded: Option<bool>,
 }
 
-pub async fn list_orders(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Query(q): Query<ListOrdersQuery>,
-) -> Result<Json<Vec<OrderView>>, ApiError> {
-    user.require_admin()?;
+/// Longest search term `q` (longer input is cut).
+const MAX_Q: usize = 100;
+
+/// `%term%` for ILIKE with `\`, `%` and `_` taken literally.
+fn like_contains(term: &str) -> String {
+    let mut out = String::with_capacity(term.len() + 2);
+    out.push('%');
+    for c in term.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
+}
+
+/// The list's filters (everything but the cursor and the limit) on a
+/// `… FROM orders WHERE true` query. `status` and `unfulfilled`/`refunded`
+/// only when `with_status` (the summary counts ignore them).
+fn push_order_filters(
+    qb: &mut sqlx::QueryBuilder<sqlx::Postgres>,
+    q: &ListOrdersQuery,
+    with_status: bool,
+) -> Result<(), ApiError> {
     if let Some(s) = &q.status
         && !matches!(s.as_str(), "pending" | "paid" | "expired" | "cancelled")
     {
         return Err(bad_request!("request.status_invalid", "unknown status"));
     }
-    let limit = q.limit.unwrap_or(50).clamp(1, 200);
-    let mut qb = sqlx::QueryBuilder::new(format!("{ORDER_SQL} WHERE true"));
-    if let Some(s) = &q.status {
-        qb.push(" AND status = ").push_bind(s.clone());
+    if with_status {
+        if let Some(s) = &q.status {
+            qb.push(" AND status = ").push_bind(s.clone());
+        }
+        if q.unfulfilled == Some(true) {
+            // Needs attention: not granted and not refunded (中-2).
+            qb.push(" AND status = 'paid' AND fulfilled_at IS NULL AND refunded_at IS NULL");
+        }
+        match q.refunded {
+            Some(true) => qb.push(" AND refunded_at IS NOT NULL"),
+            Some(false) => qb.push(" AND refunded_at IS NULL"),
+            None => qb,
+        };
     }
     if let Some(e) = q.email.as_deref().filter(|e| !e.is_empty()) {
         qb.push(" AND user_id = (SELECT u.id FROM users u WHERE u.email = ")
@@ -1036,9 +1071,26 @@ pub async fn list_orders(
             .push_bind(o.to_string())
             .push(")");
     }
-    if q.unfulfilled == Some(true) {
-        // Needs attention: not granted and not refunded (中-2).
-        qb.push(" AND status = 'paid' AND fulfilled_at IS NULL AND refunded_at IS NULL");
+    if let Some(t) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let t: String = t.chars().take(MAX_Q).collect();
+        if let Some(mail) = t
+            .strip_prefix('@')
+            .or(t.contains('@').then_some(t.as_str()))
+        {
+            let mail = mail.trim();
+            if !mail.is_empty() {
+                qb.push(" AND user_id IN (SELECT u.id FROM users u WHERE u.email ILIKE ")
+                    .push_bind(like_contains(mail))
+                    .push(")");
+            }
+        } else {
+            let pat = like_contains(&t);
+            qb.push(" AND (out_trade_no ILIKE ")
+                .push_bind(pat.clone())
+                .push(" OR trade_no ILIKE ")
+                .push_bind(pat)
+                .push(")");
+        }
     }
     if let Some(v) = q.via.as_deref().filter(|v| !v.is_empty()) {
         if !matches!(
@@ -1049,6 +1101,18 @@ pub async fn list_orders(
         }
         qb.push(" AND paid_via = ").push_bind(v.to_string());
     }
+    Ok(())
+}
+
+pub async fn list_orders(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<ListOrdersQuery>,
+) -> Result<Json<Vec<OrderView>>, ApiError> {
+    user.require_admin()?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let mut qb = sqlx::QueryBuilder::new(format!("{ORDER_SQL} WHERE true"));
+    push_order_filters(&mut qb, &q, true)?;
     if let Some(b) = q.before {
         qb.push(" AND (created_at, id) < (SELECT created_at, id FROM orders WHERE id = ")
             .push_bind(b)
@@ -1061,6 +1125,120 @@ pub async fn list_orders(
         .fetch_all(state.pg())
         .await?;
     Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrdersSummaryQuery {
+    pub status: Option<String>,
+    pub email: Option<String>,
+    pub out_trade_no: Option<String>,
+    pub unfulfilled: Option<bool>,
+    pub refunded: Option<bool>,
+    pub via: Option<String>,
+    pub q: Option<String>,
+    /// Site days (inclusive) for `days`; both or neither, ≤ 366 days.
+    pub from: Option<chrono::NaiveDate>,
+    pub to: Option<chrono::NaiveDate>,
+}
+
+/// Per-status counts under the search and `via` (the status filters are
+/// ignored so every segment shows its own count).
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct OrderCounts {
+    pub all: i64,
+    pub pending: i64,
+    pub paid: i64,
+    pub unfulfilled: i64,
+    pub refunded: i64,
+    pub expired: i64,
+    pub cancelled: i64,
+}
+
+/// One site day (by order creation) under all the list's filters.
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct OrderDay {
+    pub day: chrono::NaiveDate,
+    pub orders: i64,
+    /// Channel money of the day's paid orders (`amount_cents`).
+    pub paid_cents: i64,
+    /// Channel money given back for the day's orders (`refund_gateway_cents`,
+    /// whenever refunded).
+    pub refund_cents: i64,
+}
+
+/// GET /orders/summary: the ledger's numbers that the loaded pages cannot
+/// give — counts per status for the segments and per-day totals for the
+/// sticky day headers (`from`..`to` = the loaded days). Read-only, two
+/// aggregate queries; same filters and validation as GET /orders.
+pub async fn orders_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(s): Query<OrdersSummaryQuery>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let range = match (s.from, s.to) {
+        (Some(f), Some(t)) => Some(crate::export::date_range(Some(f), Some(t), t)?),
+        (None, None) => None,
+        _ => {
+            return Err(bad_request!(
+                "export.range_invalid",
+                "from must not be after to"
+            ));
+        }
+    };
+    let q = ListOrdersQuery {
+        status: s.status,
+        email: s.email,
+        out_trade_no: s.out_trade_no,
+        before: None,
+        limit: None,
+        unfulfilled: s.unfulfilled,
+        via: s.via,
+        q: s.q,
+        refunded: s.refunded,
+    };
+    let mut tx = state.pg().begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let mut qb = sqlx::QueryBuilder::new(
+        "SELECT count(*) AS \"all\", \
+         count(*) FILTER (WHERE status = 'pending') AS pending, \
+         count(*) FILTER (WHERE status = 'paid') AS paid, \
+         count(*) FILTER (WHERE status = 'paid' AND fulfilled_at IS NULL \
+           AND refunded_at IS NULL) AS unfulfilled, \
+         count(*) FILTER (WHERE refunded_at IS NOT NULL) AS refunded, \
+         count(*) FILTER (WHERE status = 'expired') AS expired, \
+         count(*) FILTER (WHERE status = 'cancelled') AS cancelled \
+         FROM orders WHERE true",
+    );
+    push_order_filters(&mut qb, &q, false)?;
+    let counts = qb
+        .build_query_as::<OrderCounts>()
+        .fetch_one(&mut *tx)
+        .await?;
+    let days: Vec<OrderDay> = match range {
+        None => Vec::new(),
+        Some((from, to)) => {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT akari_site_day(created_at) AS day, count(*) AS orders, \
+                 coalesce(sum(amount_cents) FILTER (WHERE status = 'paid'), 0)::bigint \
+                   AS paid_cents, \
+                 coalesce(sum(refund_gateway_cents), 0)::bigint AS refund_cents \
+                 FROM orders WHERE created_at >= ",
+            );
+            qb.push_bind(from)
+                .push("::timestamp AT TIME ZONE akari_site_tz() AND created_at < (")
+                .push_bind(to)
+                .push("::date + 1)::timestamp AT TIME ZONE akari_site_tz()");
+            push_order_filters(&mut qb, &q, true)?;
+            qb.push(" GROUP BY 1 ORDER BY 1 DESC");
+            qb.build_query_as().fetch_all(&mut *tx).await?
+        }
+    };
+    tx.commit().await?;
+    Ok(Json(json!({ "counts": counts, "days": days })))
 }
 
 pub async fn get_order(
