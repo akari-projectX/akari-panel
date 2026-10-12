@@ -4597,6 +4597,11 @@ curl -s --noproxy '*' "$BASE/app" >"$SERVED/admin/login/login.html"
 for a in $(grep -o "/$PREFIX/app/assets/[^\"]*\.\(js\|css\)" "$SERVED/admin/login/login.html"); do
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/admin/login/$(basename "$a")"
 done
+# The sign-in page's fonts (url(./x.woff2) in its CSS), public like its other assets.
+for c in $(cat "$SERVED"/admin/login/*.css | grep -ao '\./[A-Za-z0-9_.-]*\.woff2' | sed 's#.*/##' | sort -u); do
+  [ "$(curl -s --noproxy '*' -o "$SERVED/admin/login/$c" -w '%{http_code}' "$BASE/app/assets/$c")" = "200" ] \
+    || { echo "FAIL: sign-in font $c not served under the prefix"; exit 1; }
+done
 node admin/scripts/check-bundles.mjs "$SERVED/admin" "$SERVED/app" || { echo "FAIL: served bundles mix portal and console code"; exit 1; }
 echo "admin bundle: ok"
 
