@@ -12,7 +12,8 @@ export default defineConfig({
   timeout: 120_000,
   expect: { timeout: 10_000 },
   reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : [["list"]],
-  use: { trace: "retain-on-failure" },
+  // A missing element fails in seconds, not at the 120 s test timeout.
+  use: { trace: "retain-on-failure", actionTimeout: 20_000, navigationTimeout: 30_000 },
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"], locale: "zh-CN" } },
     { name: "mobile", use: { ...devices["Pixel 7"], locale: "zh-CN" } },
