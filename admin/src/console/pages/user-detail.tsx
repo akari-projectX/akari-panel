@@ -1,96 +1,84 @@
-// One account (USR-05…23): a wide dialog with tabs — 概览 (the current
-// subscription and its plan actions, account summary, plan history),
-// 流量 (daily chart + per entrance), 订单 (orders, balance ledger,
-// balance adjustment), 账户与安全 (subscription link, reset, sign-in
-// methods) — and a footer with the frequent actions (ban/unban, reset
-// traffic, renew). Rarer account actions (password, sessions, role, owner
-// transfer, delete) are in the header's 更多操作 menu. Every write goes
-// through the API client, so the list and this detail refetch on their
-// own (data.ts). Also the new-user dialog and the balance adjustment
-// (reused by the finance page).
+// One account (USR-06…23), v2: an xl dialog whose header carries the
+// avatar, address, status and marks, `#id · 注册 · 最后登录 · 最后使用`, and a
+// fact strip visible on every tab (plan + expiry, this period's traffic,
+// balance incl. withdrawable, sign-in methods; each cell jumps to its tab).
+// Tabs (?tab=): 概览 (ban / over-quota banners, the subscription card with
+// renew / extend / cancel, the plan history timeline, the subscription link
+// card (masked until 显示: reading is audited) and the account card), 流量
+// (daily chart + per entrance), 账单 (orders + balance ledger + manual
+// adjustment), 账户与安全 (role, password, email verification, sessions,
+// passkeys, the danger zone). The footer holds the frequent actions (ban /
+// unban, reset traffic, renew or assign) and ⋯ 更多 the rarer ones. The
+// sub-dialogs live in components/people-detail-dialogs.tsx. Every write
+// goes through the API client, so the list and this detail refetch on
+// their own (data.ts).
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useMemo, useState, type ReactNode } from "react";
-import { del, get, patch, post, put } from "../../shared/api";
-import {
-  ago,
-  bytes,
-  copyText,
-  dateOnly,
-  dateTime,
-  daysBefore,
-  parseYuan,
-  pct,
-  rateText,
-  siteToday,
-  yuan,
-} from "../../shared/format";
-import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { TrendChart, timeLabels } from "../../shared/ui/charts";
-import { QrCode } from "../../shared/ui/qr-code";
-import { CopyButton, Mono, SectionTitle, useErrText } from "../kit";
-import { useAction } from "../data";
-import { navigate } from "../router";
-import { resetLabel, periodLabel } from "../terms";
-import { useCrumb, useMe } from "../session";
-import type { PlanView } from "../types";
-import { EMPTY_TERM, TermFields, termBody, type TermForm } from "./term-fields";
-import { Avatar, UserStatusBadge, type UserRow } from "./users";
 import {
   Ban,
   CalendarPlus,
-  Copy,
   ChevronDown,
   ChevronRight,
+  CircleOff,
+  Crown,
+  Eye,
+  Fingerprint,
   KeyRound,
   Layers,
-  LinkIcon,
   LogOut,
   Mail,
-  RefreshCw,
+  MailCheck,
+  MoreHorizontal,
+  Plus,
+  QrCode as QrIcon,
+  RefreshCcw,
+  RotateCcw,
   ShieldCheck,
-  Star,
+  ShieldOff,
   Trash2,
-  UserPlus,
-  Users,
   Wallet,
   type LucideIcon,
 } from "lucide-react";
-import { Badge, Dot, type Tone } from "../../shared/ui/badge";
+import { useMemo, useState } from "react";
+import { del, get, patch, post } from "../../shared/api";
+import { cn } from "../../shared/cn";
+import { ago, bytes, dateOnly, dateTime, daysBefore, pct, rateText, siteToday, yuan } from "../../shared/format";
+import { useLang, useTr, type Tr } from "../../shared/i18n";
+import { Badge, type Tone } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
+import { Card, Group, Row } from "../../shared/ui/card";
+import { LineChart } from "../../shared/ui/charts";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
-import { Field, Input, Segmented, Select } from "../../shared/ui/form";
-import { Callout, KV } from "../../shared/ui/layout";
-import { MenuItem, RowMenu } from "../../shared/ui/menu";
+import { Segmented } from "../../shared/ui/form";
+import { Banner, KV, SectionTitle } from "../../shared/ui/layout";
+import { Menu, MenuItem, MenuSeparator } from "../../shared/ui/menu";
 import { Meter, usageTone } from "../../shared/ui/meter";
-import { ErrorState, LoadingBlock } from "../../shared/ui/states";
+import { QrCode } from "../../shared/ui/qr-code";
+import { ErrorState, SkeletonRows } from "../../shared/ui/states";
 import { Tabs } from "../../shared/ui/tabs";
 import { useToast } from "../../shared/ui/toast";
+import { Avatar, CopyText, RelDays, Timeline } from "../components/kit";
+import {
+  absoluteUrl,
+  BanDialog,
+  ChangePlanDialog,
+  ExtendPopover,
+  PasswordDialog,
+  SendMailDialog,
+  type Detail,
+  type Subscription,
+} from "../components/people-detail-dialogs";
+import { UserStatus } from "../components/status";
+import { useErrText } from "../kit";
+import { navigate } from "../router";
+import { useCrumb, useMe } from "../session";
+import { periodLabel, resetLabel } from "../terms";
+import type { PlanView } from "../types";
+import { UserMarks } from "./users";
 
-type Subscription = {
-  user_plan_id: string;
-  plan_id: string;
-  plan_name: string;
-  period: string;
-  period_days: number | null;
-  starts_at: string;
-  expires_at: string | null;
-  traffic_used_bytes: number;
-  traffic_total_bytes: number | null;
-  reset_period: string;
-  last_reset_at: string | null;
-  next_reset_at: string | null;
-  timezone: string;
-  speed_limit_mbps: number | null;
-  status: "active" | "expired" | "over_quota" | "banned";
-};
-type BanInfo = {
-  reason: string | null;
-  banned_at: string | null;
-  banned_by_id: string | null;
-  banned_by_email: string | null;
-};
-type Detail = UserRow & { subscription: Subscription | null; ban: BanInfo | null };
+export { AdjustBalanceDialog, CreateUserDialog, absoluteUrl } from "../components/people-detail-dialogs";
+import { AdjustBalanceDialog } from "../components/people-detail-dialogs";
+
 type PlanHistory = {
   id: string;
   plan_name: string;
@@ -144,13 +132,8 @@ type UserOrder = {
   created_at: string;
 };
 
-type Tab = "overview" | "traffic" | "orders" | "account";
-type Sub = null | "plan" | "renew" | "ban" | "password" | "balance" | "sub";
-
-/** Absolute subscription URL (the server may answer a root-relative one). */
-export function absoluteUrl(u: string): string {
-  return u.startsWith("/") ? `${location.origin}${u}` : u;
-}
+type Tab = "overview" | "traffic" | "billing" | "security";
+type Sub = null | "plan" | "ban" | "password" | "balance" | "mail";
 
 export function subStatusText(s: Subscription["status"], tr: Tr): string {
   return {
@@ -161,7 +144,7 @@ export function subStatusText(s: Subscription["status"], tr: Tr): string {
   }[s];
 }
 
-function planStatus(s: string, tr: Tr): [string, Tone] {
+function planStatus(s: string, tr: Tr): [string, "success" | "neutral" | "warning"] {
   switch (s) {
     case "active":
       return [tr("生效中", "Active"), "success"];
@@ -176,14 +159,14 @@ function planStatus(s: string, tr: Tr): [string, Tone] {
   }
 }
 
-function ledgerKind(k: string, tr: Tr): string {
+export function ledgerKind(k: string, tr: Tr): string {
   switch (k) {
     case "commission":
       return tr("邀请返利", "Commission");
     case "admin_adjust":
       return tr("人工调整", "Admin adjustment");
     case "order_payment":
-      return tr("订单支付", "Order payment");
+      return tr("购买扣款", "Order payment");
     case "refund_to_balance":
       return tr("退款到余额", "Refund to balance");
     case "withdrawal":
@@ -203,14 +186,26 @@ function orderStatus(o: UserOrder, tr: Tr): [string, Tone] {
     case "pending":
       return [tr("待付款", "Pending"), "info"];
     case "paid":
-      return o.fulfilled_at ? [tr("已付款", "Paid"), "success"] : [tr("已付款未开通", "Paid, not fulfilled"), "danger"];
+      return o.fulfilled_at ? [tr("已完成", "Completed"), "success"] : [tr("开通失败", "Not fulfilled"), "danger"];
     case "expired":
-      return [tr("已过期", "Expired"), "neutral"];
+      return [tr("已过期", "Expired"), "outline"];
     case "cancelled":
-      return [tr("已取消", "Cancelled"), "neutral"];
+      return [tr("已取消", "Cancelled"), "outline"];
     default:
       return [tr("未知", "Unknown"), "neutral"];
   }
+}
+
+const TABS: Tab[] = ["overview", "traffic", "billing", "security"];
+/** Old links: ?tab=orders / ?tab=account. */
+const ALIAS: Record<string, Tab> = { orders: "billing", account: "security" };
+
+function useOrders(email: string | undefined) {
+  return useQuery({
+    queryKey: ["orders", "user", email],
+    queryFn: () => get<UserOrder[]>(`/orders?email=${encodeURIComponent(email ?? "")}&limit=20`),
+    enabled: !!email,
+  });
 }
 
 export function UserDetail({
@@ -237,35 +232,215 @@ export function UserDetail({
   const [deleting, setDeleting] = useState(false);
   const u = q.data;
   useCrumb(u?.email);
-  // The dialog's header tile shows the account's avatar (as in the design).
-  const avatarEmail = u && !u.email_pending ? u.email : "?";
+  const avatarName = u && !u.email_pending ? u.email : "?";
+  const erased = !!u?.erased;
   const avatarIcon = useMemo(
     () =>
       function UserAvatar() {
-        return <Avatar email={avatarEmail} className="size-9 text-callout" />;
+        return <Avatar name={avatarName} size={40} className={erased ? "opacity-40 grayscale" : undefined} />;
       } as unknown as LucideIcon,
-    [avatarEmail],
+    [avatarName, erased],
   );
+  const orders = useOrders(u && !u.email_pending ? u.email : undefined);
   const isAdmin = u?.role === "admin";
   const otherAdmin = isAdmin && u?.id !== me.id;
   const ownerOnly = !!otherAdmin && !me.is_owner;
   const live = !!u && !u.erased;
-  const tabs: { value: Tab; label: string }[] = [
-    { value: "overview", label: tr("概览", "Overview") },
-    ...(isAdmin
-      ? []
-      : ([
-          { value: "traffic", label: tr("流量", "Traffic") },
-          { value: "orders", label: tr("订单", "Orders") },
-        ] as const)),
-    { value: "account", label: tr("账户与安全", "Account & security") },
-  ];
-  const tab: Tab = tabs.some((t) => t.value === tabParam) ? (tabParam as Tab) : "overview";
+  const tab: Tab = TABS.includes(tabParam as Tab) ? (tabParam as Tab) : (ALIAS[tabParam] ?? "overview");
+  const current = u?.subscription ?? null;
+  const self = u?.id === me.id;
+  const canBan = live && !u.is_owner && !self && !isAdmin;
 
   /** Confirm, run, toast; the list and this detail refetch by themselves. */
   const act = async (opts: Parameters<typeof confirm>[0], fn: () => Promise<unknown>, ok: string) => {
     if (await confirm({ ...opts, action: fn })) toast({ tone: "success", title: ok });
   };
+
+  const unban = () =>
+    u &&
+    void act(
+      {
+        title: tr("解除封禁？", "Lift the ban?"),
+        description: tr(
+          "账户恢复正常：可以登录，订阅恢复可用（套餐仍需有效）。写入审计。",
+          "The account works again: sign-in and the subscription (with a valid plan). Audited.",
+        ),
+        impacts: u.ban
+          ? [
+              { label: tr("封禁原因", "Reason"), value: u.ban.reason ?? "—" },
+              {
+                label: tr("封禁于", "Banned"),
+                value: `${dateTime(u.ban.banned_at)} · ${u.ban.banned_by_email ?? tr("系统", "system")}`,
+              },
+            ]
+          : undefined,
+        tone: "default",
+        confirmLabel: tr("解除封禁", "Unban"),
+      },
+      () => post(`/users/${id}/unban`),
+      tr("已解除封禁", "Ban lifted"),
+    );
+
+  const resetTraffic = () =>
+    current &&
+    void act(
+      {
+        title: tr("重置套餐流量？", "Reset the plan traffic?"),
+        impacts: [
+          {
+            label: tr("本周期已用", "Used this period"),
+            value: `${bytes(current.traffic_used_bytes)} → 0`,
+          },
+          { label: tr("到期日", "Expiry"), value: tr("不变", "unchanged") },
+          {
+            label: tr("超流量停用", "Over-quota suspension"),
+            value: tr("立即恢复（封禁不受影响）", "lifted now (a ban stays)"),
+          },
+        ],
+        tone: "warning",
+        confirmLabel: tr("重置流量", "Reset traffic"),
+      },
+      () => post(`/users/${id}/plan/reset-traffic`, { confirm: true }),
+      tr("流量已重置", "Traffic reset"),
+    );
+
+  const renew = () =>
+    current &&
+    void act(
+      {
+        title: tr("续期一个周期？", "Renew one term?"),
+        description: tr(
+          "从到期日（已到期则从现在）起再加一个相同的时长，写入审计。不生成订单。",
+          "Adds the same term from the expiry (or now when expired). Audited; no order is made.",
+        ),
+        impacts: [
+          { label: tr("时长", "Term"), value: periodLabel(current.period, tr, current.period_days) },
+          { label: tr("当前到期", "Expires now"), value: current.expires_at ? dateOnly(current.expires_at) : "—" },
+        ],
+        tone: "default",
+        confirmLabel: tr("续期", "Renew"),
+      },
+      () =>
+        patch(`/users/${id}/plan`, {
+          period: current.period,
+          ...(current.period === "days" && current.period_days ? { days: current.period_days } : {}),
+        }),
+      tr("已续期一个周期", "Renewed one term"),
+    );
+
+  const resetSub = () =>
+    u &&
+    void act(
+      {
+        title: tr("重置订阅？", "Reset the subscription?"),
+        description: tr(
+          "生成新的订阅链接，并更换该用户在每个入口上的凭据。",
+          "A new subscription link and new credentials on every entrance.",
+        ),
+        impacts: [
+          { label: tr("旧链接", "Old link"), value: tr("立即失效", "stops now") },
+          { label: tr("已导入的客户端", "Imported clients"), value: tr("需要重新导入", "must import again") },
+          { label: tr("在线连接", "Live connections"), value: tr("全部断开", "all cut") },
+        ],
+        typeToConfirm: u.email,
+        confirmLabel: tr("重置订阅", "Reset subscription"),
+      },
+      () => post(`/users/${id}/sub-token`),
+      tr("订阅已重置", "Subscription reset"),
+    );
+
+  const cancelPlan = () =>
+    u &&
+    current &&
+    void act(
+      {
+        title: tr("取消套餐？", "Cancel the plan?"),
+        description: tr(
+          "订阅立即结束，不会自动退款；需要退款请到订单页对相应订单操作。写入审计。",
+          "The subscription ends now with no automatic refund (refund the order on the orders page). Audited.",
+        ),
+        impacts: [
+          { label: tr("套餐", "Plan"), value: current.plan_name },
+          {
+            label: tr("剩余", "Left"),
+            value: current.expires_at ? <RelDays date={current.expires_at} /> : tr("不过期", "never expires"),
+          },
+          { label: tr("入口与在线连接", "Entrances, connections"), value: tr("立即失去、断开", "lost, cut now") },
+        ],
+        typeToConfirm: u.email,
+        confirmLabel: tr("取消套餐", "Cancel plan"),
+      },
+      () => del(`/users/${id}/plan`),
+      tr("套餐已取消", "Plan cancelled"),
+    );
+
+  const kick = () =>
+    void act(
+      {
+        title: tr("踢下线？", "Sign out everywhere?"),
+        description: tr(
+          "该账户的全部会话立即失效，所有设备需要重新登录。",
+          "Every session ends now; every device must sign in again.",
+        ),
+        tone: "warning",
+        confirmLabel: tr("踢下线", "Sign out"),
+      },
+      () => post(`/users/${id}/revoke-sessions`),
+      tr("已踢下线", "Signed out everywhere"),
+    );
+
+  const verify = () =>
+    void act(
+      {
+        title: tr("标记邮箱已验证？", "Mark the address verified?"),
+        description: tr(
+          "该地址之后会收到系统邮件，也可用于找回密码。",
+          "The address then receives mail and can reset the password.",
+        ),
+        tone: "default",
+        confirmLabel: tr("标记已验证", "Mark verified"),
+      },
+      () => post(`/users/${id}/email/verify`),
+      tr("已标记为已验证", "Marked verified"),
+    );
+
+  const setRole = (to: "user" | "admin") =>
+    void act(
+      {
+        title: to === "user" ? tr("降为普通用户？", "Demote to user?") : tr("设为管理员？", "Make admin?"),
+        description:
+          to === "user"
+            ? tr("该账户将失去后台访问。", "The account loses console access.")
+            : tr(
+                "管理员不是代理用户：不会下发到节点，订阅失效。只有所有者可以设管理员。",
+                "Admins are not proxy users (no nodes, no subscription). Only the owner makes admins.",
+              ),
+        tone: "warning",
+        confirmLabel: to === "user" ? tr("降为普通用户", "Demote") : tr("设为管理员", "Make admin"),
+      },
+      () => patch(`/users/${id}`, { role: to }),
+      to === "user" ? tr("已降为普通用户", "Demoted to user") : tr("已设为管理员", "Made admin"),
+    );
+
+  const transfer = () =>
+    u &&
+    void act(
+      {
+        title: tr(`把所有者转让给 ${u.email}？`, `Transfer the ownership to ${u.email}?`),
+        description: tr(
+          "转让后你将成为普通管理员，不能再管理其他管理员、后台前缀与支付密钥。",
+          "You become an ordinary admin: no more managing admins, the admin prefix or payment keys.",
+        ),
+        impacts: [
+          { label: tr("新所有者", "New owner"), value: u.email },
+          { label: tr("你", "You"), value: tr("变为管理员", "become an admin") },
+        ],
+        typeToConfirm: u.email,
+        confirmLabel: tr("转让所有者", "Transfer ownership"),
+      },
+      () => post(`/users/${id}/owner`, { confirm: true }),
+      tr("所有者已转让", "Ownership transferred"),
+    );
 
   const deleteUser = async () => {
     if (!u) return;
@@ -279,49 +454,44 @@ export function UserDetail({
     } finally {
       setDeleting(false);
     }
-    const lines: string[] = [];
-    if (im.balance_cents > 0)
-      lines.push(
-        tr(
-          `余额 ${yuan(im.balance_cents)}（可提现 ${yuan(im.withdrawable_cents)}）`,
-          `Balance ${yuan(im.balance_cents)} (${yuan(im.withdrawable_cents)} withdrawable)`,
-        ),
-      );
-    if (im.pending_withdrawals > 0)
-      lines.push(
-        tr(
-          `${im.pending_withdrawals} 笔待审提现（${yuan(im.pending_withdrawal_cents)}）`,
-          `${im.pending_withdrawals} pending withdrawals (${yuan(im.pending_withdrawal_cents)})`,
-        ),
-      );
-    if (im.pending_orders > 0)
-      lines.push(tr(`${im.pending_orders} 笔待付款订单`, `${im.pending_orders} pending orders`));
-    if (im.unfulfilled_orders > 0)
-      lines.push(
-        tr(`${im.unfulfilled_orders} 笔已付款未开通的订单`, `${im.unfulfilled_orders} paid, unfulfilled orders`),
-      );
-    if (im.plan)
-      lines.push(
-        tr(
-          `生效中的套餐「${im.plan.name}」（到期 ${dateOnly(im.plan.expires_at)}）`,
-          `Active plan "${im.plan.name}" (expires ${dateOnly(im.plan.expires_at)})`,
-        ),
-      );
     const ok = await confirm({
       title: tr(`删除账户 ${u.email}？`, `Delete ${u.email}?`),
-      impact: im.anonymized
+      description: im.anonymized
         ? tr(
-            "该账户有财务记录：将匿名化保留，个人数据删除",
-            "Has finance records: kept anonymized, personal data deleted",
+            "该账户有财务记录：将匿名化保留订单与流水，个人数据删除。不可撤销。",
+            "Has finance records: kept anonymized with its orders and ledger, personal data deleted. Cannot be undone.",
           )
-        : tr("账户与其全部数据将被永久删除", "The account and all its data are deleted for good"),
-      details: lines.length ? (
-        <ul className="list-disc space-y-1 pl-5 text-body text-muted-foreground">
-          {lines.map((l) => (
-            <li key={l}>{l}</li>
-          ))}
-        </ul>
-      ) : undefined,
+        : tr("账户与其全部数据将被永久删除，不可撤销。", "The account and all its data are deleted for good."),
+      impacts: [
+        {
+          label: tr("余额", "Balance"),
+          value: tr(
+            `余额 ${yuan(im.balance_cents)}（可提现 ${yuan(im.withdrawable_cents)}）`,
+            `${yuan(im.balance_cents)} (${yuan(im.withdrawable_cents)} withdrawable)`,
+          ),
+        },
+        {
+          label: tr("待审提现", "Pending withdrawals"),
+          value: tr(
+            `${im.pending_withdrawals} 笔 · ${yuan(im.pending_withdrawal_cents)}`,
+            `${im.pending_withdrawals} · ${yuan(im.pending_withdrawal_cents)}`,
+          ),
+        },
+        {
+          label: tr("待付 / 未开通订单", "Pending / unfulfilled orders"),
+          value: `${im.pending_orders} / ${im.unfulfilled_orders}`,
+        },
+        {
+          label: tr("有效套餐", "Active plan"),
+          value: im.plan
+            ? `${im.plan.name}${im.plan.expires_at ? ` · ${dateOnly(im.plan.expires_at)}` : ""}`
+            : tr("无", "none"),
+        },
+        {
+          label: tr("处理方式", "Outcome"),
+          value: im.anonymized ? tr("匿名化保留", "kept anonymized") : tr("彻底删除", "deleted"),
+        },
+      ],
       typeToConfirm: u.email,
       confirmLabel: tr("永久删除", "Delete"),
       action: () => del(`/users/${id}?confirm=true`),
@@ -332,83 +502,129 @@ export function UserDetail({
     }
   };
 
-  const current = u?.subscription ?? null;
-  const canBan = live && !u.is_owner && u.id !== me.id;
+  const nOrders = orders.data?.length;
+  const tabs = [
+    { value: "overview" as const, label: tr("概览", "Overview") },
+    { value: "traffic" as const, label: tr("流量", "Traffic") },
+    {
+      value: "billing" as const,
+      label: tr("账单", "Billing"),
+      count: nOrders !== undefined && nOrders > 0 ? nOrders : undefined,
+    },
+    { value: "security" as const, label: tr("账户与安全", "Account & security") },
+  ];
 
-  const footer = live ? (
+  const roleLock: string | null = !u
+    ? null
+    : u.is_owner
+      ? tr(
+          "所有者的角色不能在这里修改；请先把所有者转让给其他管理员。",
+          "The owner's role cannot change here; transfer the ownership first.",
+        )
+      : !me.is_owner
+        ? tr("只有所有者可以修改管理员角色。", "Only the owner changes admin roles.")
+        : self
+          ? tr("不能修改自己的角色。", "You cannot change your own role.")
+          : current
+            ? tr(
+                "该用户持有套餐，需先取消套餐才能设为管理员。",
+                "The user holds a plan; cancel it before making them an admin.",
+              )
+            : null;
+
+  const footer = !u ? undefined : !live ? (
+    <span className="text-footnote text-muted-foreground">
+      {tr(
+        "账户已注销：个人数据已删除，订单与余额流水以匿名方式保留。不能再修改。",
+        "Erased account: personal data is gone, orders and ledger are kept anonymized. It cannot be changed.",
+      )}
+    </span>
+  ) : (
     <>
+      <Menu
+        align="start"
+        label={tr("更多操作", "More actions")}
+        trigger={
+          <Button variant="ghost" icon={MoreHorizontal} aria-label={tr("更多操作", "More actions")}>
+            <span className="max-sm:hidden">{tr("更多", "More")}</span>
+          </Button>
+        }
+      >
+        <MenuItem icon={LogOut} disabled={ownerOnly} onClick={kick}>
+          {tr("踢下线（结束全部会话）", "Sign out everywhere")}
+        </MenuItem>
+        {!isAdmin && (
+          <MenuItem icon={RotateCcw} onClick={resetSub}>
+            {tr("重置订阅链接…", "Reset the subscription link…")}
+          </MenuItem>
+        )}
+        {u.email_verified && !u.email_pending && (
+          <MenuItem icon={Mail} onClick={() => setSub("mail")}>
+            {tr("发送邮件", "Send email")}
+          </MenuItem>
+        )}
+        <MenuSeparator />
+        {isAdmin ? (
+          <MenuItem icon={Crown} disabled={!me.is_owner || u.is_owner || self || !u.enabled} onClick={transfer}>
+            {tr("转让所有者…", "Transfer ownership…")}
+            {!me.is_owner && tr("（仅所有者）", " (owner only)")}
+          </MenuItem>
+        ) : (
+          <MenuItem icon={ShieldCheck} disabled={!!roleLock} onClick={() => setRole("admin")}>
+            {tr("设为管理员", "Make admin")}
+            {!me.is_owner
+              ? tr("（仅所有者）", " (owner only)")
+              : current
+                ? tr("（需先取消套餐）", " (cancel the plan first)")
+                : ""}
+          </MenuItem>
+        )}
+        <MenuSeparator />
+        <MenuItem
+          icon={Trash2}
+          danger
+          disabled={u.is_owner || self || ownerOnly || deleting}
+          onClick={() => void deleteUser()}
+        >
+          {tr("删除账户…", "Delete account…")}
+        </MenuItem>
+      </Menu>
+      <span className="flex-1" />
       {canBan &&
         (u.ban ? (
-          <Button
-            className="mr-auto"
-            icon={Ban}
-            disabled={ownerOnly}
-            onClick={() =>
-              void act(
-                {
-                  title: tr("解除封禁？", "Lift the ban?"),
-                  description: tr(
-                    "账户恢复正常：可以登录、订阅恢复可用（套餐仍需有效）。写入审计。",
-                    "The account works again: sign-in and the subscription (with a valid plan). Audited.",
-                  ),
-                  tone: "default",
-                },
-                () => post(`/users/${id}/unban`),
-                tr("已解除封禁", "Ban lifted"),
-              )
-            }
-          >
+          <Button variant="outline" icon={ShieldOff} onClick={unban}>
             {tr("解除封禁", "Unban")}
           </Button>
         ) : (
-          <Button
-            className="mr-auto"
-            variant="destructive-soft"
-            icon={Ban}
-            disabled={ownerOnly}
-            onClick={() => setSub("ban")}
-          >
-            {tr("封禁", "Ban")}
+          <Button variant="destructive-soft" icon={Ban} aria-label={tr("封禁", "Ban")} onClick={() => setSub("ban")}>
+            <span className="max-sm:hidden">{tr("封禁", "Ban")}</span>
           </Button>
         ))}
       {!isAdmin &&
         (current ? (
           <>
-            <Button
-              variant="outline"
-              icon={RefreshCw}
-              onClick={() =>
-                void act(
-                  {
-                    title: tr("重置套餐流量？", "Reset the plan traffic?"),
-                    description: tr(
-                      "已用流量清零（重置周期不变）；因超流量停用的账户会自动恢复，封禁的不会。写入审计。",
-                      "Used traffic goes to zero (schedule unchanged); an account suspended for its quota is re-enabled, a banned one is not. Audited.",
-                    ),
-                    impact: tr(
-                      `已用 ${bytes(current.traffic_used_bytes)} 将清零`,
-                      `${bytes(current.traffic_used_bytes)} used goes to zero`,
-                    ),
-                    tone: "warning",
-                  },
-                  () => post(`/users/${id}/plan/reset-traffic`, { confirm: true }),
-                  tr("流量已重置", "Traffic reset"),
-                )
-              }
-            >
+            <Button variant="outline" icon={RefreshCcw} onClick={resetTraffic}>
               {tr("重置流量", "Reset traffic")}
             </Button>
-            <Button variant="primary" icon={CalendarPlus} onClick={() => setSub("renew")}>
+            <Button
+              variant="primary"
+              icon={CalendarPlus}
+              disabled={current.period === "onetime"}
+              title={
+                current.period === "onetime" ? tr("一次性套餐不能续期", "One-time plans cannot be renewed") : undefined
+              }
+              onClick={renew}
+            >
               {tr("续期", "Renew")}
             </Button>
           </>
         ) : (
-          <Button variant="primary" icon={Layers} onClick={() => setSub("plan")}>
+          <Button variant="primary" icon={Plus} onClick={() => setSub("plan")}>
             {tr("分配套餐", "Assign a plan")}
           </Button>
         ))}
     </>
-  ) : undefined;
+  );
 
   return (
     <>
@@ -420,9 +636,14 @@ export function UserDetail({
         icon={avatarIcon}
         title={
           u ? (
-            <span className="flex min-w-0 items-center gap-1">
-              <span className="truncate">{u.email_pending ? tr("（待绑定邮箱）", "(email pending)") : u.email}</span>
-              {!u.email_pending && <CopyIcon text={u.email} />}
+            <span className="flex min-w-0 items-center gap-2">
+              <span className={cn("truncate", u.erased && "line-through decoration-faint")}>
+                {u.email_pending ? tr("（待绑定邮箱）", "(email pending)") : u.email}
+              </span>
+              <span className="hidden items-center gap-1.5 sm:inline-flex">
+                <UserStatus user={u} />
+                <UserMarks u={u} />
+              </span>
             </span>
           ) : (
             tr("用户", "User")
@@ -430,892 +651,489 @@ export function UserDetail({
         }
         description={
           u && (
-            <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-              <span className="tnum">
-                {tr(`注册于 ${dateOnly(u.created_at)}`, `Signed up ${dateOnly(u.created_at)}`)} ·{" "}
+            <span className="tnum flex flex-wrap items-center gap-x-1.5 gap-y-1">
+              <span>#{u.id.slice(0, 8)}</span>·
+              <span>{tr(`注册 ${dateOnly(u.created_at)}`, `Signed up ${dateOnly(u.created_at)}`)}</span>·
+              <span>
                 {u.last_login_at
                   ? tr(`最后登录 ${ago(u.last_login_at, lang)}`, `Last sign-in ${ago(u.last_login_at, lang)}`)
                   : tr("从未登录", "Never signed in")}
               </span>
-              <UserStatusBadge user={u} />
-              {u.is_owner && <Badge tone="primary">{tr("所有者", "Owner")}</Badge>}
-              {isAdmin && <Badge tone="outline">{tr("管理员", "Admin")}</Badge>}
+              {!isAdmin && (
+                <>
+                  ·
+                  <span>
+                    {u.last_traffic_day
+                      ? tr(`最后使用 ${u.last_traffic_day}`, `Last used ${u.last_traffic_day}`)
+                      : tr("从未使用", "Never used")}
+                  </span>
+                </>
+              )}
+              <span className="inline-flex items-center gap-1.5 sm:hidden">
+                <UserStatus user={u} />
+                <UserMarks u={u} compact />
+              </span>
             </span>
           )
         }
-        actions={
-          live && (
-            <RowMenu label={tr("更多操作", "More actions")}>
-              {(close) => (
-                <>
-                  <MenuItem icon={KeyRound} disabled={ownerOnly} onClick={() => (close(), setSub("password"))}>
-                    {tr("设置新密码", "Set a new password")}
-                  </MenuItem>
-                  <MenuItem
-                    icon={LogOut}
-                    disabled={ownerOnly}
-                    onClick={() => {
-                      close();
-                      void act(
-                        {
-                          title: tr("踢下线？", "Sign out everywhere?"),
-                          description: tr("该账户的全部会话立即失效。", "Every session of the account ends now."),
-                          tone: "warning",
-                        },
-                        () => post(`/users/${id}/revoke-sessions`),
-                        tr("已踢下线", "Signed out everywhere"),
-                      );
-                    }}
-                  >
-                    {tr("踢下线（结束全部会话）", "Sign out everywhere")}
-                  </MenuItem>
-                  {!u.email_verified && !u.email_pending && (
-                    <MenuItem
-                      icon={Mail}
-                      disabled={ownerOnly}
-                      onClick={() => {
-                        close();
-                        void act(
-                          {
-                            title: tr("标记邮箱已验证？", "Mark the address verified?"),
-                            description: tr(
-                              "该地址之后会收到系统邮件，也可用于找回密码。",
-                              "The address then receives mail and can reset the password.",
-                            ),
-                            tone: "default",
-                          },
-                          () => post(`/users/${id}/email/verify`),
-                          tr("已标记为已验证", "Marked verified"),
-                        );
-                      }}
-                    >
-                      {tr("标记邮箱已验证", "Mark email verified")}
-                    </MenuItem>
-                  )}
-                  {me.is_owner && u.id !== me.id && (
-                    <MenuItem
-                      icon={Users}
-                      onClick={() => {
-                        close();
-                        const to = isAdmin ? "user" : "admin";
-                        void act(
-                          {
-                            title: isAdmin
-                              ? tr("降级为普通用户？", "Demote to user?")
-                              : tr("设为管理员？", "Make admin?"),
-                            description: isAdmin
-                              ? tr("该账户将失去后台访问。", "The account loses console access.")
-                              : tr(
-                                  "管理员不是代理用户：不会下发到节点，订阅失效。只有所有者可以设管理员。",
-                                  "Admins are not proxy users (no nodes, no subscription). Only the owner makes admins.",
-                                ),
-                            tone: "warning",
-                          },
-                          () => patch(`/users/${id}`, { role: to }),
-                          tr("角色已修改", "Role changed"),
-                        );
-                      }}
-                    >
-                      {isAdmin ? tr("降级为普通用户", "Demote to user") : tr("设为管理员", "Make admin")}
-                    </MenuItem>
-                  )}
-                  {me.is_owner && isAdmin && u.enabled && u.id !== me.id && (
-                    <MenuItem
-                      icon={Star}
-                      onClick={() => {
-                        close();
-                        void act(
-                          {
-                            title: tr(`把所有者转让给 ${u.email}？`, `Transfer the ownership to ${u.email}?`),
-                            description: tr(
-                              "转让后你将成为普通管理员，不能再管理其他管理员、后台前缀与支付密钥。",
-                              "You become an ordinary admin: no more managing admins, the admin prefix or payment keys.",
-                            ),
-                            typeToConfirm: u.email,
-                          },
-                          () => post(`/users/${id}/owner`, { confirm: true }),
-                          tr("所有者已转让", "Ownership transferred"),
-                        );
-                      }}
-                    >
-                      {tr("转让所有者", "Transfer ownership")}
-                    </MenuItem>
-                  )}
-                  {!u.is_owner && u.id !== me.id && (
-                    <MenuItem
-                      icon={Trash2}
-                      danger
-                      disabled={ownerOnly || deleting}
-                      onClick={() => (close(), void deleteUser())}
-                    >
-                      {tr("删除账户", "Delete account")}
-                    </MenuItem>
-                  )}
-                </>
-              )}
-            </RowMenu>
-          )
+        tabs={
+          <>
+            <Facts user={u} loading={q.isPending} onTab={onTab} />
+            {u && <Tabs label={tr("用户详情", "User detail")} value={tab} onChange={(t) => onTab(t)} tabs={tabs} />}
+          </>
         }
-        tabs={u && <Tabs label={tr("用户详情", "User detail")} value={tab} onChange={(t) => onTab(t)} tabs={tabs} />}
         footer={footer}
       >
-        {q.isPending ? (
-          <LoadingBlock rows={8} />
-        ) : q.error ? (
-          <ErrorState error={q.error} onRetry={() => void q.refetch()} />
-        ) : (
-          u && (
-            <div className="space-y-4">
-              {u.erased && (
-                <Callout tone="info">
-                  {tr(
-                    "该账户已注销（有财务记录，匿名化保留）。不能再修改。",
-                    "This account was erased (kept anonymized for its finance records); it cannot be changed.",
-                  )}
-                </Callout>
-              )}
-              {ownerOnly && (
-                <Callout tone="info">
-                  {tr(
-                    "这是另一位管理员的账户：只有所有者可以修改它。",
-                    "Another admin's account: only the owner can change it.",
-                  )}
-                </Callout>
-              )}
-              {u.ban && (
-                <Callout tone="danger" title={tr("已封禁", "Banned")}>
-                  <p className="break-words">{u.ban.reason}</p>
-                  <p className="mt-1 text-footnote text-muted-foreground">
-                    {dateTime(u.ban.banned_at)} · {u.ban.banned_by_email ?? tr("系统", "system")}
-                  </p>
-                </Callout>
-              )}
-              {tab === "overview" && (
-                <Overview user={u} onAssign={() => setSub("plan")} live={live} isAdmin={isAdmin} />
-              )}
-              {tab === "traffic" && <UserTraffic id={id} />}
-              {tab === "orders" && (
-                <>
-                  <UserOrders email={u.email} />
-                  <BalanceLedger id={id} onAdjust={live ? () => setSub("balance") : undefined} />
-                </>
-              )}
-              {tab === "account" && (
-                <AccountTab
-                  user={u}
-                  isAdmin={isAdmin}
-                  live={live}
-                  ownerOnly={ownerOnly}
-                  onSubLink={() => setSub("sub")}
-                  onReset={() =>
-                    void act(
-                      {
-                        title: tr("重置订阅？", "Reset the subscription?"),
-                        description: tr(
-                          "生成新的订阅链接，并更换该用户在每个入口上的凭据。",
-                          "A new subscription link and new credentials on every entrance.",
-                        ),
-                        impact: tr(
-                          "旧链接和所有已导入的客户端立即失效，在线连接全部断开；用户需要重新导入。",
-                          "The old link and every imported client stop working now and live connections are cut; the user must import again.",
-                        ),
-                        typeToConfirm: u.email,
-                        confirmLabel: tr("重置订阅", "Reset subscription"),
-                      },
-                      () => post(`/users/${id}/sub-token`),
-                      tr("订阅已重置", "Subscription reset"),
-                    )
-                  }
-                />
-              )}
-            </div>
-          )
-        )}
+        <div className="sm:min-h-[min(56vh,520px)]">
+          {q.isPending ? (
+            <SkeletonRows rows={8} />
+          ) : q.error ? (
+            <ErrorState
+              title={tr("用户详情加载失败", "The user could not be loaded")}
+              error={q.error}
+              onRetry={() => void q.refetch()}
+            />
+          ) : (
+            u && (
+              <>
+                {tab === "overview" && (
+                  <Overview
+                    user={u}
+                    live={live}
+                    isAdmin={isAdmin}
+                    ownerOnly={ownerOnly}
+                    onPlan={() => setSub("plan")}
+                    onUnban={canBan ? unban : undefined}
+                    onResetTraffic={resetTraffic}
+                    onRenew={renew}
+                    onCancel={cancelPlan}
+                    onResetSub={resetSub}
+                  />
+                )}
+                {tab === "traffic" && <UserTraffic id={id} />}
+                {tab === "billing" && (
+                  <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+                    <UserOrders email={u.email_pending ? null : u.email} />
+                    <BalanceLedger id={id} onAdjust={live ? () => setSub("balance") : undefined} />
+                  </div>
+                )}
+                {tab === "security" && (
+                  <Security
+                    user={u}
+                    live={live}
+                    ownerOnly={ownerOnly}
+                    roleLock={roleLock}
+                    onRole={setRole}
+                    onPassword={() => setSub("password")}
+                    onVerify={verify}
+                    onKick={kick}
+                    onTransfer={transfer}
+                    onDelete={() => void deleteUser()}
+                    canDelete={!u.is_owner && !self && !ownerOnly}
+                  />
+                )}
+              </>
+            )
+          )}
+        </div>
       </Dialog>
       {u && sub === "plan" && (
-        <AssignPlanDialog id={id} plans={plans} current={u.subscription} onClose={() => setSub(null)} />
-      )}
-      {u && sub === "renew" && u.subscription && (
-        <RenewDialog id={id} sub={u.subscription} onClose={() => setSub(null)} />
+        <ChangePlanDialog id={id} email={u.email} plans={plans} current={u.subscription} onClose={() => setSub(null)} />
       )}
       {u && sub === "ban" && <BanDialog id={id} email={u.email} onClose={() => setSub(null)} />}
-      {u && sub === "password" && <PasswordDialog id={id} onClose={() => setSub(null)} />}
+      {u && sub === "password" && <PasswordDialog id={id} email={u.email} onClose={() => setSub(null)} />}
       {u && sub === "balance" && (
         <AdjustBalanceDialog id={id} email={u.email} balanceCents={u.balance_cents} onClose={() => setSub(null)} />
       )}
-      {u && sub === "sub" && <SubLinkDialog id={id} onClose={() => setSub(null)} />}
+      {u && sub === "mail" && <SendMailDialog id={id} email={u.email} onClose={() => setSub(null)} />}
     </>
   );
 }
 
-/** Icon-only copy button (next to the address in the header). */
-function CopyIcon({ text }: { text: string }) {
+/** The four facts pinned under the header (every tab); each cell opens its tab. */
+function Facts({ user: u, loading, onTab }: { user: Detail | undefined; loading: boolean; onTab: (t: Tab) => void }) {
   const tr = useTr();
-  const toast = useToast();
+  const pk = useQuery({
+    queryKey: ["user", u?.id, "passkeys"],
+    queryFn: () => get<Passkeys>(`/users/${u?.id}/passkeys`),
+    enabled: !!u && !u.erased,
+  });
+  const bal = useQuery({
+    queryKey: ["balance", u?.id, "summary"],
+    queryFn: () => get<Ledger>(`/users/${u?.id}/balance?limit=1`),
+    enabled: !!u && !u.erased && u.role === "user",
+  });
+  if (loading || !u)
+    return (
+      <div className="flex gap-2 px-5 py-3" aria-hidden="true">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-11 flex-1 animate-pulse rounded-lg bg-secondary" />
+        ))}
+      </div>
+    );
+  const s = u.subscription;
+  const p = s ? pct(s.traffic_used_bytes, s.traffic_total_bytes) : 0;
+  const cell =
+    "min-w-0 flex-1 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none max-sm:min-w-[44%] max-sm:py-2";
+  const passkeys = pk.data?.passkeys.length ?? u.passkeys;
   return (
-    <Button
-      size="icon-sm"
-      variant="ghost"
-      icon={Copy}
-      aria-label={tr("复制邮箱", "Copy address")}
-      onClick={async () =>
-        toast(
-          (await copyText(text))
-            ? { tone: "success", title: tr("已复制", "Copied") }
-            : { tone: "error", title: tr("复制失败，请手动复制", "Copy failed; copy it by hand") },
-        )
-      }
-    />
-  );
-}
-
-function Stat({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="min-w-0">
-      <div className="text-caption font-medium text-muted-foreground">{label}</div>
-      <div className="tnum mt-0.5 text-body font-semibold break-words">{children}</div>
+    <div
+      role="group"
+      aria-label={tr("概要", "Summary")}
+      className="flex overflow-x-auto px-3 py-1.5 [scrollbar-width:none] sm:divide-x sm:divide-separator sm:px-3"
+    >
+      <button type="button" className={cell} onClick={() => onTab("overview")}>
+        <div className="text-caption font-medium text-muted-foreground">{tr("套餐", "Plan")}</div>
+        <div className="truncate text-body font-semibold">
+          {s ? s.plan_name : <span className="font-normal text-faint">{tr("无套餐", "No plan")}</span>}
+        </div>
+        <div className="truncate text-footnote text-muted-foreground">
+          {s ? (
+            s.expires_at ? (
+              <>
+                {tr("到期", "Expires")} {dateOnly(s.expires_at).slice(5)} · <RelDays date={s.expires_at} />
+              </>
+            ) : (
+              tr("不过期", "Never expires")
+            )
+          ) : (
+            "—"
+          )}
+        </div>
+      </button>
+      <button type="button" className={cell} onClick={() => onTab("traffic")}>
+        <div className="text-caption font-medium text-muted-foreground">{tr("本周期流量", "This period")}</div>
+        {s ? (
+          <>
+            <div className="tnum truncate text-body font-semibold">
+              {bytes(s.traffic_used_bytes)}{" "}
+              <span className="font-normal text-muted-foreground">
+                / {s.traffic_total_bytes === null ? tr("不限", "unlimited") : bytes(s.traffic_total_bytes)}
+              </span>
+            </div>
+            {s.traffic_total_bytes !== null && (
+              <div className="mt-1 flex items-center gap-2">
+                <Meter value={p} tone={usageTone(p)} className="flex-1" />
+                <span className="tnum text-caption text-muted-foreground">{p.toFixed(0)}%</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-body text-faint">—</div>
+        )}
+      </button>
+      <button type="button" className={cell} onClick={() => onTab("billing")}>
+        <div className="text-caption font-medium text-muted-foreground">{tr("余额", "Balance")}</div>
+        <div className="tnum truncate text-body font-semibold">{yuan(u.balance_cents)}</div>
+        <div className="tnum truncate text-footnote text-muted-foreground">
+          {tr("可提现", "Withdrawable")} {bal.data ? yuan(bal.data.withdrawable_cents) : "—"}
+        </div>
+      </button>
+      <button type="button" className={cell} onClick={() => onTab("security")}>
+        <div className="text-caption font-medium text-muted-foreground">{tr("登录方式", "Sign-in")}</div>
+        <div className="truncate text-body font-semibold">
+          {passkeys ? tr(`${passkeys} 个通行密钥`, `${passkeys} passkeys`) : tr("仅密码", "Password only")}
+        </div>
+        <div className="truncate text-footnote text-muted-foreground">
+          {pk.data && !pk.data.password_login
+            ? tr("只允许通行密钥", "Passkeys only")
+            : passkeys
+              ? tr("密码 + 通行密钥", "Password + passkeys")
+              : tr("可以添加通行密钥", "No passkey yet")}
+        </div>
+      </button>
     </div>
   );
 }
 
 function Overview({
   user: u,
-  onAssign,
   live,
   isAdmin,
+  ownerOnly,
+  onPlan,
+  onUnban,
+  onResetTraffic,
+  onRenew,
+  onCancel,
+  onResetSub,
 }: {
   user: Detail;
-  onAssign: () => void;
   live: boolean;
   isAdmin: boolean;
+  ownerOnly: boolean;
+  onPlan: () => void;
+  onUnban?: () => void;
+  onResetTraffic: () => void;
+  onRenew: () => void;
+  onCancel: () => void;
+  onResetSub: () => void;
 }) {
   const tr = useTr();
-  const lang = useLang();
+  const s = u.subscription;
   return (
-    <>
-      {!isAdmin && !u.erased && <SubscriptionCard user={u} onAssign={onAssign} live={live} />}
-      <div className="grid gap-x-6 gap-y-4 md:grid-cols-2">
-        <section>
-          <SectionTitle>{tr("账户", "Account")}</SectionTitle>
-          <dl className="divide-y divide-separator text-body">
-            {(
-              [
-                [tr("余额", "Balance"), <span className="tnum">{yuan(u.balance_cents)}</span>],
-                [
-                  tr("邮箱", "Email"),
-                  u.email_pending ? (
-                    <Badge tone="warning">{tr("待绑定邮箱", "Email pending")}</Badge>
-                  ) : u.email_verified ? (
-                    <Badge tone="success">
-                      <ShieldCheck aria-hidden="true" />
-                      {tr("已验证", "Verified")}
-                    </Badge>
-                  ) : (
-                    <Badge tone="warning">{tr("未验证", "Unverified")}</Badge>
-                  ),
-                ],
-                [
-                  tr("注册方式", "Signed up with"),
-                  u.signup_method === "passkey" ? tr("通行密钥", "Passkey") : tr("邮箱 + 密码", "Email + password"),
-                ],
-                [tr("通行密钥", "Passkeys"), tr(`${u.passkeys} 个`, String(u.passkeys))],
-                [
-                  tr("最后登录", "Last sign-in"),
-                  u.last_login_at ? (
-                    <span title={dateTime(u.last_login_at)}>{ago(u.last_login_at, lang)}</span>
-                  ) : (
-                    tr("从未", "never")
-                  ),
-                ],
-              ] as [string, ReactNode][]
-            ).map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between gap-4 py-2">
-                <dt className="text-muted-foreground">{k}</dt>
-                <dd className="min-w-0 text-right font-medium">{v}</dd>
-              </div>
-            ))}
-          </dl>
-        </section>
-        {!isAdmin && <TopEntrances id={u.id} />}
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)]">
+      <div className="grid content-start gap-4">
+        {u.erased && (
+          <Banner tone="info" title={tr("已注销", "Erased")}>
+            {tr(
+              "该账户已注销（有财务记录，匿名化保留）。不能再修改。",
+              "This account was erased (kept anonymized for its finance records); it cannot be changed.",
+            )}
+          </Banner>
+        )}
+        {ownerOnly && (
+          <Banner tone="info">
+            {tr(
+              "这是另一位管理员的账户：只有所有者可以修改它。",
+              "Another admin's account: only the owner can change it.",
+            )}
+          </Banner>
+        )}
+        {u.ban && (
+          <Banner
+            tone="danger"
+            icon={<Ban />}
+            title={tr("已封禁", "Banned")}
+            action={
+              onUnban && (
+                <Button size="sm" variant="outline" onClick={onUnban}>
+                  {tr("解除封禁", "Unban")}
+                </Button>
+              )
+            }
+          >
+            <span className="break-words">{u.ban.reason}</span> · {dateTime(u.ban.banned_at)} ·{" "}
+            {u.ban.banned_by_email ?? tr("系统", "system")}
+            {tr("。订阅已停止服务，用户登录后看到这条原因。", ". The subscription stops; the user sees this reason.")}
+          </Banner>
+        )}
+        {s?.status === "over_quota" && !u.ban && (
+          <Banner
+            tone="warning"
+            title={tr("流量已用尽", "Traffic used up")}
+            action={
+              live && (
+                <Button size="sm" variant="outline" onClick={onResetTraffic}>
+                  {tr("重置流量", "Reset traffic")}
+                </Button>
+              )
+            }
+          >
+            {tr(
+              "节点已停止为该用户转发；重置后立即恢复。",
+              "Nodes stopped serving this user; a reset brings it back now.",
+            )}
+          </Banner>
+        )}
+        {!isAdmin && !u.erased && (
+          <SubscriptionCard user={u} live={live} onPlan={onPlan} onRenew={onRenew} onCancel={onCancel} />
+        )}
+        {isAdmin && (
+          <Card className="px-4 py-4">
+            <div className="text-headline font-semibold">{tr("没有套餐", "No plan")}</div>
+            <div className="text-footnote text-muted-foreground">
+              {tr("管理员账户不能持有套餐。", "Admin accounts cannot hold a plan.")}
+            </div>
+          </Card>
+        )}
+        {!isAdmin && <PlanHistoryList id={u.id} />}
       </div>
-      {!isAdmin && <PlanHistoryList id={u.id} />}
-    </>
+      <div className="grid content-start gap-4">
+        {!isAdmin && live && <SubLinkCard id={u.id} onReset={onResetSub} />}
+        <AccountCard user={u} />
+      </div>
+    </div>
   );
 }
 
-/** 概览: the last 30 days by entrance, top five (the 流量 tab has the rest). */
-function TopEntrances({ id }: { id: string }) {
+function SubscriptionCard({
+  user,
+  live,
+  onPlan,
+  onRenew,
+  onCancel,
+}: {
+  user: Detail;
+  live: boolean;
+  onPlan: () => void;
+  onRenew: () => void;
+  onCancel: () => void;
+}) {
   const tr = useTr();
-  const to = siteToday();
-  const from = daysBefore(to, 29);
-  // Same key as the 流量 tab's 30-day view: one request for both.
-  const q = useQuery({
-    queryKey: ["traffic", "user-entrances", id, "30"],
-    queryFn: () => get<{ rows: EntranceRow[] }>(`/users/${id}/traffic?from=${from}&to=${to}&group=entrance`),
-  });
-  const rows = [...(q.data?.rows ?? [])].sort((a, b) => b.billed_bytes - a.billed_bytes).slice(0, 5);
-  const top = Math.max(1, ...rows.map((r) => r.billed_bytes));
-  return (
-    <section>
-      <SectionTitle>{tr("近 30 天流量 · 按入口", "Last 30 days · by entrance")}</SectionTitle>
-      {q.isPending ? (
-        <LoadingBlock rows={3} />
-      ) : q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : rows.length === 0 ? (
-        <p className="py-2 text-body text-muted-foreground">{tr("近 30 天没有流量。", "No traffic in 30 days.")}</p>
-      ) : (
-        <ul className="grid gap-2 pt-1" aria-label={tr("近 30 天流量 · 按入口", "Last 30 days · by entrance")}>
-          {rows.map((n, i) => (
-            <li key={n.entrance_id} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1">
-              <span className="flex min-w-0 items-center gap-1.5 text-body">
-                <Dot tone={n.kind === "relay" ? "warning" : n.kind ? "success" : "neutral"} />
-                <span className="truncate">
-                  {n.node ?? tr("已删除的节点", "Deleted node")} ·{" "}
-                  {n.entrance ?? tr("已删除的入口", "Deleted entrance")}
-                </span>
-              </span>
-              <span className="tnum text-footnote text-muted-foreground">
-                {bytes(n.billed_bytes)}
-                {n.rate_now !== null && ` · ${rateText(Math.round(n.rate_now * 1000))}`}
-              </span>
-              <div className="col-span-2 h-1.5 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
-                <div
-                  className="h-full rounded-full bg-chart-1"
-                  style={{ width: `${Math.max(2, (n.billed_bytes / top) * 100)}%`, opacity: 1 - i * 0.12 }}
-                />
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function SubscriptionCard({ user, onAssign, live }: { user: Detail; onAssign: () => void; live: boolean }) {
-  const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
   const s = user.subscription;
-  const id = user.id;
   if (!s)
     return (
-      <section className="rounded-xl bg-window p-4 ring-1 ring-border ring-inset">
-        <div className="text-footnote font-medium text-muted-foreground">{tr("当前订阅", "Current subscription")}</div>
-        <p className="mt-1 text-body text-muted-foreground">
-          {tr("没有生效的套餐。", "No active plan.")}{" "}
-          {live && (
-            <Button size="sm" variant="link" onClick={onAssign}>
-              {tr("现在分配一个", "Assign one now")}
-            </Button>
-          )}
-        </p>
-      </section>
+      <Card className="flex flex-wrap items-center gap-3 px-4 py-4">
+        <div className="min-w-0 flex-1">
+          <div className="text-headline font-semibold">{tr("没有套餐", "No plan")}</div>
+          <div className="text-footnote text-muted-foreground">
+            {tr("分配后从现在开始计算周期，流量从 0 开始。", "Assigned plans start now with zero traffic.")}
+          </div>
+        </div>
+        {live && (
+          <Button size="sm" variant="primary" icon={Plus} onClick={onPlan}>
+            {tr("分配套餐", "Assign a plan")}
+          </Button>
+        )}
+      </Card>
     );
   const p = pct(s.traffic_used_bytes, s.traffic_total_bytes);
-  const left = s.expires_at ? Math.ceil((Date.parse(s.expires_at) - Date.now()) / 86400_000) : null;
-  const resetIn = s.next_reset_at ? Math.ceil((Date.parse(s.next_reset_at) - Date.now()) / 86400_000) : null;
-  const cancel = async () => {
-    const ok = await confirm({
-      title: tr("取消套餐？", "Cancel the plan?"),
-      description: tr(
-        "订阅立即结束，不会自动退款；需要退款请到订单页对相应订单操作。写入审计。",
-        "The subscription ends now with no automatic refund (refund the order on the orders page). Audited.",
-      ),
-      impact: tr(
-        `「${s.plan_name}」立即结束${left !== null && left > 0 ? `（还剩 ${left} 天）` : ""}：用户失去全部入口，在线连接断开`,
-        `"${s.plan_name}" ends now${left !== null && left > 0 ? ` (${left} days left)` : ""}: the user loses every entrance and is disconnected`,
-      ),
-      typeToConfirm: user.email,
-      confirmLabel: tr("取消套餐", "Cancel plan"),
-      action: () => del(`/users/${id}/plan`),
-    });
-    if (ok) toast({ tone: "success", title: tr("套餐已取消", "Plan cancelled") });
-  };
+  const onetime = s.period === "onetime";
   return (
-    <section className="rounded-xl bg-[linear-gradient(135deg,var(--primary-soft),transparent_70%)] p-4 ring-1 ring-border ring-inset">
-      <div className="flex flex-wrap items-start gap-3">
+    <Card className="overflow-hidden">
+      <div className="flex flex-wrap items-start gap-3 bg-[linear-gradient(135deg,var(--primary-soft),transparent_70%)] px-4 pt-3.5 pb-3">
         <div className="min-w-0 flex-1">
           <div className="text-footnote font-medium text-muted-foreground">
             {tr("当前订阅", "Current subscription")}
           </div>
-          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
-            <span className="text-title3 font-semibold break-all">{s.plan_name}</span>
-            <span className="text-body text-muted-foreground">
-              · {periodLabel(s.period, tr, s.period_days)} · {resetLabel(s.reset_period, tr)}
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-title3 font-semibold">
+            <span className="break-all">{s.plan_name}</span>
+            <span className="text-body font-normal text-muted-foreground">
+              {periodLabel(s.period, tr, s.period_days)}
             </span>
             {s.status !== "active" && (
-              <Badge tone="danger" dot>
+              <Badge tone={s.status === "banned" ? "danger" : "warning"} dot>
                 {subStatusText(s.status, tr)}
               </Badge>
             )}
           </div>
         </div>
         {live && (
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={onAssign}>
-              {tr("更换套餐", "Change plan")}
-            </Button>
-            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void cancel()}>
-              {tr("取消套餐", "Cancel plan")}
-            </Button>
+          <Button size="sm" variant="outline" icon={Layers} onClick={onPlan}>
+            {tr("更换套餐", "Change plan")}
+          </Button>
+        )}
+      </div>
+      <div className="px-4 pt-1 pb-3">
+        {s.traffic_total_bytes !== null && (
+          <div className="mb-3 flex items-center gap-3">
+            <Meter value={p} tone={usageTone(p)} className="h-2 flex-1" label={tr("流量用量", "Traffic used")} />
+            <span className="tnum text-footnote font-semibold">
+              {bytes(s.traffic_used_bytes)} / {bytes(s.traffic_total_bytes)} · {p.toFixed(1)}%
+            </span>
           </div>
         )}
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
-        <Stat label={tr("已用 / 总流量", "Used / total")}>
-          {bytes(s.traffic_used_bytes)}
-          <span className="font-normal text-muted-foreground">
-            {" "}
-            / {s.traffic_total_bytes === null ? tr("不限", "unlimited") : bytes(s.traffic_total_bytes)}
-          </span>
-        </Stat>
-        <Stat label={tr("到期", "Expires")}>
-          {s.expires_at ? <span title={dateTime(s.expires_at)}>{dateOnly(s.expires_at)}</span> : tr("永久", "never")}
-        </Stat>
-        <Stat label={tr("下次重置", "Next reset")}>
-          {s.next_reset_at ? (
-            <span title={dateTime(s.next_reset_at)}>
-              {dateOnly(s.next_reset_at).slice(5)}
-              {resetIn !== null && resetIn > 0 && tr(` · ${resetIn} 天后`, ` · in ${resetIn} d`)}
-            </span>
-          ) : (
-            "—"
-          )}
-        </Stat>
-        <Stat label={tr("限速", "Speed limit")}>
-          {s.speed_limit_mbps ? `${s.speed_limit_mbps} Mbps` : tr("不限", "unlimited")}
-        </Stat>
-      </div>
-      {s.traffic_total_bytes !== null && (
-        <div className="mt-3 flex items-center gap-3">
-          <Meter value={p} tone={usageTone(p)} className="h-2 flex-1" label={tr("流量用量", "Traffic used")} />
-          <span className="tnum text-footnote font-semibold">{p.toFixed(1)}%</span>
-        </div>
-      )}
-      <p className="tnum mt-3 text-footnote text-muted-foreground">
-        {tr("开始", "Started")} {dateTime(s.starts_at)} · {tr("上次重置", "Last reset")}{" "}
-        {s.last_reset_at ? dateTime(s.last_reset_at) : "—"} · {tr("重置时区", "Reset time zone")} {s.timezone}
-      </p>
-    </section>
-  );
-}
-
-function AssignPlanDialog({
-  id,
-  plans,
-  current,
-  onClose,
-}: {
-  id: string;
-  plans: PlanView[];
-  current: Subscription | null;
-  onClose: () => void;
-}) {
-  const tr = useTr();
-  const [form, setForm] = useState<TermForm>({ ...EMPTY_TERM, planId: current?.plan_id ?? "" });
-  const [error, setError] = useState<string | null>(null);
-  const [run, busy] = useAction();
-  const submit = async () => {
-    const b = termBody(form, tr);
-    if (typeof b === "string") return setError(b);
-    setError(null);
-    const r = await run(() => put(`/users/${id}/plan`, b), { ok: tr("套餐已分配", "Plan assigned") });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      icon={Layers}
-      onClose={onClose}
-      title={current ? tr("更换套餐", "Change plan") : tr("分配套餐", "Assign a plan")}
-      description={
-        current
-          ? tr(
-              `替换当前的「${current.plan_name}」：从现在开始计算，已用流量清零。`,
-              `Replaces "${current.plan_name}": starts now with zero usage.`,
-            )
-          : tr("从现在开始计算，到期时间由时长决定。", "Starts now; the expiry follows from the term.")
-      }
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("确认分配", "Assign")}
-          </Button>
-        </>
-      }
-    >
-      <TermFields form={form} onChange={setForm} plans={plans} />
-      {error && (
-        <p role="alert" className="mt-3 text-footnote text-destructive">
-          {error}
-        </p>
-      )}
-    </Dialog>
-  );
-}
-
-function RenewDialog({ id, sub, onClose }: { id: string; sub: Subscription; onClose: () => void }) {
-  const tr = useTr();
-  const onetime = sub.period === "onetime";
-  const [mode, setMode] = useState<"term" | "extend">("term");
-  const [form, setForm] = useState<TermForm>({
-    ...EMPTY_TERM,
-    period: sub.period,
-    days: sub.period_days ? String(sub.period_days) : "",
-  });
-  const [days, setDays] = useState("30");
-  const [error, setError] = useState<string | null>(null);
-  const [run, busy] = useAction();
-  const submit = async () => {
-    let body: Record<string, unknown>;
-    if (mode === "extend") {
-      const n = Number(days.trim());
-      if (!/^\d{1,4}$/.test(days.trim()) || n < 1 || n > 3650)
-        return setError(tr("天数须为 1–3650 的整数", "Days must be a whole number 1–3650"));
-      body = { extend_days: n };
-    } else {
-      const b = termBody(form, tr, false);
-      if (typeof b === "string") return setError(b);
-      body = { period: b.period, ...(b.days ? { days: b.days } : {}) };
-    }
-    setError(null);
-    const r = await run(() => patch(`/users/${id}/plan`, body), { ok: tr("已续期", "Renewed") });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      icon={CalendarPlus}
-      onClose={onClose}
-      title={tr("续期 / 延长", "Renew / extend")}
-      description={tr(
-        `从到期时间（已到期则从现在）起算。当前到期：${sub.expires_at ? dateTime(sub.expires_at) : "永久"}`,
-        `From the expiry (or now when expired). Expires: ${sub.expires_at ? dateTime(sub.expires_at) : "never"}`,
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("确认", "Confirm")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        {!onetime && (
-          <Segmented
-            value={mode}
-            onChange={(m) => {
-              setMode(m);
-              setError(null);
-            }}
-            options={[
-              { value: "term", label: tr("续期一个时长", "One more term") },
-              { value: "extend", label: tr("延长 N 天", "Extend N days") },
-            ]}
-          />
-        )}
-        {mode === "term" ? (
-          <>
-            <TermFields form={form} onChange={setForm} plans={[]} withPlan={false} />
-            {error && (
-              <p role="alert" className="text-footnote text-destructive">
-                {error}
-              </p>
-            )}
-          </>
-        ) : (
-          <Field label={tr("延长天数", "Days")} error={error ?? undefined}>
-            <Input inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} data-autofocus />
-          </Field>
-        )}
-      </div>
-    </Dialog>
-  );
-}
-
-function BanDialog({ id, email, onClose }: { id: string; email: string; onClose: () => void }) {
-  const tr = useTr();
-  const [note, setNote] = useState("");
-  const [kind, setKind] = useState("abuse");
-  const [run, busy] = useAction();
-  const presets: Record<string, string> = {
-    abuse: tr("违反服务条款（滥用）", "Terms of service violation (abuse)"),
-    share: tr("账号共享 / 转售", "Account sharing / resale"),
-    payment: tr("支付争议", "Payment dispute"),
-    other: "",
-  };
-  const text = [presets[kind], note.trim()].filter(Boolean).join(tr("：", ": "));
-  const needNote = kind === "other" && !note.trim();
-  const submit = async () => {
-    if (!text) return;
-    const r = await run(() => post(`/users/${id}/ban`, { reason: text }), {
-      ok: tr("已封禁，已踢下线", "Banned and signed out"),
-    });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      tone="danger"
-      icon={Ban}
-      onClose={onClose}
-      title={tr(`封禁 ${email}`, `Ban ${email}`)}
-      description={tr(
-        "立即踢下线，所有节点断开该用户，订阅返回 404；门户里只能看到封禁原因和工单。写入审计。",
-        "Signed out at once, dropped from every node, the subscription answers 404; the portal shows only the reason and tickets. Audited.",
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          {needNote && (
-            <span className="mr-auto text-footnote text-muted-foreground">
-              {tr("选「其他」时要先写说明", "“Other” needs a note first")}
-            </span>
-          )}
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="destructive" loading={busy} disabled={!text}>
-            {tr("封禁", "Ban")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <Field label={tr("原因", "Reason")}>
-          <Select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="abuse">{presets.abuse}</option>
-            <option value="share">{presets.share}</option>
-            <option value="payment">{presets.payment}</option>
-            <option value="other">{tr("其他（只写说明）", "Other (note only)")}</option>
-          </Select>
-        </Field>
-        <Field
-          label={tr("补充说明（会显示给用户）", "Note (shown to the user)")}
-          error={
-            needNote
-              ? tr("选择「其他」时必须填写说明，用户会看到这段文字。", "“Other” needs a note; the user sees it.")
-              : undefined
-          }
-          hint={tr(`用户将看到：${text || "—"}`, `The user sees: ${text || "—"}`)}
-        >
-          <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={400} />
-        </Field>
-      </div>
-    </Dialog>
-  );
-}
-
-function PasswordDialog({ id, onClose }: { id: string; onClose: () => void }) {
-  const tr = useTr();
-  const [pw, setPw] = useState("");
-  const [touched, setTouched] = useState(false);
-  const [run, busy] = useAction();
-  const bad = pw.length < 8 ? tr("至少 8 位", "At least 8 characters") : null;
-  const submit = async () => {
-    setTouched(true);
-    if (bad) return;
-    const r = await run(() => patch(`/users/${id}`, { password: pw }), {
-      ok: tr("密码已修改，该账户的会话已结束", "Password set; the account's sessions ended"),
-    });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      size="sm"
-      icon={KeyRound}
-      onClose={onClose}
-      title={tr("设置新密码", "Set a new password")}
-      description={tr("保存后该账户的全部会话结束。", "Every session of the account ends.")}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
-    >
-      <Field label={tr("新密码（至少 8 位）", "New password (8+ characters)")} error={touched ? bad : undefined}>
-        <Input
-          type="password"
-          autoComplete="new-password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-          onBlur={() => pw && setTouched(true)}
-          data-autofocus
-        />
-      </Field>
-    </Dialog>
-  );
-}
-
-/**
- * Credit or debit a balance with a reason; previews the resulting balance.
- * `balanceCents` when the caller knows it, else it is read.
- */
-export function AdjustBalanceDialog({
-  id,
-  email,
-  balanceCents,
-  onClose,
-  onDone,
-}: {
-  id: string;
-  email: string;
-  balanceCents?: number;
-  onClose: () => void;
-  onDone?: () => void;
-}) {
-  const tr = useTr();
-  const [dir, setDir] = useState<"credit" | "debit">("credit");
-  const [amount, setAmount] = useState("");
-  const [reason, setReason] = useState("");
-  const [touched, setTouched] = useState({ amount: false, reason: false });
-  const [run, busy] = useAction();
-  const current = useQuery({
-    queryKey: ["balance", id, "summary"],
-    queryFn: () => get<Ledger>(`/users/${id}/balance?limit=1`),
-    enabled: balanceCents === undefined,
-  });
-  const before = balanceCents ?? current.data?.balance_cents;
-  const c = amount.trim() ? parseYuan(amount) : null;
-  const signed = c === null ? null : dir === "credit" ? c : -c;
-  const after = before !== undefined && signed !== null ? before + signed : null;
-  const amountError = !amount.trim()
-    ? tr("请填写金额", "Enter an amount")
-    : c === null || c <= 0
-      ? tr("金额无效（元，最多两位小数）", "Invalid amount (yuan, 2 decimals)")
-      : after !== null && after < 0
-        ? tr(`扣减后余额不能为负（当前 ${yuan(before)}）`, `The balance cannot go below 0 (now ${yuan(before)})`)
-        : null;
-  const reasonError = reason.trim() ? null : tr("请填写原因", "Enter a reason");
-  const submit = async () => {
-    setTouched({ amount: true, reason: true });
-    if (amountError || reasonError || signed === null) return;
-    const r = await run(() => post(`/users/${id}/balance`, { amount_cents: signed, reason: reason.trim() }), {
-      ok: tr("余额已调整", "Balance adjusted"),
-    });
-    if (r !== undefined) {
-      onDone?.();
-      onClose();
-    }
-  };
-  return (
-    <Dialog
-      open
-      icon={Wallet}
-      onClose={onClose}
-      title={tr("调整余额", "Adjust balance")}
-      description={email}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("确认调整", "Adjust")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <Segmented
-          value={dir}
-          onChange={setDir}
-          options={[
-            { value: "credit", label: tr("增加", "Credit") },
-            { value: "debit", label: tr("扣减", "Debit") },
+        <KV
+          cols={3}
+          items={[
+            { k: tr("开始", "Started"), v: dateTime(s.starts_at) },
+            {
+              k: tr("到期", "Expires"),
+              v: s.expires_at ? (
+                <>
+                  {dateOnly(s.expires_at)} · <RelDays date={s.expires_at} />
+                </>
+              ) : (
+                tr("不过期", "never")
+              ),
+            },
+            { k: tr("重置方式", "Reset"), v: resetLabel(s.reset_period, tr) },
+            { k: tr("上次重置", "Last reset"), v: s.last_reset_at ? dateTime(s.last_reset_at) : "—" },
+            {
+              k: tr("下次重置", "Next reset"),
+              v: s.next_reset_at ? (
+                <>
+                  {dateTime(s.next_reset_at).slice(5)} · <RelDays date={s.next_reset_at} />
+                </>
+              ) : (
+                "—"
+              ),
+            },
+            {
+              k: tr("限速", "Speed limit"),
+              v: s.speed_limit_mbps ? `${s.speed_limit_mbps} Mbps` : tr("不限速", "unlimited"),
+            },
+            ...(s.traffic_total_bytes === null
+              ? [{ k: tr("已用流量", "Used"), v: `${bytes(s.traffic_used_bytes)} / ${tr("不限", "unlimited")}` }]
+              : []),
           ]}
         />
-        <Field label={tr("金额（元）", "Amount (yuan)")} error={touched.amount ? amountError : undefined}>
-          <Input
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            onBlur={() => amount && setTouched((t) => ({ ...t, amount: true }))}
-            data-autofocus
-          />
-        </Field>
-        <Field
-          label={tr("原因（必填，写入审计）", "Reason (required, audited)")}
-          error={touched.reason ? reasonError : undefined}
-        >
-          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} />
-        </Field>
-        <div className="flex items-center justify-between rounded-lg bg-window px-3 py-2 text-body ring-1 ring-border ring-inset">
-          <span className="text-muted-foreground">{tr("调整后余额", "Balance after")}</span>
-          <span className="tnum font-medium">
-            {before === undefined ? (
-              current.error ? (
-                tr("读取失败", "Unavailable")
-              ) : (
-                "…"
-              )
-            ) : (
-              <>
-                {yuan(before)}
-                {after !== null && !amountError && (
-                  <>
-                    {" → "}
-                    <span className={signed !== null && signed < 0 ? "text-destructive" : "text-success"}>
-                      {yuan(after)}
-                    </span>
-                  </>
-                )}
-              </>
-            )}
-          </span>
-        </div>
       </div>
-    </Dialog>
+      {live && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-separator px-3 py-2">
+          <Button size="sm" variant="ghost" icon={CalendarPlus} disabled={onetime} onClick={onRenew}>
+            {tr("续期一个周期", "Renew one term")}
+          </Button>
+          {!onetime && s.expires_at && <ExtendPopover id={user.id} sub={s} />}
+          <span className="flex-1" />
+          <Button size="sm" variant="ghost" icon={CircleOff} className="text-destructive" onClick={onCancel}>
+            {tr("取消套餐", "Cancel plan")}
+          </Button>
+        </div>
+      )}
+      {onetime && (
+        <p className="border-t border-separator px-4 py-2 text-footnote text-faint">
+          {tr(
+            "一次性套餐没有周期，不能续期或延长天数；可以重置流量或更换套餐。",
+            "One-time plans have no term: they cannot be renewed or extended; reset the traffic or change the plan.",
+          )}
+        </p>
+      )}
+    </Card>
   );
 }
 
-function SubLinkDialog({ id, onClose }: { id: string; onClose: () => void }) {
+/** Masked until 显示 (each read is audited); then the link, a copy button and a QR code. */
+function SubLinkCard({ id, onReset }: { id: string; onReset: () => void }) {
   const tr = useTr();
+  const [shown, setShown] = useState(false);
   const q = useQuery({
     queryKey: ["user", id, "sub-link"],
     queryFn: () =>
       get<{ sub_token: string | null; sub_url: string | null; legacy: boolean }>(`/users/${id}/subscription`),
+    enabled: shown,
     gcTime: 0,
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
   const url = q.data?.sub_url ? absoluteUrl(q.data.sub_url) : null;
   return (
-    <Dialog
-      open
-      icon={LinkIcon}
-      onClose={onClose}
-      title={tr("订阅链接", "Subscription link")}
-      description={tr("每次读取都写入审计。", "Every read is audited.")}
-      footer={<Button onClick={onClose}>{tr("关闭", "Close")}</Button>}
-    >
-      {q.isPending ? (
-        <LoadingBlock rows={4} />
+    <Card className="p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <QrIcon className="size-4 text-muted-foreground" aria-hidden="true" />
+        <h3 className="flex-1 text-headline font-semibold">{tr("订阅链接", "Subscription link")}</h3>
+        <Button size="sm" variant="ghost" icon={RotateCcw} className="text-destructive" onClick={onReset}>
+          {tr("重置", "Reset")}
+        </Button>
+      </div>
+      {!shown ? (
+        <>
+          <div className="flex items-center gap-3 rounded-lg bg-window px-3 py-3 ring-1 ring-border ring-inset">
+            <span className="min-w-0 flex-1 truncate font-mono text-footnote text-faint">••••••••••••••••••••</span>
+            <Button size="sm" variant="soft" icon={Eye} onClick={() => setShown(true)}>
+              {tr("显示", "Show")}
+            </Button>
+          </div>
+          <p className="mt-2 text-footnote text-faint">
+            {tr("查看链接与二维码会写入审计日志。", "Viewing the link and QR code is audited.")}
+          </p>
+        </>
+      ) : q.isPending ? (
+        <div className="grid gap-3" aria-busy="true">
+          <div className="h-8 animate-pulse rounded-md bg-secondary" />
+          <div className="flex items-center gap-3">
+            <div className="size-28 animate-pulse rounded-lg bg-secondary" />
+            <span className="text-footnote text-muted-foreground">{tr("正在读取订阅链接…", "Reading the link…")}</span>
+          </div>
+        </div>
       ) : q.error ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
       ) : q.data?.legacy ? (
-        <Callout tone="warning">
+        <Banner tone="warning">
           {tr(
             "该链接是旧版本生成的，只存了哈希，无法显示；重置订阅后可查看新链接。",
             "This link predates storable links; reset the subscription to get a showable one.",
           )}
-        </Callout>
+        </Banner>
       ) : url ? (
-        <div className="space-y-3">
-          <div className="flex items-start gap-2">
-            <Mono>{url}</Mono>
-            <CopyButton text={url} />
-          </div>
-          <div className="flex justify-center">
+        <div className="grid gap-3">
+          <CopyText block value={url} label={tr("订阅链接", "Subscription link")} />
+          <div className="flex items-center gap-3">
             <QrCode text={url} label={tr("订阅链接二维码", "Subscription QR code")} />
+            <p className="text-footnote text-muted-foreground">
+              {tr("用客户端扫码导入。此次查看已写入审计日志。", "Scan it with a client. This view was audited.")}
+            </p>
           </div>
         </div>
       ) : (
@@ -1323,150 +1141,59 @@ function SubLinkDialog({ id, onClose }: { id: string; onClose: () => void }) {
           {tr("该账户还没有订阅链接。", "This account has no subscription link yet.")}
         </p>
       )}
-    </Dialog>
+    </Card>
   );
 }
 
-function AccountTab({
-  user: u,
-  isAdmin,
-  live,
-  ownerOnly,
-  onSubLink,
-  onReset,
-}: {
-  user: Detail;
-  isAdmin: boolean;
-  live: boolean;
-  ownerOnly: boolean;
-  onSubLink: () => void;
-  onReset: () => void;
-}) {
+function AccountCard({ user: u }: { user: Detail }) {
   const tr = useTr();
   return (
-    <>
-      <section>
-        <SectionTitle>{tr("账户", "Account")}</SectionTitle>
-        <KV
-          items={[
-            [
-              tr("邮箱", "Email"),
-              <span key="e" className="break-all">
-                {u.email_pending ? tr("（待绑定）", "(pending)") : u.email}
-                {!u.email_verified && !u.email_pending && tr("（未验证）", " (unverified)")}
-              </span>,
-            ],
-            [
-              tr("用户 ID", "User ID"),
-              <span key="i" className="inline-flex flex-wrap items-center gap-1">
-                <Mono>{u.id}</Mono>
-                <CopyButton text={u.id} />
-              </span>,
-            ],
-            [tr("角色", "Role"), u.role === "admin" ? tr("管理员", "Admin") : tr("用户", "User")],
-            [tr("注册时间", "Signed up"), dateTime(u.created_at)],
-            [tr("最后登录", "Last sign-in"), u.last_login_at ? dateTime(u.last_login_at) : tr("从未", "never")],
-          ]}
-        />
-      </section>
-      {!isAdmin && live && (
-        <section>
-          <SectionTitle>{tr("订阅", "Subscription")}</SectionTitle>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" icon={LinkIcon} onClick={onSubLink}>
-              {tr("订阅链接", "Subscription link")}
-            </Button>
-            <Button size="sm" variant="destructive-soft" icon={RefreshCw} onClick={onReset}>
-              {tr("重置订阅", "Reset subscription")}
-            </Button>
-          </div>
-        </section>
-      )}
-      <LoginMethods id={u.id} disabled={ownerOnly || !live} />
-    </>
-  );
-}
-
-function LoginMethods({ id, disabled }: { id: string; disabled: boolean }) {
-  const tr = useTr();
-  const confirm = useConfirm();
-  const toast = useToast();
-  const q = useQuery({ queryKey: ["user", id, "passkeys"], queryFn: () => get<Passkeys>(`/users/${id}/passkeys`) });
-  const d = q.data;
-  return (
-    <section>
-      <SectionTitle
-        actions={
-          d &&
-          !disabled &&
-          (d.passkeys.length > 0 || d.password_login_disabled) && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={async () => {
-                const ok = await confirm({
-                  title: tr("重置登录方式？", "Reset sign-in methods?"),
-                  description: tr(
-                    "恢复密码登录（丢失设备时使用）。写入审计。",
-                    "Turns password sign-in back on (lost device). Audited.",
-                  ),
-                  impact:
-                    d.passkeys.length > 0
-                      ? tr(
-                          `将删除该账户的全部 ${d.passkeys.length} 个通行密钥`,
-                          `All ${d.passkeys.length} passkeys of the account are deleted`,
-                        )
-                      : tr(
-                          "没有通行密钥会被删除，只恢复密码登录",
-                          "No passkey is deleted; password sign-in comes back",
-                        ),
-                  tone: d.passkeys.length > 0 ? "danger" : "warning",
-                  action: () => post(`/users/${id}/login-method/reset`),
-                });
-                if (ok) toast({ tone: "success", title: tr("登录方式已重置", "Sign-in methods reset") });
-              }}
-            >
-              {tr("重置登录方式", "Reset sign-in")}
-            </Button>
-          )
-        }
-      >
-        {tr("登录方式", "Sign-in methods")}
-      </SectionTitle>
-      {q.isPending ? (
-        <LoadingBlock rows={2} />
-      ) : q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : (
-        d && (
-          <div className="text-body">
-            <p className="text-muted-foreground">
-              {d.password_login
-                ? tr("可以用密码登录。", "Password sign-in works.")
-                : tr("仅通行密钥登录。", "Passkey sign-in only.")}{" "}
-              {d.password_login_disabled &&
-                tr("账户已选择只用通行密钥登录。", "The account chose passkey-only sign-in.")}{" "}
-              {!d.available &&
-                tr("（通行密钥需要 https 主域名，当前不可用）", "(passkeys need an https main domain; unavailable)")}
-            </p>
-            {d.passkeys.length > 0 ? (
-              <ul className="mt-2 divide-y divide-separator rounded-lg ring-1 ring-border ring-inset">
-                {d.passkeys.map((p) => (
-                  <li key={p.id} className="flex flex-wrap justify-between gap-x-3 px-3 py-2">
-                    <span className="min-w-0 break-all">{p.name}</span>
-                    <span className="text-footnote text-muted-foreground">
-                      {tr("最后使用", "last used")} {p.last_used_at ? dateTime(p.last_used_at) : tr("从未", "never")}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+    <Card className="p-4">
+      <h3 className="mb-3 text-headline font-semibold">{tr("账户", "Account")}</h3>
+      <KV
+        cols={2}
+        items={[
+          {
+            k: tr("注册方式", "Signed up with"),
+            v: u.signup_method === "passkey" ? tr("通行密钥", "Passkey") : tr("邮箱 + 密码", "Email + password"),
+          },
+          {
+            k: tr("邮箱", "Email"),
+            v: u.email_pending ? (
+              <Badge tone="warning">{tr("待绑定邮箱", "Email pending")}</Badge>
+            ) : u.email_verified ? (
+              <Badge tone="success">
+                <MailCheck aria-hidden="true" />
+                {tr("已验证", "Verified")}
+              </Badge>
             ) : (
-              <p className="mt-1 text-footnote text-faint">{tr("没有通行密钥。", "No passkeys.")}</p>
-            )}
-          </div>
-        )
-      )}
-    </section>
+              <Badge tone="warning">{tr("未验证", "Unverified")}</Badge>
+            ),
+          },
+          {
+            k: tr("邀请人", "Invited by"),
+            v: u.inviter_email ? (
+              <button
+                type="button"
+                className="break-all text-left text-primary hover:underline"
+                onClick={() => navigate(`/users?q=${encodeURIComponent(u.inviter_email ?? "")}`)}
+              >
+                {u.inviter_email}
+              </button>
+            ) : (
+              "—"
+            ),
+            span: 2,
+          },
+          { k: tr("用户 ID", "User ID"), v: <CopyText value={u.id} />, span: 2 },
+          { k: tr("余额", "Balance"), v: yuan(u.balance_cents) },
+          {
+            k: tr("最后使用", "Last used"),
+            v: u.last_traffic_day ?? tr("从未", "never"),
+          },
+        ]}
+      />
+    </Card>
   );
 }
 
@@ -1479,30 +1206,35 @@ function PlanHistoryList({ id }: { id: string }) {
   const rows = q.data?.history ?? [];
   return (
     <section>
-      <SectionTitle>{tr("套餐历史", "Plan history")}</SectionTitle>
-      {q.isPending ? (
-        <LoadingBlock rows={3} />
-      ) : q.error ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : rows.length === 0 ? (
-        <p className="py-2 text-body text-muted-foreground">{tr("还没有分配过套餐。", "No plan yet.")}</p>
-      ) : (
-        <ul className="divide-y divide-separator text-body">
-          {rows.map((h) => {
-            const [label, tone] = planStatus(h.status, tr);
-            return (
-              <li key={h.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2">
-                <span className="min-w-0 font-medium break-all">{h.plan_name}</span>
-                <Badge tone={tone}>{label}</Badge>
-                <span className="w-full text-footnote text-muted-foreground">
-                  {periodLabel(h.period, tr, h.period_days)} · {dateOnly(h.starts_at)} →{" "}
-                  {h.ended_at || h.expires_at ? dateOnly(h.ended_at ?? h.expires_at) : tr("永久", "never")}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      <SectionTitle count={q.data ? rows.length : undefined}>{tr("套餐历史", "Plan history")}</SectionTitle>
+      <Card className="p-4">
+        {q.isPending ? (
+          <SkeletonRows rows={3} />
+        ) : q.error ? (
+          <ErrorState
+            title={tr("套餐历史加载失败", "The plan history could not be loaded")}
+            error={q.error}
+            onRetry={() => void q.refetch()}
+            compact
+          />
+        ) : rows.length === 0 ? (
+          <p className="text-body text-muted-foreground">{tr("还没有分配过套餐。", "No plan yet.")}</p>
+        ) : (
+          <Timeline
+            items={rows.map((h) => {
+              const [label, tone] = planStatus(h.status, tr);
+              return {
+                title: `${h.plan_name} · ${label}`,
+                time: dateOnly(h.starts_at),
+                body: `${periodLabel(h.period, tr, h.period_days)} · ${dateOnly(h.starts_at)} → ${
+                  h.ended_at || h.expires_at ? dateOnly(h.ended_at ?? h.expires_at) : tr("不过期", "never")
+                }`,
+                tone,
+              };
+            })}
+          />
+        )}
+      </Card>
     </section>
   );
 }
@@ -1522,83 +1254,112 @@ function BalanceLedger({ id, onAdjust }: { id: string; onAdjust?: () => void }) 
   const first = q.data?.pages[0];
   const entries = q.data?.pages.flatMap((p) => p.entries) ?? [];
   return (
-    <section>
+    <section className="min-w-0">
       <SectionTitle
-        actions={
+        action={
           onAdjust && (
-            <Button size="sm" variant="outline" icon={Wallet} onClick={onAdjust}>
-              {tr("调整余额", "Adjust balance")}
+            <Button size="sm" variant="soft" icon={Wallet} onClick={onAdjust}>
+              {tr("人工调整余额", "Adjust balance")}
             </Button>
           )
         }
       >
         {tr("余额明细", "Balance ledger")}
-        {first &&
-          tr(
-            ` · 余额 ${yuan(first.balance_cents)}（可提现 ${yuan(first.withdrawable_cents)}）`,
-            ` · ${yuan(first.balance_cents)} (${yuan(first.withdrawable_cents)} withdrawable)`,
-          )}
       </SectionTitle>
-      {q.isPending ? (
-        <LoadingBlock rows={3} />
-      ) : q.error && !q.data ? (
-        <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : entries.length === 0 ? (
-        <p className="py-2 text-body text-muted-foreground">{tr("暂无余额变动。", "No balance movements yet.")}</p>
-      ) : (
-        <>
-          <ul className="divide-y divide-separator rounded-lg text-body ring-1 ring-border ring-inset">
-            {entries.map((e) => (
-              <li key={e.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2">
-                <span className={`tnum font-medium ${e.amount_cents < 0 ? "text-destructive" : "text-success"}`}>
-                  {e.amount_cents > 0 ? "+" : ""}
-                  {yuan(e.amount_cents)}
-                </span>
-                <Badge>{ledgerKind(e.kind, tr)}</Badge>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {e.reason ?? e.out_trade_no ?? ""}
-                </span>
-                <span className="tnum text-footnote text-muted-foreground">
-                  {tr(`余额 ${yuan(e.balance_after_cents)}`, `→ ${yuan(e.balance_after_cents)}`)} ·{" "}
-                  {dateTime(e.created_at)}
-                </span>
-              </li>
-            ))}
-          </ul>
-          {q.error && (
-            <p role="alert" className="mt-2 text-footnote text-destructive">
-              {tr("加载更多失败，可以重试。", "Loading more failed; try again.")}
-            </p>
-          )}
-          {q.hasNextPage && (
-            <Button
-              className="mt-2"
-              size="sm"
-              variant="ghost"
-              icon={ChevronDown}
-              loading={q.isFetchingNextPage}
-              onClick={() => void q.fetchNextPage()}
-            >
-              {tr("加载更多", "Load more")}
-            </Button>
-          )}
-        </>
-      )}
+      <Card className="overflow-hidden">
+        {q.isPending ? (
+          <SkeletonRows rows={4} />
+        ) : q.error && !q.data ? (
+          <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
+        ) : (
+          <>
+            <div className="flex items-baseline gap-6 border-b border-separator px-4 py-3">
+              <div>
+                <div className="text-footnote text-muted-foreground">{tr("当前余额", "Balance")}</div>
+                <div className="tnum text-title3 font-semibold">{yuan(first?.balance_cents ?? 0)}</div>
+              </div>
+              <div>
+                <div className="text-footnote text-muted-foreground">{tr("其中可提现", "Withdrawable")}</div>
+                <div className="tnum text-headline font-semibold">{yuan(first?.withdrawable_cents ?? 0)}</div>
+              </div>
+            </div>
+            {entries.length === 0 ? (
+              <p className="px-4 py-4 text-body text-muted-foreground">
+                {tr("暂无余额变动。", "No balance movements yet.")}
+              </p>
+            ) : (
+              <ul className="divide-y divide-separator">
+                {entries.map((e) => (
+                  <li key={e.id} className="flex items-center gap-3 px-4 py-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-body">
+                        <span className="font-medium">{ledgerKind(e.kind, tr)}</span>
+                        {e.actor_label && <span className="truncate text-footnote text-faint">· {e.actor_label}</span>}
+                      </div>
+                      <div className="truncate text-footnote text-faint">
+                        {dateTime(e.created_at)}
+                        {(e.reason ?? e.out_trade_no) && <> · {e.reason ?? e.out_trade_no}</>}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div
+                        className={cn(
+                          "tnum text-body font-semibold",
+                          e.amount_cents > 0 ? "text-success" : "text-foreground",
+                        )}
+                      >
+                        {e.amount_cents > 0 ? "+" : ""}
+                        {yuan(e.amount_cents)}
+                      </div>
+                      <div className="tnum text-caption text-faint">
+                        {tr(`余额 ${yuan(e.balance_after_cents)}`, `→ ${yuan(e.balance_after_cents)}`)}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {q.error && (
+              <p role="alert" className="px-4 pt-2 text-footnote text-destructive">
+                {tr("加载更多失败，可以重试。", "Loading more failed; try again.")}
+              </p>
+            )}
+            {entries.length > 0 && (
+              <div className="border-t border-separator px-4 py-2 text-center">
+                {q.hasNextPage ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon={ChevronDown}
+                    loading={q.isFetchingNextPage}
+                    onClick={() => void q.fetchNextPage()}
+                  >
+                    {tr("加载更多", "Load more")}
+                  </Button>
+                ) : (
+                  <span className="text-footnote text-faint">
+                    {tr(`已全部加载 · 共 ${entries.length} 条`, `All loaded · ${entries.length}`)}
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </Card>
     </section>
   );
 }
 
-function UserOrders({ email }: { email: string }) {
+function UserOrders({ email }: { email: string | null }) {
   const tr = useTr();
-  const q = useQuery({
-    queryKey: ["orders", "user", email],
-    queryFn: () => get<UserOrder[]>(`/orders?email=${encodeURIComponent(email)}&limit=20`),
-  });
+  const q = useOrders(email ?? undefined);
   const rows = q.data ?? [];
   return (
-    <section>
+    <section className="min-w-0">
       <SectionTitle
-        actions={
+        count={q.data ? (rows.length >= 20 ? "20+" : rows.length) : undefined}
+        action={
+          email &&
           rows.length > 0 && (
             <Button
               size="sm"
@@ -1611,43 +1372,300 @@ function UserOrders({ email }: { email: string }) {
           )
         }
       >
-        {tr("订单（最近 20 笔）", "Orders (latest 20)")}
+        {tr("订单", "Orders")}
       </SectionTitle>
+      <Card className="overflow-hidden">
+        {!email ? (
+          <p className="px-4 py-4 text-body text-muted-foreground">{tr("该用户还没有订单。", "No orders yet.")}</p>
+        ) : q.isPending ? (
+          <SkeletonRows rows={3} />
+        ) : q.error ? (
+          <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
+        ) : rows.length === 0 ? (
+          <p className="px-4 py-4 text-body text-muted-foreground">{tr("该用户还没有订单。", "No orders yet.")}</p>
+        ) : (
+          <ul className="divide-y divide-separator">
+            {rows.map((o) => {
+              const [label, tone] = orderStatus(o, tr);
+              const struck = !!o.refunded_at || o.status === "cancelled" || o.status === "expired";
+              return (
+                <li key={o.id}>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/orders?open=${o.id}`)}
+                    className="flex min-h-11 w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-body font-medium">
+                        {o.plan_name} · {periodLabel(o.period, tr, o.period_days)}
+                      </div>
+                      <div className="tnum truncate text-footnote text-faint">
+                        {o.out_trade_no} · {dateTime(o.created_at)}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <span
+                        className={cn(
+                          "tnum text-body font-semibold",
+                          struck && "text-muted-foreground line-through decoration-faint",
+                        )}
+                      >
+                        {yuan(o.amount_cents)}
+                      </span>
+                      <Badge tone={tone}>{label}</Badge>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+    </section>
+  );
+}
+
+function Security({
+  user: u,
+  live,
+  ownerOnly,
+  roleLock,
+  onRole,
+  onPassword,
+  onVerify,
+  onKick,
+  onTransfer,
+  onDelete,
+  canDelete,
+}: {
+  user: Detail;
+  live: boolean;
+  ownerOnly: boolean;
+  roleLock: string | null;
+  onRole: (r: "user" | "admin") => void;
+  onPassword: () => void;
+  onVerify: () => void;
+  onKick: () => void;
+  onTransfer: () => void;
+  onDelete: () => void;
+  canDelete: boolean;
+}) {
+  const tr = useTr();
+  const me = useMe();
+  const isAdmin = u.role === "admin";
+  const locked = !live || ownerOnly;
+  return (
+    <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid content-start gap-5">
+        <Group
+          title={tr("角色", "Role")}
+          footer={
+            roleLock ??
+            tr(
+              "管理员可以进入后台；只有所有者能任免管理员、修改支付设置。",
+              "Admins use the console; only the owner appoints admins and changes payment settings.",
+            )
+          }
+        >
+          <Row
+            label={tr("账户角色", "Role")}
+            description={u.is_owner ? tr("所有者（唯一）", "Owner (the one)") : undefined}
+          >
+            <Segmented
+              label={tr("账户角色", "Role")}
+              value={isAdmin ? "admin" : "user"}
+              onChange={(v) => !roleLock && !locked && v !== (isAdmin ? "admin" : "user") && onRole(v)}
+              options={[
+                { value: "user", label: tr("普通用户", "User") },
+                { value: "admin", label: tr("管理员", "Admin") },
+              ]}
+            />
+          </Row>
+        </Group>
+        <Group title={tr("登录与会话", "Sign-in and sessions")}>
+          <Row
+            label={tr("密码", "Password")}
+            description={tr(
+              "设置新密码后，该账户的全部会话立即结束",
+              "A new password ends every session of the account",
+            )}
+          >
+            <Button size="sm" variant="secondary" icon={KeyRound} disabled={locked} onClick={onPassword}>
+              {tr("设置新密码", "Set a new password")}
+            </Button>
+          </Row>
+          <Row
+            label={tr("邮箱验证", "Email verification")}
+            description={
+              u.email_pending
+                ? tr("用户还没有绑定邮箱", "The user has not bound an address yet")
+                : u.email_verified
+                  ? tr("已验证", "Verified")
+                  : tr(
+                      "用户还没有点击验证邮件；确认邮箱属实后可手动标记",
+                      "Not verified yet; mark it when you know it is theirs",
+                    )
+            }
+          >
+            {u.email_verified ? (
+              <Badge tone="success">
+                <MailCheck aria-hidden="true" />
+                {tr("已验证", "Verified")}
+              </Badge>
+            ) : (
+              !u.email_pending && (
+                <Button size="sm" variant="secondary" icon={MailCheck} disabled={locked} onClick={onVerify}>
+                  {tr("标记已验证", "Mark verified")}
+                </Button>
+              )
+            )}
+          </Row>
+          <Row
+            label={tr("结束全部会话", "End every session")}
+            description={tr("踢下线：所有设备需要重新登录", "Sign out everywhere: every device must sign in again")}
+          >
+            <Button size="sm" variant="secondary" icon={LogOut} disabled={locked} onClick={onKick}>
+              {tr("踢下线", "Sign out")}
+            </Button>
+          </Row>
+        </Group>
+      </div>
+      <div className="grid content-start gap-5">
+        <LoginMethods id={u.id} disabled={locked} />
+        <section className="grid gap-1.5">
+          <h3 className="px-1 text-footnote font-semibold text-destructive">{tr("危险操作", "Danger zone")}</h3>
+          <div className="divide-y divide-separator overflow-hidden rounded-xl bg-card shadow-[0_0_0_0.5px_var(--destructive)]">
+            <Row
+              label={tr("转让所有者", "Transfer ownership")}
+              description={
+                isAdmin
+                  ? me.is_owner
+                    ? tr("把所有者身份转给此管理员，你将变为管理员", "Make this admin the owner; you become an admin")
+                    : tr("只有所有者可以操作", "Owner only")
+                  : tr("目标必须是启用中的管理员", "The target must be an enabled admin")
+              }
+            >
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={Crown}
+                disabled={!isAdmin || !me.is_owner || u.is_owner || u.id === me.id || !u.enabled || !live}
+                onClick={onTransfer}
+              >
+                {tr("转让", "Transfer")}
+              </Button>
+            </Row>
+            <Row
+              label={tr("删除账户", "Delete account")}
+              description={tr(
+                "先查看影响（余额、待审提现、未完成订单），再输入邮箱确认",
+                "Shows the impact first (balance, pending withdrawals, open orders), then asks for the address",
+              )}
+            >
+              <Button
+                size="sm"
+                variant="destructive-soft"
+                icon={Trash2}
+                disabled={!canDelete || !live}
+                onClick={onDelete}
+              >
+                {tr("删除…", "Delete…")}
+              </Button>
+            </Row>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function LoginMethods({ id, disabled }: { id: string; disabled: boolean }) {
+  const tr = useTr();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const q = useQuery({ queryKey: ["user", id, "passkeys"], queryFn: () => get<Passkeys>(`/users/${id}/passkeys`) });
+  const d = q.data;
+  const n = d?.passkeys.length ?? 0;
+  const reset = async () => {
+    if (!d) return;
+    const ok = await confirm({
+      title: tr("重置登录方式？", "Reset sign-in methods?"),
+      description: tr(
+        "恢复密码登录（丢失设备时使用）。写入审计。",
+        "Turns password sign-in back on (lost device). Audited.",
+      ),
+      impacts: [
+        { label: tr("删除的通行密钥", "Passkeys deleted"), value: tr(`${n} 个`, String(n)) },
+        { label: tr("密码登录", "Password sign-in"), value: tr("恢复", "back on") },
+      ],
+      tone: n > 0 ? "danger" : "warning",
+      typeToConfirm: n > 0 ? tr(`删除 ${n} 个通行密钥`, `delete ${n} passkeys`) : undefined,
+      confirmLabel:
+        n > 0 ? tr(`删除 ${n} 个通行密钥`, `Delete ${n} passkeys`) : tr("恢复密码登录", "Restore password sign-in"),
+      action: () => post(`/users/${id}/login-method/reset`),
+    });
+    if (ok) toast({ tone: "success", title: tr("登录方式已重置", "Sign-in methods reset") });
+  };
+  return (
+    <Group
+      title={tr("通行密钥", "Passkeys")}
+      footer={
+        d &&
+        (d.password_login
+          ? tr("用户可以用密码或下面任一通行密钥登录。", "The user signs in with the password or any passkey below.")
+          : tr(
+              "此账户只允许通行密钥登录。用户丢失设备时，用「重置登录方式」恢复密码登录。",
+              "Passkeys only. When the user loses the device, 重置登录方式 brings the password back.",
+            )) +
+          (d.available
+            ? ""
+            : tr("（通行密钥需要 https 主域名，当前不可用）", " (passkeys need an https main domain; unavailable)"))
+      }
+    >
       {q.isPending ? (
-        <LoadingBlock rows={3} />
+        <SkeletonRows rows={2} />
       ) : q.error ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : rows.length === 0 ? (
-        <p className="py-2 text-body text-muted-foreground">{tr("该用户还没有订单。", "No orders yet.")}</p>
       ) : (
-        <ul className="divide-y divide-separator rounded-lg text-body ring-1 ring-border ring-inset">
-          {rows.map((o) => {
-            const [label, tone] = orderStatus(o, tr);
-            return (
-              <li key={o.id}>
-                <button
-                  type="button"
-                  onClick={() => navigate(`/orders?open=${o.id}`)}
-                  className="flex min-h-11 w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-                >
-                  <span className="min-w-0 font-medium break-all">{o.plan_name}</span>
-                  <span className="text-footnote text-muted-foreground">
-                    {periodLabel(o.period, tr, o.period_days)}
-                  </span>
-                  <Badge tone={tone} dot>
-                    {label}
-                  </Badge>
-                  <span className="tnum ml-auto font-medium">{yuan(o.amount_cents)}</span>
-                  <span className="tnum w-full text-footnote text-muted-foreground">
-                    {o.out_trade_no} · {dateTime(o.created_at)}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        d && (
+          <>
+            {d.passkeys.map((k) => (
+              <Row
+                key={k.id}
+                icon={<Fingerprint className="size-4 text-muted-foreground" aria-hidden="true" />}
+                label={k.name}
+                description={tr(
+                  `添加于 ${dateOnly(k.created_at)} · 最近使用 ${k.last_used_at ? dateTime(k.last_used_at) : "从未"}`,
+                  `Added ${dateOnly(k.created_at)} · last used ${k.last_used_at ? dateTime(k.last_used_at) : "never"}`,
+                )}
+              />
+            ))}
+            {n === 0 && (
+              <Row
+                label={tr("没有通行密钥", "No passkeys")}
+                description={tr("用户登录后可在账户页添加", "The user can add one on their account page")}
+              />
+            )}
+            <Row
+              label={tr("重置登录方式", "Reset sign-in methods")}
+              description={tr(
+                `删除全部 ${n} 个通行密钥，恢复密码登录`,
+                `Deletes all ${n} passkeys and turns password sign-in back on`,
+              )}
+            >
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={disabled || (n === 0 && !d.password_login_disabled)}
+                onClick={() => void reset()}
+              >
+                {tr("重置", "Reset")}
+              </Button>
+            </Row>
+          </>
+        )
       )}
-    </section>
+    </Group>
   );
 }
 
@@ -1667,7 +1685,7 @@ type EntranceRow = {
 
 export function UserTraffic({ id }: { id: string }) {
   const tr = useTr();
-  const [range, setRange] = useState<"7" | "30" | "90">("30");
+  const [range, setRange] = useState<"7" | "30">("30");
   const to = siteToday();
   const from = daysBefore(to, Number(range) - 1);
   const days = useQuery({
@@ -1681,226 +1699,133 @@ export function UserTraffic({ id }: { id: string }) {
   const all: string[] = [];
   for (let i = Number(range) - 1; i >= 0; i--) all.push(daysBefore(to, i));
   const by = new Map((days.data?.rows ?? []).map((r) => [r.day, r]));
-  const rows = entrances.data?.rows ?? [];
-  const top = Math.max(1, ...rows.map((r) => r.billed_bytes));
+  const rows = [...(entrances.data?.rows ?? [])].sort((a, b) => b.billed_bytes - a.billed_bytes);
+  const totalRaw = Math.max(
+    1,
+    rows.reduce((s, r) => s + r.up_bytes + r.down_bytes, 0),
+  );
+  const title = tr("每日流量（站点时区）", "Daily traffic (site days)");
+  const kindBadge = (k: EntranceRow["kind"]) =>
+    k && (
+      <Badge tone={k === "relay" ? "warning" : "primary"}>
+        {k === "relay" ? tr("中转", "relay") : tr("直连", "direct")}
+      </Badge>
+    );
+  const name = (n: EntranceRow) =>
+    `${n.node ?? tr("已删除的节点", "Deleted node")} · ${n.entrance ?? tr("已删除的入口", "Deleted entrance")}`;
   return (
-    <section>
-      <SectionTitle
-        actions={
+    <div className="grid gap-4">
+      <Card className="p-4">
+        <div className="mb-2 flex flex-wrap items-center gap-3">
+          <h3 className="text-headline font-semibold">{tr("流量明细", "Traffic history")}</h3>
           <Segmented
             size="sm"
+            className="ml-auto"
             label={tr("时间范围", "Range")}
             value={range}
             onChange={setRange}
             options={[
               { value: "7", label: tr("7 天", "7d") },
               { value: "30", label: tr("30 天", "30d") },
-              { value: "90", label: tr("90 天", "90d") },
             ]}
           />
-        }
-      >
-        {tr("流量明细", "Traffic history")}
-      </SectionTitle>
-      {days.isPending ? (
-        <LoadingBlock rows={5} />
-      ) : days.error ? (
-        <ErrorState error={days.error} onRetry={() => void days.refetch()} compact />
-      ) : (
-        <TrendChart
-          title={tr("每日流量（站点时区）", "Daily traffic (site days)")}
-          times={all.map((d) => `${d}T12:00:00Z`)}
-          {...timeLabels(all.map((d) => `${d}T12:00:00Z`))}
-          format={bytes}
-          series={[
-            { label: tr("下载", "Down"), values: all.map((d) => by.get(d)?.down_bytes ?? 0), slot: 1 },
-            { label: tr("上传", "Up"), values: all.map((d) => by.get(d)?.up_bytes ?? 0), slot: 3 },
-            { label: tr("计费", "Billed"), values: all.map((d) => by.get(d)?.billed_bytes ?? 0), slot: 4 },
-          ]}
-        />
-      )}
-      <SectionTitle>{tr("按入口", "By entrance")}</SectionTitle>
-      {entrances.isPending ? (
-        <LoadingBlock rows={3} />
-      ) : entrances.error ? (
-        <ErrorState error={entrances.error} onRetry={() => void entrances.refetch()} compact />
-      ) : rows.length === 0 ? (
-        <p className="py-2 text-body text-muted-foreground">{tr("这段时间没有流量。", "No traffic in this range.")}</p>
-      ) : (
-        <ul className="grid gap-2.5 text-body" aria-label={tr("按入口", "By entrance")}>
-          {rows.map((n) => (
-            <li key={n.entrance_id} className="grid gap-1">
-              <div className="flex flex-wrap justify-between gap-x-3">
-                <span className="min-w-0">
-                  {n.node ?? tr("已删除的节点", "Deleted node")} ·{" "}
-                  {n.entrance ?? tr("已删除的入口", "Deleted entrance")}
-                  {n.kind && (
-                    <span className="ml-1.5 text-footnote text-muted-foreground">
-                      {n.kind === "relay" ? tr("中转", "relay") : tr("直连", "direct")}
-                      {n.rate_now !== null && ` · ${tr("当前", "now")} ${rateText(Math.round(n.rate_now * 1000))}`}
-                    </span>
-                  )}
-                </span>
-                <span className="tnum text-footnote text-muted-foreground">
-                  {tr("原始", "raw")} {bytes(n.up_bytes + n.down_bytes)} · {tr("计费", "billed")}{" "}
-                  {bytes(n.billed_bytes)}
-                </span>
-              </div>
-              <Meter value={(n.billed_bytes / top) * 100} tone="primary" />
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-export function CreateUserDialog({ plans, onClose }: { plans: PlanView[]; onClose: () => void }) {
-  const tr = useTr();
-  const me = useMe();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState("user");
-  const [term, setTerm] = useState<TermForm>(EMPTY_TERM);
-  const [touched, setTouched] = useState({ email: false, password: false, submit: false });
-  const [created, setCreated] = useState<{ email: string; sub_url: string | null } | null>(null);
-  const [run, busy] = useAction();
-  const emailError = !email.trim()
-    ? tr("请填写邮箱", "Enter the email")
-    : !EMAIL_RE.test(email.trim())
-      ? tr("邮箱格式不正确，例如 name@example.com", "Not an email address, e.g. name@example.com")
-      : null;
-  const passwordError =
-    password.length < 8
-      ? tr("至少 8 位", "At least 8 characters")
-      : password.length > 128
-        ? tr("最多 128 位", "At most 128 characters")
-        : null;
-  const termError = role === "user" && term.planId ? termBody(term, tr) : null;
-  const termText = typeof termError === "string" ? termError : null;
-  const problems = [emailError, passwordError, termText].filter(Boolean).length;
-  const submit = async () => {
-    setTouched({ email: true, password: true, submit: true });
-    if (problems) return;
-    let plan: Record<string, unknown> | undefined;
-    if (role === "user" && term.planId) {
-      const b = termBody(term, tr);
-      if (typeof b === "string") return;
-      plan = b;
-    }
-    const r = await run(
-      () =>
-        post<{ email: string; sub_url: string | null }>("/users", {
-          email: email.trim(),
-          password,
-          role,
-          ...(plan ? { plan } : {}),
-        }),
-      { ok: tr("用户已创建", "User created") },
-    );
-    if (r) setCreated(r);
-  };
-  if (created)
-    return (
-      <Dialog
-        open
-        icon={UserPlus}
-        onClose={onClose}
-        title={tr("用户已创建", "User created")}
-        description={created.email}
-        footer={
-          <Button variant="primary" onClick={onClose}>
-            {tr("完成", "Done")}
-          </Button>
-        }
-      >
-        {created.sub_url ? (
-          <div className="space-y-2">
-            <p className="text-footnote text-muted-foreground">{tr("订阅链接", "Subscription link")}</p>
-            <div className="flex items-start gap-2">
-              <Mono>{absoluteUrl(created.sub_url)}</Mono>
-              <CopyButton text={absoluteUrl(created.sub_url)} />
-            </div>
-          </div>
-        ) : (
-          <p className="text-body text-muted-foreground">
-            {tr("之后可在用户详情里查看订阅链接。", "The subscription link is in the user's detail.")}
-          </p>
-        )}
-      </Dialog>
-    );
-  return (
-    <Dialog
-      open
-      size="lg"
-      icon={UserPlus}
-      onClose={onClose}
-      title={tr("新建用户", "New user")}
-      description={tr(
-        "管理员创建的邮箱视为已验证。套餐按「套餐 + 时长」分配。",
-        "Addresses created by an admin count as verified. A plan is assigned as plan + term.",
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          {touched.submit && problems > 0 && (
-            <span role="status" className="mr-auto text-footnote text-destructive">
-              {tr(`${problems} 处需要修正`, `${problems} to fix`)}
-            </span>
-          )}
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("创建", "Create")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={tr("邮箱", "Email")} error={touched.email ? emailError : undefined} required>
-            <Input
-              type="email"
-              autoComplete="off"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onBlur={() => email && setTouched((t) => ({ ...t, email: true }))}
-              data-autofocus
-            />
-          </Field>
-          <Field
-            label={tr("初始密码（至少 8 位）", "Initial password (8+)")}
-            error={touched.password ? passwordError : undefined}
-            required
-          >
-            <Input
-              type="password"
-              autoComplete="new-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onBlur={() => password && setTouched((t) => ({ ...t, password: true }))}
-            />
-          </Field>
         </div>
-        <Field
-          label={tr("角色", "Role")}
-          hint={!me.is_owner ? tr("只有所有者可以创建管理员。", "Only the owner creates admins.") : undefined}
-        >
-          <Select value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="user">{tr("用户", "User")}</option>
-            <option value="admin" disabled={!me.is_owner}>
-              {tr("管理员", "Admin")}
-            </option>
-          </Select>
-        </Field>
-        {role === "user" && <TermFields form={term} onChange={setTerm} plans={plans} allowNone />}
-        {touched.submit && termText && (
-          <p role="alert" className="text-footnote text-destructive">
-            {termText}
-          </p>
+        {days.isPending ? (
+          <SkeletonRows rows={4} />
+        ) : days.error ? (
+          <ErrorState error={days.error} onRetry={() => void days.refetch()} compact />
+        ) : (
+          <div role="img" aria-label={title}>
+            <LineChart
+              title={title}
+              legend="total"
+              times={all}
+              axisLabel={(d) => d.slice(5)}
+              format={bytes}
+              series={[
+                { label: tr("下载", "Down"), values: all.map((d) => by.get(d)?.down_bytes ?? 0), slot: 1, area: true },
+                { label: tr("上传", "Up"), values: all.map((d) => by.get(d)?.up_bytes ?? 0), slot: 2 },
+                {
+                  label: tr("计费（× 倍率）", "Billed (× rate)"),
+                  values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
+                  slot: 3,
+                  dashed: true,
+                },
+              ]}
+            />
+          </div>
         )}
-      </div>
-    </Dialog>
+      </Card>
+      <section>
+        <SectionTitle
+          count={entrances.data ? rows.length : undefined}
+          action={
+            <span className="text-footnote text-faint">
+              {tr(`近 ${range} 天 · 按入口`, `Last ${range} days · by entrance`)}
+            </span>
+          }
+        >
+          {tr("按入口", "By entrance")}
+        </SectionTitle>
+        <Card className="overflow-hidden">
+          {entrances.isPending ? (
+            <SkeletonRows rows={3} />
+          ) : entrances.error ? (
+            <ErrorState error={entrances.error} onRetry={() => void entrances.refetch()} compact />
+          ) : rows.length === 0 ? (
+            <p className="px-4 py-4 text-body text-muted-foreground">
+              {tr("这段时间没有流量。", "No traffic in this range.")}
+            </p>
+          ) : (
+            <ul className="divide-y divide-separator" aria-label={tr("按入口", "By entrance")}>
+              {rows.map((n) => {
+                const raw = n.up_bytes + n.down_bytes;
+                const share = (raw / totalRaw) * 100;
+                return (
+                  <li
+                    key={n.entrance_id}
+                    className="grid gap-1 px-4 py-2.5 md:grid-cols-[minmax(0,1fr)_auto_7rem_7rem_7rem_9rem] md:items-center md:gap-3"
+                  >
+                    <span className="min-w-0 truncate text-body font-medium">{name(n)}</span>
+                    <span className="flex items-center gap-2 text-footnote text-muted-foreground">
+                      {kindBadge(n.kind)}
+                      {n.rate_now !== null && (
+                        <span className="tnum">
+                          {tr("当前", "now")} {rateText(Math.round(n.rate_now * 1000))}
+                        </span>
+                      )}
+                    </span>
+                    <span className="tnum text-footnote text-muted-foreground md:text-right">
+                      {tr("原始", "raw")} {bytes(raw)}
+                    </span>
+                    <span className="tnum text-body font-semibold md:text-right">
+                      <span className="text-footnote font-normal text-muted-foreground">{tr("计费", "billed")} </span>
+                      {bytes(n.billed_bytes)}
+                    </span>
+                    <span className="flex items-center gap-2 md:col-span-2">
+                      <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                        <span
+                          className={cn("block h-full rounded-full", n.kind === "relay" ? "bg-chart-2" : "bg-chart-1")}
+                          style={{ width: `${share}%` }}
+                        />
+                      </span>
+                      <span className="tnum w-10 text-right text-footnote text-muted-foreground">
+                        {share.toFixed(0)}%
+                      </span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+        <p className="mt-2 px-1 text-footnote text-faint">
+          {tr(
+            "计费流量 = 原始流量 × 入口倍率（按结算时的倍率）；倍率在节点页的入口设置里修改，只影响之后的流量。",
+            "Billed = raw × the entrance rate at settlement; rates are set on the node's entrances and only affect later traffic.",
+          )}
+        </p>
+      </section>
+    </div>
   );
 }
