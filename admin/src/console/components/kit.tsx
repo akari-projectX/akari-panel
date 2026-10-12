@@ -607,12 +607,41 @@ export function PageTabs({
   trailing,
   label,
   className,
+  segmented,
 }: {
   items: { to: string; label: ReactNode; count?: ReactNode; end?: boolean }[];
   trailing?: ReactNode;
   label?: string;
   className?: string;
+  /** A segmented control (v2 finance) instead of underline tabs. */
+  segmented?: boolean;
 }) {
+  if (segmented)
+    return (
+      <nav aria-label={label} className={cn("mb-4 flex flex-wrap items-center gap-2", className)}>
+        <div className="flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-secondary p-0.5 [scrollbar-width:none]">
+          {items.map((it) => (
+            <NavLink
+              key={it.to}
+              to={it.to}
+              end={it.end}
+              className={({ isActive }) =>
+                cn(
+                  "inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-3 text-callout font-medium transition-colors",
+                  isActive ? "bg-card text-foreground shadow-card" : "text-muted-foreground hover:text-foreground",
+                )
+              }
+            >
+              {it.label}
+              {it.count !== undefined && it.count !== null && (
+                <span className="tnum text-footnote text-muted-foreground">{it.count}</span>
+              )}
+            </NavLink>
+          ))}
+        </div>
+        {trailing && <div className="ml-auto shrink-0">{trailing}</div>}
+      </nav>
+    );
   return (
     <nav
       aria-label={label}

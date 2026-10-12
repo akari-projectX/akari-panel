@@ -103,6 +103,7 @@ export function FinancePage() {
         ]}
       />
       <PageTabs
+        segmented
         label={tr("资金", "Finance")}
         items={[
           { to: "/finance/withdrawals", label: tr("提现审核", "Withdrawals"), count: pending || undefined },
