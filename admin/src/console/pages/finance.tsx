@@ -11,7 +11,7 @@ import { DataTable, type Column } from "../../shared/ui/table";
 import { CopyButton, FormError, Mono, useDebounced } from "../kit";
 import { useAction } from "../data";
 import { navigate, setQuery, useRoute } from "../router";
-import { AdjustBalanceDialog } from "./user-drawer";
+import { AdjustBalanceDialog } from "./user-detail";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, CardBody, CardHeader } from "../../shared/ui/card";

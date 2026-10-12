@@ -42,6 +42,17 @@ async function openUser(page: Page, email: string) {
   return dialog(page, email);
 }
 
+/** Close the user's detail dialog (it is not a form: no discard question). */
+async function closeUser(page: Page, email: string) {
+  await dialog(page, email).getByRole("button", { name: "关闭" }).first().click();
+  await expect(page.getByRole("dialog", { name: email })).toHaveCount(0);
+}
+
+/** A detail tab (概览 / 流量 / 订单 / 账户与安全). */
+async function tab(page: Page, email: string, name: string) {
+  await dialog(page, email).getByRole("tab", { name }).click();
+}
+
 test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, filters, more filters as chips, columns, CSV export", async ({
   page,
 }, info) => {
@@ -77,6 +88,12 @@ test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, filters, more filters as
   await expect(row(page, `${tag}-b@e2e.test`)).toBeVisible();
   await expect(row(page, `${tag}-a@e2e.test`)).toHaveCount(0);
   await expect(page).toHaveURL(/never_used=1/);
+  // The CSV export sends exactly the list's filters (never used, both days).
+  const exportLink = page.getByRole("link", { name: "导出 CSV" });
+  await expect(exportLink).toHaveAttribute("href", /never_used=true/);
+  await expect(exportLink).toHaveAttribute("href", new RegExp(`registered_before=${tomorrow}`));
+  await expect(exportLink).toHaveAttribute("href", new RegExp(`last_login_before=${tomorrow}`));
+  await expect(exportLink).toHaveAttribute("href", new RegExp(`q=${tag}`));
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await expect(row(page, `${tag}-a@e2e.test`)).toBeVisible();
   // Column chooser (remembered).
@@ -116,11 +133,11 @@ test("USR-05 USR-06 USR-07 USR-08 USR-09 USR-10 USR-11: new user with a plan, th
   await expect(u.getByText("月付").first()).toBeVisible();
   await expect(u.getByText("每月重置").first()).toBeVisible();
   // Renew one term, then extend 7 days.
-  await u.getByRole("button", { name: "续期 / 延长" }).click();
+  await u.getByRole("button", { name: "续期", exact: true }).click();
   let r = dialog(page, "续期 / 延长");
   await r.getByRole("button", { name: "确认" }).click();
   await toast(page, "已续期");
-  await u.getByRole("button", { name: "续期 / 延长" }).click();
+  await u.getByRole("button", { name: "续期", exact: true }).click();
   r = dialog(page, "续期 / 延长");
   await r.getByRole("button", { name: "延长 N 天" }).click();
   await r.getByLabel("延长天数").fill("7");
@@ -141,16 +158,26 @@ test("USR-05 USR-06 USR-07 USR-08 USR-09 USR-10 USR-11: new user with a plan, th
   await toast(page, "套餐已分配");
   await expect(u.getByText(`${tag}-p2`).first()).toBeVisible();
   await expect(u.getByText("15 天").first()).toBeVisible();
+  // The list shows the new plan without a reload.
+  await closeUser(page, email);
+  await expect(row(page, email)).toContainText(`${tag}-p2`);
+  await openUser(page, email);
   // History lists the replaced subscription.
   await expect(u.getByText("套餐历史").first()).toBeVisible();
   await expect(u.getByText(`${tag}-p1`).first()).toBeVisible();
   // Cancel.
+  // Cancel: the impact is stated and the address must be typed.
   await u.getByRole("button", { name: "取消套餐" }).click();
-  await confirmDialog(page);
+  await expect(page.getByRole("alertdialog")).toContainText("失去全部入口");
+  await expect(page.getByRole("alertdialog").getByRole("button", { name: "取消套餐" })).toBeDisabled();
+  await confirmDialog(page, email, "取消套餐");
   await toast(page, "套餐已取消");
   await expect(u.getByText("没有生效的套餐。").first()).toBeVisible();
   await u.getByRole("button", { name: "分配套餐" }).click();
   await expect(dialog(page, "分配套餐")).toBeVisible();
+  await dialog(page, "分配套餐").getByRole("button", { name: "取消" }).click();
+  await closeUser(page, email);
+  await expect(row(page, email)).toContainText("无套餐");
 });
 
 test("USR-12 USR-13 USR-14 USR-15 USR-16 USR-17 USR-18 USR-19: ban, role, password, sessions, subscription link, verification, sign-in methods", async ({
@@ -163,25 +190,38 @@ test("USR-12 USR-13 USR-14 USR-15 USR-16 USR-17 USR-18 USR-19: ban, role, passwo
   await openConsole(page, "/users");
   const u = await openUser(page, email);
   // Ban with a reason (shown to the user), then lift it.
-  await u.getByRole("button", { name: "封禁" }).click();
+  await u.getByRole("button", { name: "封禁", exact: true }).click();
   const b = dialog(page, `封禁 ${email}`);
+  // "Other" without a note cannot be submitted, and says why.
+  await b.getByLabel("原因").selectOption("other");
+  await expect(b.getByRole("button", { name: "封禁", exact: true })).toBeDisabled();
+  await expect(b).toContainText("必须填写说明");
   await b.getByLabel("补充说明（会显示给用户）").fill("e2e abuse");
-  await b.getByRole("button", { name: "封禁" }).click();
+  await b.getByRole("button", { name: "封禁", exact: true }).click();
   await toast(page, "已封禁");
   await expect(u.getByText("e2e abuse").first()).toBeVisible();
   await expect(u.getByText(ADMIN).first()).toBeVisible();
+  // The list's badge follows without a reload.
+  await closeUser(page, email);
+  await expect(row(page, email)).toContainText("已封禁");
+  await openUser(page, email);
   await u.getByRole("button", { name: "解除封禁" }).click();
   await confirmDialog(page);
   await toast(page, "已解除封禁");
+  await closeUser(page, email);
+  await expect(row(page, email)).not.toContainText("已封禁");
+  await openUser(page, email);
+  await tab(page, email, "账户与安全");
   // Subscription link (read is audited) with a QR code; reset it.
   await u.getByRole("button", { name: "订阅链接" }).click();
   const s = dialog(page, "订阅链接");
   await expect(s.getByRole("img", { name: "订阅链接二维码" })).toBeVisible();
   const link = await s.locator("code").innerText();
   expect(link).toMatch(/^http.+\/[0-9a-f]{16}\/[A-Za-z0-9_-]{43}$/);
-  await s.getByRole("button", { name: "关闭" }).click();
+  await s.getByRole("button", { name: "关闭" }).last().click();
   await u.getByRole("button", { name: "重置订阅" }).click();
-  await confirmDialog(page);
+  await expect(page.getByRole("alertdialog")).toContainText("已导入的客户端立即失效");
+  await confirmDialog(page, email, "重置订阅");
   await toast(page, "订阅已重置");
   // The more-actions menu: password, sessions, verify, role.
   const menu = async (item: string) => {
@@ -198,6 +238,7 @@ test("USR-12 USR-13 USR-14 USR-15 USR-16 USR-17 USR-18 USR-19: ban, role, passwo
   await menu("标记邮箱已验证");
   await confirmDialog(page);
   await toast(page, "已标记为已验证");
+  await expect(u.getByText("（未验证）")).toHaveCount(0);
   await menu("设为管理员");
   await confirmDialog(page);
   await toast(page, "角色已修改");
@@ -208,6 +249,7 @@ test("USR-12 USR-13 USR-14 USR-15 USR-16 USR-17 USR-18 USR-19: ban, role, passwo
   // Sign-in methods: passkey only → reset.
   await expect(u.getByText(/账户已选择只用通行密钥登录/).first()).toBeVisible();
   await u.getByRole("button", { name: "重置登录方式" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("没有通行密钥会被删除");
   await confirmDialog(page);
   await toast(page, "登录方式已重置");
   await expect(u.getByText(/账户已选择只用通行密钥登录/)).toHaveCount(0);
@@ -244,25 +286,32 @@ test("USR-20 USR-21 USR-22 USR-23: owner transfer and back, delete with impact, 
   await openConsole(page, "/users");
   u = await openUser(page, victim);
   await expect(u.getByText("¥12.34").first()).toBeVisible();
-  // Balance: adjust and see the ledger.
+  // Balance: adjust (the resulting balance is previewed) and see the ledger.
+  await tab(page, victim, "订单");
+  await expect(u.getByText("该用户还没有订单。")).toBeVisible();
   await u.getByRole("button", { name: "调整余额" }).click();
   const bd = dialog(page, "调整余额");
   await bd.getByRole("button", { name: "扣减" }).click();
   await bd.getByLabel("金额（元）").fill("2.34");
+  await expect(bd).toContainText("¥12.34 → ¥10.00");
   await bd.getByLabel("原因（必填，写入审计）").fill("e2e debit");
   await bd.getByRole("button", { name: "确认调整" }).click();
   await toast(page, "余额已调整");
   await expect(u.getByText("e2e debit").first()).toBeVisible();
+  await expect(u.getByText("人工调整").first()).toBeVisible();
   await u.getByRole("button", { name: "更多操作" }).click();
   await page.getByRole("menuitem", { name: "删除账户" }).click();
   await expect(dialog(page)).toContainText("余额 ¥10.00");
   await expect(dialog(page)).toContainText("匿名化保留");
   await confirmDialog(page, victim, "永久删除");
   await toast(page, "账户已删除");
+  await expect(page.getByRole("dialog", { name: victim })).toHaveCount(0);
+  await expect(row(page, victim)).toHaveCount(0);
   // Traffic history (seeded by e2e.sh for the e2e user: a deleted node).
   await page.getByLabel("搜索邮箱或 ID").fill("e2e-user@");
   await openRow(page, "e2e-user@e2e.test");
   const t = dialog(page, "e2e-user@e2e.test");
+  await tab(page, "e2e-user@e2e.test", "流量");
   await expect(t.getByText("流量明细")).toBeVisible();
   await expect(t.getByRole("img", { name: /每日流量/ })).toBeVisible();
   await expect(t.getByText("已删除的节点").first()).toBeVisible();
@@ -284,6 +333,7 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
   await expect(row(page, `${tag}-c@e2e.test`)).toBeVisible();
   for (const n of ["a", "b"]) await row(page, `${tag}-${n}@e2e.test`).getByRole("checkbox", { name: "选择" }).click();
   await expect(page.getByTestId("bulk-bar")).toContainText("已选 2 项");
+  await expect(page.getByTestId("bulk-bar").getByRole("button", { name: "选择全部匹配的 3 个" })).toBeVisible();
   // Bulk: credit 1 yuan each.
   await page.getByTestId("bulk-bar").getByRole("button", { name: "批量操作" }).click();
   const bd = dialog(page, "批量操作");
@@ -300,10 +350,21 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
     .first()
     .click();
   await expect(dialog(page, "调整余额")).toContainText(/共 2，完成 2/);
+  await expect(dialog(page, "调整余额")).toContainText("已完成");
   await page.keyboard.press("Escape");
-  // On all filter matches.
-  await page.getByRole("button", { name: /对筛选结果批量操作（3）/ }).click();
+  // The finished job refreshed the list (balance column) without a reload.
+  await page.getByRole("button", { name: "显示的列" }).click();
+  await page.getByRole("checkbox", { name: "余额" }).click();
+  await page.keyboard.press("Escape");
+  await expect(row(page, `${tag}-a@e2e.test`)).toContainText("¥1.00");
+  await expect(row(page, `${tag}-c@e2e.test`)).toContainText("¥0.00");
+  // On all filter matches: tick one, then widen to every match.
+  await row(page, `${tag}-c@e2e.test`).getByRole("checkbox", { name: "选择" }).click();
+  await page.getByTestId("bulk-bar").getByRole("button", { name: "选择全部匹配的 3 个" }).click();
+  await expect(page.getByTestId("bulk-bar")).toContainText("将作用于全部匹配的 3 个");
+  await page.getByTestId("bulk-bar").getByRole("button", { name: "批量操作" }).click();
   const b2 = dialog(page, "批量操作");
+  await expect(b2).toContainText("当前筛选的全部 3 个账户");
   await b2.getByLabel("操作").selectOption("send_email");
   await b2.getByLabel("邮件标题").fill("e2e notice");
   await b2.getByLabel("正文（纯文本，空行分段）").fill("hello");
@@ -311,14 +372,18 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
   await expect(dialog(page)).toContainText("影响 3 个账户");
   await page.getByRole("button", { name: "取消" }).last().click();
   await dialog(page, "批量操作").getByRole("button", { name: "取消" }).click();
+  // The selection belongs to the view: changing the sort drops it.
+  await expect(page.getByTestId("bulk-bar")).toBeVisible();
+  await page.getByLabel("排序").selectOption("email");
+  await expect(page.getByTestId("bulk-bar")).toHaveCount(0);
   // Bulk delete of the selection (their balance makes them anonymized).
   for (const n of ["a", "b"]) await row(page, `${tag}-${n}@e2e.test`).getByRole("checkbox", { name: "选择" }).click();
   await page.getByTestId("bulk-bar").getByRole("button", { name: "删除" }).click();
-  const del = dialog(page, "批量删除账户");
+  const del = page.getByRole("alertdialog");
   await expect(del).toContainText("将永久删除 2 个账户");
+  await expect(del).toContainText("匿名化保留");
   await expect(del.getByRole("button", { name: "永久删除" })).toBeDisabled();
-  await del.getByLabel("确认文字").fill("删除 2 个账户");
-  await del.getByRole("button", { name: "永久删除" }).click();
+  await confirmDialog(page, "删除 2 个账户", "永久删除");
   await toast(page, /匿名化 2/);
   await expect(row(page, `${tag}-a@e2e.test`)).toHaveCount(0);
   await expect(row(page, `${tag}-c@e2e.test`)).toBeVisible();
