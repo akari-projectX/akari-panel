@@ -326,7 +326,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/tickets/{id}/replies \| close \| reopen | admin | W17：`{message, close?}` / 关闭 / 重开 |
 | PUT | /api/v1/tickets/{id}/assignee | admin | W17：`{assignee_id}`（已启用的管理员，或 null） |
 | GET | /api/v1/admins, /api/v1/admin-badges | admin | W17：可指派的管理员；控制台计数（未读工单、正在触发的告警） |
-| GET | /api/v1/alerts | admin | W17：告警中心 `?status=firing\|resolved&server&kind&before&limit` + 按 kind 统计的 `firing` 数量（Q1：告警按服务器归属：`server_id`、`server_name`） |
+| GET | /api/v1/alerts | admin | W17：告警中心 `?status=firing\|resolved&server&kind&before&limit` + 按 kind 统计的 `firing` 数量（Q1：告警按服务器归属：`server_id`、`server_name`）；`resolved_7d_by_kind` = 近 7 天已恢复的告警按 kind 计数（受 `server` 筛选，告警页历史胶囊） |
 | POST | /api/v1/alerts/{id}/ack | admin | W17：确认（仅审计一次） |
 | GET/PUT | /api/v1/alerts/settings | admin | W17：阈值和渠道（Telegram 机器人、签名 webhook、邮件）；密钥只写（`*_set` 标记），`version` 用于乐观并发（409） |
 | POST | /api/v1/alerts/test | admin | W17：`{channel}` 通过已保存的配置发送测试消息，`{ok, error?}` |

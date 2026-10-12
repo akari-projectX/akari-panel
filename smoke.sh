@@ -3257,6 +3257,8 @@ python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firin
   || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM server_alerts"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&server=$SERVER_ID")" = "200" ] \
   && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "isinstance(d['resolved_7d_by_kind'], dict) and all(v >= 1 for v in d['resolved_7d_by_kind'].values())")" = "True" ] \
+  || { echo "FAIL: alert history counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
 curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
   || { echo "FAIL: akari_node_alerts_firing"; exit 1; }

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
+import { daysBefore, siteToday } from "../../shared/format";
 import type { Lang, Tr } from "../../shared/i18n";
 
 export const ALERT_KINDS = [
@@ -129,4 +130,16 @@ export function SettingsHint({ to, children }: { to: string; children: ReactNode
       <ChevronRight className="size-3.5" aria-hidden="true" />
     </Link>
   );
+}
+
+/** Day header label for a site day (YYYY-MM-DD): 今天 / 昨天 / 10 月 10 日 周六. */
+export function dayLabel(day: string, tr: Tr, lang: Lang): string {
+  const today = siteToday();
+  if (day === today) return tr("今天", "Today");
+  if (day === daysBefore(today, 1)) return tr("昨天", "Yesterday");
+  const d = new Date(`${day}T12:00:00Z`);
+  if (lang === "en")
+    return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+  const wd = "日一二三四五六"[d.getUTCDay()];
+  return `${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日 周${wd}`;
 }

@@ -29,7 +29,7 @@ async function openBy(page: Page, info: TestInfo, r: ReturnType<typeof row>, tex
   else await r.getByText(text).first().click();
 }
 
-test("ALR-01 ALR-02 ALR-05: alert center, acknowledge (row and bulk), alert detail, notification log with filters and retry", async ({
+test("ALR-01 ALR-02 ALR-05: firing board, acknowledge (card and bulk), detail timeline, history filters, notification log with filters and retry", async ({
   page,
 }, info) => {
   const name = uniq(info, "alert-host");
@@ -42,53 +42,69 @@ test("ALR-01 ALR-02 ALR-05: alert center, acknowledge (row and bulk), alert deta
   const alert = sql(
     `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'cpu', 'firing', '97%', 'CPU 97% for 5 min') RETURNING id`,
   ).split("\n")[0];
-  sql(
-    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'memory', 'firing', '95%', 'memory 95% for 5 min')`,
-  );
+  const memAlert = sql(
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail) VALUES ('${id}', 'memory', 'firing', '95%', 'memory 95% for 5 min') RETURNING id`,
+  ).split("\n")[0];
   sql(
     `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error) ` +
       `VALUES (${alert}, 'webhook', 'firing', '{"title":"${name} CPU"}', 'dead', 8, 'connection refused')`,
   );
   await openConsole(page, "/alerts");
   // The thresholds and channels are a settings section now.
-  await expect(page.getByRole("link", { name: "告警通道与阈值" })).toHaveAttribute("href", /\/settings\/alerts$/);
-  // ALR-01: firing list, counts by kind, filters (in the URL).
-  await expect(page.getByText(/CPU 过高 · \d/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /告警通道与阈值/ })).toHaveAttribute("href", /\/settings\/alerts$/);
+  // ALR-01: the firing board; the server filter is in the URL.
   await page.getByLabel("服务器", { exact: true }).selectOption({ label: name });
   await expect(page).toHaveURL(/server=/);
-  const cpu = page.locator("[data-row]:visible", { hasText: "CPU 97% for 5 min" }).first();
-  const mem = page.locator("[data-row]:visible", { hasText: "memory 95% for 5 min" }).first();
-  await expect(cpu).toContainText("正在告警");
-  await expect(mem).toContainText("正在告警");
-  // ALR-02: acknowledge one row (the list updates without a reload).
+  const cpu = page.locator(`[data-alert="${alert}"]`);
+  const mem = page.locator(`[data-alert="${memAlert}"]`);
+  await expect(cpu).toContainText("CPU 97% for 5 min");
+  await expect(cpu).toContainText("已持续");
+  await expect(mem).toContainText("memory 95% for 5 min");
+  // ALR-02: acknowledge one card (the board updates without a reload).
   await cpu.getByRole("button", { name: "确认", exact: true }).click();
   await toast(page, "已确认");
-  await expect(cpu).toContainText(/u-[0-9a-f]{8}|e2e-admin|@/);
+  await expect(cpu).toContainText(/已确认 · 恢复前不再提醒/);
   await expect(cpu.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
-  // … and in bulk.
+  // … and in bulk (tick → the floating bar).
   await mem.getByRole("checkbox", { name: "选择" }).click();
-  await page.getByRole("button", { name: /确认所选（1）/ }).click();
+  await page
+    .getByRole("region", { name: "批量操作" })
+    .getByRole("button", { name: /确认 1 条/ })
+    .click();
   await toast(page, "已确认 1 条告警");
   await expect(mem.getByRole("button", { name: "确认", exact: true })).toHaveCount(0);
-  // The alert's own detail, with a link to its server.
-  await openBy(page, info, cpu, "CPU 97% for 5 min");
+  // The alert's own detail: facts, the timeline (the failed webhook notice), a link to its server.
+  await cpu.getByRole("button", { name }).click();
+  await expect(page).toHaveURL(new RegExp(`open=${alert}`));
   const a = dialog(page, new RegExp(`CPU 过高 · ${name}`));
   await expect(a.getByText("97%", { exact: true })).toBeVisible();
-  await expect(a.getByRole("link", { name: "查看服务器" })).toHaveAttribute("href", new RegExp(`server:${id}`));
+  await expect(a).toContainText("Webhook 通知失败");
+  await expect(a).toContainText("仍在触发");
+  await expect(a.getByRole("link", { name: "查看服务器" }).first()).toHaveAttribute("href", new RegExp(`server:${id}`));
   await a.getByRole("button", { name: "关闭", exact: true }).first().click();
   await expect(a).toHaveCount(0);
-  // A filter without matches: the "no match" empty state.
-  await page.getByLabel("状态", { exact: true }).selectOption("resolved");
-  await page.getByLabel("类型", { exact: true }).selectOption("cpu");
+  // A filter without matches: the calm card for the board, "no match" for the history.
+  await page.goto(`${CONSOLE}/alerts?kind=cert&server=${id}`);
+  await expect(page.getByText("这个筛选下没有正在触发的告警")).toBeVisible();
   await expect(page.getByText("没有匹配的记录")).toBeVisible();
-  // ALR-05: the notification log (channel / status in words, filters); retry a dead one.
-  await page.getByRole("tab", { name: "通知记录" }).click();
-  await page.getByLabel("通道", { exact: true }).selectOption("webhook");
-  await page.getByLabel("投递状态", { exact: true }).selectOption("dead");
-  const n = row(page, `${name} CPU`);
-  await expect(n).toContainText("connection refused");
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page).not.toHaveURL(/kind=/);
+  // ALR-05: the notification log (merged per event, filters in the URL); retry a dead one.
+  await page
+    .getByRole("group", { name: "告警视图" })
+    .getByRole("button", { name: /通知记录/ })
+    .click();
+  await expect(page).toHaveURL(/\/alerts\/outbox/);
+  await page.getByRole("group", { name: "通道" }).getByRole("button", { name: "Webhook" }).click();
+  await page.getByRole("group", { name: "投递状态" }).getByRole("button", { name: /失败/ }).click();
+  await expect(page).toHaveURL(/channel=webhook/);
+  await expect(page).toHaveURL(/status=failed/);
+  const n = page.locator("[data-row]:visible", { hasText: `${name} CPU` });
+  await expect(n).toContainText("连接被拒绝");
   await expect(n).toContainText("发送失败");
   await expect(n).toContainText("Webhook");
+  await n.getByRole("button", { name: "原始错误" }).click();
+  await expect(n).toContainText("connection refused");
   await n.getByRole("button", { name: "重试", exact: true }).click();
   await toast(page, "已重新排队");
 });

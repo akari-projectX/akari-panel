@@ -3,11 +3,36 @@
 // (the e2e data always has pending work), status-allok (depends on the CI
 // host), status-mail-empty (the queue is never empty there),
 // status-diagnose-running (a single request, no stable frame), *-loading,
-// *-error, *-stale. status-diagnose-ok / -failed: only the one matching the
+// *-error, *-stale, alerts-calm (other specs leave alerts firing),
+// alerts-outbox-empty (never empty there). status-diagnose-ok / -failed: only the one matching the
 // CI mail setup is taken.
 import { expect, type Page } from "@playwright/test";
 
-import { go, goto, type Shot } from "./shared";
+import { apiJson, sql, uniq } from "../helpers";
+import { go, goDialog, goto, need, type Ctx, type Shot } from "./shared";
+
+/**
+ * Alerts of our own: an enrolled server (the evaluator leaves the live kinds
+ * of a never-online one as they are) with a firing CPU alert, a resolved
+ * disk alert and a failed webhook notice.
+ */
+export async function setup(c: Ctx): Promise<void> {
+  const name = uniq(c.info, "screens-alerts");
+  const { id } = await apiJson<{ id: string }>("POST", "/servers", { name });
+  sql(`UPDATE servers SET cert_serial = md5('${name}'), enrolled_at = now() WHERE id = '${id}'`);
+  c.extra.alertServer = id;
+  c.extra.alertFiring = sql(
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at) VALUES ('${id}', 'cpu', 'firing', '94%', 'CPU 高于 90% 已持续 10 分钟', now() - interval '25 minutes') RETURNING id`,
+  ).split("\n")[0];
+  c.extra.alertResolved = sql(
+    `INSERT INTO server_alerts (server_id, kind, status, value, detail, fired_at, resolved_at, acked_at, acked_by) VALUES ('${id}', 'disk', 'resolved', '91%', '磁盘已用 91%', now() - interval '3 hours', now() - interval '2 hours', now() - interval '170 minutes', 'admin') RETURNING id`,
+  ).split("\n")[0];
+  sql(
+    `INSERT INTO alert_notifications (alert_id, channel, event, payload, status, attempts, last_error) ` +
+      `VALUES (${c.extra.alertFiring}, 'webhook', 'firing', '{"title":"${name} CPU 过高"}', 'dead', 3, '502 Bad Gateway'), ` +
+      `(${c.extra.alertFiring}, 'email', 'firing', '{"title":"${name} CPU 过高"}', 'sent', 1, NULL)`,
+  );
+}
 
 /** Run the test mail in the open dialog; resolve only when the outcome is `want`. */
 const diagnose = (want: "ok" | "failed") => async (page: Page) => {
@@ -37,4 +62,26 @@ export const shots: Shot[] = [
   { name: "status-mail-all", open: go("/status?tab=mail"), full: true },
   { name: "status-diagnose-failed", open: diagnose("failed") },
   { name: "status-diagnose-ok", open: diagnose("ok") },
+  { name: "alerts-board", open: go("/alerts"), full: true },
+  {
+    name: "alerts-selected",
+    open: async (page) => {
+      await goto(page, "/alerts");
+      await page.locator("[data-alert]").getByRole("checkbox", { name: "选择" }).first().click();
+      await expect(page.getByRole("region", { name: "批量操作" })).toBeVisible();
+    },
+  },
+  { name: "alerts-filter-kind", open: go("/alerts?kind=cpu"), full: true },
+  {
+    name: "alerts-nomatch",
+    open: async (page, c) => goto(page, `/alerts?kind=cert&server=${need(c.extra.alertServer, "alert server")}`),
+  },
+  { name: "alerts-detail-firing", open: goDialog((c) => `/alerts?open=${need(c.extra.alertFiring, "firing alert")}`) },
+  {
+    name: "alerts-detail-resolved",
+    open: goDialog((c) => `/alerts?open=${need(c.extra.alertResolved, "resolved alert")}`),
+  },
+  { name: "alerts-outbox", open: go("/alerts/outbox"), full: true },
+  { name: "alerts-outbox-failed", open: go("/alerts/outbox?status=failed") },
+  { name: "alerts-outbox-nomatch", open: go("/alerts/outbox?channel=telegram&status=failed") },
 ];
