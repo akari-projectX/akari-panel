@@ -548,6 +548,16 @@ BEFORE=$(date -u -d '-30 days' +%F)
   && last_json "[u['id'] for u in d['users']] == ['$IDLE']" | matches '^True$' \
   || { echo "FAIL: never-used filter: $(cat /tmp/akari-smoke/last)"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?registered_before=yesterday")" = "400" ] || { echo "FAIL: bad day filter"; exit 1; }
+# Console redesign: view rail counts, views, new sorts, row extras, finance summary.
+[ "$(code -b "$JAR" "$BASE/api/v1/users?counts=true&limit=1&sort=-usage")" = "200" ] \
+  && last_json "isinstance(d['counts']['all'], int) and d['counts']['never'] >= 1 and 'last_traffic_day' in d['users'][0] and 'inviter_email' in d['users'][0]" | matches '^True$' \
+  || { echo "FAIL: user counts: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?view=lapsed&sort=-balance")" = "200" ] || { echo "FAIL: users view=lapsed"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?view=bogus")" = "400" ] && last_json "d['code']" | matches -x 'user.view_invalid' \
+  || { echo "FAIL: bad user view"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/finance/summary")" = "200" ] \
+  && last_json "sorted(d) == ['balances', 'commissions', 'withdrawals'] and isinstance(d['withdrawals']['pending'], int)" | matches '^True$' \
+  || { echo "FAIL: finance summary: $(cat /tmp/akari-smoke/last)"; exit 1; }
 SEL="{\"filter\":{\"never_used\":true,\"registered_before\":\"$BEFORE\"}}"
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/delete/preview" -H 'Content-Type: application/json' -d "{\"selection\":$SEL}")" = "200" ] \
   && last_json "d['deletable'] == 1 and d['anonymized'] == 0" | matches '^True$' || { echo "FAIL: bulk delete preview: $(cat /tmp/akari-smoke/last)"; exit 1; }

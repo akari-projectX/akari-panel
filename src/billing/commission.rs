@@ -936,6 +936,97 @@ pub async fn list_commissions(
     Ok(Json(rows))
 }
 
+/// `GET /finance/summary`: the finance page's header (one read-only
+/// snapshot): withdrawals per status (pending amount and the oldest
+/// pending request), customers' balances, and commissions per status with
+/// this site month's total (reversed excluded). Admin.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct FinanceSummary {
+    pub withdrawals: WithdrawalSummary,
+    pub balances: BalanceSummary,
+    pub commissions: CommissionSummary,
+}
+
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct WithdrawalSummary {
+    pub pending: i64,
+    pub pending_cents: i64,
+    pub oldest_pending_at: Option<DateTime<Utc>>,
+    pub approved: i64,
+    pub rejected: i64,
+    pub cancelled: i64,
+}
+
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct BalanceSummary {
+    /// Customers (role=user) holding a positive balance, and its sum.
+    pub users: i64,
+    pub total_cents: i64,
+}
+
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct CommissionSummary {
+    /// Frozen (not yet credited) commissions and their sum.
+    pub pending: i64,
+    pub pending_cents: i64,
+    pub credited: i64,
+    pub reversed: i64,
+    /// Created since the start of this site-time-zone month, not reversed.
+    pub month_cents: i64,
+}
+
+pub async fn finance_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<FinanceSummary>, ApiError> {
+    user.require_admin()?;
+    let mut tx = state.pg().begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let summary = summarize(&mut tx).await?;
+    tx.commit().await?;
+    Ok(Json(summary))
+}
+
+pub(crate) async fn summarize(conn: &mut PgConnection) -> sqlx::Result<FinanceSummary> {
+    let withdrawals = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'pending') AS pending, \
+         coalesce(sum(amount_cents) FILTER (WHERE status = 'pending'), 0)::bigint AS pending_cents, \
+         min(created_at) FILTER (WHERE status = 'pending') AS oldest_pending_at, \
+         count(*) FILTER (WHERE status = 'approved') AS approved, \
+         count(*) FILTER (WHERE status = 'rejected') AS rejected, \
+         count(*) FILTER (WHERE status = 'cancelled') AS cancelled \
+         FROM withdrawals",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let balances = sqlx::query_as(
+        "SELECT count(*) AS users, coalesce(sum(b.balance_cents), 0)::bigint AS total_cents \
+         FROM user_balances b JOIN users u ON u.id = b.user_id \
+         WHERE u.role = 'user' AND b.balance_cents > 0",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    let commissions = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'pending') AS pending, \
+         coalesce(sum(amount_cents) FILTER (WHERE status = 'pending'), 0)::bigint AS pending_cents, \
+         count(*) FILTER (WHERE status = 'credited') AS credited, \
+         count(*) FILTER (WHERE status = 'reversed') AS reversed, \
+         coalesce(sum(amount_cents) FILTER (WHERE status <> 'reversed' AND created_at >= \
+           date_trunc('month', now() AT TIME ZONE akari_site_tz()) AT TIME ZONE akari_site_tz()), \
+           0)::bigint AS month_cents \
+         FROM commissions",
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(FinanceSummary {
+        withdrawals,
+        balances,
+        commissions,
+    })
+}
+
 pub async fn list_withdrawals(
     State(state): State<AppState>,
     user: AuthUser,

@@ -86,6 +86,9 @@ pub struct UserFilter {
     pub registered_before: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_login_before: Option<String>,
+    /// Console views (as `GET /users`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
 }
 
 impl UserFilter {
@@ -98,6 +101,7 @@ impl UserFilter {
             never_used: self.never_used,
             registered_before: self.registered_before.clone(),
             last_login_before: self.last_login_before.clone(),
+            view: self.view.clone(),
             ..Default::default()
         }
     }

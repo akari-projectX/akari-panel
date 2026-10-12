@@ -283,6 +283,12 @@ pub struct BalanceRow {
     email: String,
     balance_cents: i64,
     updated_at: DateTime<Utc>,
+    /// Console redesign: the part that can be withdrawn (as
+    /// `withdrawable`) and the latest ledger entry (null = none).
+    withdrawable_cents: i64,
+    last_kind: Option<String>,
+    last_amount_cents: Option<i64>,
+    last_at: Option<DateTime<Utc>>,
 }
 
 /// GET /balances: customers holding a balance row (largest first), or
@@ -294,13 +300,24 @@ pub async fn list_balances(
     Query(q): Query<BalancesQuery>,
 ) -> Result<Json<Vec<BalanceRow>>, ApiError> {
     user.require_admin()?;
-    let rows = sqlx::query_as(
-        "SELECT u.id AS user_id, u.email, COALESCE(b.balance_cents, 0) AS balance_cents, \
-         COALESCE(b.updated_at, u.created_at) AS updated_at \
-         FROM users u LEFT JOIN user_balances b ON b.user_id = u.id \
-         WHERE u.role = 'user' AND (($1::text IS NULL AND b.user_id IS NOT NULL) OR u.email = $1) \
-         ORDER BY balance_cents DESC, u.email LIMIT $2",
-    )
+    // The page first (≤ 500 rows), then each row's withdrawable part and
+    // latest entry (WITHDRAWABLE_SQL with the row's id; index
+    // balance_ledger_user).
+    let rows = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT r.user_id, r.email, r.balance_cents, r.updated_at, \
+         ({withdrawable}) AS withdrawable_cents, \
+         l.kind AS last_kind, l.amount_cents AS last_amount_cents, l.created_at AS last_at \
+         FROM (SELECT u.id AS user_id, u.email, COALESCE(b.balance_cents, 0) AS balance_cents, \
+               COALESCE(b.updated_at, u.created_at) AS updated_at \
+               FROM users u LEFT JOIN user_balances b ON b.user_id = u.id \
+               WHERE u.role = 'user' \
+                 AND (($1::text IS NULL AND b.user_id IS NOT NULL) OR u.email = $1) \
+               ORDER BY balance_cents DESC, u.email LIMIT $2) r \
+         LEFT JOIN LATERAL (SELECT kind, amount_cents, created_at FROM balance_ledger \
+                            WHERE user_id = r.user_id ORDER BY id DESC LIMIT 1) l ON true \
+         ORDER BY r.balance_cents DESC, r.email",
+        withdrawable = WITHDRAWABLE_SQL.replace("$1", "r.user_id")
+    )))
     .bind(
         q.email
             .map(|e| e.trim().to_lowercase())
