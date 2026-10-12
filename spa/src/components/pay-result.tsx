@@ -60,7 +60,7 @@ export default function PayResult({ order, outcome, onClose }: { order: MyOrder;
       description: tr('支付成功，套餐已生效'),
       actions: (
         <>
-          <Button variant="outline" className="h-10" onClick={() => go(`${R.account}?tab=security`)}>{tr('查看订阅')}</Button>
+          <Button variant="outline" className="h-10" onClick={() => go(`${R.dashboard}#subscribe`)}>{tr('查看订阅')}</Button>
           <Button className="h-10" onClick={() => go(R.dashboard)}>{tr('返回仪表盘')}</Button>
         </>
       ),

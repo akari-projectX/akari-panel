@@ -26,6 +26,8 @@ export type Site = {
   passkey: boolean;
   /** 注册页可以「用通行密钥注册」 */
   passkeyRegister: boolean;
+  /** 站点开着发信（`/auth/options` 的 mail）：关着时设置页不出现「更换邮箱」「验证」 */
+  mail: boolean;
   /** 配置还没取到 */
   loading: boolean;
 };
@@ -48,6 +50,7 @@ export function siteFrom(o: AuthOptions | undefined): Site {
     emailDomains: o?.email_domains ?? [],
     passkey: !!o?.passkey,
     passkeyRegister: !!o?.passkey_register,
+    mail: !!o?.mail,
     loading: !o,
   };
 }

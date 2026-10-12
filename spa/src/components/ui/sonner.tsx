@@ -1,19 +1,33 @@
-import { useEffect } from "react"
+import { useEffect, useSyncExternalStore } from "react"
 import { useTheme } from "@/lib/theme"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react"
 import { toasterMounted } from "@/lib/toast"
 
+/* 和 sonner 自己的手机断点（600px）一致 */
+const NARROW = "(max-width: 600px)"
+const subscribeNarrow = (f: () => void) => {
+  const mq = window.matchMedia(NARROW)
+  mq.addEventListener("change", f)
+  return () => mq.removeEventListener("change", f)
+}
+
 const Toaster = ({ ...props }: ToasterProps) => {
   const { theme } = useTheme()
+  const narrow = useSyncExternalStore(subscribeNarrow, () => window.matchMedia(NARROW).matches, () => false)
   /* 挂上之后 lib/toast 才放行排队的提示；sonner 自己的订阅在子组件的 effect 里，先于这里执行 */
   useEffect(() => { toasterMounted() }, [])
 
   return (
     <Sonner
       theme={theme as ToasterProps["theme"]}
-      position="top-right"
-      offset={76}
+      /*
+       * 桌面在右下角：右上角正好压住页头的账户菜单。手机在顶部居中（sonner 的 mobileOffset），让出刘海的安全区；
+       * 弹窗开着时它在遮罩之上（z-index 比弹窗高），不会被盖住也不挡弹窗的按钮。
+       */
+      position={narrow ? "top-center" : "bottom-right"}
+      offset={24}
+      mobileOffset={{ top: "calc(env(safe-area-inset-top) + 12px)", left: 12, right: 12 }}
       gap={10}
       duration={3200}
       className="toaster group"

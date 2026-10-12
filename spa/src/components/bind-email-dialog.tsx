@@ -1,19 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { MailCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { FlowDialog, FlowFooter } from '@/components/ui/panels';
+import TextField from '@/components/text-field';
 import { meApi } from '@/api';
 import { usePending } from '@/hooks/use-api';
+import { useResend } from '@/hooks/use-resend';
 import { useAuth } from '@/lib/auth';
 import { useErrorText } from '@/lib/errors';
+import { digits, fieldOf, isCode, isEmail, useFieldErrors } from '@/lib/form-errors';
 import { useSite } from '@/lib/site';
 import { toast } from '@/lib/toast';
 import { useT, useTp } from '@/i18n';
-
-/** 重发验证码前要等的秒数（面板另有按地址的发信限速） */
-const RESEND_SECS = 60;
 
 /**
  * 用通行密钥注册之后的第一步：绑定邮箱。账户在这之前只有一个会话，除了这里什么接口都用不了
@@ -31,32 +29,45 @@ export default function BindEmailDialog() {
   const [code, setCode] = useState('');
   const [pwd, setPwd] = useState('');
   const [sent, setSent] = useState(false);
-  const [wait, setWait] = useState(0);
+  const resend = useResend();
   const [busy, run] = usePending();
-
-  useEffect(() => {
-    if (wait <= 0) return;
-    const t = setTimeout(() => setWait((w) => w - 1), 1000);
-    return () => clearTimeout(t);
-  }, [wait]);
+  const f = useFieldErrors(['email', 'code', 'pwd'] as const);
 
   const verify = site.emailVerify;
   const domains = site.emailDomains;
+  const FIELD_CODES = {
+    'signup.invalid_email': 'email', 'signup.domain_not_allowed': 'email', 'signup.unavailable': 'email',
+    'signup.invalid_code': 'code', 'account.bind_no_code': 'code',
+    'account.password_too_short': 'pwd', 'account.password_too_long': 'pwd',
+  } as const;
+  const showError = (err: unknown) => {
+    const k = fieldOf(err, FIELD_CODES);
+    if (k) f.set(k, errText(err));
+    else toast.error(errText(err));
+  };
+  const emailError = () => (!email.trim() ? tr('请输入邮箱') : !isEmail(email) ? tr('请输入有效的邮箱地址') : undefined);
 
-  const send = () => run(async () => {
-    if (!email.trim()) { toast.error(tr('请先填写邮箱')); return; }
-    try {
-      await meApi.emailBindCode(email.trim());
-      setSent(true);
-      setWait(RESEND_SECS);
-      toast.success(tr('如果这个邮箱可以使用，验证码已经发出'), { description: tr('请查收邮件，也看看垃圾邮件箱') });
-    } catch (err) {
-      toast.error(errText(err));
-    }
-  });
+  const send = () => {
+    if (!f.check({ email: emailError() })) return;
+    run(async () => {
+      try {
+        await meApi.emailBindCode(email.trim());
+        setSent(true);
+        resend.start();
+        toast.success(tr('如果这个邮箱可以使用，验证码已经发出'), { description: tr('请查收邮件，也看看垃圾邮件箱') });
+      } catch (err) {
+        showError(err);
+      }
+    });
+  };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!f.check({
+      email: !verify ? emailError() : undefined,
+      code: verify && (!sent ? tr('请先发送验证码') : !isCode(code) ? tr('请输入 6 位数字验证码') : undefined),
+      pwd: pwd && pwd.length < 8 && tr('密码至少 8 位'),
+    })) return;
     run(async () => {
       try {
         await meApi.emailBind({
@@ -66,12 +77,10 @@ export default function BindEmailDialog() {
         await refresh();
         toast.success(tr('邮箱已绑定'), { description: tr('以后用这个邮箱登录，到期提醒和收据也会发到这里。') });
       } catch (err) {
-        toast.error(errText(err));
+        showError(err);
       }
     });
   };
-
-  const ready = verify ? sent && code.trim().length === 6 : email.trim().length > 0;
 
   return (
     <FlowDialog
@@ -80,46 +89,39 @@ export default function BindEmailDialog() {
       title={tr('绑定邮箱')}
       description={tr('账号已创建。请先绑定一个邮箱：它是你的登录名，用来接收提醒和找回账号。完成之前其他功能都不能使用。')}
     >
-      <form id="bind-email" onSubmit={submit} className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="bind-email-addr">{tr('邮箱')}</Label>
-          <Input
-            id="bind-email-addr" type="email" className="h-10" autoComplete="email" placeholder="you@example.com"
-            value={email} onChange={(e) => setEmail(e.target.value)} disabled={verify && sent}
-          />
-          {domains.length > 0 && (
-            <p className="text-[12px] text-muted-foreground">
-              {tr('仅限')} {domains.slice(0, 3).join(' / ')}{domains.length > 3 ? ' …' : ''}
-            </p>
-          )}
-        </div>
+      <form id="bind-email" noValidate onSubmit={submit} className="space-y-4">
+        <TextField
+          {...f.field('email', 'bind-email-addr')}
+          label={tr('邮箱')} type="email" autoComplete="email" placeholder="you@example.com"
+          value={email} onChange={(e) => setEmail(e.target.value)} disabled={verify && sent}
+          help={domains.length > 0 ? `${tr('仅限')} ${domains.slice(0, 3).join(' / ')}${domains.length > 3 ? ' …' : ''}` : undefined}
+        />
 
         {verify && (
-          <div className="space-y-2">
-            <Label htmlFor="bind-email-code">{tr('邮箱验证码')}</Label>
-            <div className="flex gap-2">
-              <Input
-                id="bind-email-code" className="h-10 flex-1" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
-                value={code} onChange={(e) => setCode(e.target.value)} placeholder={tr('六位数字')} disabled={!sent}
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <TextField
+                {...f.field('code', 'bind-email-code')}
+                label={tr('邮箱验证码')} inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                value={code} onChange={(e) => setCode(digits(e.target.value))} placeholder={tr('六位数字')}
               />
-              <Button type="button" variant="outline" className="h-10 shrink-0" disabled={busy || wait > 0} onClick={send}>
-                {wait > 0 ? tp('{n} 秒后重发', { n: wait }) : sent ? tr('重新发送') : tr('发送验证码')}
-              </Button>
             </div>
+            <Button type="button" variant="outline" className="mt-[28px] h-10 shrink-0" disabled={busy || resend.left > 0} onClick={send}>
+              {resend.left > 0 ? tp('{n} 秒后重发', { n: resend.left }) : sent ? tr('重新发送') : tr('发送验证码')}
+            </Button>
           </div>
         )}
 
-        <div className="space-y-2">
-          <Label htmlFor="bind-email-pwd">{tr('密码')}（{tr('选填')}）</Label>
-          <Input
-            id="bind-email-pwd" type="password" className="h-10" autoComplete="new-password" minLength={8}
-            value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder={tr('可以先跳过，以后在设置页设置')}
-          />
-        </div>
+        <TextField
+          {...f.field('pwd', 'bind-email-pwd')}
+          label={`${tr('密码')}（${tr('选填')}）`} type="password" autoComplete="new-password"
+          value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder={tr('可以先跳过，以后在设置页设置')}
+          help={tr('至少 8 位')}
+        />
       </form>
       <FlowFooter>
         <Button variant="ghost" disabled={busy} onClick={() => { void signOut(); }}>{tr('退出登录')}</Button>
-        <Button type="submit" form="bind-email" disabled={busy || !ready}>
+        <Button type="submit" form="bind-email" disabled={busy}>
           {busy ? tr('提交中') : tr('完成绑定')}
         </Button>
       </FlowFooter>

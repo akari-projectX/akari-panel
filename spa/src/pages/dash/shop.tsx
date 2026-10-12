@@ -344,7 +344,7 @@ export default function Shop() {
 
               {offer && (
                 <FlowStep n={++n} title={tr('优惠码')} aside={tr('选填')}>
-                  <form
+                  <form noValidate
                     onSubmit={(e) => { e.preventDefault(); applyCoupon(); }}
                     className="flex gap-2.5"
                   >
