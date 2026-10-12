@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Check, KeyRound, MailCheck } from 'lucide-react';
+import { ArrowLeft, Check, KeyRound, MailCheck, TriangleAlert } from 'lucide-react';
 import { useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ import { ApiError, authApi, type LoginResult } from '@/api';
 import { solvePow } from '@/api/pow';
 import { isUserCancel, webauthnSupported } from '@/api/webauthn';
 import { usePending } from '@/hooks/use-api';
-import { safeRedirect, useAuth } from '@/lib/auth';
+import { safeRedirect, useAuth, useSiteOptions } from '@/lib/auth';
 import { useErrorText } from '@/lib/errors';
 import { digits, fieldOf, isCode, isEmail, useFieldErrors } from '@/lib/form-errors';
 import { useFormGuard } from '@/lib/form-guard';
@@ -33,6 +33,10 @@ import { useLocale, useT, useTp } from '@/i18n';
  */
 function Shell({ children }: { children: React.ReactNode }) {
   const enter = useEnter();
+  const tr = useT();
+  /* /auth/options 没取到：注册、找回、通行密钥的入口都按「关」处理，表单提交也会被拒——得告诉用户，而不是只少几个按钮 */
+  const { error, refresh } = useSiteOptions();
+  const [retrying, retry] = usePending();
   return (
     <section className="relative flex min-h-[calc(100vh-160px)] items-center justify-center px-6 pt-10 pb-20">
       {/* 极淡的品牌色光晕 */}
@@ -42,6 +46,13 @@ function Shell({ children }: { children: React.ReactNode }) {
         style={{ background: 'radial-gradient(ellipse 60% 100% at 50% 0%, color-mix(in srgb, var(--brand) 7%, transparent), transparent 70%)' }}
       />
       <div {...enter()} className="relative w-full max-w-[360px]">
+        {error && (
+          <div role="alert" className="mb-8 flex items-center gap-3 rounded-xl bg-amber-500/[.08] px-4 py-3 text-[13px] leading-[1.6] dark:bg-amber-500/[.12]">
+            <TriangleAlert className="size-4 shrink-0 text-warning" />
+            <span className="min-w-0 flex-1">{tr('站点设置没能加载，暂时无法登录或注册。')}</span>
+            <Button size="sm" variant="outline" disabled={retrying} onClick={() => retry(refresh)}>{tr('重试')}</Button>
+          </div>
+        )}
         {children}
       </div>
     </section>
@@ -282,6 +293,7 @@ type Phase = 'idle' | 'pow' | 'submit';
 
 export function Register() {
   const tr = useT();
+  const tp = useTp();
   const errText = useErrorText();
   const { locale } = useLocale();
   const nav = useNavigate();
@@ -472,7 +484,7 @@ export function Register() {
         {/* 没强制要求时邀请码也留着：从邀请链接进来的人得有地方填 */}
         <Field
           {...f.field('invite', 'register-invite')}
-          label={site.inviteRequired ? tr('邀请码') : `${tr('邀请码')}（${tr('选填')}）`}
+          label={site.inviteRequired ? tr('邀请码') : tp('{label}（选填）', { label: tr('邀请码') })}
           placeholder={tr('填写邀请码')}
           value={invite} onChange={(e) => setInvite(e.target.value)}
         />
@@ -721,7 +733,7 @@ export function AccountDeleted() {
             : tr('你的账户已注销，所有设备上的登录都已结束。')}
       />
       <p className="mb-6 text-[13.5px] leading-[1.8] text-muted-foreground">
-        {tr('已经退出登录。这个邮箱以后可以重新注册，但原来的套餐、余额和记录不会回来。')}
+        {tr('这个邮箱以后可以重新注册，但原来的套餐、余额和记录不会回来。')}
       </p>
       <Button asChild className="h-11 w-full rounded-xl text-[15px]">
         <Link to={R.login} replace>{tr('返回登录页')}</Link>

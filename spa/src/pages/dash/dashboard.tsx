@@ -185,8 +185,13 @@ function Overview({ full }: { full: boolean }) {
         }
       />
 
+      {/*
+        统计条是这一页的最大内容块（LCP）：原地渲染，不做入场与数字滚动，否则最大内容要等启动画面淡出、
+        再等入场与 CountUp 播完才算画好（#117 的 LCP 退化）。其余区块照常错峰。
+      */}
       <Section>
         <StatRow
+          still
           items={[
             hasPlan && !usage.unlimited
               ? {
@@ -208,8 +213,10 @@ function Overview({ full }: { full: boolean }) {
                 },
             full
               ? {
-                  k: tr('可用线路'), v: onlineCount, suffix: tr(' 条'),
-                  x: nodes.data ? tp('共 {n} 条线路在订阅内', { n: nodes.data.length }) : tr('正在获取线路列表'),
+                  /* 线路还没取到 / 没取到时写横杠，不写 0：0 条是「全部不可用」的意思 */
+                  k: tr('可用线路'), v: nodes.data ? onlineCount : '—', suffix: nodes.data ? tr(' 条') : '',
+                  x: nodes.data ? tp('共 {n} 条线路在订阅内', { n: nodes.data.length })
+                    : nodes.error ? tr('线路列表没能加载') : tr('正在获取线路列表'),
                 }
               : { k: tr('可用线路'), v: 0, suffix: tr(' 条'), x: tr('续费后恢复') },
             {
@@ -229,7 +236,7 @@ function Overview({ full }: { full: boolean }) {
       {full && (
         <Section
           title={<><TrendingUp className="size-4 text-brand" />{tr('近 7 日流量趋势')}</>}
-          desc={
+          desc={traffic.data && (
             <span className="flex flex-wrap items-center gap-x-5 gap-y-1">
               <span className="flex items-baseline gap-1.5">
                 <i className="size-2 translate-y-[-1px] rounded-full bg-brand" />
@@ -242,7 +249,7 @@ function Overview({ full }: { full: boolean }) {
                 <span className="text-[13px] font-normal text-muted-foreground">GB</span>
               </span>
             </span>
-          }
+          )}
           extra={traffic.data && (
             <span className="text-[12.5px] text-muted-foreground">
               {tr('计费')} <b className="tnum font-normal text-foreground">{toGB(traffic.data.total.billed_bytes).toFixed(1)}</b> GB
@@ -334,7 +341,7 @@ function Overview({ full }: { full: boolean }) {
                 extra={<Button variant="link" size="sm" asChild><Link to={R.help}>{tr('全部文档')}</Link></Button>}
               />
 
-              {docs.loading && !docs.data ? <Loading rows={2} />
+              {docs.loading && !docs.data ? <Loading rows={3} />
                 : docs.error && !docs.data ? <LoadError error={docs.error} onRetry={docs.reload} />
                 : !featured ? <Empty title="站点还没有发布文档" desc="站长在后台的「知识库」里发布文章后，这里就会有入口。" />
                 : (
@@ -356,7 +363,7 @@ function Overview({ full }: { full: boolean }) {
                             )}
                           </div>
                           <div className="mt-1 truncate text-[12.5px] text-muted-foreground">
-                            {tp('{n} 篇', { n: featured.articles.length })}
+                            {featured.articles.length === 1 ? tr('1 篇') : tp('{n} 篇', { n: featured.articles.length })}
                             {featured.mine && featured.platform && <> · {tr(featured.platform.client)}</>}
                           </div>
                         </div>

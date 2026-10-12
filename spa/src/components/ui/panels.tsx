@@ -253,8 +253,8 @@ export function FlowFooter({ summary, children }: { summary?: ReactNode; childre
   return (
     <div className="sticky bottom-0 -mx-6 mt-auto flex flex-wrap items-center gap-x-4 gap-y-3 border-t border-border bg-popover/95 px-6 py-3.5 backdrop-blur supports-backdrop-filter:bg-popover/85 sm:-mx-7 sm:px-7 sm:pb-4">
       <div className="min-w-0 flex-1 text-[12.5px] leading-[1.5] text-muted-foreground empty:hidden">{summary}</div>
-      {/* 手机上按钮等宽铺满（和确认弹窗同一手感）；桌面靠右 */}
-      <div className="grid flex-1 auto-cols-fr grid-flow-col gap-2 sm:flex sm:flex-none sm:shrink-0 sm:items-center [&>button]:h-10 sm:[&>button]:h-9">{children}</div>
+      {/* 手机上按钮另起一行、等宽铺满（和确认弹窗同一手感），不和左边的小结抢宽度（以前「提交申请」被挤出弹窗）；桌面靠右 */}
+      <div className="grid basis-full auto-cols-fr grid-flow-col gap-2 sm:ml-auto sm:flex sm:basis-auto sm:shrink-0 sm:items-center [&>button]:h-10 sm:[&>button]:h-9">{children}</div>
     </div>
   );
 }

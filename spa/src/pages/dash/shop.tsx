@@ -5,6 +5,7 @@ import { DUR, NUDGE, enterProps, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { FlowDialog, FlowFooter, FlowStep } from '@/components/ui/panels';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -251,7 +252,9 @@ export default function Shop() {
                     <PlanContent content={pl.description} className="mb-5.5 flex-1" />
 
                     <Button
-                      variant={pl.current ? 'default' : 'outline'} className="h-10 w-full"
+                      variant={pl.current ? 'default' : first ? 'outline' : 'secondary'}
+                      /* 买不了的套餐整张卡已经淡了一层，按钮不再叠一层禁用透明度（以前「已售罄」几乎看不见） */
+                      className={cn('h-10 w-full', !first && 'disabled:opacity-100 text-muted-foreground')}
                       disabled={!first}
                       onClick={() => openBuy(pl, first, first?.action === 'reset')}
                     >
@@ -385,8 +388,9 @@ export default function Shop() {
               )}
 
               {confirmSwitch && offer && (
-                <label className="flex items-start gap-3 rounded-xl bg-amber-500/[.08] px-4 py-3.5 text-[12.5px] leading-[1.8]">
-                  <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} className="mt-1 accent-[var(--brand)]" />
+                <label htmlFor="switch-ack" className="flex cursor-pointer items-start gap-3 rounded-xl bg-amber-500/[.08] px-4 py-3.5 text-[12.5px] leading-[1.8]">
+                  {/* 站内的 Checkbox（与注销确认同一个），整行可点；原生小方框在手机上很难点中 */}
+                  <Checkbox id="switch-ack" checked={ack} onCheckedChange={(v) => setAck(v === true)} className="mt-[3px]" />
                   <span>
                     <TriangleAlert className="mr-1 inline size-3.5 text-warning" />
                     {offer.forfeited_cents > 0

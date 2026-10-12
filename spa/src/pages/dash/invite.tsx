@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/panels';
 import { Input } from '@/components/ui/input';
-import { PageTitle, Section, StatRow } from '@/components/flat';
+import { PageTitle, Row, Section, StatRow } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import StatusTag from '@/components/status-tag';
 import { useCopy } from '@/hooks/use-copy';
@@ -200,7 +200,7 @@ export default function Invite() {
                 <Button asChild variant="outline" className="h-11 px-6"><Link to={R.wallet}><Wallet />{tr('去钱包提现')}</Link></Button>
                 {i.reversed_cents > 0 && (
                   <p className="mt-3 text-[12.5px] text-muted-foreground">
-                    {tp('另有 {v} 因订单退款被追回。已提现的部分会从余额里扣，余额不够时记为负数，从之后的佣金里抵扣。', { v: formatMoney(i.reversed_cents) })}
+                    {tp('另有 {v} 因订单退款被追回：从余额里扣回，余额不够时差额记为欠款，从之后入账的佣金里抵扣（余额不会变成负数）。', { v: formatMoney(i.reversed_cents) })}
                   </p>
                 )}
               </div>
@@ -209,9 +209,34 @@ export default function Invite() {
       </Section>
 
       <Section title={<><Gift className="size-4 text-brand" />{tr('返佣明细')}</>} desc={i?.commissions.length ? tp('共 {n} 条', { n: i.commissions.length }) : undefined}>
-        {!i ? null : i.commissions.length === 0 ? <Empty title="还没有返佣记录" desc="被你邀请的人完成付费后，明细会出现在这里。" />
+        {invite.loading && !i ? <Loading rows={2} />
+          : invite.error && !i ? <LoadError error={invite.error} onRetry={invite.reload} />
+          : !i ? null : i.commissions.length === 0 ? <Empty title="还没有返佣记录" desc="被你邀请的人完成付费后，明细会出现在这里。" />
           : (
-            <div className="overflow-x-auto">
+            <>
+            {/* 窄屏：一行一笔（和钱包、订单同一种列表），不在表格里横向滚动 */}
+            <div className="md:hidden">
+              {i.commissions.map((x, n) => (
+                <Row
+                  key={x.id} index={n}
+                  title={x.invitee_label}
+                  desc={
+                    <>
+                      <span className="tnum">{formatDate(x.created_at)}</span>
+                      {' · '}{tp('订单 {v}', { v: formatMoney(x.base_cents) })}
+                      {x.status === 'pending' && <> · <span className="whitespace-nowrap">{tp('{d} 入账', { d: formatDate(x.available_at) })}</span></>}
+                    </>
+                  }
+                  extra={
+                    <span className="flex flex-col items-end gap-1.5">
+                      <span className="tnum font-medium">{formatMoney(x.amount_cents)} <span className="text-[12px] font-normal text-muted-foreground">({x.rate_percent}%)</span></span>
+                      <StatusTag {...C_STATUS[x.status]} />
+                    </span>
+                  }
+                />
+              ))}
+            </div>
+            <div className="hidden overflow-x-auto md:block">
               <table className="w-full min-w-[620px] text-[14px]">
                 <thead>
                   <tr className="border-b border-border text-[12.5px] text-muted-foreground">
@@ -226,7 +251,7 @@ export default function Invite() {
                   {i.commissions.map((x) => (
                     <tr key={x.id} className="border-b border-border last:border-b-0">
                       <td className="tnum py-3.5 whitespace-nowrap text-muted-foreground">{formatDate(x.created_at)}</td>
-                      <td className="py-3.5 font-mono text-[13px]">{x.invitee_label}</td>
+                      <td className="py-3.5">{x.invitee_label}</td>
                       <td className="tnum py-3.5 text-right text-muted-foreground">{formatMoney(x.base_cents)}</td>
                       <td className="tnum py-3.5 text-right font-medium">
                         {formatMoney(x.amount_cents)} <span className="text-[12px] font-normal text-muted-foreground">({x.rate_percent}%)</span>
@@ -242,6 +267,7 @@ export default function Invite() {
                 </tbody>
               </table>
             </div>
+            </>
           )}
       </Section>
     </>

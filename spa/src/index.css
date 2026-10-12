@@ -659,8 +659,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .rowline-x { flex-shrink: 0; display: flex; align-items: center; gap: 14px; }
 
 /* --- 两栏分区：靠间距，不画竖线 --- */
-.split2 { display: grid; grid-template-columns: 1fr 1fr; gap: 72px; }
-.split2 > .pane { display: flex; flex-direction: column; }
+/* minmax(0, 1fr)：隐式最小宽度 = 内容最小宽度，订阅组件、图表图例会把一栏撑出视口（手机横向滚动） */
+.split2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 72px; }
+.split2 > .pane { display: flex; flex-direction: column; min-width: 0; }
 .split2 > .vline { display: none; }
 
 /* --- 表格：仅微标签表头，无表头底色 --- */
@@ -687,6 +688,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
   box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.03), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
   font-size: 14.5px;
 }
+/* 手机上文字至少留 15rem：按钮放不下就换到下一行靠右，而不是把标题挤成好几行、摘要截成两个字 */
+.notice > .flex-1 { min-width: min(15rem, 100%); flex-basis: 0; }
+.notice > .flex-1 ~ :last-child { margin-left: auto; }
 .dark .notice {
   background: var(--muted);
   border-color: transparent;
@@ -761,7 +765,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 @media (max-width: 991px) {
   .statrow { gap: 36px 48px; }
   .stat-v { font-size: 38px; }
-  .split2 { grid-template-columns: 1fr; gap: 44px; }
+  .split2 { grid-template-columns: minmax(0, 1fr); gap: 44px; }
 }
 @media (max-width: 640px) {
   .page-wrap { padding-inline: 20px; }

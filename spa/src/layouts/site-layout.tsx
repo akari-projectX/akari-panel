@@ -14,6 +14,7 @@ import { useAuth } from '@/lib/auth';
 import { prefetchSite, whenIdle } from '@/lib/prefetch';
 import { useSite } from '@/lib/site';
 import { R } from '@/lib/routes';
+import { cn } from '@/lib/utils';
 
 /**
  * 访客/未登录时的轻量页头：
@@ -42,6 +43,7 @@ function GuestHeader() {
             </Button>
           )}
 
+          {/* 手机上页头只放得下一个按钮：「登录」也在的时候「创建账号」收起来（登录页上会有注册入口） */}
           {pathname !== R.register && !site.loading && (
             !site.registerOpen ? (
               <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
@@ -49,7 +51,7 @@ function GuestHeader() {
                 {tr('暂停注册')}
               </span>
             ) : (
-              <Button size="sm" onClick={() => nav(R.register)}>
+              <Button size="sm" className={cn(pathname !== R.login && 'hidden sm:inline-flex')} onClick={() => nav(R.register)}>
                 {tr('创建账号')}
               </Button>
             )

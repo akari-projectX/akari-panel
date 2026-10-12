@@ -262,7 +262,8 @@ function ChartLegendContent({
   return (
     <div
       className={cn(
-        "flex items-center justify-center gap-4",
+        /* 换行：线路分布的图例在手机上一行放不下，不换行会把整页撑出横向滚动 */
+        "flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5",
         verticalAlign === "top" ? "pb-3" : "pt-3",
         className
       )}
