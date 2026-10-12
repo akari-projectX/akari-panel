@@ -75,10 +75,12 @@ export const open = (page: Page, path: string) => page.goto(path);
  * 付款结果弹窗（components/pay-result）：等它出现，核对标题与小结里的套餐名，再从右上角关掉。
  * 弹窗开着时页面其余部分对无障碍树是隐藏的（getByRole 找不到页面标题），所以先处理它。
  */
-export async function payResult(page: Page, title: string, plan?: string, timeout = 10_000) {
+export async function payResult(page: Page, title: string, plan?: string, timeout = 10_000, shot?: string) {
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: title })).toBeVisible({ timeout });
   if (plan) await expect(dialog.getByText(plan, { exact: true })).toBeVisible();
+  /* 截图（CI 工件 portal-screens，给 PR 作证据）：reduced motion 下就是最终的样子 */
+  if (shot) await page.screenshot({ path: `test-results/screens/${shot}.png` });
   await dialog.getByRole('button', { name: '关闭' }).click();
   await expect(dialog).toHaveCount(0);
 }
