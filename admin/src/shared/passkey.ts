@@ -27,12 +27,13 @@ export function passkeysSupported(): boolean {
 }
 
 /** Run a discoverable login with the server's options; the credential JSON to post back. */
-export async function getAssertion(options: Json): Promise<Json> {
+export async function getAssertion(options: Json, signal?: AbortSignal): Promise<Json> {
   const pk = { ...(options.publicKey as Json) };
   pk.challenge = b64uToBuf(pk.challenge as string);
   if (Array.isArray(pk.allowCredentials))
     pk.allowCredentials = (pk.allowCredentials as Json[]).map((c) => ({ ...c, id: b64uToBuf(c.id as string) }));
   const cred = (await navigator.credentials.get({
+    signal,
     publicKey: pk as unknown as PublicKeyCredentialRequestOptions,
   })) as PublicKeyCredential | null;
   if (!cred) throw new Error("no credential");

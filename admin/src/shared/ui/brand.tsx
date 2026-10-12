@@ -25,7 +25,7 @@ export function BrandMark({
         style={{ width: size, height: size, borderRadius: radius }}
       />
     );
-  const glyph = !name || name.trim().toLowerCase() === "akari" ? "灯" : name.trim().slice(0, 1).toUpperCase();
+  const glyph = !name || name.trim().toLowerCase() === "akari" ? "灯" : name.trim().slice(0, 1).toUpperCase(); // i18n-ok: the brand seal glyph
   return (
     <span
       aria-hidden="true"

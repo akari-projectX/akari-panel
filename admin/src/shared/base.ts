@@ -9,6 +9,9 @@ export const adminBase = `${prefixBase}/admin`;
 export const apiBase = `${prefixBase}/api/v1`;
 export const authBase = `${prefixBase}/auth`;
 
+/** The sign-in page after signing out (it says so). */
+export const signedOutUrl = `${loginBase}?signed_out=1`;
+
 /** Full-page navigation (login page <-> console are different bundles). */
 export function loadPage(url: string): void {
   location.assign(url);

@@ -11,24 +11,27 @@ test("ACC-01 ACC-02 ACC-04: account details, password change, sign out", async (
   await expect(page.getByRole("heading", { level: 1, name: "我的账户" })).toBeVisible();
   await expect(page.getByRole("main").getByText(email).first()).toBeVisible();
   await expect(page.getByRole("main").getByText("管理员", { exact: true }).first()).toBeVisible();
-  // ACC-02: the new password twice (a mismatch is caught here); a wrong current password is refused; the right one changes it.
+  // ACC-02: the new password twice (a mismatch is caught here, with "N to fix"); a wrong current
+  // password is shown at its field; the right one changes it.
   await page.getByLabel("当前密码").fill("wrong-pass-1");
-  await page.getByLabel("新密码（至少 8 位）").fill("account-pass-2");
-  await page.getByLabel("确认新密码").fill("account-pass-3");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByLabel(/^新密码/).fill("account-pass-2");
+  await page.getByLabel("再输一次新密码").fill("account-pass-3");
+  await page.getByRole("button", { name: "修改密码" }).click();
   await expect(page.getByText("两次输入的新密码不一致")).toBeVisible();
-  await page.getByLabel("确认新密码").fill("account-pass-2");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(page.locator("[data-sonner-toast]").filter({ hasNotText: "密码已修改" }).first()).toBeVisible();
+  await expect(page.getByText("1 处需要修正")).toBeVisible();
+  await page.getByLabel("再输一次新密码").fill("account-pass-2");
+  await page.getByRole("button", { name: "修改密码" }).click();
+  await expect(page.getByText("当前密码不正确")).toBeVisible();
   await page.getByLabel("当前密码").fill("account-pass-1");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.getByRole("button", { name: "修改密码" }).click();
   await toast(page, "密码已修改");
   // This session stays.
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "我的账户" })).toBeVisible();
   // ACC-04: sign out; the console is gone; the new password works.
-  await page.getByRole("button", { name: "退出登录" }).first().click();
-  await expect(page).toHaveURL(LOGIN);
+  await page.getByRole("main").getByRole("button", { name: "退出登录" }).click();
+  await expect(page).toHaveURL(`${LOGIN}?signed_out=1`);
+  await expect(page.getByText("已退出登录。")).toBeVisible();
   expect((await page.request.get(CONSOLE)).status()).toBe(404);
   await signIn(page, email, "account-pass-2");
 });

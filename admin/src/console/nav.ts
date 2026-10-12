@@ -83,3 +83,34 @@ export const TABS: NavItem[] = [
 ];
 
 export const pathOf = (id: string) => (id === "dashboard" ? "/" : `/${id}`);
+
+/** The navigation item (and its group) of a page id; "more" has no group. */
+export function navOf(id: string): { group?: NavGroup; item: NavItem } {
+  for (const g of NAV) for (const it of g.items) if (it.id === id) return { group: g, item: it };
+  return { item: id === "more" ? MORE : ALL_NAV[0] };
+}
+
+/**
+ * Full sub-pages under a page (tabs that are routes): their breadcrumb
+ * label. Other sub-paths are objects (a server, a ticket, a settings
+ * section) whose name the page reports with `useCrumb`.
+ */
+export const SUB_LABELS: Record<string, { zh: string; en: string }> = {
+  "content/announcements": { zh: "公告", en: "Announcements" },
+  "content/kb": { zh: "知识库", en: "Knowledge base" },
+  "finance/withdrawals": { zh: "提现审核", en: "Withdrawals" },
+  "finance/balances": { zh: "余额", en: "Balances" },
+  "finance/commissions": { zh: "返利", en: "Commissions" },
+  "plans/groups": { zh: "节点组", en: "Node groups" },
+  "coupons/batches": { zh: "批量码", en: "Code batches" },
+  "alerts/outbox": { zh: "通知记录", en: "Deliveries" },
+};
+
+/** Generic names for an object opened with `?open=` before (or without) its own name. */
+export const OPEN_LABELS: Record<string, { zh: string; en: string }> = {
+  users: { zh: "用户详情", en: "User" },
+  orders: { zh: "订单详情", en: "Order" },
+  alerts: { zh: "告警详情", en: "Alert" },
+  audit: { zh: "审计记录", en: "Audit entry" },
+  coupons: { zh: "优惠券详情", en: "Coupon" },
+};

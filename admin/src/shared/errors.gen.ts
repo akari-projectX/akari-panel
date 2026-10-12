@@ -199,7 +199,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "mail.provider_invalid": ["不支持的发信方式", "Unknown mail provider"],
   "mail.retry_not_dead": ["只能重试尚未过期的失败邮件", "Only a dead letter that has not expired can be retried"],
   "mail.security_invalid": ["加密方式只能是 STARTTLS、TLS 或无", "Security must be starttls, tls or none"],
-  "mail.status_invalid": ["状态只能是失败、待发送或已发送", "Status must be dead, pending or sent"],
+  "mail.status_invalid": ["状态只能是失败、待发送、已发送或全部", "Status must be dead, pending, sent or all"],
   "mail.test_failed": ["测试邮件发送失败：{detail}", "{detail}"],
   "mail.test_needs_host": ["请先保存 SMTP 服务器和发件地址", "Save the SMTP host and sender address first"],
   "mail.to_invalid": ["收件地址不是有效的邮箱地址", "To is not a valid email address"],

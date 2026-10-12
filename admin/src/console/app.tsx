@@ -55,9 +55,6 @@ export function ConsoleApp() {
 
   const page = [...ALL_NAV, MORE].find((n) => n.id === route.page) ?? ALL_NAV[0];
   useEffect(() => {
-    document.title = `${tr(page.zh, page.en)} · ${site.siteName} ${tr("管理后台", "admin")}`;
-  }, [page, site.siteName, tr]);
-  useEffect(() => {
     const fav = branding.data?.favicon_url;
     if (!fav) return;
     const link = document.createElement("link");

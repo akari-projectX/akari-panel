@@ -423,6 +423,11 @@ test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance'
 test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and groups, term changes applied to subscribers, disable, delete", async ({
   page,
 }, info) => {
+  const act = async (label: string, item: string) => {
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await page.getByRole("menuitem", { name: item }).click();
+  };
+  const tabs = page.getByRole("navigation", { name: "套餐页面" });
   const srv = uniq(info, "plan-host");
   const { id: serverId } = await apiJson<{ id: string }>("POST", "/servers", { name: srv });
   const node = uniq(info, "plan-node");
@@ -434,40 +439,51 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   const group = uniq(info, "组");
   const plan = uniq(info, "基础套餐");
   await openConsole(page, "/plans");
-  // NOD-21: a node group with the node's direct entrance.
-  await page.getByRole("tab", { name: "节点组" }).click();
+  // NOD-21: a node group with the node's direct entrance (the card draws server → entrance chips).
+  await tabs.getByRole("link", { name: /节点组/ }).click();
+  await expect(page).toHaveURL(/\/plans\/groups/);
   await page.getByRole("button", { name: "新建节点组" }).first().click();
   let d = dialog(page, "新建节点组");
   await d.getByLabel("名称").fill(group);
   await d.getByLabel("说明").fill("e2e");
   await d.getByRole("checkbox", { name: `${node} · 直连` }).click();
-  await d.getByRole("button", { name: "保存" }).click();
+  await d.getByRole("button", { name: "创建" }).click();
   await toast(page, "节点组已保存");
-  await expect(page.getByRole("region", { name: group })).toContainText(`${srv} / ${node}`);
-  // PLN-02: a plan with a monthly price and the group (its entrances listed live).
-  await page.getByRole("tab", { name: "套餐" }).click();
+  const groupCard = page.getByRole("region", { name: group });
+  await expect(groupCard).toContainText(srv);
+  await expect(groupCard).toContainText(node);
+  // PLN-02: a plan through the sectioned editor (traffic, price, stock, the group with its entrances listed live).
+  await tabs.getByRole("link", { name: /^套餐/ }).click();
   await page.getByRole("button", { name: "新建套餐" }).first().click();
   d = dialog(page, "新建套餐");
+  const section = (name: string) => d.getByRole("navigation", { name: "套餐设置分区" }).getByRole("button", { name });
   await d.getByLabel("名称").fill(plan);
-  await d.getByLabel("流量额度（GiB，留空不限）").fill("100");
-  await d.getByLabel("限速（Mbps，留空不限）").fill("50");
-  await d.getByLabel("库存（最多用户数，留空不限）").fill("10");
-  await d.getByRole("checkbox", { name: "月付", exact: true }).click();
+  await section("流量与限速").click();
+  await d.getByLabel("流量", { exact: true }).fill("100");
+  await d.getByLabel("限速", { exact: true }).fill("50");
+  await section("价格").click();
   await d.getByLabel("月付价格").fill("10");
+  await section("库存与上架").click();
+  await d.getByLabel("库存（同时持有的人数上限）").fill("10");
+  await section("节点组").click();
   await d.getByRole("checkbox", { name: group }).click();
-  await expect(d.getByText("用户将获得的入口（1）")).toBeVisible();
-  await d.getByRole("button", { name: "保存" }).click();
-  await toast(page, "套餐已保存");
-  // PLN-01: the card.
+  await expect(d.getByText("用户将获得这些入口 · 1")).toBeVisible();
+  await d.getByRole("button", { name: "创建套餐" }).click();
+  await toast(page, "套餐已创建");
+  // PLN-01: the card (price chip, quota, group chip).
   const card = page.getByRole("region", { name: plan });
-  await expect(card).toContainText("¥10.00");
+  await expect(card).toContainText("¥10");
   await expect(card).toContainText("100 GiB");
-  // Numbers are checked in place: a bad speed limit is never sent as "no limit".
-  await card.getByRole("button", { name: new RegExp(`^${plan}`) }).click();
-  d = dialog(page, `编辑套餐 ${plan}`);
-  await d.getByLabel("限速（Mbps，留空不限）").fill("5x");
+  await expect(card).toContainText(group);
+  // Numbers are checked in place: a bad speed limit is never sent as "no limit"; the editor jumps to its section.
+  await card.getByRole("button", { name: plan, exact: true }).click();
+  d = dialog(page, `编辑「${plan}」`);
+  await section("流量与限速").click();
+  await d.getByLabel("限速", { exact: true }).fill("5x");
+  await section("基本").click();
   await d.getByRole("button", { name: "保存" }).click();
-  await expect(d.getByText("请输入 1–100000 的整数")).toBeVisible();
+  await expect(d.getByText("请输入整数")).toBeVisible();
+  await expect(d.getByText("1 处需要修正")).toBeVisible();
   // Esc on an edited form asks first; the footer's 取消 discards.
   await page.keyboard.press("Escape");
   await expect(dialog(page, "放弃未保存的修改？")).toBeVisible();
@@ -482,38 +498,44 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   });
   const planId = sql(`SELECT id FROM plans WHERE name = '${plan}'`);
   await apiJson("PUT", `/users/${u.id}/plan`, { plan_id: planId, period: "month" });
-  await card.getByRole("button", { name: new RegExp(`^${plan}`) }).click();
-  d = dialog(page, `编辑套餐 ${plan}`);
-  await d.getByLabel("流量额度（GiB，留空不限）").fill("50");
+  await card.getByRole("button", { name: plan, exact: true }).click();
+  d = dialog(page, `编辑「${plan}」`);
+  await section("流量与限速").click();
+  await d.getByLabel("流量", { exact: true }).fill("50");
   await d.getByRole("button", { name: "保存" }).click();
-  const impact = dialog(page, "套餐条款变更");
+  const impact = dialog(page, "这次改动会影响现有用户");
   await expect(impact).toContainText("1 个生效订阅");
-  await impact.getByRole("button", { name: "同时应用到 1 个现有订阅" }).click();
+  await expect(impact).toContainText("100 GiB");
+  await impact.getByRole("button", { name: "同时应用到现有用户" }).click();
   await toast(page, "套餐已保存");
   await expect(card).toContainText("50 GiB");
   expect(sql(`SELECT quota_bytes FROM user_plans WHERE user_id = '${u.id}' AND status = 'active'`)).toBe(
     String(50 * 1024 ** 3),
   );
   // PLN-04: disable (confirmed) and enable; delete is refused while held, allowed for a plan nobody holds.
-  await menu(page, `套餐 ${plan} 的操作`, "停用");
-  await confirmDialog(page);
+  await act(`套餐 ${plan} 的操作`, "停用");
+  await confirmDialog(page, undefined, "停用");
   await expect(card).toContainText("已停用");
-  await menu(page, `套餐 ${plan} 的操作`, "启用");
-  await confirmDialog(page);
-  await menu(page, `套餐 ${plan} 的操作`, "删除");
-  await expect(dialog(page)).toContainText("1 个用户正在使用");
-  await page.keyboard.press("Escape");
+  await act(`套餐 ${plan} 的操作`, "启用");
+  await confirmDialog(page, undefined, "启用");
+  await expect(card).not.toContainText("已停用");
+  await act(`套餐 ${plan} 的操作`, "删除");
+  const blocked = dialog(page, `暂时不能删除「${plan}」`);
+  await expect(blocked).toContainText("1 个用户正在使用");
+  await expect(blocked.getByRole("link", { name: "查看这些用户" })).toBeVisible();
+  await blocked.getByRole("button", { name: "知道了" }).click();
   const spare = uniq(info, "空套餐");
   await apiJson("POST", "/plans", { name: spare, period: "monthly" });
   await page.reload();
-  await menu(page, `套餐 ${spare} 的操作`, "删除");
+  await act(`套餐 ${spare} 的操作`, "删除");
   await confirmDialog(page, spare);
   await toast(page, "套餐已删除");
   await expect(page.getByRole("region", { name: spare })).toHaveCount(0);
   // The group: the same row menu as plans; the list follows without a reload.
-  await page.getByRole("tab", { name: "节点组" }).click();
-  await menu(page, `节点组 ${group} 的操作`, "删除");
-  await expect(dialog(page)).toContainText("1 个套餐的用户会失去这些入口");
+  await tabs.getByRole("link", { name: /节点组/ }).click();
+  await act(`节点组 ${group} 的操作`, "删除");
+  await expect(dialog(page)).toContainText(plan);
+  await expect(dialog(page)).toContainText("受影响的订阅");
   await confirmDialog(page, group);
   await toast(page, "节点组已删除");
   await expect(page.getByRole("region", { name: group })).toHaveCount(0);

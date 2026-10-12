@@ -147,8 +147,13 @@ export function duration(secs: number | null | undefined, lang: Lang): string {
   const d = Math.floor(secs / 86400);
   const h = Math.floor((secs % 86400) / 3600);
   const m = Math.floor((secs % 3600) / 60);
-  if (lang === "en") return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${Math.floor(secs % 60)}s`;
-  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分` : `${m} 分 ${Math.floor(secs % 60)} 秒`;
+  const s = Math.floor(secs % 60);
+  const t = (zh: string, en: string) => (lang === "en" ? en : zh);
+  return d
+    ? t(`${d} 天 ${h} 小时`, `${d}d ${h}h`)
+    : h
+      ? t(`${h} 小时 ${m} 分`, `${h}h ${m}m`)
+      : t(`${m} 分 ${s} 秒`, `${m}m ${s}s`);
 }
 
 /** Multiplier text from permille (1000 → "1x", 1500 → "1.5x"). */

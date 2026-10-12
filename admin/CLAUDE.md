@@ -22,17 +22,18 @@
 - `src/shared/`：两个包共用（i18n、API 客户端、错误映射、格式化、主题、通行密钥、UI 组件）。**不得**引用 `src/console/` 或 `src/login/`。
   - `api.ts`：`request`/`get`/`post`/…；204 返回 `null`；401 交给 `setUnauthorizedHandler`（控制台：整页跳到登录页并带 `?next=`）；每次成功的写请求通知 `setWriteListener`（控制台的数据层据此失效查询）。
   - `errors.gen.ts`：由 `src/error_codes.txt` 生成的中英错误表（`errorText`）；新错误码必须在这里有中英两份（`check-error-codes.mjs`：与登记表一致、两种语言非空、英文里没有中文）。
-  - `i18n.tsx`：内联 `tr("中文", "English")`；语言存 `akari.admin.lang`。`theme.ts`：浅/深色存 `akari.admin.theme`，否则跟随系统。
+  - `i18n.tsx`：内联 `tr("中文", "English")`；语言存 `akari.admin.lang`（`?lang=en|zh` 只对这一页生效、不记住）。`theme.ts`：浅/深色存 `akari.admin.theme`，否则跟随系统。
   - `format.ts`：时间一律按**站点时区**（`/settings` 的 `timezone`）显示，不用浏览器时区。
   - `index.css`：设计令牌（类 macOS：主色 `#2563eb`/深色 `#4a9dff`、石墨灰分层、毛玻璃 `.glass`、`--scrim`、图表色 `--chart-1..8`、圆角、阴影、字号令牌 `text-caption|footnote|body|callout|headline|title3|title2|title1`、`.hit-44`、减少动效/透明度）。**不用任意字号（`text-[13px]`）与硬编码颜色**。
   - `ui/`（Radix + lucide + sonner）：`button`（Button/ButtonLink）、`badge`、`card`（Card/Group/Row/Tile）、`form`（Input、Textarea、原生 Select、`Field`（错误经 `aria-invalid`/`aria-describedby` 关联）、`SecretInput`、Switch/`SwitchField`、Checkbox、Segmented、Kbd/`MOD_KEY`）、`tabs`、`states`（Skeleton、LoadingBlock、EmptyState、带重试的 ErrorState）、`meter`、`layout`（PageHeader、Callout、KV、SettingRow、SectionTitle）、`dialog`（Radix Dialog，sm/md/lg/xl，手机全屏；**有修改时 Esc/点遮罩/关闭先问"放弃未保存的修改？"**，`data-nodirty` 例外；只自动聚焦 `[data-autofocus]`；Esc 只关最上一层）、`confirm`（`useConfirm`：影响列表、输入确认文字 `typeToConfirm`）、`toast`、`menu`（Menu/RowMenu/Popover）、`table`（DataTable：手机卡片、勾选与全选本页、无数据/无匹配两种空状态、>120 行虚拟滚动；Pager 可改每页条数与跳页）、`charts`（recharts `TrendChart`，带 sr-only 数据表）、`ring`、`qr-code`。**详情、编辑、新建一律是居中弹窗，没有侧边抽屉。**
-- `src/login/`：邮箱 + 密码、通行密钥（可发现凭据；两个按钮各自转圈）、仅通行密钥提示（含 `akari admin reset-login`）、密码登录后的绑定引导、蜜罐 + 最短提交时间 + Turnstile；凭据错误时输入框标红；非管理员账户登录后立即登出并提示。每次尝试（含非管理员）后 Turnstile 令牌作废换新，并重新取 `/auth/options`（另有每 30 秒与窗口回到前台）；打开后才开启的登录 Turnstile 让页面重新加载一次（CSP）；组件出错/超时/脚本加载失败显示「人机验证加载失败，请刷新重试」+「重试」。
+- `src/login/`（v2 login-*）：品牌标记与站点名在卡片上方；通行密钥按钮在最上（可发现凭据；等待时按钮自身转圈、表单禁用、可取消 = `getAssertion(options, signal)`），"或用邮箱和密码"下是表单（主按钮）；凭据错误 = 顶部红色提示 + 两个输入框标红 + 密码清空并聚焦；仅通行密钥（`auth.passkey_required`）只剩通行密钥按钮并展开"丢失了全部通行密钥？"（`akari admin reset-login <邮箱>`）；非管理员账户登录后立即登出，显示"不是管理员账户"页 +"换个账户登录"；`?next=` 显示"登录已过期"与返回的视图；`?signed_out=1` 显示"已退出登录"；密码登录后的绑定引导（可勾选之后只用通行密钥、可"以后再说"）；蜜罐 + 最短提交时间 + Turnstile。每次尝试（含非管理员）后 Turnstile 令牌作废换新，并重新取 `/auth/options`（另有每 30 秒与窗口回到前台）；打开后才开启的登录 Turnstile 让页面重新加载一次（CSP）；组件出错/超时/脚本加载失败显示「人机验证加载失败，请刷新重试」+「重试」。
 - 只写的秘密输入框（Turnstile 密钥、SMTP 密码、Resend 密钥、支付密钥、告警通道密钥）一律用 `shared/ui/form` 的 `SecretInput` / `secretInputProps`（`new-password` + 1Password/LastPass/Bitwarden 忽略属性）：浏览器无视 `autocomplete="off"`，会把管理员密码填进去再随保存存成密钥；留空 = 不发送 = 不改。
 - `src/console/`：
   - `routes.tsx` + `pages.ts`：`createBrowserRouter`（basename = 后台前缀下的 `/admin`），每个页面一个懒加载路由；侧栏/标签栏悬停或聚焦时预取（`prefetchPage`）。`router.tsx`：`navigate`/`setQuery`/`useRoute`/`useQueryParam`（URL 即视图，查询串即筛选与打开的对象）。
   - `data.ts`：**统一的数据层**——每次成功写请求按 API 路径的实体表（`ENTITIES`）让相关查询失效并重取（未登记的根一律重取，宁多一次请求不留旧数据）；窗口回到前台时重取；`useAction()` 执行写操作 + 成功提示 + 错误映射，等重取落地后才返回，每个按钮自己的 busy。查询键以实体名开头（`["users", …]`、`["user", id]`）。
-  - `shell.tsx`：桌面 = 浮起的毛玻璃侧栏（分组导航、待处理计数、可折叠并记住 `akari.admin.sidebar`、底部账户卡片菜单）+ 工具栏（按设计稿：左侧搜索 / ⌘K，右侧主题、告警铃铛；语言在账户菜单；`useCrumb` 目前不显示）；手机 = 顶栏（站点标识、搜索、铃铛、账户菜单）+ **底部标签栏 仪表盘 / 用户 / 订单 / 工单 / 更多**（`nav.ts` 的 `TABS`），"更多"页（`pages/more.tsx`）列出全部页面并带语言与主题。`main[data-page][data-ready]` 标出页面数据已到（e2e 计时用）。
-  - `palette.tsx`：cmdk 命令面板（独立 chunk，首次打开时加载）：页面、常用操作、`@` 只搜用户、`#` 只搜订单。
+  - `shell.tsx`（v2 外壳，proposal-v2 §6）：桌面 = 浮起的毛玻璃侧栏（**与内容同一画布 `bg-window`，侧栏列没有单独背景/边框/分隔线，四周等距 8px**；分组导航、计数（工单未读蓝、正在告警红）、可收起为 60px 图标栏（悬停提示、角标，记住 `akari.admin.sidebar`）、底部账户卡片菜单）+ 工具栏（左：面包屑「分组 › 页面 › 子页 › 打开的对象」，子页标签见 `nav.ts` 的 `SUB_LABELS`，对象名由页面用 `useCrumb(名称)` 报告（没有时按 `OPEN_LABELS` 写通用名，**不显示原始参数**）；右：搜索胶囊 ⌘K、中 / EN、深浅色、告警铃铛弹层 `components/shell-bell.tsx`（独立分包，打开时才加载））；账户菜单 = 身份 + 我的账户与通行密钥 + 主题/语言分段（`menuitemradio`）+ 退出；手机 = 顶栏（站点标识；打开了对象时为返回箭头 + 对象名；大标题滚走后显示标题；搜索、铃铛、头像菜单）+ **底部标签栏 仪表盘 / 用户 / 订单 / 工单 / 更多**（`nav.ts` 的 `TABS`）。`document.title` = `<视图> · <站点名> 管理后台`（视图 = 最后一级面包屑）。`?demo=bell|account-menu` 打开铃铛/账户菜单（设计稿对比截图用）。`useCrumb` 的对象同时记入"最近打开"（`recent.ts`，本机 localStorage `akari.admin.recent`，最多 6 条）。`<main>` 按页面加 key（区域内换子路由不重放入场动画），`main[data-page][data-ready]` 标出页面数据已到（e2e 计时用）。退出登录一律去 `signedOutUrl`（登录页 `?signed_out=1` 显示"已退出登录"）。
+  - `pages/more.tsx`："更多"页（手机标签栏进入，桌面也能打开）：账户卡片、搜索胶囊、按侧栏分组的全部页面（`nav[aria-label=全部页面]`）、语言与外观分段控件、退出与版本。
+  - `palette.tsx`：cmdk 命令面板（独立 chunk，首次打开时加载）：空输入 = 最近打开 + 操作 + 全部页面；输入时搜页面、操作、设置分区（`settings-ia.ts` 的名称与 `keywords`），2 字符起前 3 个用户、3 字符起订单（订单号或邮箱，精确）；`@` 只搜用户、`#` 只搜订单（输入框左侧模式标签，可清除，退格退出）。
   - `kit.tsx`（FormError、useDebounced、CopyButton、Mono、StatusBadge、Stat）、`components/`（v2 kit，见下）、`session.tsx`（`useMe`/`useSite`/`useBadges`/`useCrumb`）、`servers.ts`（服务器列表与状态）、`pages/*`（每个导航项一个页面；`protocols.gen.ts` 由 `make gen-protocols` 从 `proto/protocols.toml` 生成）。
 
 ## v2 kit（2026-10 改版第 3 轮：各页面按 v2 设计稿移植时只用这些）
@@ -51,12 +52,20 @@
 
 ```bash
 npm ci
-npm run check     # tsc + eslint + prettier + 错误码表 + vitest
+npm run check     # tsc + eslint + prettier + 错误码表 + 双语检查（check-i18n）+ vitest
 npm run build     # 两个包 + check-bundles
 make admin        # 仓库根：同上
 ```
 
 e2e：`scripts/e2e.sh`（`make e2e` 先跑门户套件 `scripts/e2e-portal.sh` 再跑本套件）起一个独立的面板 + Mailpit + 本地发布源，Playwright 两个项目 desktop（Desktop Chrome）与 mobile（Pixel 7），中文界面、串行。`e2e/helpers.ts`：`openConsole`（复用缓存的管理员会话）、`signIn`、`sql`（docker compose psql 造数据）、`row`/`openRow`、`dialog`（dialog 与 alertdialog 都匹配）、`confirmDialog`（alertdialog）、`toast`（`[data-sonner-toast]`）、`nav`（桌面侧栏；手机标签栏，否则"更多"）、`accountMenu`。每个 spec 都要能在同一库里先后跑 desktop 与 mobile（名字用 `uniq(info, …)`，改全局设置的用例结束时恢复原样）；写操作后的断言**不允许 `page.reload()`**（列表、详情、徽标必须自己更新）。`zz-screens.spec.ts` 最后跑：v2 设计稿同名镜头（按区域写在 `e2e/screens/<区域>.ts`）在同样视口（1440×900、390×844@2x）与主题下的截图集（`test-results/screens/`，CI 工件 `admin-screens`，只截图不断言，四种变体并行、总时长 `SCREENS_BUDGET_MIN` 默认 10 分钟；与设计稿并排放在 `design/admin-redesign-2026-10/compare/`）。`zz-passkeys.spec.ts`：把主域名设为 `e2e.localhost:<端口>`（Chromium 把 `*.localhost` 解析到本机且视为安全上下文；面板对 `localhost`/`*.localhost` 主域名同时接受其 http 源，`passkey::Rp::localhost_http`），用 CDP 虚拟认证器，结束后恢复。`zz-perf.spec.ts` 最后跑（**只报告**）：首屏 ready 与 LCP、切页（仪表盘 → 用户 → 节点 → 订单 → 设置）、2000 行用户列表滚动的 rAF 间隔，桌面与"中端手机"（Pixel 7 + CDP CPU×4 + Fast 3G）各 5 次取中位数（第 1 次单列为首访），预算在 `perf-budget.json`，结果写 Step Summary 与工件 `admin-perf`；CI 跑够 10 次后按中位数 +30% 定预算再打开阻断。
+
+## 双语（SH-13）：切换语言 = 整个后台一起切换
+
+- **每一段运营者可见的文字都经 `tr("中文", "English")`**（`useTr()`；组件外用 `trFor(lang)`），包括按钮、标签、`aria-label`、占位符、提示、toast、确认框、空状态、图表图例、页面标题；不要写"只有中文"的字符串，也不要在英文里夹中文（中文的顿号「、」、全角括号与冒号也只放在中文那一半）。枚举/状态/种类的名称用 `{ zh, en }` 表或返回 `tr(...)` 的函数；拼接列表时分隔符也要按语言（`lang === "en" ? ", " : "、"`）。
+- 服务端错误一律经 `errorText(err, lang)`（`useErrText()`、`useAction()` 已内置）；新错误码在 `errors.gen.ts` 里中英各一份（`check-error-codes.mjs`）。
+- 日期时间用 `format.ts`（站点时区、数字格式，与语言无关）；相对时间与时长用 `ago(iso, lang)` / `duration(secs, lang)`；数字分组用 `toLocaleString()`（两种语言相同）。
+- 语言切换走 `LangProvider` 的 context：凡是用 `useTr()`/`useLang()` 的组件都会重渲染。**不要**在模块顶层或 `useMemo` 无依赖地把 `tr(...)` 的结果缓存起来（依赖里要有 `tr`/`lang`）。
+- `scripts/check-i18n.mjs`（`npm run check`）：源码里每个含中文的字符串/模板/JSX 文本必须是 `tr()` 的第一个参数、同时有 `en` 的对象里的 `zh`、`["中文", "English"]` 二元组的第一个、或 `lang === "en" ? … : "中文"` 的后一支；英文那一半含中文也报错。确实与语言无关的（语言自己的名字"中文"、品牌字形）在同一行写 `// i18n-ok: 原因`。改版前遗留的按文件计数记在 `scripts/i18n-baseline.json`，**只减不增**（新文件必须为 0；修好后用 `--write-baseline` 重写）。`--list` 列出全部。
 
 ## 约定
 

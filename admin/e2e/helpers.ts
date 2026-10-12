@@ -186,8 +186,14 @@ export async function nav(page: Page, info: TestInfo, name: string): Promise<voi
 
 /** Open the account menu (sidebar card on a desktop, avatar on a phone) and pick `item`. */
 export async function accountMenu(page: Page, item: string | RegExp): Promise<void> {
-  await page.getByRole("button", { name: "账户菜单" }).click();
-  await page.getByRole("menuitem", { name: item }).click();
+  // Either language (the menu switches it); theme and language are radio items in it.
+  await page.getByRole("button", { name: /^(账户菜单|Account menu)$/ }).click();
+  const menu = page.getByRole("menu");
+  await menu
+    .getByRole("menuitem", { name: item })
+    .or(menu.getByRole("menuitemradio", { name: item }))
+    .first()
+    .click();
 }
 
 /** The canonical rejection as a client sees it (status, headers minus Date, body). */

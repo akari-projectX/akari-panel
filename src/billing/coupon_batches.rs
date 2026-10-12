@@ -175,6 +175,8 @@ pub struct BatchView {
     /// Uses counted (reserved + redeemed) over all codes.
     pub used: i64,
     pub redeemed: i64,
+    /// Codes with at least one use counted (reserved or redeemed).
+    pub codes_used: i64,
 }
 
 const BATCH_SQL: &str = "SELECT b.id, b.name, b.prefix, b.count, b.template, b.actor_label, \
@@ -182,7 +184,8 @@ const BATCH_SQL: &str = "SELECT b.id, b.name, b.prefix, b.count, b.template, b.a
      (SELECT count(*) FROM coupons c WHERE c.batch_id = b.id) AS codes, \
      (SELECT COALESCE(sum(c.used), 0)::bigint FROM coupons c WHERE c.batch_id = b.id) AS used, \
      (SELECT count(*) FROM coupon_redemptions r JOIN coupons c ON c.id = r.coupon_id \
-      WHERE c.batch_id = b.id AND r.status = 'redeemed') AS redeemed \
+      WHERE c.batch_id = b.id AND r.status = 'redeemed') AS redeemed, \
+     (SELECT count(*) FROM coupons c WHERE c.batch_id = b.id AND c.used > 0) AS codes_used \
      FROM coupon_batches b";
 
 /// Create the batch and its codes (caller's transaction). Audited
@@ -443,4 +446,51 @@ pub fn routes() -> axum::Router<AppState> {
             "/{prefix}/api/v1/coupon-batches/{id}/export.csv",
             get(export),
         )
+}
+
+/// The batch list's read-only counts on a real database.
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::testdb::TestDb;
+
+    #[tokio::test]
+    async fn coupon_batches_view_counts_used_codes() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let mut c = db.pool.acquire().await.unwrap();
+        let req = CreateBatchReq {
+            name: Some("view".into()),
+            prefix: Some("VW".into()),
+            count: 3,
+            length: None,
+            kind: Kind::Percent,
+            value: 10,
+            plan_ids: None,
+            periods: None,
+            min_amount_cents: None,
+            starts_at: None,
+            ends_at: None,
+            max_uses: Some(Some(2)),
+            per_user_limit: None,
+            new_users_only: None,
+        };
+        let (id, codes) = apply_create(&mut c, &Actor::test(), &req).await.unwrap();
+        // Two uses of one code: 2 uses counted, 1 code used.
+        sqlx::query("UPDATE coupons SET used = 2 WHERE code = $1")
+            .bind(&codes[0])
+            .execute(&mut *c)
+            .await
+            .unwrap();
+        let v: BatchView =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!("{BATCH_SQL} WHERE b.id = $1")))
+                .bind(id)
+                .fetch_one(&mut *c)
+                .await
+                .unwrap();
+        assert_eq!((v.codes, v.used, v.codes_used, v.redeemed), (3, 2, 1, 0));
+        drop(c);
+        db.drop().await;
+    }
 }

@@ -1029,6 +1029,25 @@ async fn settings_and_alert_center_api() {
     let l = c.get("/test/api/v1/alerts?status=firing").await.json();
     assert_eq!(l["firing"], 1);
     assert_eq!(l["firing_by_kind"]["offline"], 1);
+    // History chips: resolved in the last 7 days by kind (older ones and
+    // other servers' under the filter are not counted).
+    assert_eq!(l["resolved_7d_by_kind"], json!({}));
+    sqlx::query(
+        "INSERT INTO server_alerts (server_id, kind, status, fired_at, resolved_at) VALUES \
+         ($1, 'disk', 'resolved', now() - interval '2 hours', now() - interval '1 hour'), \
+         ($1, 'disk', 'resolved', now() - interval '9 days', now() - interval '8 days')",
+    )
+    .bind(n)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let h = c.get("/test/api/v1/alerts").await.json();
+    assert_eq!(h["resolved_7d_by_kind"], json!({"disk": 1}));
+    let h = c
+        .get(&format!("/test/api/v1/alerts?server={}", Uuid::new_v4()))
+        .await
+        .json();
+    assert_eq!(h["resolved_7d_by_kind"], json!({}));
     let a = &l["alerts"][0];
     assert_eq!(a["server_id"], n.to_string());
     assert_eq!(a["kind"], "offline");

@@ -710,8 +710,9 @@ pub struct OutboxQuery {
     pub limit: Option<i64>,
 }
 
-/// GET /api/v1/mail/outbox?status=dead|pending|sent&before=<id>&limit=
-/// (admin): newest first; never the bodies.
+/// GET /api/v1/mail/outbox?status=dead|pending|sent|all&before=<id>&limit=
+/// (admin): newest first; never the bodies. `all` = every status (the
+/// mail queue's 全部 view).
 pub async fn list_outbox(
     State(state): State<AppState>,
     user: AuthUser,
@@ -719,10 +720,10 @@ pub async fn list_outbox(
 ) -> Result<Json<Vec<OutboxRow>>, ApiError> {
     user.require_admin()?;
     let status = q.status.as_deref().unwrap_or("dead");
-    if !["dead", "pending", "sent"].contains(&status) {
+    if !["dead", "pending", "sent", "all"].contains(&status) {
         return Err(bad_request!(
             "mail.status_invalid",
-            "status must be dead, pending or sent"
+            "status must be dead, pending, sent or all"
         ));
     }
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
@@ -731,7 +732,7 @@ pub async fn list_outbox(
          next_attempt_at, settled_at, \
          (status = 'dead' AND body_text <> '' AND (discard_after IS NULL OR discard_after > now())) \
          AS retryable \
-         FROM mail_outbox WHERE status = $1 AND ($2::bigint IS NULL OR id < $2) \
+         FROM mail_outbox WHERE ($1 = 'all' OR status = $1) AND ($2::bigint IS NULL OR id < $2) \
          ORDER BY id DESC LIMIT $3",
     )
     .bind(status)

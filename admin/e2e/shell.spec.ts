@@ -33,7 +33,8 @@ test("SH-01 SH-06 SH-07 SH-08 SH-13 SH-18: sign-in page, non-admins refused, the
   const problems = watch(page);
   const res = await page.goto(LOGIN);
   expect(res?.headers()["content-security-policy"]).toBe("default-src 'self'; style-src 'self' 'unsafe-inline'");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(/管理后台/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("登录");
+  await expect(page.getByRole("main").getByText("管理后台", { exact: true })).toBeVisible();
   await expect(page).toHaveTitle(/管理后台登录/);
   // W27 guard: the honeypot is in the form, invisible.
   await expect(page.locator("input[name=website]")).toBeAttached();
@@ -42,12 +43,17 @@ test("SH-01 SH-06 SH-07 SH-08 SH-13 SH-18: sign-in page, non-admins refused, the
   await page.locator("#email").fill(ADMIN);
   await page.locator("#password").fill("wrong-password-1");
   await page.locator("form button[type=submit]").click();
-  await expect(page.getByRole("alert")).toHaveText("邮箱或密码错误");
+  // The notice at the top, both inputs red, the password cleared.
+  await expect(page.getByRole("alert")).toContainText("邮箱或密码不正确");
+  await expect(page.locator("#email")).toHaveAttribute("aria-invalid", "true");
+  await expect(page.locator("#password")).toHaveValue("");
   // A user's right password: not an admin (and no session left behind).
   await page.locator("#email").fill(USER);
   await page.locator("#password").fill(USER_PW);
   await page.locator("form button[type=submit]").click();
   await expect(page.getByRole("alert")).toContainText("不是管理员账户");
+  await page.getByRole("button", { name: "换个账户登录" }).click();
+  await expect(page.locator("#email")).toBeVisible();
   // No session: the console and its paths are the canonical rejection.
   const reject = await observe(request, `${ORIGIN}/definitely-not-here`);
   for (const p of ["", "/users", "/settings/site", "/assets/missing.js"])
@@ -64,11 +70,13 @@ test("SH-01 SH-06 SH-07 SH-08 SH-13 SH-18: sign-in page, non-admins refused, the
   await nav(page, info, "订单");
   await expect(page).toHaveURL(new RegExp(`/app\\?next=${encodeURIComponent(`/${PREFIX}/admin/orders`)}`));
   await expect(page.locator("#email")).toBeVisible();
+  // It says where the sign-in returns to.
+  await expect(page.getByRole("status").filter({ hasText: "登录已过期" })).toContainText("orders");
   // Sign out from the account menu.
   await signIn(page, email, "admin2-password");
-  await page.getByRole("button", { name: "账户菜单" }).click();
-  await page.getByRole("menuitem", { name: "退出登录" }).click();
-  await expect(page).toHaveURL(LOGIN);
+  await accountMenu(page, "退出登录");
+  await expect(page).toHaveURL(`${LOGIN}?signed_out=1`);
+  await expect(page.getByText("已退出登录。")).toBeVisible();
   expect((await page.request.get(CONSOLE)).status()).toBe(404);
   expect(problems).toEqual([]);
 });
@@ -153,34 +161,51 @@ test("SH-09 SH-10 SH-12 SH-16: sidebar / tab bar, toolbar, language, theme, badg
   await page.goBack();
   await expect(page).toHaveURL(`${CONSOLE}/users`);
   await expect(page.getByRole("heading", { level: 1, name: "用户" })).toBeVisible();
-  // Theme (remembered): the toolbar on a desktop, the account menu on a phone;
-  // language: the account menu (the design's toolbar has search, theme and bell only).
-  if (isMobile(info)) await accountMenu(page, "切换深色 / 浅色");
+  // Breadcrumb (desktop): group › page.
+  if (!isMobile(info)) await expect(page.getByRole("navigation", { name: "位置" })).toContainText("运营");
+  // Theme (remembered): the toolbar on a desktop, the account menu's segment on a phone;
+  // language: the toolbar's 中 / EN on a desktop, the account menu on a phone.
+  if (isMobile(info)) await accountMenu(page, "深色");
   else await page.getByRole("button", { name: "切换主题" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await accountMenu(page, "English");
+  if (isMobile(info)) await accountMenu(page, "English");
+  else await page.getByRole("button", { name: "切换界面语言" }).click();
+  // The whole console switches: page, navigation, toolbar (SH-13).
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page).toHaveTitle(/^Users · .* admin$/);
+  if (isMobile(info))
+    await expect(
+      page.getByRole("navigation", { name: "Tab bar" }).getByRole("link", { name: /^Orders/ }),
+    ).toBeVisible();
+  else {
+    await expect(
+      page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Orders" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Toggle theme" })).toBeVisible();
+  }
   await page.reload();
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();
   await expect(page.locator("html")).toHaveClass(/dark/);
   if (isMobile(info)) {
-    // The More page lists every page and carries language and theme too.
+    // The More page lists every page and carries language and appearance too.
     await page.getByRole("navigation", { name: "Tab bar" }).getByRole("link", { name: /^More/ }).click();
     const all = page.getByRole("navigation", { name: "All pages" });
     for (const t of ["System status", "Coupons", "Nodes", "Settings", "Audit log"])
       await expect(all.getByRole("link", { name: new RegExp(`^${t}`) })).toBeVisible();
-    await page.getByRole("button", { name: /^Language/ }).click();
+    await page.getByRole("group", { name: "Language" }).getByRole("button", { name: "中文" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "更多" })).toBeVisible();
-    await page.getByRole("button", { name: /^深色模式/ }).click();
+    await page.getByRole("group", { name: "外观" }).getByRole("button", { name: "浅色" }).click();
   } else {
-    await accountMenu(page, "中文");
+    await page.getByRole("button", { name: "Switch language" }).click();
     await page.getByRole("button", { name: "切换主题" }).click();
   }
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
-  // The bell goes to the alert center.
-  await page.getByRole("link", { name: /告警（/ }).click();
+  // The bell lists what fires; its header link goes to the alert center.
+  await page.getByRole("button", { name: /^告警（/ }).click();
+  await expect(page.getByRole("dialog", { name: "正在告警" })).toBeVisible();
+  await page.getByRole("dialog", { name: "正在告警" }).getByRole("link", { name: "告警页" }).click();
   await expect(page).toHaveURL(`${CONSOLE}/alerts`);
   expect(problems).toEqual([]);
 });
@@ -234,14 +259,15 @@ test("SH-11: command palette — pages, actions, users by email, orders by numbe
 test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in dates", async ({ page }) => {
   await page.route(`${API}/servers`, (r) => r.fulfill({ status: 500, body: "{}" }));
   await openConsole(page, "/nodes");
-  await expect(page.getByText("加载失败")).toBeVisible();
+  const failed = page.getByText("服务器列表加载失败", { exact: true }).first();
+  await expect(failed).toBeVisible();
   await page.unroute(`${API}/servers`);
-  await page.getByRole("button", { name: "重试" }).click();
+  await page.getByRole("button", { name: "重试" }).first().click();
   await expect(page.getByRole("heading", { level: 1, name: "节点" })).toBeVisible();
-  await expect(page.getByText("加载失败")).toHaveCount(0);
+  await expect(page.getByText("服务器列表加载失败", { exact: true })).toHaveCount(0);
   // Empty state with a next step.
   await page.goto(`${CONSOLE}/alerts?kind=disk`);
-  await expect(page.getByText("没有匹配的记录")).toBeVisible();
+  await expect(page.getByText(/没有匹配/).first()).toBeVisible();
   // Q3: the site time zone, not the browser's.
   const s = await apiJson<{ version: number }>("GET", "/settings");
   await apiJson("PUT", "/settings/site", { version: s.version, timezone: "UTC" });
