@@ -24,7 +24,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await expect(page.getByRole('dialog').getByRole('button', { name: '查看订阅' })).toBeVisible();
   await expect(page.getByRole('dialog').getByRole('button', { name: '返回仪表盘' })).toBeVisible();
   await expect(page.getByRole('dialog').getByText('到期时间')).toBeVisible();
-  await payResult(page, '支付成功', seed.plan);
+  await payResult(page, '支付成功', seed.plan, 10_000, `pay-success-${info.project.name}`);
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await expect(page.getByText('已付款').first()).toBeVisible();
   await expect(page.getByText('流量重置').first()).toBeVisible();
