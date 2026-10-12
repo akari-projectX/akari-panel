@@ -59,6 +59,9 @@
   --color-chart-6: var(--chart-6);
   --color-chart-7: var(--chart-7);
   --color-chart-8: var(--chart-8);
+  --color-brand-mark: var(--brand-mark);
+  --color-brand-mark-foreground: var(--brand-mark-foreground);
+  --color-segment-active: var(--segment-active);
 
   /* 同心圆角：外层 = 内层 + 内边距 */
   --radius-xs: 5px;
@@ -156,6 +159,11 @@
   --glass-edge: rgb(255 255 255 / 0.7);
   --scrim: rgb(15 18 25 / 0.28);
 
+  /* 品牌印章（未上传 Logo 时的应用图标：夜色方块 + 金色「灯」，深浅色同值）与分段控件选中块 */
+  --brand-mark: #12100c;
+  --brand-mark-foreground: #d8a43c;
+  --segment-active: var(--card);
+
   --shadow-card-v: 0 0 0 0.5px rgb(18 21 28 / 0.07), 0 1px 2px rgb(18 21 28 / 0.04);
   --shadow-raised-v:
     0 0 0 0.5px rgb(18 21 28 / 0.08), 0 2px 6px -1px rgb(18 21 28 / 0.08), 0 8px 24px -8px rgb(18 21 28 / 0.08);
@@ -209,6 +217,8 @@
   --glass-toolbar: rgb(18 19 24 / 0.72);
   --glass-edge: rgb(255 255 255 / 0.06);
   --scrim: rgb(0 0 0 / 0.5);
+
+  --segment-active: #3a3c45;
 
   --shadow-card-v: 0 0 0 0.5px rgb(255 255 255 / 0.07), inset 0 0.5px 0 rgb(255 255 255 / 0.05);
   --shadow-raised-v:

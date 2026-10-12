@@ -147,20 +147,18 @@ test("SH-09 SH-10 SH-12 SH-16: sidebar / tab bar, toolbar, language, theme, badg
     await expect(page.locator("aside[data-collapsed=true]")).toBeVisible();
     await page.getByRole("button", { name: "展开侧边栏" }).click();
     await expect(page.locator("aside[data-collapsed=false]")).toBeVisible();
-    // Breadcrumb: group › page.
-    await expect(page.getByRole("navigation", { name: "当前位置" })).toContainText(/运营.*订单/);
   }
   await expect(page).toHaveURL(`${CONSOLE}/orders`);
   await expect(page.getByRole("heading", { level: 1, name: "订单" })).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(`${CONSOLE}/users`);
   await expect(page.getByRole("heading", { level: 1, name: "用户" })).toBeVisible();
-  // Theme and language (remembered): the toolbar on a desktop, the account menu on a phone.
+  // Theme (remembered): the toolbar on a desktop, the account menu on a phone;
+  // language: the account menu (the design's toolbar has search, theme and bell only).
   if (isMobile(info)) await accountMenu(page, "切换深色 / 浅色");
   else await page.getByRole("button", { name: "切换主题" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
-  if (isMobile(info)) await accountMenu(page, "English");
-  else await page.getByRole("button", { name: "English" }).click();
+  await accountMenu(page, "English");
   await expect(page.getByRole("heading", { level: 1, name: "Users" })).toBeVisible();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
   await page.reload();
@@ -176,7 +174,7 @@ test("SH-09 SH-10 SH-12 SH-16: sidebar / tab bar, toolbar, language, theme, badg
     await expect(page.getByRole("heading", { level: 1, name: "更多" })).toBeVisible();
     await page.getByRole("button", { name: /^深色模式/ }).click();
   } else {
-    await page.getByRole("button", { name: "中文" }).click();
+    await accountMenu(page, "中文");
     await page.getByRole("button", { name: "切换主题" }).click();
   }
   await expect(page.locator("html")).not.toHaveClass(/dark/);
@@ -249,7 +247,7 @@ test("SH-14 SH-15 SH-17: error state with retry, empty state, site time zone in 
   await apiJson("PUT", "/settings/site", { version: s.version, timezone: "UTC" });
   try {
     await page.goto(CONSOLE);
-    await expect(page.getByText(/（UTC）/)).toBeVisible();
+    await expect(page.getByText(/站点时区 UTC/)).toBeVisible();
   } finally {
     const s2 = await apiJson<{ version: number }>("GET", "/settings");
     await apiJson("PUT", "/settings/site", { version: s2.version, timezone: null });

@@ -9,6 +9,7 @@ import {
   createContext,
   useContext,
   useId,
+  type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
   type Ref,
@@ -296,7 +297,7 @@ export function Segmented<T extends string>({
               "inline-flex shrink-0 items-center gap-1.5 rounded-[8px] px-2.5 font-medium whitespace-nowrap transition-[background-color,color,box-shadow] duration-(--dur-hover)",
               size === "sm" ? "h-6 text-footnote pointer-coarse:h-8" : "h-7 text-body pointer-coarse:h-9",
               on
-                ? "bg-card text-foreground shadow-[0_0_0_0.5px_rgb(0_0_0/0.06),0_1px_3px_rgb(0_0_0/0.1)] dark:bg-[#3a3c45]"
+                ? "bg-segment-active text-foreground shadow-[0_0_0_0.5px_rgb(0_0_0/0.06),0_1px_3px_rgb(0_0_0/0.1)]"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
@@ -309,9 +310,14 @@ export function Segmented<T extends string>({
   );
 }
 
-export function Kbd({ children, className }: { children: ReactNode; className?: string }) {
+export function Kbd({
+  children,
+  className,
+  ...props
+}: { children: ReactNode; className?: string } & Omit<HTMLAttributes<HTMLElement>, "children" | "className">) {
   return (
     <kbd
+      {...props}
       className={cn(
         "inline-flex h-5 min-w-5 items-center justify-center rounded-[5px] bg-secondary px-1 font-sans text-caption font-medium text-muted-foreground shadow-[inset_0_-0.5px_0_var(--input)]",
         className,

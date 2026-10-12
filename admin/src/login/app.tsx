@@ -13,9 +13,13 @@ import { mergeOptions } from "./guard";
 import { useTheme } from "../shared/theme";
 import { ArrowRight, Eye, EyeOff, Fingerprint, Languages, LoaderCircle, Lock, Moon, Sun } from "lucide-react";
 import { cn } from "../shared/cn";
+import { BrandMark } from "../shared/ui/brand";
 import { Button } from "../shared/ui/button";
 import { Checkbox, Field, Input } from "../shared/ui/form";
 import { Callout } from "../shared/ui/layout";
+
+/** The sign-in card: frosted, on the soft colour fields (design login-*.png). */
+const card = "glass rounded-2xl bg-[color-mix(in_srgb,var(--card)_78%,transparent)] p-7 shadow-dialog max-sm:p-6";
 
 // The codes the sign-in page can meet (the console has the full table;
 // scripts/check-error-codes.mjs keeps these in step with it).
@@ -179,7 +183,7 @@ function BindPasskey({ onDone }: { onDone: () => void }) {
     }
   };
   return (
-    <div className="rounded-2xl bg-card p-7 shadow-dialog">
+    <div className={card}>
       <div className="mb-4 flex size-11 items-center justify-center rounded-full bg-primary-soft text-primary">
         <Fingerprint className="size-[22px]" aria-hidden="true" />
       </div>
@@ -387,11 +391,11 @@ export function LoginApp() {
     <div className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden bg-background px-4 py-10">
       {/* Soft colour fields behind the card (CSS gradients, no images). */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute -top-40 -left-40 size-[560px] rounded-full bg-[radial-gradient(closest-side,rgb(37_99_235/0.22),transparent)] dark:bg-[radial-gradient(closest-side,rgb(74_157_255/0.16),transparent)]" />
-        <div className="absolute top-1/3 left-1/2 size-[420px] rounded-full bg-[radial-gradient(closest-side,rgb(124_58_237/0.08),transparent)]" />
-        <div className="absolute -right-40 -bottom-40 size-[620px] rounded-full bg-[radial-gradient(closest-side,rgb(234_138_0/0.14),transparent)] dark:bg-[radial-gradient(closest-side,rgb(234_138_0/0.08),transparent)]" />
+        <div className="absolute -top-40 -left-32 size-[560px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--chart-1)_30%,transparent),transparent)] blur-2xl" />
+        <div className="absolute -right-40 -bottom-48 size-[620px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--brand-mark-foreground)_26%,transparent),transparent)] blur-2xl" />
+        <div className="absolute top-1/3 left-1/2 size-[420px] rounded-full bg-[radial-gradient(closest-side,color-mix(in_srgb,var(--chart-7)_14%,transparent),transparent)] blur-2xl" />
       </div>
-      <div className="absolute top-3 right-3 flex gap-1">
+      <div className="absolute top-4 right-4 flex gap-1">
         <Button
           variant="ghost"
           size="icon"
@@ -404,7 +408,7 @@ export function LoginApp() {
           variant="ghost"
           size="icon"
           className="rounded-full"
-          icon={theme === "dark" ? Sun : Moon}
+          icon={theme === "dark" ? Moon : Sun}
           onClick={toggleTheme}
           aria-label={tr("切换主题", "Toggle theme")}
         />
@@ -413,28 +417,19 @@ export function LoginApp() {
         {bind ? (
           <BindPasskey onDone={goConsole} />
         ) : (
-          <div className="rounded-2xl bg-card/95 p-7 shadow-dialog">
+          <div className={card}>
             <div className="mb-6 flex flex-col items-center text-center">
-              {logo ? (
-                <img src={`${prefixBase}/${logo}`} alt="" className="mb-3 size-13 rounded-[12px] object-contain" />
-              ) : (
-                <div
-                  aria-hidden="true"
-                  className="mb-3 flex size-13 items-center justify-center rounded-[12px] bg-primary text-2xl font-bold text-primary-foreground shadow-[inset_0_0.5px_0_rgb(255_255_255/0.25),0_2px_6px_rgb(0_0_0/0.15)]"
-                >
-                  {name.slice(0, 1).toUpperCase()}
-                </div>
-              )}
-              <h1 className="text-title3 font-bold tracking-[-0.015em]">
+              <BrandMark name={name} logoUrl={logo ? `${prefixBase}/${logo}` : null} size={52} />
+              <h1 className="mt-4 text-title2 font-bold tracking-[-0.02em]">
                 {tr(`登录 ${name} 管理后台`, `Sign in to ${name} admin console`)}
               </h1>
-              <p className="mt-1 text-footnote text-muted-foreground">{tr("仅限管理员登录", "Administrators only")}</p>
+              <p className="mt-1 text-body text-muted-foreground">{tr("仅限管理员登录", "Administrators only")}</p>
             </div>
             {passkeyOk && (
               <Button
                 variant="primary"
                 size="lg"
-                className="w-full"
+                className="w-full [&_svg]:size-[18px]"
                 icon={Fingerprint}
                 onClick={onPasskey}
                 loading={busy === "passkey"}
@@ -456,12 +451,12 @@ export function LoginApp() {
               <>
                 {passkeyOk && (
                   <div className="my-5 flex items-center gap-3 text-footnote text-faint">
-                    <div className="h-px flex-1 bg-separator" />
+                    <span className="h-px flex-1 bg-border" />
                     {tr("或使用邮箱", "or use your email")}
-                    <div className="h-px flex-1 bg-separator" />
+                    <span className="h-px flex-1 bg-border" />
                   </div>
                 )}
-                <form className="grid gap-4" onSubmit={onPassword} noValidate>
+                <form className="grid gap-3.5" onSubmit={onPassword} noValidate>
                   <Field label={tr("邮箱", "Email")}>
                     <Input
                       id="email"
@@ -473,7 +468,7 @@ export function LoginApp() {
                         setBadCreds(false);
                       }}
                       aria-invalid={badCreds || undefined}
-                      className="h-10"
+                      className="h-10 rounded-[10px]"
                       required
                     />
                   </Field>
@@ -489,7 +484,7 @@ export function LoginApp() {
                           setBadCreds(false);
                         }}
                         aria-invalid={badCreds || undefined}
-                        className="h-10 pr-10"
+                        className="h-10 rounded-[10px] pr-10"
                         required
                       />
                       <button
@@ -556,7 +551,7 @@ export function LoginApp() {
                     type="submit"
                     variant={passkeyOk ? "secondary" : "primary"}
                     size="lg"
-                    className="w-full"
+                    className="mt-1 w-full"
                     loading={busy === "password"}
                     disabled={busy === "passkey" || !email || !password || (wantTurnstile && (!turnstile || !captcha))}
                   >

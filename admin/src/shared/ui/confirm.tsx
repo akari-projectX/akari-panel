@@ -12,7 +12,7 @@ import { cn } from "../cn";
 import { errorText } from "../errors";
 import { useLang, useTr } from "../i18n";
 import { Button } from "./button";
-import { Input } from "./form";
+import { Input, Kbd } from "./form";
 
 export type ConfirmOptions = {
   title: string;
@@ -97,7 +97,7 @@ function ConfirmDialog({ pending, onDone }: { pending: Pending | null; onDone: (
               box.focus();
             }
           }}
-          className="fixed top-1/2 left-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-card p-5 shadow-dialog data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
+          className="fixed top-1/2 left-1/2 z-50 max-h-[90vh] w-[calc(100vw-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl bg-card p-5 shadow-dialog data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.97]"
         >
           <form
             noValidate
@@ -155,10 +155,11 @@ function ConfirmDialog({ pending, onDone }: { pending: Pending | null; onDone: (
               {p.typeToConfirm !== undefined && (
                 <label className="grid gap-1.5 text-footnote text-muted-foreground">
                   <span>
-                    {tr("二次确认：请输入", "Second confirmation: type")}{" "}
+                    {tr("输入", "Type")}{" "}
                     <code className="rounded bg-secondary px-1 py-0.5 font-mono text-foreground">
                       {p.typeToConfirm}
-                    </code>
+                    </code>{" "}
+                    {tr("以确认", "to confirm")}
                   </span>
                   <Input
                     value={typed}
@@ -180,8 +181,11 @@ function ConfirmDialog({ pending, onDone }: { pending: Pending | null; onDone: (
             </div>
             <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <A.Cancel asChild>
-                <Button variant="secondary" disabled={busy}>
+                <Button variant="secondary" disabled={busy} aria-keyshortcuts="Escape">
                   {tr("取消", "Cancel")}
+                  <Kbd className="ml-1 bg-transparent max-sm:hidden" aria-hidden="true">
+                    Esc
+                  </Kbd>
                 </Button>
               </A.Cancel>
               <Button

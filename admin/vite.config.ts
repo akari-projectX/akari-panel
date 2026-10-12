@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -17,6 +18,17 @@ import tailwindcss from "@tailwindcss/vite";
 // carries absolute "/admin/assets/" URLs, which the panel rewrites.
 // scripts/check-bundles.mjs checks the output.
 const entry = process.env.ADMIN_ENTRY === "login" ? "login" : "console";
+
+/**
+ * The panel version for the sidebar ("管理后台 · v0.4.4"): the console ships
+ * inside the panel binary, so it is the root Cargo.toml's version (empty
+ * when that file is not next to admin/, e.g. a bare admin checkout).
+ */
+function panelVersion(): string {
+  const toml = new URL("../Cargo.toml", import.meta.url);
+  if (!existsSync(toml)) return "";
+  return /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(toml, "utf8"))?.[1] ?? "";
+}
 
 /** Console-only libraries: never in the public sign-in page (it stays small). */
 const CONSOLE_LIBS =
@@ -38,6 +50,7 @@ function loginGuard(): Plugin {
 export default defineConfig({
   plugins: [react(), tailwindcss(), ...(entry === "login" ? [loginGuard()] : [])],
   base: entry === "login" ? "/app/" : "/admin/",
+  define: { __PANEL_VERSION__: JSON.stringify(panelVersion()) },
   build: {
     target: "es2022",
     outDir: `dist/${entry}`,
