@@ -1,22 +1,43 @@
 {
-  "blocking": false,
+  "blocking": true,
   "desktop": {
-    "first_screen_ready_ms": 1200,
-    "lcp_ms": 1500,
-    "switch_users_ms": 300,
-    "switch_nodes_ms": 300,
-    "switch_orders_ms": 300,
-    "switch_settings_ms": 300,
-    "switch_dashboard_ms": 300,
+    "first_screen_ready_ms": 260,
+    "lcp_ms": 390,
+    "switch_users_ms": 140,
+    "switch_nodes_ms": 80,
+    "switch_orders_ms": 100,
+    "switch_settings_ms": 60,
+    "switch_dashboard_ms": 80,
     "list_scroll_raf_p95_ms": 20
   },
   "phone": {
-    "first_screen_ready_ms": 3000,
-    "lcp_ms": 3500,
-    "switch_users_ms": 900,
-    "switch_nodes_ms": 900,
-    "switch_orders_ms": 900,
-    "switch_settings_ms": 900,
-    "switch_dashboard_ms": 900
+    "first_screen_ready_ms": 1420,
+    "lcp_ms": 1020,
+    "switch_users_ms": 550,
+    "switch_nodes_ms": 210,
+    "switch_orders_ms": 440,
+    "switch_settings_ms": 260,
+    "switch_dashboard_ms": 260
+  },
+  "targets": {
+    "desktop": {
+      "first_screen_ready_ms": 1200,
+      "lcp_ms": 1500,
+      "switch_users_ms": 300,
+      "switch_nodes_ms": 300,
+      "switch_orders_ms": 300,
+      "switch_settings_ms": 300,
+      "switch_dashboard_ms": 300,
+      "list_scroll_raf_p95_ms": 20
+    },
+    "phone": {
+      "first_screen_ready_ms": 3000,
+      "lcp_ms": 3500,
+      "switch_users_ms": 900,
+      "switch_nodes_ms": 900,
+      "switch_orders_ms": 900,
+      "switch_settings_ms": 900,
+      "switch_dashboard_ms": 900
+    }
   }
 }
