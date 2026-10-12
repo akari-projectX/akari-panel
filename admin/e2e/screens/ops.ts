@@ -4,7 +4,10 @@
 // host), status-mail-empty (the queue is never empty there),
 // status-diagnose-running (a single request, no stable frame), *-loading,
 // *-error, *-stale, alerts-calm (other specs leave alerts firing),
-// alerts-outbox-empty (never empty there). status-diagnose-ok / -failed: only the one matching the
+// alerts-outbox-empty (never empty there), updates-checking / -nokey /
+// -check-error / -no-releases / -error / -paused / -delete-inuse /
+// -upload-progress / -upload-error (transient or need a state the CI data
+// does not have). status-diagnose-ok / -failed: only the one matching the
 // CI mail setup is taken.
 import { expect, type Page } from "@playwright/test";
 
@@ -84,4 +87,57 @@ export const shots: Shot[] = [
   { name: "alerts-outbox", open: go("/alerts/outbox"), full: true },
   { name: "alerts-outbox-failed", open: go("/alerts/outbox?status=failed") },
   { name: "alerts-outbox-nomatch", open: go("/alerts/outbox?channel=telegram&status=failed") },
+  { name: "updates-pipeline", open: go("/updates"), full: true },
+  {
+    name: "updates-no-rollout",
+    open: async (page) => {
+      await goto(page, "/updates");
+      const empty = page.getByText("没有进行中的灰度");
+      if (!(await empty.isVisible())) throw new Error("a rollout is open");
+      await empty.scrollIntoViewIfNeeded();
+    },
+  },
+  { name: "updates-upload-empty", open: goDialog(() => "/updates?upload=1") },
+  {
+    name: "updates-delete",
+    open: async (page) => {
+      await goto(page, "/updates");
+      const v = await page.locator("[data-release]").first().getAttribute("data-release");
+      if (!v) throw new Error("no release");
+      await goto(page, `/updates?delete=${encodeURIComponent(v)}`);
+      await expect(page.getByRole("alertdialog")).toBeVisible();
+    },
+  },
+  { name: "updates-rollout-form", open: goDialog(() => "/updates?new=rollout") },
+  {
+    name: "updates-rollout-invalid",
+    open: async (page) => {
+      await goDialog(() => "/updates?new=rollout")(page, {} as Ctx);
+      const d = page.getByRole("dialog");
+      await d.getByLabel("批次").fill("0");
+      await d.getByLabel("健康超时（分钟）").fill("abc");
+      await d.getByLabel(/最大失败比例/).fill("");
+      await d.getByRole("button", { name: "下一步" }).click();
+      await expect(d.getByText(/处需要修正/)).toBeVisible();
+    },
+  },
+  {
+    name: "updates-rollout-subset",
+    open: async (page) => {
+      await goDialog(() => "/updates?new=rollout")(page, {} as Ctx);
+      await page
+        .getByRole("dialog")
+        .getByRole("radio", { name: /指定服务器/ })
+        .click();
+    },
+  },
+  {
+    name: "updates-rollout-confirm",
+    open: async (page) => {
+      await goDialog(() => "/updates?new=rollout")(page, {} as Ctx);
+      const d = page.getByRole("dialog");
+      await d.getByRole("button", { name: "下一步" }).click();
+      await expect(d.getByRole("button", { name: /开始升级/ })).toBeVisible();
+    },
+  },
 ];

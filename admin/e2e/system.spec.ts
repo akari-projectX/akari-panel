@@ -126,69 +126,85 @@ test("UPD-01 UPD-02 UPD-03 DSH-06: check for updates from the source, releases (
     auto_check: false,
   });
   await openConsole(page, "/updates");
-  // The order of the work: check, releases, rollouts.
-  const titles = await page.locator("h3").allTextContents();
-  const at = (t: string) => titles.findIndex((x) => x.includes(t));
-  expect(at("检查更新")).toBeLessThan(at("Agent 发布"));
-  expect(at("Agent 发布")).toBeLessThan(at("灰度更新"));
-  await expect(page.getByRole("link", { name: "更新源与验签" })).toHaveAttribute("href", /\/settings\/updates$/);
-  // UPD-01: check.
-  await page.getByRole("button", { name: "检查更新" }).click();
-  await expect(page.getByText(/上次检查：.*(已保存 v0\.9\.0|已是最新)/)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText(/最新发布 v0\.9\.0/)).toBeVisible();
+  // The order of the work: check, releases, rollouts (a numbered pipeline).
+  const titles = await page.locator("main h2").allTextContents();
+  const at = (t: string) => titles.findIndex((x) => x.trim() === t);
+  expect(at("检查更新")).toBeGreaterThan(-1);
+  expect(at("检查更新")).toBeLessThan(at("发布"));
+  expect(at("发布")).toBeLessThan(at("灰度"));
+  await expect(page.getByRole("link", { name: /更新源与验签/ }).first()).toHaveAttribute(
+    "href",
+    /\/settings\/updates$/,
+  );
+  // UPD-01: check (its own progress), the result in words.
+  await page.getByRole("button", { name: "立即检查" }).click();
+  await expect(page.locator("[data-last-check]")).toContainText(/已保存 v0\.9\.0|已是最新/, { timeout: 30_000 });
+  await expect(page.locator("[data-last-check]")).toContainText(/最新发布 v0\.9\.0/);
+  // The fleet's versions on top.
+  await expect(page.locator("[data-distribution]")).toContainText("v0.8.0");
   // DSH-06: the dashboard and the nodes page say a newer agent exists.
   await page.goto(CONSOLE);
-  await expect(page.getByText("有新版本 v0.9.0")).toBeVisible();
+  await expect(page.getByText("agent v0.9.0 可用")).toBeVisible();
   await page.goto(`${CONSOLE}/nodes`);
   await expect(page.getByText("有新版本 v0.9.0")).toBeVisible();
   await page.goto(`${CONSOLE}/updates`);
-  // UPD-02: delete the amd64 release (typing the version), upload it again by hand.
-  await expect(page.getByRole("button", { name: "删除 v0.9.0 arm64" })).toBeVisible();
-  await page.getByRole("button", { name: "删除 v0.9.0 amd64" }).click();
+  // UPD-02: one row per version (both platforms); delete it (impact, typing the version), upload amd64 again.
+  const rel = page.locator('[data-release="v0.9.0"]');
+  await expect(rel).toContainText("linux/amd64");
+  await expect(rel).toContainText("linux/arm64");
+  await rel.getByRole("button", { name: "v0.9.0 的操作" }).click();
+  await page.getByRole("menuitem", { name: /删除发布/ }).click();
+  await expect(page).toHaveURL(/delete=v0\.9\.0/);
   await expect(page.getByRole("alertdialog")).toContainText("没有未结束的灰度使用这个版本");
-  await confirmDialog(page, "v0.9.0");
-  await toast(page, "已删除");
-  await expect(page.getByRole("button", { name: "删除 v0.9.0 amd64" })).toHaveCount(0);
+  await confirmDialog(page, "v0.9.0", "删除发布");
+  await toast(page, "已删除 v0.9.0");
+  await expect(rel).toHaveCount(0);
+  await page.getByRole("button", { name: "上传发布" }).first().click();
+  const up = dialog(page, "上传 agent 发布");
+  await expect(up.getByText("还差 3 个文件")).toBeVisible();
   const dl = join(PAY_DIR, "release/www/dl");
-  await page.getByLabel("清单（manifest）").setInputFiles(join(dl, "akari-agent-linux-amd64.manifest.json"));
-  await page.getByLabel("签名", { exact: true }).setInputFiles(join(dl, "akari-agent-linux-amd64.manifest.sig"));
-  await page.getByLabel("二进制").setInputFiles(join(dl, "akari-agent-linux-amd64"));
-  await page.getByRole("button", { name: "上传" }).click();
+  await up.getByLabel("清单（manifest）").setInputFiles(join(dl, "akari-agent-linux-amd64.manifest.json"));
+  await up.getByLabel("签名", { exact: true }).setInputFiles(join(dl, "akari-agent-linux-amd64.manifest.sig"));
+  await up.getByLabel("二进制", { exact: true }).setInputFiles(join(dl, "akari-agent-linux-amd64"));
+  await up.getByRole("button", { name: "上传并验签" }).click();
   await toast(page, "已上传 v0.9.0");
-  await expect(page.getByRole("button", { name: "删除 v0.9.0 amd64" })).toBeVisible();
-  // The file inputs are cleared after an upload.
-  await expect(page.getByLabel("二进制")).toHaveValue("");
-  await expect(page.getByRole("button", { name: "上传" })).toBeDisabled();
-  // UPD-03: a rollout to this server; the form checks its numbers; "将影响 N 台" before it starts.
-  await page.getByRole("button", { name: "新建灰度" }).click();
+  await expect(up).toHaveCount(0);
+  await expect(rel).toContainText("linux/amd64");
+  // UPD-03: a rollout to this server; the form checks its numbers; "开始升级 N 台" on a second step.
+  await page.getByRole("button", { name: "新建灰度" }).first().click();
   const d = dialog(page, "新建灰度");
   await d.getByLabel("版本").selectOption("v0.9.0");
-  await d.getByLabel(/分批/).fill("50,10");
-  await d.getByLabel("健康超时（秒）").click();
-  await expect(d.getByText("必须在 1–100 之间且逐个增大")).toBeVisible();
-  await d.getByLabel(/分批/).fill("100");
-  await d.getByLabel("覆盖比例（%）").fill("100");
-  await d.getByLabel("健康超时（秒）").fill("600");
-  await d.getByRole("checkbox", { name: name }).click();
+  await d.getByLabel("批次").fill("0");
+  await d.getByLabel("健康超时（分钟）").click();
+  await expect(d.getByText("1–10 的整数")).toBeVisible();
+  await d.getByLabel("批次").fill("1");
+  await d.getByLabel("健康超时（分钟）").fill("10");
+  await d.getByRole("radio", { name: /指定服务器/ }).click();
+  await d.getByRole("checkbox", { name }).click();
+  await d.getByRole("button", { name: "下一步" }).click();
+  const c = dialog(page, /开始灰度 v0\.9\.0/);
+  await expect(c).toContainText("将影响 1 台服务器");
   const made = page.waitForResponse((r) => r.url().endsWith("/rollouts") && r.request().method() === "POST");
-  await d.getByRole("button", { name: "开始" }).click();
-  await expect(page.getByRole("alertdialog")).toContainText("将影响 1 台服务器");
-  await confirmDialog(page, undefined, "开始");
+  await c.getByRole("button", { name: "开始升级 1 台" }).click();
   const res = await made;
   expect(res.status(), await res.text()).toBeLessThan(300);
   await toast(page, "灰度已开始");
-  const ro = page.locator("[data-rollout]:visible", { hasText: "v0.9.0" }).first();
-  await openBy(page, info, ro, "v0.9.0");
-  const r = dialog(page, /灰度 v0\.9\.0/);
-  await expect(r.getByText(name)).toBeVisible();
-  await r.getByRole("button", { name: "暂停" }).click();
-  await expect(r.getByText("已暂停")).toBeVisible();
-  await r.getByRole("button", { name: "继续" }).click();
-  await expect(r.getByText("进行中")).toBeVisible();
-  await r.getByRole("button", { name: "中止" }).click();
-  await confirmDialog(page, undefined, "中止");
-  await expect(r.getByText("已中止")).toBeVisible();
-  await expect(r.getByRole("button", { name: "继续" })).toHaveCount(0);
+  // The open rollout is on the page: per server, pause / resume / abort (with impact).
+  const ro = page.locator("[data-active-rollout]");
+  await expect(ro).toContainText(name);
+  await expect(page.getByRole("button", { name: "新建灰度" }).first()).toBeDisabled();
+  await ro.getByRole("button", { name: "暂停" }).click();
+  await expect(ro.getByText("已暂停").first()).toBeVisible();
+  await ro.getByRole("button", { name: "继续" }).click();
+  await expect(ro.getByText(/进行中/).first()).toBeVisible();
+  await ro.getByRole("button", { name: "中止" }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("不再升级");
+  await confirmDialog(page, undefined, "中止灰度");
+  await expect(ro).toHaveCount(0);
+  const h = page.locator("[data-rollout]", { hasText: "v0.9.0" }).first();
+  await expect(h).toContainText("已中止");
+  await h.click();
+  await expect(dialog(page, /灰度 v0\.9\.0/).getByText(name)).toBeVisible();
 });
 
 test("AUD-01 AUD-02: the audit log — actor (by email) and action filters in the URL, object link, change detail, load older", async ({
