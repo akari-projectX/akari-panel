@@ -2839,6 +2839,9 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 # The daily series: 60 site days ending today, agreeing with the 30-day window; traffic by entrance kind.
 [ "$(last_json "len(d['series']) == 60 and d['series'][-1]['day'] == d['today_date'] and sum(x['gross_cents'] for x in d['series'][-30:]) == d['d30']['gross_cents'] and sum(x['revenue_cents'] for x in d['series'][-30:]) == d['d30']['revenue_cents'] and sum(x['orders'] for x in d['series'][-30:]) == d['d30']['orders'] and all(min(x['direct_bytes'], x['relay_bytes'], x['other_bytes']) >= 0 for x in d['series']) and 'signups' in d['prev_today']")" = "True" ] \
   || { echo "FAIL: dashboard series"; cat /tmp/akari-smoke/last; exit 1; }
+# The pending queues' details and the new subscriptions (same snapshot).
+[ "$(last_json "d['pending_detail']['withdrawals_cents'] >= 0 and d['pending_detail']['alerts_unacked'] <= d['pending']['alerts_firing'] and (d['pending_detail']['order_sample_id'] is None) == (d['pending']['orders_unfulfilled'] == 0) and 0 <= d['subscribers_7d'] <= d['subscribers']")" = "True" ] \
+  || { echo "FAIL: dashboard pending detail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
 
 echo "== W31: system status =="
@@ -2846,6 +2849,10 @@ echo "== W31: system status =="
   && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
+# The mail queue's 全部 view: every status, newest first.
+[ "$(code -b "$JAR" "$BASE/api/v1/mail/outbox?status=all&limit=200")" = "200" ] \
+  && [ "$(last_json "isinstance(d, list) and all(r['status'] in ('dead','pending','sent') for r in d) and [r['id'] for r in d] == sorted([r['id'] for r in d], reverse=True)")" = "True" ] \
+  || { echo "FAIL: mail outbox all"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
   && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == '$BUYER_MAIL'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
@@ -3263,6 +3270,8 @@ python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firin
   || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM server_alerts"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&server=$SERVER_ID")" = "200" ] \
   && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "isinstance(d['resolved_7d_by_kind'], dict) and all(v >= 1 for v in d['resolved_7d_by_kind'].values())")" = "True" ] \
+  || { echo "FAIL: alert history counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
 curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
   || { echo "FAIL: akari_node_alerts_firing"; exit 1; }
