@@ -29,7 +29,7 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders, list and filters
   const { email } = await setup(tag);
   await openConsole(page, "/orders");
   // ORD-07: a manual order through the one pay path (no amount sent).
-  await page.getByRole("button", { name: "新建人工订单" }).click();
+  await page.getByRole("button", { name: "人工订单", exact: true }).first().click();
   const m = dialog(page, "新建人工订单");
   // Nothing chosen yet: the fields say what is missing (nothing is sent).
   await m.getByRole("button", { name: "创建并开通" }).click();
@@ -51,7 +51,7 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders, list and filters
   await m.getByRole("button", { name: "创建并开通" }).click();
   await toast(page, "人工订单已创建并开通");
   // A second one (refunded below to a record-only route).
-  await page.getByRole("button", { name: "新建人工订单" }).click();
+  await page.getByRole("button", { name: "人工订单", exact: true }).first().click();
   const m2 = dialog(page, "新建人工订单");
   await m2.getByLabel("用户邮箱").fill(email);
   await m2.getByRole("button", { name: email }).click();
@@ -68,10 +68,12 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders, list and filters
   await expect(page.locator("[data-row]:visible")).toHaveCount(2);
   const statuses = page.getByRole("group", { name: "订单状态" });
   await statuses.getByRole("button", { name: "待付款" }).click();
-  await expect(page.getByText("没有匹配的记录")).toBeVisible();
+  // Nothing matches: says so, with the next steps.
+  await expect(page.getByText("没有符合条件的订单")).toBeVisible();
+  await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
   await statuses.getByRole("button", { name: "已付款" }).click();
   await expect(row(page, "¥15.00")).toBeVisible();
-  await expect(page.getByText("共 2 条")).toBeVisible();
+  await expect(page.getByText("共 2 笔")).toBeVisible();
   // ORD-03: the order dialog with the amount breakdown.
   await openRow(page, "¥15.00");
   let d = dialog(page);

@@ -4,7 +4,7 @@
 // edited and are checked field by field (audit §5.6: a bad number is never
 // sent, so it can never be saved as "unlimited").
 import { useQuery } from "@tanstack/react-query";
-import { Download, Plus, TicketPercent, Trash2 } from "lucide-react";
+import { Ban, CircleCheck, CircleDashed, Download, Plus, SearchX, TicketPercent, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { del, get, patch, post } from "../../shared/api";
 import { dateTime, fromLocalInput, parseYuan, toLocalInput, yuan } from "../../shared/format";
@@ -17,7 +17,7 @@ import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Segmented, SwitchField } from "../../shared/ui/form";
 import { KV, PageHeader, SectionTitle } from "../../shared/ui/layout";
 import { EmptyState, ErrorState, LoadingBlock } from "../../shared/ui/states";
-import { DataTable, Pager, type Column } from "../../shared/ui/table";
+import { Pager } from "../../shared/ui/table";
 import { useToast } from "../../shared/ui/toast";
 import { useAction } from "../data";
 import { useDebounced } from "../kit";
@@ -26,6 +26,7 @@ import { useCrumb } from "../session";
 import { PERIODS, periodLabel } from "../terms";
 import type { PlanView } from "../types";
 import { downloadFile } from "./download";
+import { LedgerTable, ScrollX, SearchField, When, shortTime, useColumns } from "./ledger";
 import { usePlans } from "./users";
 
 type Coupon = {
@@ -344,52 +345,86 @@ export function CouponsPage() {
   const at = offset < rows.length ? offset : 0;
   const page = rows.slice(at, at + limit);
   const filtered = !!(q || status);
-  const columns: Column<Coupon>[] = [
+  const clear = () => {
+    setTerm("");
+    setQuery({ q: null, status: null });
+  };
+  const onCount = all.filter((c) => c.enabled).length;
+  const redeemed = all.reduce((n, c) => n + c.redeemed, 0);
+  const statusChip = (c: Coupon) =>
+    c.enabled ? (
+      <Badge tone="success">
+        <CircleCheck aria-hidden="true" />
+        {tr("启用", "On")}
+      </Badge>
+    ) : (
+      <Badge tone="outline">
+        <CircleDashed aria-hidden="true" />
+        {tr("停用", "Off")}
+      </Badge>
+    );
+  const windowText = (c: Coupon) =>
+    c.starts_at || c.ends_at ? `${dateTime(c.starts_at)} → ${dateTime(c.ends_at)}` : tr("长期", "Always");
+  const [columns, chooser] = useColumns<Coupon>("coupons", [
     {
       key: "code",
       header: tr("优惠码", "Code"),
-      fixed: true,
-      mobile: "title",
-      cell: (c) => <span className="font-mono">{c.code}</span>,
+      className: "whitespace-nowrap",
+      cell: (c) => <span className="font-mono text-footnote font-medium">{c.code}</span>,
     },
-    { key: "name", header: tr("名称", "Name"), cell: (c) => c.name || <span className="text-faint">—</span> },
-    { key: "value", header: tr("面值", "Value"), cell: (c) => couponValue(c, tr) },
+    {
+      key: "name",
+      header: tr("名称", "Name"),
+      className: "max-w-56 truncate",
+      cell: (c) => c.name || <span className="text-faint">—</span>,
+    },
     {
       key: "uses",
       header: tr("已用 / 总次数", "Used / max"),
+      className: "whitespace-nowrap",
       cell: (c) => <span className="tnum">{`${c.used} / ${c.max_uses ?? "∞"}`}</span>,
     },
     {
       key: "window",
       header: tr("有效期", "Valid"),
       optional: true,
-      cell: (c) =>
-        c.starts_at || c.ends_at ? `${dateTime(c.starts_at)} → ${dateTime(c.ends_at)}` : tr("长期", "Always"),
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: windowText,
     },
+    { key: "status", header: tr("状态", "Status"), cell: statusChip },
     {
-      key: "status",
-      header: tr("状态", "Status"),
-      cell: (c) => (
-        <Badge tone={c.enabled ? "success" : "neutral"} dot>
-          {c.enabled ? tr("启用", "On") : tr("停用", "Off")}
-        </Badge>
-      ),
+      key: "value",
+      header: tr("面值", "Value"),
+      align: "right",
+      className: "whitespace-nowrap",
+      cell: (c) => <span className="font-semibold">{couponValue(c, tr)}</span>,
     },
-  ];
+  ]);
+  const newCoupon = (
+    <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
+      {tr("新建优惠券", "New coupon")}
+    </Button>
+  );
   return (
     <>
       <PageHeader
         title={tr("优惠券", "Coupons")}
-        description={tr("单个优惠码与批量生成的码。", "Single coupon codes and generated batches.")}
-        actions={
-          <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-            {tr("新建优惠券", "New coupon")}
-          </Button>
+        description={
+          list.data && all.length > 0 ? (
+            <span className="tnum">
+              {tr(
+                `共 ${all.length} 张 · 启用 ${onCount} 张 · 已核销 ${redeemed} 次`,
+                `${all.length} coupons · ${onCount} on · redeemed ${redeemed} times`,
+              )}
+            </span>
+          ) : (
+            tr("单个优惠码与批量生成的码。", "Single coupon codes and generated batches.")
+          )
         }
+        actions={newCoupon}
       />
-      <DataTable
+      <LedgerTable
         label={tr("优惠券", "Coupons")}
-        storageKey="coupons"
         rows={page}
         columns={columns}
         loading={list.isPending}
@@ -397,13 +432,39 @@ export function CouponsPage() {
         onRetry={() => void list.refetch()}
         onRowClick={(c) => setQuery({ open: c.id }, false)}
         activeId={open}
-        filtered={filtered}
-        onClearFilters={() => {
-          setTerm("");
-          setQuery({ q: null, status: null });
-        }}
+        phone={(c) => ({
+          title: <span className="font-mono">{c.code}</span>,
+          sub: c.name || undefined,
+          meta: tr(
+            `已用 ${c.used} / ${c.max_uses ?? "∞"} · ${windowText(c)}`,
+            `used ${c.used} / ${c.max_uses ?? "∞"} · ${windowText(c)}`,
+          ),
+          amount: couponValue(c, tr),
+          status: statusChip(c),
+        })}
         empty={
-          filtered ? undefined : (
+          filtered ? (
+            <EmptyState
+              icon={SearchX}
+              title={tr("没有符合条件的优惠券", "No coupons match")}
+              description={
+                q
+                  ? tr(
+                      `没有优惠码或名称包含「${q}」的${status === "on" ? "启用中" : status === "off" ? "已停用" : ""}优惠券。检查拼写，或清除筛选。`,
+                      `No ${status === "on" ? "enabled " : status === "off" ? "disabled " : ""}coupon whose code or name contains “${q}”. Check the spelling, or clear the filters.`,
+                    )
+                  : status === "on"
+                    ? tr("没有启用中的优惠券。清除筛选查看全部。", "No coupon is on. Clear the filter to see all.")
+                    : tr("没有已停用的优惠券。清除筛选查看全部。", "No coupon is off. Clear the filter to see all.")
+              }
+              action={
+                <>
+                  <Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>
+                  {newCoupon}
+                </>
+              }
+            />
+          ) : (
             <EmptyState
               icon={TicketPercent}
               title={tr("还没有优惠券", "No coupons yet")}
@@ -411,19 +472,13 @@ export function CouponsPage() {
                 "新建一个优惠码，或在下方批量生成一批码。",
                 "Create a coupon code, or generate a batch below.",
               )}
-              action={
-                <Button variant="primary" icon={Plus} onClick={() => setCreating(true)}>
-                  {tr("新建优惠券", "New coupon")}
-                </Button>
-              }
+              action={newCoupon}
             />
           )
         }
         toolbar={
           <>
-            <Input
-              type="search"
-              className="min-w-0 flex-1 basis-48"
+            <SearchField
               aria-label={tr("搜索优惠码或名称", "Search code or name")}
               placeholder={tr("搜索优惠码或名称", "Search code or name")}
               value={term}
@@ -432,19 +487,22 @@ export function CouponsPage() {
                 setOffset(0);
               }}
             />
-            <Segmented
-              label={tr("优惠券状态", "Coupon status")}
-              value={status}
-              onChange={(v) => {
-                setOffset(0);
-                setQuery({ status: v || null });
-              }}
-              options={[
-                { value: "", label: tr("全部", "All") },
-                { value: "on", label: tr("启用", "On") },
-                { value: "off", label: tr("停用", "Off") },
-              ]}
-            />
+            <ScrollX>
+              <Segmented
+                label={tr("优惠券状态", "Coupon status")}
+                value={status}
+                onChange={(v) => {
+                  setOffset(0);
+                  setQuery({ status: v || null });
+                }}
+                options={[
+                  { value: "", label: tr("全部", "All"), count: list.data ? all.length : undefined },
+                  { value: "on", label: tr("启用", "On"), count: list.data ? onCount : undefined },
+                  { value: "off", label: tr("停用", "Off"), count: list.data ? all.length - onCount : undefined },
+                ]}
+              />
+            </ScrollX>
+            {chooser}
           </>
         }
         footer={
@@ -461,10 +519,10 @@ export function CouponsPage() {
               totalLabel={
                 all.length >= LIST_CAP
                   ? tr(
-                      `${rows.length} 条（只取最新 ${LIST_CAP} 张优惠券）`,
+                      `${rows.length} 张（只取最新 ${LIST_CAP} 张优惠券）`,
                       `${rows.length} (newest ${LIST_CAP} coupons only)`,
                     )
-                  : undefined
+                  : tr(`共 ${rows.length} 张`, `${rows.length} in total`)
               }
             />
           )
@@ -776,42 +834,52 @@ function Batches({ plans }: { plans: PlanView[] }) {
   const rows = q.data ?? [];
   const LIMIT = 10;
   const at = offset < rows.length ? offset : 0;
-  const columns: Column<Batch>[] = [
+  const revokedChip = (b: Batch) =>
+    b.revoked_at ? (
+      <Badge tone="danger">
+        <Ban aria-hidden="true" />
+        {tr("已作废", "Revoked")}
+      </Badge>
+    ) : (
+      <Badge tone="success">
+        <CircleCheck aria-hidden="true" />
+        {tr("可用", "Active")}
+      </Badge>
+    );
+  const counts = (b: Batch) =>
+    tr(
+      `${b.codes} 个码 · 已用 ${b.used} · 核销 ${b.redeemed}`,
+      `${b.codes} codes · ${b.used} used · ${b.redeemed} redeemed`,
+    );
+  const [columns, chooser] = useColumns<Batch>("coupon-batches", [
     {
       key: "name",
       header: tr("批次", "Batch"),
-      fixed: true,
-      mobile: "title",
-      cell: (b) => (
-        <span className="flex flex-wrap items-center gap-1.5">
-          <span className="font-medium">{batchLabel(b, tr)}</span>
-          {b.revoked_at && <Badge tone="danger">{tr("已作废", "Revoked")}</Badge>}
-        </span>
-      ),
+      className: "max-w-64 truncate font-medium",
+      cell: (b) => batchLabel(b, tr),
+    },
+    { key: "codes", header: tr("码", "Codes"), className: "tnum whitespace-nowrap", cell: counts },
+    { key: "status", header: tr("状态", "Status"), cell: revokedChip },
+    {
+      key: "created",
+      header: tr("生成时间", "Created"),
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (b) => <When iso={b.created_at} />,
     },
     {
-      key: "codes",
-      header: tr("码", "Codes"),
-      cell: (b) => (
-        <span className="tnum">
-          {tr(
-            `${b.codes} 个码 · 已用 ${b.used} · 核销 ${b.redeemed}`,
-            `${b.codes} codes · ${b.used} used · ${b.redeemed} redeemed`,
-          )}
-        </span>
-      ),
+      key: "actor",
+      header: tr("操作人", "By"),
+      optional: true,
+      className: "text-muted-foreground",
+      cell: (b) => b.actor_label,
     },
-    { key: "created", header: tr("生成时间", "Created"), cell: (b) => dateTime(b.created_at) },
-    { key: "actor", header: tr("操作人", "By"), optional: true, cell: (b) => b.actor_label },
     {
       key: "act",
       header: <span className="sr-only">{tr("操作", "Actions")}</span>,
-      label: tr("操作", "Actions"),
-      fixed: true,
       align: "right",
       cell: (b) => <BatchActions b={b} />,
     },
-  ];
+  ]);
   return (
     <section>
       <CardHeader
@@ -828,13 +896,21 @@ function Batches({ plans }: { plans: PlanView[] }) {
         }
       />
       <div className="mt-1">
-        <DataTable
+        <LedgerTable
           label={tr("优惠码批次", "Code batches")}
           rows={rows.slice(at, at + LIMIT)}
           columns={columns}
           loading={q.isPending}
           error={q.error}
           onRetry={() => void q.refetch()}
+          toolbar={chooser ? <div className="ml-auto">{chooser}</div> : undefined}
+          phone={(b) => ({
+            title: <span className="truncate">{batchLabel(b, tr)}</span>,
+            sub: counts(b),
+            meta: shortTime(b.created_at, tr),
+            status: revokedChip(b),
+            actions: <BatchActions b={b} />,
+          })}
           empty={
             <EmptyState
               icon={TicketPercent}
@@ -843,6 +919,11 @@ function Batches({ plans }: { plans: PlanView[] }) {
                 "需要大量一次性优惠码时，用「批量生成优惠码」。",
                 "Use “Generate codes” for many one-off codes.",
               )}
+              action={
+                <Button icon={Plus} onClick={() => setCreating(true)}>
+                  {tr("批量生成优惠码", "Generate codes")}
+                </Button>
+              }
             />
           }
           footer={rows.length > LIMIT && <Pager total={rows.length} offset={at} limit={LIMIT} onOffset={setOffset} />}

@@ -30,9 +30,9 @@ test("CPN-01 CPN-02 CPN-03 CPN-04: coupons — create (checked numbers), search,
   await expect(page).toHaveURL(/q=/);
   await expect(row(page, code)).toContainText("10% 折扣");
   await expect(row(page, code)).toContainText("0 / 5");
-  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: "停用" }).click();
-  await expect(page.getByText("没有匹配的记录")).toBeVisible();
-  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: "全部" }).click();
+  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: /^停用/ }).click();
+  await expect(page.getByText("没有符合条件的优惠券")).toBeVisible();
+  await page.getByRole("group", { name: "优惠券状态" }).getByRole("button", { name: /^全部/ }).click();
   await openRow(page, code);
   const d = dialog(page);
   await expect(d.getByText("还没有人使用。")).toBeVisible();
@@ -155,7 +155,7 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
   await rj.getByLabel("拒绝原因（用户可见）").fill("e2e reject");
   await rj.getByRole("button", { name: "拒绝", exact: true }).click();
   await toast(page, "已拒绝");
-  await page.getByLabel("状态", { exact: true }).selectOption("all");
+  await page.getByRole("group", { name: "提现状态" }).getByRole("button", { name: /^全部/ }).click();
   await expect(row(page, "¥5.00")).toContainText("已打款");
   await expect(row(page, "¥5.00")).toContainText("0xe2e0");
   await expect(row(page, "¥5.00").getByRole("button", { name: "复制哈希" })).toBeVisible();

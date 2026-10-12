@@ -16,7 +16,6 @@ import { Dialog } from "../../shared/ui/dialog";
 import { Checkbox, Field, Input, Segmented, Select } from "../../shared/ui/form";
 import { Callout, KV, PageHeader, SectionTitle } from "../../shared/ui/layout";
 import { EmptyState, ErrorState, LoadingBlock } from "../../shared/ui/states";
-import { DataTable, type Column } from "../../shared/ui/table";
 import { useToast } from "../../shared/ui/toast";
 import { useAction } from "../data";
 import { CopyButton, FormError, Mono, useDebounced } from "../kit";
@@ -25,7 +24,8 @@ import { useCrumb } from "../session";
 import { periodLabel } from "../terms";
 import type { PlanPrice } from "../types";
 import { downloadFile } from "./download";
-import { OrderStatus } from "./order-status";
+import { LedgerTable, ScrollX, SearchField, When, shortTime, useColumns } from "./ledger";
+import { needsAttention, OrderChip } from "./order-status";
 import { findUsers, type UserRow } from "./users";
 
 type RefundEffect =
@@ -84,9 +84,6 @@ type Preview = {
   original_available: boolean;
   original_request: { state: string } | null;
 };
-
-/** Paid, not fulfilled and not refunded: needs the operator. */
-const needsAttention = (o: Order) => o.status === "paid" && !o.fulfilled_at && !o.refunded_at;
 
 const VIAS = ["manual", "notify", "query", "balance", "coupon", "credit"] as const;
 
@@ -224,6 +221,9 @@ const ATTENTION_CAP = 200;
 
 type StatusFilter = "" | "pending" | "paid" | "unfulfilled" | "expired" | "cancelled";
 
+/** The dashboard's "today" window: the header's one line of numbers. */
+type Today = { today: { orders: number; gross_cents: number; refunds_cents: number } };
+
 export function OrdersPage() {
   const tr = useTr();
   const { query } = useRoute();
@@ -256,6 +256,8 @@ export function OrdersPage() {
     queryKey: ["orders", "attention"],
     queryFn: () => get<Order[]>(`/orders${qs({ unfulfilled: "true", limit: ATTENTION_CAP })}`),
   });
+  // Same key as the dashboard: one request when both are open, refreshed by every write.
+  const dash = useQuery({ queryKey: ["dashboard"], queryFn: () => get<Today>("/dashboard") });
   const rows = list.data?.pages.flat() ?? [];
   const stuck = attention.data?.length ?? 0;
   const stuckText = stuck >= ATTENTION_CAP ? `${ATTENTION_CAP}+` : String(stuck);
@@ -265,15 +267,15 @@ export function OrdersPage() {
     setTerm("");
     setQuery({ status: null, unfulfilled: null, via: null, email: null, no: null });
   };
+  const newOrder = () => setQuery({ new: "1" }, false);
+  const today = dash.data?.today;
 
-  const columns: Column<Order>[] = [
+  const [columns, chooser] = useColumns<Order>("orders", [
     {
       key: "no",
       header: tr("订单号", "Order"),
-      fixed: true,
-      mobile: "title",
       cell: (o) => (
-        <span className="inline-flex items-center gap-1.5 font-mono text-footnote">
+        <span className="inline-flex items-center gap-1.5 font-mono text-footnote whitespace-nowrap">
           {needsAttention(o) && (
             <CircleAlert
               className="size-3.5 shrink-0 text-destructive"
@@ -287,6 +289,7 @@ export function OrdersPage() {
     {
       key: "user",
       header: tr("用户", "User"),
+      className: "max-w-56 truncate",
       cell: (o) => o.user_email ?? <span className="text-muted-foreground">{o.user_label}</span>,
     },
     {
@@ -302,28 +305,18 @@ export function OrdersPage() {
       key: "via",
       header: tr("方式", "Via"),
       cell: (o) => (
-        <span className="flex items-center gap-1 text-muted-foreground">
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-muted-foreground">
           {viaText(o.paid_via, tr)}
-          {o.gift_cents > 0 && <Badge tone="info">{tr("赠送", "Gift")}</Badge>}
+          {o.gift_cents > 0 && <Badge tone="primary">{tr("赠送", "Gift")}</Badge>}
         </span>
       ),
     },
-    {
-      key: "status",
-      header: tr("状态", "Status"),
-      cell: (o) => (
-        <span className="flex flex-wrap gap-1">
-          <OrderStatus status={o.status} />
-          {needsAttention(o) && <Badge tone="danger">{tr("未开通", "Not fulfilled")}</Badge>}
-          {o.refunded_at && <Badge tone="warning">{tr("已退款", "Refunded")}</Badge>}
-          {o.refund_request?.state === "pending" && <Badge tone="info">{tr("退款处理中", "Refund pending")}</Badge>}
-        </span>
-      ),
-    },
+    { key: "status", header: tr("状态", "Status"), cell: (o) => <OrderChip order={o} /> },
     {
       key: "extras",
       header: tr("优惠 / 余额", "Discount / balance"),
       optional: true,
+      className: "text-muted-foreground",
       cell: (o) =>
         [
           o.discount_cents ? `-${yuan(o.discount_cents)}` : "",
@@ -336,41 +329,53 @@ export function OrdersPage() {
       key: "amount",
       header: tr("实付", "Paid"),
       align: "right",
-      cell: (o) => <span className="tnum font-semibold">{yuan(o.amount_cents)}</span>,
+      cell: (o) => <span className="font-semibold">{yuan(o.amount_cents)}</span>,
     },
     {
       key: "created",
-      header: tr("下单时间", "Created"),
+      header: tr("时间", "Time"),
       align: "right",
-      cell: (o) => <span className="tnum text-muted-foreground">{dateTime(o.created_at)}</span>,
+      className: "whitespace-nowrap text-muted-foreground",
+      cell: (o) => <When iso={o.created_at} />,
     },
-  ];
+  ]);
 
   return (
     <>
       <PageHeader
         title={tr("订单", "Orders")}
-        description={tr("用户的购买、续费与人工订单。", "Purchases, renewals and manual orders.")}
+        description={
+          today ? (
+            <span className="tnum">
+              {tr(
+                `今日已付 ${today.orders} 笔 · 实收 ${yuan(today.gross_cents)} · 退款 ${yuan(today.refunds_cents)}`,
+                `Today ${today.orders} paid · collected ${yuan(today.gross_cents)} · refunded ${yuan(today.refunds_cents)}`,
+              )}
+            </span>
+          ) : (
+            tr("用户的购买、续费与人工订单。", "Purchases, renewals and manual orders.")
+          )
+        }
         actions={
           <>
             <Button variant="outline" icon={Download} onClick={() => setExporting(true)}>
               {tr("导出 CSV", "Export CSV")}
             </Button>
-            <Button variant="primary" icon={Plus} onClick={() => setQuery({ new: "1" }, false)}>
-              {tr("新建人工订单", "New manual order")}
+            <Button variant="primary" icon={Plus} onClick={newOrder}>
+              {tr("人工订单", "Manual order")}
             </Button>
           </>
         }
       />
       {stuck > 0 && (
-        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl bg-destructive-soft px-4 py-3 text-body">
+        <div className="mb-3 flex items-center gap-3 rounded-xl bg-destructive-soft px-4 py-3 text-body">
           <CircleAlert className="size-4 shrink-0 text-destructive" aria-hidden="true" />
           <span className="min-w-0 flex-1">
             <b className="font-semibold">
               {tr(`${stuckText} 个订单已付款但未开通。`, `${stuckText} paid orders are not fulfilled.`)}
-            </b>{" "}
-            <span className="text-muted-foreground">
-              {tr("用户已扣款，请打开订单重试开通或退款。", "The users paid: open each to retry or refund.")}
+            </b>
+            <span className="text-muted-foreground max-sm:hidden">
+              {tr(" 用户已扣款，请打开订单重试开通或退款。", " The users paid: open each to retry or refund.")}
             </span>
           </span>
           {!unfulfilled && (
@@ -380,9 +385,8 @@ export function OrdersPage() {
           )}
         </div>
       )}
-      <DataTable
+      <LedgerTable
         label={tr("订单列表", "Orders")}
-        storageKey="orders"
         rows={rows}
         columns={columns}
         loading={list.isPending}
@@ -390,10 +394,55 @@ export function OrdersPage() {
         onRetry={() => void list.refetch()}
         activeId={open}
         onRowClick={(o) => setQuery({ open: o.id }, false)}
-        filtered={filtered}
-        onClearFilters={clear}
+        phone={(o) => ({
+          title: (
+            <>
+              {needsAttention(o) && (
+                <CircleAlert
+                  className="size-3.5 shrink-0 text-destructive"
+                  aria-label={tr("已付款未开通", "Paid, not fulfilled")}
+                />
+              )}
+              {o.plan_name}
+              <span className="font-normal text-muted-foreground">· {periodLabel(o.period, tr, o.period_days)}</span>
+              {o.gift_cents > 0 && <Badge tone="primary">{tr("赠送", "Gift")}</Badge>}
+            </>
+          ),
+          sub: o.user_email ?? o.user_label,
+          meta: (
+            <span className="font-mono">
+              {o.out_trade_no} · {shortTime(o.created_at, tr)}
+            </span>
+          ),
+          amount: yuan(o.amount_cents),
+          status: <OrderChip order={o} />,
+        })}
         empty={
-          filtered ? undefined : (
+          filtered ? (
+            <EmptyState
+              icon={ReceiptText}
+              title={tr("没有符合条件的订单", "No orders match")}
+              description={
+                email || no
+                  ? tr(
+                      `没有订单号或邮箱为「${email || no}」的订单（精确匹配）。检查拼写，或清除筛选查看全部订单。`,
+                      `No order whose number or email is “${email || no}” (exact match). Check the spelling, or clear the filters to see every order.`,
+                    )
+                  : tr(
+                      "当前筛选下没有订单。清除筛选查看全部订单。",
+                      "No order under these filters. Clear them to see every order.",
+                    )
+              }
+              action={
+                <>
+                  <Button onClick={clear}>{tr("清除筛选", "Clear filters")}</Button>
+                  <Button variant="primary" icon={Plus} onClick={newOrder}>
+                    {tr("人工订单", "Manual order")}
+                  </Button>
+                </>
+              }
+            />
+          ) : (
             <EmptyState
               icon={ReceiptText}
               title={tr("还没有订单", "No orders yet")}
@@ -402,8 +451,8 @@ export function OrdersPage() {
                 "Orders appear here once users buy or you create a manual order.",
               )}
               action={
-                <Button variant="primary" icon={Plus} onClick={() => setQuery({ new: "1" }, false)}>
-                  {tr("新建人工订单", "New manual order")}
+                <Button variant="primary" icon={Plus} onClick={newOrder}>
+                  {tr("人工订单", "Manual order")}
                 </Button>
               }
             />
@@ -411,35 +460,39 @@ export function OrdersPage() {
         }
         toolbar={
           <>
-            <Input
-              type="search"
-              className="min-w-0 flex-1 basis-56"
+            <SearchField
               aria-label={tr("搜索订单号或邮箱", "Search order no. or email")}
-              placeholder={tr("订单号、交易号或用户邮箱（精确）", "Order / trade no. or user email (exact)")}
+              placeholder={tr("订单号、交易号或用户邮箱", "Order / trade no. or user email")}
               value={term}
               onChange={(e) => setTerm(e.target.value)}
             />
-            <Segmented
-              label={tr("订单状态", "Order status")}
-              value={statusF}
-              onChange={(v) =>
-                setQuery({
-                  status: ["paid", "pending", "expired", "cancelled"].includes(v) ? v : null,
-                  unfulfilled: v === "unfulfilled" ? "1" : null,
-                })
-              }
-              options={[
-                { value: "", label: tr("全部", "All") },
-                { value: "pending", label: tr("待付款", "Pending") },
-                { value: "paid", label: tr("已付款", "Paid") },
-                { value: "unfulfilled", label: tr("未开通", "Not fulfilled") },
-                { value: "expired", label: tr("已过期", "Expired") },
-                { value: "cancelled", label: tr("已取消", "Cancelled") },
-              ]}
-            />
+            <ScrollX>
+              <Segmented
+                label={tr("订单状态", "Order status")}
+                value={statusF}
+                onChange={(v) =>
+                  setQuery({
+                    status: ["paid", "pending", "expired", "cancelled"].includes(v) ? v : null,
+                    unfulfilled: v === "unfulfilled" ? "1" : null,
+                  })
+                }
+                options={[
+                  { value: "", label: tr("全部", "All") },
+                  { value: "pending", label: tr("待付款", "Pending") },
+                  { value: "paid", label: tr("已付款", "Paid") },
+                  {
+                    value: "unfulfilled",
+                    label: tr("未开通", "Not fulfilled"),
+                    count: stuck > 0 ? stuck : undefined,
+                  },
+                  { value: "expired", label: tr("已过期", "Expired") },
+                  { value: "cancelled", label: tr("已取消", "Cancelled") },
+                ]}
+              />
+            </ScrollX>
             <Select
               aria-label={tr("付款方式", "Paid via")}
-              className="w-36 max-sm:flex-1"
+              className="w-32 max-sm:flex-1"
               value={via}
               onChange={(e) => setQuery({ via: e.target.value || null })}
             >
@@ -450,6 +503,7 @@ export function OrdersPage() {
                 </option>
               ))}
             </Select>
+            {chooser}
           </>
         }
         footer={
@@ -457,8 +511,8 @@ export function OrdersPage() {
             <>
               <span className="tnum">
                 {list.hasNextPage
-                  ? tr(`已加载 ${rows.length} 条`, `${rows.length} loaded`)
-                  : tr(`共 ${rows.length} 条`, `${rows.length} in total`)}
+                  ? tr(`已加载 ${rows.length} 笔`, `${rows.length} loaded`)
+                  : tr(`共 ${rows.length} 笔`, `${rows.length} in total`)}
               </span>
               {list.hasNextPage && (
                 <Button
@@ -503,11 +557,10 @@ function OrderDialog({ id, onClose }: { id: string; onClose: () => void }) {
         title={o ? <span className="font-mono">{o.out_trade_no}</span> : tr("订单详情", "Order")}
         description={
           o && (
-            <span className="flex flex-wrap items-center gap-1">
-              <OrderStatus status={o.status} />
-              {stuck && <Badge tone="danger">{tr("未开通", "Not fulfilled")}</Badge>}
-              {o.refunded_at && <Badge tone="warning">{tr("已退款", "Refunded")}</Badge>}
-              {o.refund_request?.state === "pending" && <Badge tone="info">{tr("退款处理中", "Refund pending")}</Badge>}
+            <span className="flex flex-wrap items-center gap-1.5">
+              <OrderChip order={o} />
+              <span className="tnum font-semibold text-foreground">{yuan(o.amount_cents)}</span>
+              <span>· {o.user_email ?? o.user_label}</span>
             </span>
           )
         }

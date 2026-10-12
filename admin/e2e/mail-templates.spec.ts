@@ -157,7 +157,10 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
 
   // Leaving the page with unsaved changes asks too.
   await page.getByRole("button", { name: "自动排版", exact: true }).click();
-  await page.getByRole("link", { name: /系统设置 · 通知/ }).click();
+  await page
+    .getByRole("main")
+    .getByRole("link", { name: /^系统设置/ })
+    .click();
   await expect(dialog(page, "放弃未保存的修改？")).toBeVisible();
   await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
   await expect(page).toHaveURL(/\/settings\/mail-templates/);
