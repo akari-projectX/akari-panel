@@ -32,7 +32,7 @@ import { ErrorState, Skeleton } from "../../shared/ui/states";
 import { navigate } from "../router";
 import { useServers } from "../servers";
 import type { ServerView } from "../types";
-import { OrderStatus } from "./orders";
+import { OrderStatus } from "./order-status";
 import { UpdateBadge } from "./updates";
 
 type Window = {
