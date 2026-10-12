@@ -6,9 +6,11 @@
 // way: the bottom save bar (N unsaved changes · discard · save, ⌘/Ctrl+S;
 // disabled while fields need fixing); leaving with unsaved changes asks.
 import { ChevronLeft, ChevronRight, CloudCog, ExternalLink, Lock, Search, TriangleAlert } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { Link, Navigate, useBlocker } from "react-router";
 import { cn } from "../../shared/cn";
+import { get } from "../../shared/api";
 import { useTr } from "../../shared/i18n";
 import { Button } from "../../shared/ui/button";
 import { Tile } from "../../shared/ui/card";
@@ -19,10 +21,10 @@ import { useErrText } from "../kit";
 import { useRoute } from "../router";
 import { useCrumb } from "../session";
 import { AccessSection, RetentionSection } from "./settings-access";
-import { useSettings } from "./settings-data";
+import { useAccess, useAuthSettings, useSettings } from "./settings-data";
 import { DomainsSection, SiteSection } from "./settings-general";
 import { MOVED_OUT, OLD_IDS, OVERVIEW_TINT, SECTIONS, SETTINGS_IA, type Section, type SectionId } from "./settings-ia";
-import { SaveContext, useWide, type SavePart, type SaveRegistry } from "./settings-kit";
+import { OwnerBadge, SaveContext, useWide, type SavePart, type SaveRegistry } from "./settings-kit";
 import { AlertsSection, MailSection, NoticesSection, TemplatesSection } from "./settings-mail";
 import { BlockSection, InstallSection, ProbeSection, UpdatesSection } from "./settings-misc";
 import { CommissionSection, PaymentsSection } from "./settings-payments";
@@ -84,21 +86,30 @@ function useSearch() {
   const [q, setQ] = useState("");
   const t = q.trim().toLowerCase();
   const match = useCallback(
-    (s: { zh: string; en: string; keywords: string; desc?: [string, string] }) =>
-      !t || `${s.zh} ${s.en} ${s.keywords} ${s.desc?.join(" ") ?? ""}`.toLowerCase().includes(t),
+    (s: { zh: string; en: string; keywords: string; desc?: [string, string]; from?: [string, string] }) =>
+      !t ||
+      `${s.zh} ${s.en} ${s.keywords} ${s.desc?.join(" ") ?? ""} ${s.from?.join(" ") ?? ""}`.toLowerCase().includes(t),
     [t],
   );
-  const box = (className?: string) => (
-    <div className={cn("relative", className)}>
+  const box = (phone?: boolean) => (
+    <div className={cn("relative", phone ? "mb-4" : "mb-3")}>
       <Search
-        className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-faint"
+        className={cn(
+          "pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-faint",
+          phone ? "left-3" : "left-2.5",
+        )}
         aria-hidden="true"
       />
       <Input
         type="search"
+        data-nodirty
         aria-label={tr("搜索设置", "Search settings")}
         placeholder={tr("搜索设置", "Search settings")}
-        className="rounded-full pl-8"
+        className={
+          phone
+            ? "h-10 rounded-[11px] bg-[color-mix(in_srgb,var(--foreground)_6%,transparent)] pl-9 shadow-none"
+            : "rounded-full pl-8"
+        }
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
@@ -129,6 +140,21 @@ function Moved({ items }: { items: typeof MOVED_OUT }) {
   );
 }
 
+function OwnerLock({ on }: { on?: boolean }) {
+  const tr = useTr();
+  return (
+    <Lock
+      className={cn("size-3 shrink-0", on ? "text-primary-foreground/80" : "text-faint")}
+      aria-label={tr("仅所有者可修改", "Owner only")}
+    />
+  );
+}
+
+function DangerMark() {
+  const tr = useTr();
+  return <TriangleAlert className="size-3 shrink-0 text-warning" aria-label={tr("含危险操作", "Has a danger zone")} />;
+}
+
 // ---------------------------------------------------------------------------
 // Desktop navigation and overview
 // ---------------------------------------------------------------------------
@@ -147,10 +173,10 @@ function SettingsNav({ current }: { current?: SectionId }) {
   return (
     <aside className="sticky top-[76px] max-h-[calc(100dvh-100px)] self-start overflow-y-auto pr-1 pb-6">
       <h1 className="mb-3 text-title2 font-bold tracking-[-0.02em]">{tr("系统设置", "Settings")}</h1>
-      {search.box("mb-3")}
+      {search.box()}
       <nav aria-label={tr("设置分类", "Settings sections")}>
         {!search.q && (
-          <Link to="/settings" aria-current={!current ? "page" : undefined} className={cn(item(!current), "mb-1")}>
+          <Link to="/settings" aria-current={!current ? "page" : undefined} className={cn(item(!current), "mb-2")}>
             <Tile color={OVERVIEW_TINT}>
               <CloudCog />
             </Tile>
@@ -171,12 +197,7 @@ function SettingsNav({ current }: { current?: SectionId }) {
                   <s.icon />
                 </Tile>
                 <span className="flex-1 truncate">{tr(s.zh, s.en)}</span>
-                {s.owner && (
-                  <Lock
-                    className={cn("size-3", current === s.id ? "text-primary-foreground/80" : "text-faint")}
-                    aria-label={tr("仅所有者可修改", "Owner only")}
-                  />
-                )}
+                {s.owner && <OwnerLock on={current === s.id} />}
                 {s.href && <ChevronRight className="size-3.5 text-faint" aria-hidden="true" />}
               </Link>
             ))}
@@ -198,67 +219,256 @@ function SettingsNav({ current }: { current?: SectionId }) {
   );
 }
 
-/** "需要注意": obsolete panel.toml keys (SET-25) and the standing warnings of /settings. */
-function Attention() {
+type Notice = { key: string; text: ReactNode; to: string };
+
+/**
+ * "需要注意": what needs the operator now — obsolete panel.toml keys (SET-25),
+ * the standing warnings of /settings (domains, passkey centre) and mail that
+ * could not be delivered. One strip, one "查看" (the first item's place).
+ */
+function Attention({ mail }: { mail?: { dead_letters: number } }) {
   const tr = useTr();
   const s = useSettings();
   const d = s.data;
-  if (!d || (d.obsolete_config_keys.length === 0 && d.warnings.length === 0)) return null;
+  const items: Notice[] = [];
+  if (d?.obsolete_config_keys.length)
+    items.push({
+      key: "obsolete",
+      to: "/settings",
+      text: (
+        <>
+          {tr("panel.toml 中有已废弃的键", "panel.toml has obsolete keys")}{" "}
+          <code className="font-mono break-all">{d.obsolete_config_keys.join(", ")}</code>
+          {tr(
+            "，这些设置已经搬到系统设置里，请从文件中删除",
+            "; these settings live here now, delete them from the file",
+          )}
+        </>
+      ),
+    });
+  for (const w of d?.warnings ?? []) items.push({ key: w, to: "/settings/domains", text: w });
+  if (mail?.dead_letters)
+    items.push({
+      key: "mail",
+      to: "/status?mail=dead",
+      text: tr(`发信通道有 ${mail.dead_letters} 封邮件发送失败`, `${mail.dead_letters} mails could not be delivered`),
+    });
+  if (items.length === 0) return null;
+  const go = items.find((i) => i.to !== "/settings")?.to;
   return (
     <section
       aria-label={tr("需要注意", "Needs attention")}
-      className="grid gap-2 rounded-xl bg-warning-soft px-4 py-3 text-body"
+      className="grid gap-3 rounded-xl bg-warning-soft px-4 py-3 text-body sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center"
     >
-      <div className="flex items-center gap-2 font-semibold">
-        <TriangleAlert className="size-4 text-warning" aria-hidden="true" />
-        {tr("需要注意", "Needs attention")}
-      </div>
-      {d.obsolete_config_keys.length > 0 && (
-        <div>
-          <div className="font-medium">{tr("panel.toml 中有已废弃的键", "panel.toml has obsolete keys")}</div>
-          <div className="text-footnote text-muted-foreground">
-            {tr(
-              "这些设置已经搬到系统设置里，请从 panel.toml 删除：",
-              "These settings moved here; delete them from panel.toml: ",
-            )}
-            <code className="font-mono break-all text-foreground">{d.obsolete_config_keys.join(", ")}</code>
-          </div>
-        </div>
-      )}
-      {d.warnings.length > 0 && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <ul className="min-w-0 flex-1 list-disc pl-4 text-footnote">
-            {d.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-          <Button asChild size="sm" variant="outline">
-            <Link to="/settings/domains">{tr("查看域名与证书", "Open domains")}</Link>
-          </Button>
-        </div>
+      <TriangleAlert className="size-4 text-warning max-sm:hidden" aria-hidden="true" />
+      <p>
+        <b className="font-semibold">
+          {tr(
+            `需要注意 ${items.length} 项：`,
+            `${items.length} ${items.length === 1 ? "thing needs" : "things need"} attention: `,
+          )}
+        </b>
+        {items.map((i, n) => (
+          <span key={i.key}>
+            {n > 0 && tr("；", "; ")}
+            {i.text}
+          </span>
+        ))}
+        {tr("。", ".")}
+      </p>
+      {go && (
+        <Button asChild size="sm" variant="outline" className="justify-self-start">
+          <Link to={go}>{tr("查看", "View")}</Link>
+        </Button>
       )}
     </section>
   );
 }
 
+// --- One-line summaries (real values; the section's description until they load) ---
+
+type Num3 = { value: number | null; effective: number };
+type SignupS = { register_enabled: boolean; email_verify: boolean; invite_required: boolean };
+type CleanupS = { auto: boolean; after_days: number };
+type PaymentsS = { methods: { display_name: string; enabled: boolean; sort: number }[] };
+type CommissionS = { enabled: boolean; rate_percent: number; first_order_only: boolean };
+type MailS = {
+  enabled: boolean;
+  provider: string;
+  dead_letters: number;
+  notify_order_paid: boolean;
+  notify_expiry_days: number;
+  notify_expired: boolean;
+  notify_quota: boolean;
+  notify_refund: boolean;
+};
+type AlertsS = { enabled: boolean; telegram_enabled: boolean; webhook_enabled: boolean; email_enabled: boolean };
+type BlockS = { nodes_enabled: number; rules: { enabled: boolean }[] };
+type UpdatesS = { source_url: string | null; auto_check: boolean };
+
+function useSummaries(): { sum: Partial<Record<SectionId, string>>; mail?: MailS } {
+  const tr = useTr();
+  const q = <T,>(key: unknown[], path: string) => ({ queryKey: key, queryFn: () => get<T>(path) });
+  const st = useSettings().data;
+  const signup = useQuery(q<SignupS>(["settings", "signup"], "/settings/signup")).data;
+  const auth = useAuthSettings().data;
+  const cleanup = useQuery(q<CleanupS>(["settings", "cleanup"], "/settings/cleanup")).data;
+  const access = useAccess().data;
+  const pay = useQuery(q<PaymentsS>(["settings", "payments"], "/settings/payments")).data;
+  const com = useQuery(q<CommissionS>(["commission-settings"], "/commission-settings")).data;
+  const mail = useQuery(q<MailS>(["settings", "mail"], "/settings/mail")).data;
+  const tpl = useQuery(q<{ kind: string; custom: boolean }[]>(["mail-templates"], "/settings/mail-templates")).data;
+  const alerts = useQuery(q<AlertsS>(["alerts", "settings"], "/alerts/settings")).data;
+  const block = useQuery(q<BlockS>(["block-rules"], "/block-rules")).data;
+  const upd = useQuery(q<UpdatesS>(["agent-updates"], "/agent-updates")).data;
+  const sep = " · ";
+  const days = (n: Num3) => (n.effective === 0 ? tr("永久", "forever") : tr(`${n.effective} 天`, `${n.effective} d`));
+  const sum: Partial<Record<SectionId, string>> = {};
+  if (st) {
+    sum.site = [st.site_name || "Akari", st.timezone.effective].join(sep);
+    sum.domains = tr(
+      `主 ${st.main.domains.length} · 订阅 ${st.sub.domains.length} · 节点 ${st.node.domains.length}`,
+      `Main ${st.main.domains.length} · subscription ${st.sub.domains.length} · node ${st.node.domains.length}`,
+    );
+    sum.subscription = tr(
+      `${st.subscription.formats.effective.length} 种格式 · ${st.subscription.import_clients.effective.length} 个一键导入`,
+      `${st.subscription.formats.effective.length} formats · ${st.subscription.import_clients.effective.length} import buttons`,
+    );
+    sum.routing = [
+      st.subscription.rules.value === null ? tr("默认模板", "Default template") : tr("自定义", "Custom"),
+      tr(`${st.subscription.rules.effective.length} 条`, `${st.subscription.rules.effective.length} rules`),
+    ].join(sep);
+    const o = st.node_ops;
+    sum.install = [
+      o.install_tls_pin ? tr("公钥钉扎", "Pinned key") : tr("自动探测证书", "Certificate probed"),
+      o.acme_directory_url
+        ? tr(`ACME ${hostOf(o.acme_directory_url)}`, `ACME ${hostOf(o.acme_directory_url)}`)
+        : "ACME Let's Encrypt",
+    ].join(sep);
+    const mins = Math.round(st.probe.interval_secs.effective / 60);
+    sum.probe = [
+      tr(`每 ${mins} 分钟`, `Every ${mins} min`),
+      st.probe.panel_tcp.effective ? tr("TCP 测速", "TCP probe") : tr("不做 TCP 测速", "No TCP probe"),
+    ].join(sep);
+    sum.retention = tr(
+      `审计 ${days(st.security.audit_retention_days)} · 明细 ${days(st.security.traffic_daily_retention_days)}`,
+      `Audit ${days(st.security.audit_retention_days)} · history ${days(st.security.traffic_daily_retention_days)}`,
+    );
+  }
+  if (signup)
+    sum.signup = [
+      signup.register_enabled ? tr("开放注册", "Open") : tr("不开放注册", "Closed"),
+      signup.email_verify ? tr("需验证邮箱", "Email verified") : tr("不验证邮箱", "No verification"),
+      ...(signup.invite_required ? [tr("需邀请码", "Invite only")] : []),
+    ].join(sep);
+  if (auth) {
+    const forms = [auth.turnstile_login, auth.turnstile_register, auth.turnstile_reset].filter(Boolean).length;
+    sum.login = [
+      forms
+        ? tr(`Turnstile 已开 · ${forms} 个表单`, `Turnstile on · ${forms} forms`)
+        : tr("Turnstile 未开", "Turnstile off"),
+      ...(auth.passkey_only_admins ? [tr("管理员仅通行密钥", "Admins passkey only")] : []),
+    ].join(sep);
+  }
+  if (cleanup)
+    sum.cleanup = cleanup.auto
+      ? tr(`开启 · 注册超过 ${cleanup.after_days} 天`, `On · after ${cleanup.after_days} days`)
+      : tr("关闭", "Off");
+  if (access)
+    sum.access = [
+      tr("前缀已隐藏", "Prefix masked"),
+      access.admin_allow_cidrs.length
+        ? tr(`白名单 ${access.admin_allow_cidrs.length} 条`, `${access.admin_allow_cidrs.length} allowed`)
+        : tr("不限 IP", "Any address"),
+    ].join(sep);
+  if (pay) {
+    const on = [...pay.methods].filter((m) => m.enabled).sort((a, b) => a.sort - b.sort);
+    sum.payments = on.length ? on.map((m) => m.display_name).join(sep) : tr("没有启用的渠道", "No channel on");
+  }
+  if (com)
+    sum.commission = com.enabled
+      ? [`${com.rate_percent}%`, ...(com.first_order_only ? [tr("仅首单", "First order only")] : [])].join(sep)
+      : tr("关闭", "Off");
+  if (mail) {
+    sum.mail = mail.enabled
+      ? [
+          mail.provider === "resend" ? "Resend" : "SMTP",
+          mail.dead_letters ? tr(`${mail.dead_letters} 封失败`, `${mail.dead_letters} failed`) : tr("正常", "Healthy"),
+        ].join(sep)
+      : tr("未启用", "Off");
+    const on = [
+      mail.notify_order_paid,
+      mail.notify_expiry_days > 0,
+      mail.notify_expired,
+      mail.notify_quota,
+      mail.notify_refund,
+    ];
+    sum.notices = tr(
+      `${on.filter(Boolean).length} / ${on.length} 开启`,
+      `${on.filter(Boolean).length} of ${on.length} on`,
+    );
+  }
+  if (tpl) {
+    const kinds = new Set(tpl.map((t) => t.kind)).size;
+    const custom = new Set(tpl.filter((t) => t.custom).map((t) => t.kind)).size;
+    sum.templates = tr(`${kinds} 种 · ${custom} 种已自定义`, `${kinds} kinds · ${custom} customised`);
+  }
+  if (alerts) {
+    const ch = [
+      alerts.telegram_enabled && "Telegram",
+      alerts.webhook_enabled && "Webhook",
+      alerts.email_enabled && tr("邮件", "Email"),
+    ].filter(Boolean);
+    sum.alerts = !alerts.enabled
+      ? tr("告警关闭", "Alerts off")
+      : ch.length
+        ? ch.join(sep)
+        : tr("没有通知通道", "No channel");
+  }
+  if (block)
+    sum.block = tr(
+      `${block.rules.filter((r) => r.enabled).length} 个规则集 · ${block.nodes_enabled} 个节点启用`,
+      `${block.rules.filter((r) => r.enabled).length} rule sets · on ${block.nodes_enabled} nodes`,
+    );
+  if (upd)
+    sum.updates = [
+      upd.source_url ? tr("自定义源", "Custom source") : tr("官方源", "Official source"),
+      upd.auto_check ? tr("自动检查", "Auto check") : tr("手动检查", "Manual check"),
+    ].join(sep);
+  return { sum, mail };
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 function Overview() {
   const tr = useTr();
   useCrumb(tr("概览", "Overview"));
+  const { sum, mail } = useSummaries();
   return (
     <div className="grid gap-6">
       <div className="pt-1">
         <h2 className="text-title2 font-bold tracking-[-0.02em]">{tr("概览", "Overview")}</h2>
         <p className="mt-1 text-body text-muted-foreground">
-          {tr("带", "Sections with")} <Lock className="inline size-3" aria-label={tr("锁", "a lock")} />{" "}
-          {tr("的分区只有所有者能修改；带", "only the owner can change; sections with")}{" "}
+          {tr(
+            `${SETTINGS_IA.length} 组 ${SECTIONS.length} 个分区。带`,
+            `${SETTINGS_IA.length} groups, ${SECTIONS.length} sections. Those with`,
+          )}{" "}
+          <Lock className="inline size-3" aria-label={tr("锁", "a lock")} />{" "}
+          {tr("的只有所有者能修改；带", "only the owner can change; those with")}{" "}
           <TriangleAlert className="inline size-3 text-warning" aria-label={tr("警告", "a warning sign")} />{" "}
           {tr(
-            "的分区含有影响全站的操作，单独放在分区底部的「危险操作」里，保存时会再确认。",
-            "hold site-wide actions, kept apart in their danger zone and confirmed on save.",
+            "的分区含有影响全站的危险操作，单独放在分区底部的「危险操作」里。",
+            "hold site-wide dangerous actions, kept apart in the section's danger zone.",
           )}
         </p>
       </div>
-      <Attention />
+      <Attention mail={mail} />
       {SETTINGS_IA.map((g) => (
         <section key={g.zh}>
           <h3 className="mb-2 px-1 text-footnote font-semibold text-muted-foreground">{tr(g.zh, g.en)}</h3>
@@ -267,6 +477,7 @@ function Overview() {
               <Link
                 key={s.id}
                 to={hrefOf(s)}
+                title={tr(`原位置：${s.from[0]}`, `Formerly: ${s.from[1]}`)}
                 className="group flex items-center gap-3 rounded-xl bg-card p-3.5 shadow-card transition-shadow hover:shadow-raised"
               >
                 <Tile color={s.tint} size={32}>
@@ -275,15 +486,10 @@ function Overview() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 text-body font-semibold">
                     {tr(s.zh, s.en)}
-                    {s.owner && <Lock className="size-3 text-faint" aria-label={tr("仅所有者可修改", "Owner only")} />}
-                    {s.danger && (
-                      <TriangleAlert
-                        className="size-3 text-warning"
-                        aria-label={tr("含危险操作", "Has a danger zone")}
-                      />
-                    )}
+                    {s.owner && <OwnerLock />}
+                    {s.danger && <DangerMark />}
                   </div>
-                  <div className="line-clamp-2 text-footnote text-muted-foreground">{tr(...s.desc)}</div>
+                  <div className="truncate text-footnote text-muted-foreground">{sum[s.id] ?? tr(...s.desc)}</div>
                 </div>
                 <ChevronRight
                   className="size-4 text-faint transition-transform group-hover:translate-x-0.5"
@@ -294,7 +500,45 @@ function Overview() {
           </div>
         </section>
       ))}
+      <MovedFrom />
     </div>
+  );
+}
+
+/** "从哪里搬来": where each section lived before the redesign (collapsed). */
+function MovedFrom() {
+  const tr = useTr();
+  return (
+    <details className="group rounded-xl bg-card shadow-card">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 px-4 py-2.5 text-body font-medium [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-4 text-faint transition-transform group-open:rotate-90" aria-hidden="true" />
+        {tr("找不到以前的设置？每个分区是从哪里搬来的", "Looking for an old setting? Where each section came from")}
+      </summary>
+      <ul className="divide-y divide-separator border-t border-separator">
+        {SECTIONS.map((s) => (
+          <li key={s.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2">
+            <Tile color={s.tint}>
+              <s.icon />
+            </Tile>
+            <Link to={hrefOf(s)} className="min-w-32 text-body font-medium hover:text-primary">
+              {tr(s.zh, s.en)}
+            </Link>
+            <span className="min-w-0 flex-1 basis-48 text-footnote text-muted-foreground">
+              {tr(`原位置：${s.from[0]}`, `Formerly: ${s.from[1]}`)}
+            </span>
+          </li>
+        ))}
+        {MOVED_OUT.map((m) => (
+          <li key={m.to} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-4 py-2">
+            <ExternalLink className="size-4 text-faint" aria-hidden="true" />
+            <Link to={m.to} className="min-w-32 text-body font-medium hover:text-primary">
+              {tr(m.zh, m.en)}
+            </Link>
+            <span className="min-w-0 flex-1 basis-48 text-footnote text-muted-foreground">{tr(...m.where)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
@@ -305,16 +549,19 @@ function Overview() {
 function PhoneIndex() {
   const tr = useTr();
   const search = useSearch();
+  const { sum, mail } = useSummaries();
   const groups = SETTINGS_IA.map((g) => ({ ...g, sections: g.sections.filter(search.match) })).filter(
     (g) => g.sections.length > 0,
   );
   return (
     <>
       <h1 className="mb-3 text-title1 font-bold tracking-[-0.02em]">{tr("系统设置", "Settings")}</h1>
-      {search.box("mb-4")}
-      <div className="mb-5">
-        <Attention />
-      </div>
+      {search.box(true)}
+      {!search.q && (
+        <div className="mb-5 empty:hidden">
+          <Attention mail={mail} />
+        </div>
+      )}
       <nav aria-label={tr("设置分类", "Settings sections")} className="grid gap-5">
         {groups.map((g) => (
           <section key={g.zh} className="grid gap-1.5">
@@ -328,11 +575,9 @@ function PhoneIndex() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 text-callout font-medium">
                       {tr(s.zh, s.en)}
-                      {s.owner && (
-                        <Lock className="size-3 text-faint" aria-label={tr("仅所有者可修改", "Owner only")} />
-                      )}
+                      {s.owner && <OwnerLock />}
                     </div>
-                    <div className="truncate text-footnote text-muted-foreground">{tr(...s.desc)}</div>
+                    <div className="truncate text-footnote text-muted-foreground">{sum[s.id] ?? tr(...s.desc)}</div>
                   </div>
                   <ChevronRight className="size-4 text-faint" aria-hidden="true" />
                 </Link>
@@ -369,31 +614,30 @@ function SectionPage({ s }: { s: Section }) {
   useCrumb(tr(s.zh, s.en));
   return (
     <SaveScope>
-      <div className="pb-6">
-        {!wide && (
-          <Link
-            to="/settings"
-            className="-ml-1 mb-2 inline-flex min-h-11 items-center text-callout text-primary"
-            aria-label={tr("返回系统设置", "Back to Settings")}
-          >
-            <ChevronLeft className="size-5" aria-hidden="true" />
-            {tr("系统设置", "Settings")}
-          </Link>
-        )}
-        <header className="mb-5 flex items-start gap-3 pt-1">
-          <Tile color={s.tint} size={36}>
-            <s.icon />
-          </Tile>
-          <div className="min-w-0 flex-1">
-            <h2 className="flex flex-wrap items-center gap-2 text-title2 font-bold tracking-[-0.02em]">
-              {tr(s.zh, s.en)}
-            </h2>
-            <p className="mt-0.5 text-body text-muted-foreground">{tr(...s.desc)}</p>
-          </div>
-        </header>
-        <div className="grid gap-6">
-          <Body />
+      {!wide && (
+        <Link
+          to="/settings"
+          className="-ml-1 mb-2 inline-flex min-h-11 items-center text-callout text-primary"
+          aria-label={tr("返回系统设置", "Back to Settings")}
+        >
+          <ChevronLeft className="size-5" aria-hidden="true" />
+          {tr("系统设置", "Settings")}
+        </Link>
+      )}
+      <header className="mb-5 flex items-start gap-3 pt-1">
+        <Tile color={s.tint} size={36}>
+          <s.icon />
+        </Tile>
+        <div className="min-w-0 flex-1">
+          <h2 className="flex flex-wrap items-center gap-2 text-title2 font-bold tracking-[-0.02em]">
+            {tr(s.zh, s.en)}
+            {s.owner && <OwnerBadge />}
+          </h2>
+          <p className="mt-0.5 text-body text-muted-foreground">{tr(...s.desc)}</p>
         </div>
+      </header>
+      <div className="grid gap-6">
+        <Body />
       </div>
     </SaveScope>
   );
@@ -427,18 +671,39 @@ function SaveScope({ children }: { children: ReactNode }) {
   const dirty = useRef(false);
   dirty.current = count > 0;
 
+  // A save asked for while one runs (⌘S pressed again right after an edit) is
+  // not dropped: it runs once the first has finished, with the latest values.
+  const busy = useRef(false);
+  const again = useRef(false);
   const save = useCallback(async () => {
+    if (busy.current) {
+      again.current = true;
+      return;
+    }
     const list = [...parts.current.values()].map((p) => p.current);
-    if (saving || list.some((p) => p.count > 0 && p.errors > 0)) return;
+    if (list.some((p) => p.count > 0 && p.errors > 0)) return;
+    busy.current = true;
     setSaving(true);
+    let ok = true;
     try {
-      for (const p of list) if (p.count > 0 && !(await p.save())) return;
+      for (const p of list)
+        if (p.count > 0 && !(await p.save())) {
+          ok = false;
+          break;
+        }
     } catch (e) {
+      ok = false;
       toast({ tone: "error", title: errText(e) });
     } finally {
+      busy.current = false;
       setSaving(false);
     }
-  }, [saving, toast, errText]);
+    if (again.current) {
+      again.current = false;
+      // After the re-render, so the parts carry the values typed meanwhile.
+      if (ok) setTimeout(() => dirty.current && void saveRef.current(), 0);
+    }
+  }, [toast, errText]);
   const discard = () => {
     for (const p of parts.current.values()) p.current.discard();
   };
@@ -481,14 +746,37 @@ function SaveScope({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("beforeunload", onUnload);
   }, [count]);
 
+  // The bar floats over the bottom of the window, aligned with the section's column.
+  const box = useRef<HTMLDivElement>(null);
+  const [place, setPlace] = useState<{ left: number; width: number } | null>(null);
+  useEffect(() => {
+    const el = box.current;
+    if (!el || count === 0) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      setPlace((p) => (p && p.left === r.left && p.width === r.width ? p : { left: r.left, width: r.width }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [count]);
+
   return (
     <SaveContext.Provider value={registry}>
-      {children}
+      <div ref={box} className="pb-24">
+        {children}
+      </div>
       {count > 0 && (
         <div
           role="region"
           aria-label={tr("保存栏", "Save bar")}
-          className="glass sticky bottom-[calc(64px+env(safe-area-inset-bottom))] z-20 mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl bg-(--glass-toolbar) px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
+          style={place ? { left: place.left, width: place.width } : undefined}
+          className="glass fixed inset-x-3 bottom-[calc(60px+env(safe-area-inset-bottom))] z-20 flex items-center gap-3 rounded-2xl bg-popover px-4 py-2.5 shadow-pop animate-in fade-in-0 slide-in-from-bottom-2 lg:bottom-5"
         >
           <span className="size-2 shrink-0 rounded-full bg-warning" aria-hidden="true" />
           <span className="min-w-0 flex-1 text-body" role="status">

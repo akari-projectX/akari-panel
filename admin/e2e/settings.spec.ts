@@ -80,7 +80,19 @@ test("SET-25: overview (needs attention: obsolete keys), search by old names, ol
   }
   await page.goto(`${CONSOLE}/settings/mail?outbox=dead`);
   await expect(page).toHaveURL(/\/status\?mail=dead$/);
-  // Unsaved changes: the save bar counts them; leaving asks first.
+  // Unsaved changes: the save bar counts them; leaving asks first. The site name is put back
+  // through the API whatever happens (other specs read it in the page title).
+  const site = await apiJson<{ site_name: string | null }>("GET", "/settings");
+  try {
+    await guardAndShortcut(page, info);
+  } finally {
+    const now = await apiJson<{ version: number; site_name: string | null }>("GET", "/settings");
+    if (now.site_name !== site.site_name)
+      await apiJson("PUT", "/settings/site", { version: now.version, site_name: site.site_name });
+  }
+});
+
+async function guardAndShortcut(page: Page, info: TestInfo) {
   await openConsole(page, "/settings/site");
   const name = page.getByLabel("站点名称");
   await name.fill("Akari guard");
@@ -96,13 +108,16 @@ test("SET-25: overview (needs attention: obsolete keys), search by old names, ol
   await page.getByRole("alertdialog").getByRole("button", { name: "取消" }).click();
   await expect(page).toHaveURL(/\/settings\/site$/);
   await expect(name).toHaveValue("Akari guard");
-  // ⌘/Ctrl+S saves; then back to the default name the same way.
+  // ⌘/Ctrl+S saves; then back to the default name the same way (each save finished before
+  // the next edit: the bar is gone).
   await page.keyboard.press("ControlOrMeta+s");
   await toast(page, "站点设置已保存");
   await expect(bar(page)).toHaveCount(0);
   await name.fill("");
+  await expect(bar(page)).toContainText("1 项未保存的修改");
   await page.keyboard.press("ControlOrMeta+s");
-  await toast(page, "站点设置已保存");
+  await expect(bar(page)).toHaveCount(0);
+  await expect(name).toHaveValue("");
   // Discard puts the saved values back.
   await name.fill("Akari discard");
   await bar(page).getByRole("button", { name: "放弃" }).click();
@@ -112,7 +127,7 @@ test("SET-25: overview (needs attention: obsolete keys), search by old names, ol
   await leave();
   await confirmDialog(page, undefined, "放弃修改");
   await expect(page).toHaveURL(/\/settings(\/domains)?$/);
-});
+}
 
 test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links and downloads", async ({ page }) => {
   await openConsole(page, "/settings/site");
@@ -162,21 +177,22 @@ test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links an
   await toast(page, "品牌设置已保存");
 });
 
-test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added in a dialog, DNS check), removal impact, per-user subscription domains, Cloudflare, certificate names, the passkey centre", async ({
+test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added inline, DNS check from the row menu), removal impact, per-user subscription domains, Cloudflare, certificate names, the passkey centre", async ({
   page,
 }, info) => {
   await openConsole(page, "/settings/domains");
-  // SET-02: a subscription domain from the dialog (a bad name is refused in place).
+  // SET-02: a subscription domain from the list's last row (a bad name is refused in place).
   const sub = `${uniq(info, "sub")}.e2e.test`;
+  const input = page.getByLabel("新的订阅域名");
+  await input.fill("portal");
+  await input.press("Enter");
+  await expect(page.getByText(/不是完整域名/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加订阅域名" })).toBeDisabled();
+  await input.fill(sub);
   await page.getByRole("button", { name: "添加订阅域名" }).click();
-  let d = dialog(page, "添加订阅域名");
-  await d.getByLabel("域名").fill("portal");
-  await d.getByRole("button", { name: "添加" }).click();
-  await expect(d.getByText(/不是完整域名/)).toBeVisible();
-  await d.getByLabel("域名").fill(sub);
-  await d.getByRole("button", { name: "添加" }).click();
-  await expect(d).toHaveCount(0);
-  await page.getByRole("button", { name: `DNS 检测 ${sub}` }).click();
+  await expect(input).toHaveValue("");
+  await page.getByRole("button", { name: `更多操作 ${sub}` }).click();
+  await page.getByRole("menuitem", { name: "DNS 检测" }).click();
   await expect(
     page
       .getByRole("status")
@@ -192,7 +208,8 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added in a dialog
   await expect(bar(page)).toHaveCount(0);
   await expect(page.getByText(sub, { exact: true })).toBeVisible();
   // SET-03: removing it lists the impact on save and wants the domain typed.
-  await page.getByRole("button", { name: `移除 ${sub}` }).click();
+  await page.getByRole("button", { name: `更多操作 ${sub}` }).click();
+  await page.getByRole("menuitem", { name: "移除" }).click();
   await setSwitch(page.getByRole("switch", { name: "每个用户随机分配订阅域名" }), false);
   await page.getByLabel("信任 Cloudflare（读取 CF-Connecting-IP）").selectOption("");
   await save(page);
@@ -203,7 +220,7 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added in a dialog
   // SET-09 (Cloudflare ranges): edited in a dialog, saved in the bar, then back to the shipped list.
   for (const ranges of ["173.245.48.0/20", ""]) {
     await page.getByRole("button", { name: "编辑网段" }).click();
-    d = dialog(page, "Cloudflare 网段");
+    const d = dialog(page, "Cloudflare 网段");
     await d.getByLabel("网段（每行一个）").fill(ranges);
     await d.getByRole("button", { name: "完成" }).click();
     await save(page);
@@ -218,7 +235,7 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added in a dialog
   await expect(page.getByText("通行密钥中心域名").first()).toBeVisible();
   const zone = page.getByRole("region", { name: "危险操作" });
   await zone.getByRole("button", { name: /^(设置|更换)…$/ }).click();
-  d = dialog(page, "通行密钥中心域名");
+  const d = dialog(page, "通行密钥中心域名");
   await d.getByLabel("新的中心域名").fill("bad");
   await expect(d.getByText(/不是完整域名/)).toBeVisible();
   await expect(d.getByRole("button", { name: "完成" })).toBeDisabled();
@@ -335,7 +352,9 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   await expect(bar(page)).toContainText("1 处需要修正");
   await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await codes.fill("3");
-  await page.getByLabel("邮箱域名白名单").fill("e2e.test, example.com");
+  await page.getByRole("button", { name: "邮箱域名白名单" }).click();
+  await dialog(page, "允许注册的邮箱域名").getByLabel("邮箱域名（每行一个）").fill("e2e.test\nexample.com");
+  await dialog(page, "允许注册的邮箱域名").getByRole("button", { name: "完成" }).click();
   await page.getByLabel("试用天数").fill("7");
   const saved = page.waitForResponse((r) => r.url().endsWith("/settings/signup") && r.request().method() === "PUT");
   await save(page);
@@ -343,10 +362,12 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   expect(res.status(), await res.text()).toBe(200);
   await toast(page, "注册设置已保存");
   await page.reload();
-  await expect(page.getByLabel("邮箱域名白名单")).toHaveValue("e2e.test, example.com");
+  await expect(page.getByRole("button", { name: "邮箱域名白名单" })).toHaveText("2 个域名");
   await setSwitch(page.getByRole("switch", { name: "开放注册" }), false);
   await setSwitch(page.getByRole("switch", { name: "注册需要邀请码" }), false);
-  await page.getByLabel("邮箱域名白名单").fill("");
+  await page.getByRole("button", { name: "邮箱域名白名单" }).click();
+  await dialog(page, "允许注册的邮箱域名").getByLabel("邮箱域名（每行一个）").fill("");
+  await dialog(page, "允许注册的邮箱域名").getByRole("button", { name: "完成" }).click();
   await save(page);
   await toast(page, "注册设置已保存");
 });
@@ -513,7 +534,7 @@ test("SET-19: payment methods — add (kind chooser, key files), test, edit in a
 }, info) => {
   const name = uniq(info, "支付宝");
   await openConsole(page, "/settings/payments");
-  await page.getByRole("button", { name: "添加支付方式" }).click();
+  await page.getByRole("button", { name: "添加渠道" }).click();
   await dialog(page, "添加支付方式").getByRole("button", { name: "支付宝当面付" }).click();
   const d = dialog(page, "添加 支付宝当面付");
   await d.getByLabel("名称（用户可见）").fill(name);
@@ -526,7 +547,7 @@ test("SET-19: payment methods — add (kind chooser, key files), test, edit in a
   await d.getByRole("button", { name: "保存" }).click();
   await toast(page, "支付方式已保存");
   const item = page.locator(`[data-method="${name}"]`);
-  await expect(item).toContainText("已停用");
+  await expect(item).toContainText("停用");
   // Test the connection (nobody listens on the gateway: reported, not thrown).
   await item.getByRole("button", { name: "测试连接" }).click();
   await expect(page.locator("[data-sonner-toast]").filter({ hasText: /连接/ }).first()).toBeVisible();

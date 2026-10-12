@@ -5,14 +5,17 @@
 // danger zone and are confirmed on save (the cleanup estimate is counted for
 // the values being edited, not the saved ones).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 import { Link } from "react-router";
 import { get, put, qs } from "../../shared/api";
 import { dateTime, daysBefore, siteToday } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
+import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Group } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
-import { Input, SecretInput, Select } from "../../shared/ui/form";
+import { Dialog } from "../../shared/ui/dialog";
+import { Field, Input, SecretInput, Select, Textarea } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
 import { useAction } from "../data";
 import { useDebounced } from "../kit";
@@ -77,6 +80,8 @@ function SignupForm({ s }: { s: Signup }) {
     reset_enabled: s.reset_enabled,
   });
   const v = f.value!;
+  const [editing, setEditing] = useState(false);
+  const domainList = v.domains.split(/[\s,]+/).filter(Boolean);
   const codesError = f.isEdited("codes")
     ? intError(v.codes, 0, 100, tr) && tr("请输入 0–100 的整数（0 = 不能生成）", "Enter 0–100 (0 = none)")
     : undefined;
@@ -146,14 +151,38 @@ function SignupForm({ s }: { s: Signup }) {
             </Callout>
           )}
         </SwitchRow>
-        <FieldRow
-          label={tr("邮箱域名白名单", "Email domain allow-list")}
-          description={tr("逗号分隔，如 example.com；留空 = 不限制", "Comma separated, e.g. example.com; empty = any")}
+        <InfoRow
+          label={tr("允许注册的邮箱域名", "Allowed email domains")}
+          description={tr("留空 = 不限制。每行一个，如 example.com", "Empty = any. One per line, e.g. example.com")}
         >
-          {(a) => (
-            <Input {...a} className="sm:w-64" value={v.domains} onChange={(e) => f.set("domains", e.target.value)} />
-          )}
-        </FieldRow>
+          {f.isEdited("domains") && <Badge tone="info">{tr("未保存", "Unsaved")}</Badge>}
+          <Button
+            size="sm"
+            variant="outline"
+            aria-label={tr("邮箱域名白名单", "Email domain allow-list")}
+            onClick={() => setEditing(true)}
+          >
+            {domainList.length
+              ? tr(`${domainList.length} 个域名`, `${domainList.length} domains`)
+              : tr("不限制", "Any")}
+          </Button>
+        </InfoRow>
+        {editing && (
+          <DomainsDialog
+            value={domainList.join("\n")}
+            onClose={() => setEditing(false)}
+            onDone={(t) => {
+              f.set(
+                "domains",
+                t
+                  .split(/[\s,]+/)
+                  .filter(Boolean)
+                  .join(", "),
+              );
+              setEditing(false);
+            }}
+          />
+        )}
       </Group>
       <Group
         title={tr("邀请", "Invites")}
@@ -233,6 +262,44 @@ function SignupForm({ s }: { s: Signup }) {
         />
       </Group>
     </>
+  );
+}
+
+function DomainsDialog({
+  value,
+  onClose,
+  onDone,
+}: {
+  value: string;
+  onClose: () => void;
+  onDone: (t: string) => void;
+}) {
+  const tr = useTr();
+  const [t, setT] = useState(value);
+  return (
+    <Dialog
+      open
+      size="sm"
+      onClose={onClose}
+      title={tr("允许注册的邮箱域名", "Allowed email domains")}
+      description={tr(
+        "每行一个，如 example.com；留空 = 不限制。完成后在保存栏保存。",
+        "One per line, e.g. example.com; empty = any. Save in the save bar afterwards.",
+      )}
+      onSubmit={() => onDone(t)}
+      footer={
+        <>
+          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          <Button type="submit" variant="primary">
+            {tr("完成", "Done")}
+          </Button>
+        </>
+      }
+    >
+      <Field label={tr("邮箱域名（每行一个）", "Email domains (one per line)")}>
+        <Textarea data-autofocus rows={8} className="font-mono" value={t} onChange={(e) => setT(e.target.value)} />
+      </Field>
+    </Dialog>
   );
 }
 

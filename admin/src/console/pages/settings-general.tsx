@@ -4,8 +4,8 @@
 // lists the impact of removed domains (typed confirmation), and confirms a
 // new time zone and a new passkey centre.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Star, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { CircleCheck, GripVertical, Plus, Radar, Star, Trash2, TriangleAlert } from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
 import { del, get, post, put, putBinary } from "../../shared/api";
 import { prefixBase } from "../../shared/base";
 import { dateTime } from "../../shared/format";
@@ -16,6 +16,7 @@ import { Group } from "../../shared/ui/card";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
 import { Field, Input, Select, Textarea } from "../../shared/ui/form";
+import { MenuItem, MenuSeparator, RowMenu } from "../../shared/ui/menu";
 import { useToast } from "../../shared/ui/toast";
 import { settled, useAction } from "../data";
 import { Mono, useErrText } from "../kit";
@@ -534,7 +535,6 @@ function Domains({ d }: { d: SettingsView }) {
   const confirm = useConfirm();
   const toast = useToast();
   const errText = useErrText();
-  const [adding, setAdding] = useState<Kind | null>(null);
   const [checks, setChecks] = useState<Record<string, { tone: "success" | "warning" | "neutral"; text: string }>>({});
   const f = useDraft(domainBase(d));
   const v = f.value!;
@@ -650,20 +650,37 @@ function Domains({ d }: { d: SettingsView }) {
     }
   };
 
+  /** What a domain serves (shown on wide screens, like "影响 门户、邮件链接"). */
+  const impactOf = (kind: Kind, dom: string, preferred: boolean): string | undefined => {
+    if (kind === "main")
+      return preferred
+        ? tr("门户、后台、邮件与安装链接", "Portal, console, mail and install links")
+        : tr("门户与后台", "Portal and console");
+    if (kind === "sub")
+      return preferred || v.perUser
+        ? tr("订阅链接", "Subscription links")
+        : tr("备用，不出现在链接里", "Spare, not in links");
+    const n = d.server_names.find((x) => x.name === dom || x.display === dom || x.name.split(":")[0] === dom)?.nodes
+      .length;
+    return n ? tr(`${n} 台服务器`, `${n} servers`) : undefined;
+  };
+
   const list = (kind: Kind, footer: string, extra?: ReactNode) => {
     const items = v[kind];
     return (
       <Group title={kindName(kind, tr)} footer={footer}>
-        {items.length === 0 && (
-          <p className="px-4 py-3 text-footnote text-muted-foreground">{tr("还没有设置。", "None yet.")}</p>
-        )}
         {items.map((dom, i) => {
           const c = checks[`${kind}:${dom}`];
           const isNew = !d[kind].domains.some((x) => x.domain === dom);
+          const locked = i === 0 && items.length > 1;
+          const impact = impactOf(kind, dom, i === 0);
           return (
-            <div key={dom} className="px-4 py-2.5">
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                <span className="min-w-0 flex-1 basis-48 truncate font-mono text-body">{dom}</span>
+            <div key={dom} className="px-4 py-2.5" data-domain={dom}>
+              <div className="flex items-center gap-x-3 gap-y-1">
+                <GripVertical className="size-4 shrink-0 text-faint max-sm:hidden" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate font-mono text-body" title={dom}>
+                  {dom}
+                </span>
                 {isNew && <Badge tone="info">{tr("未保存", "Unsaved")}</Badge>}
                 {i === 0 ? (
                   <Badge tone="primary">
@@ -674,58 +691,62 @@ function Domains({ d }: { d: SettingsView }) {
                   <Button
                     size="sm"
                     variant="ghost"
+                    className="text-muted-foreground"
                     aria-label={tr(`设为首选 ${dom}`, `Make ${dom} preferred`)}
                     onClick={() => f.set(kind, [dom, ...items.filter((_, j) => j !== i)])}
                   >
                     {tr("设为首选", "Make preferred")}
                   </Button>
                 )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  aria-label={tr(`DNS 检测 ${dom}`, `Check DNS of ${dom}`)}
-                  onClick={() => void dns(kind, dom)}
-                >
-                  {tr("DNS 检测", "Check DNS")}
-                </Button>
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  icon={Trash2}
-                  aria-label={tr(`移除 ${dom}`, `Remove ${dom}`)}
-                  disabled={i === 0 && items.length > 1}
-                  title={
-                    i === 0 && items.length > 1
-                      ? tr("首选域名不能直接删除：先把另一个设为首选", "Make another one preferred first")
-                      : undefined
-                  }
-                  onClick={() =>
-                    f.set(
-                      kind,
-                      items.filter((_, j) => j !== i),
-                    )
-                  }
-                />
+                {c && c.tone !== "neutral" && (
+                  <Badge tone={c.tone} className="max-md:hidden">
+                    {c.tone === "success" ? <CircleCheck aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}
+                    {c.tone === "success" ? tr("DNS 正常", "DNS ok") : tr("DNS 需检查", "Check DNS")}
+                  </Badge>
+                )}
+                {impact && (
+                  <span className="shrink-0 text-footnote text-muted-foreground max-md:hidden">
+                    {tr(`影响 ${impact}`, `Serves ${impact}`)}
+                  </span>
+                )}
+                <RowMenu label={tr(`更多操作 ${dom}`, `More for ${dom}`)}>
+                  {() => (
+                    <>
+                      {i > 0 && (
+                        <MenuItem icon={Star} onClick={() => f.set(kind, [dom, ...items.filter((_, j) => j !== i)])}>
+                          {tr("设为首选", "Make preferred")}
+                        </MenuItem>
+                      )}
+                      <MenuItem icon={Radar} onClick={() => void dns(kind, dom)}>
+                        {tr("DNS 检测", "Check DNS")}
+                      </MenuItem>
+                      <MenuSeparator />
+                      <MenuItem
+                        icon={Trash2}
+                        danger
+                        disabled={locked}
+                        onClick={() =>
+                          f.set(
+                            kind,
+                            items.filter((_, j) => j !== i),
+                          )
+                        }
+                      >
+                        {locked ? tr("首选域名不能移除", "The preferred one stays") : tr("移除", "Remove")}
+                      </MenuItem>
+                    </>
+                  )}
+                </RowMenu>
               </div>
               {c && (
-                <p role="status" className="mt-1.5">
-                  <Badge tone={c.tone}>{c.text}</Badge>
+                <p role="status" className="mt-1 text-footnote text-muted-foreground sm:pl-7">
+                  {c.text}
                 </p>
               )}
             </div>
           );
         })}
-        <div className="px-4 py-2.5">
-          <Button
-            size="sm"
-            variant="soft"
-            icon={Plus}
-            aria-label={tr(`添加${kindOne(kind, tr)}`, `Add a ${kindOne(kind, tr)}`)}
-            onClick={() => setAdding(kind)}
-          >
-            {tr("添加", "Add")}
-          </Button>
-        </div>
+        <AddRow kind={kind} taken={[...v.main, ...v.sub, ...v.node]} onAdd={(dom) => f.set(kind, [...items, dom])} />
         {extra}
       </Group>
     );
@@ -767,73 +788,65 @@ function Domains({ d }: { d: SettingsView }) {
       <CloudflareGroup d={d} trust={v.trust} setTrust={(x) => f.set("trust", x)} />
       <ServerNames d={d} />
       <PasskeyCentre d={d} />
-      {adding && (
-        <AddDomain
-          kind={adding}
-          taken={[...v.main, ...v.sub, ...v.node]}
-          onClose={() => setAdding(null)}
-          onAdd={(dom) => {
-            f.set(adding, [...v[adding], dom]);
-            setAdding(null);
-          }}
-        />
-      )}
     </>
   );
 }
 
-function AddDomain({
-  kind,
-  taken,
-  onClose,
-  onAdd,
-}: {
-  kind: Kind;
-  taken: string[];
-  onClose: () => void;
-  onAdd: (d: string) => void;
-}) {
+/** The last row of a domain list: type a name, 添加 (Enter works too); a bad name is explained below. */
+function AddRow({ kind, taken, onAdd }: { kind: Kind; taken: string[]; onAdd: (d: string) => void }) {
   const tr = useTr();
   const [value, setValue] = useState("");
   const [shown, setShown] = useState(false);
+  const id = useId();
   const dom = value.trim().toLowerCase();
   const error =
     domainError(dom, tr) ?? (taken.includes(dom) ? tr("这个域名已经在列表里了", "Already listed") : undefined);
-  const submit = () => {
+  const visible = shown && dom ? error : undefined;
+  const add = () => {
     setShown(true);
-    if (!error) onAdd(dom);
+    if (!error) {
+      onAdd(dom);
+      setValue("");
+      setShown(false);
+    }
   };
   return (
-    <Dialog
-      open
-      size="sm"
-      onClose={onClose}
-      icon={Plus}
-      title={tr(`添加${kindOne(kind, tr)}`, `Add a ${kindOne(kind, tr)}`)}
-      description={tr("添加后在保存栏保存才生效。", "It takes effect once saved in the save bar.")}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary">
-            {tr("添加", "Add")}
-          </Button>
-        </>
-      }
-    >
-      <Field label={tr("域名", "Domain")} error={shown ? error : undefined}>
+    <div className="px-4 py-2.5">
+      <div className="flex items-center gap-2">
         <Input
-          data-autofocus
+          aria-label={tr(`新的${kindOne(kind, tr)}`, `New ${kindOne(kind, tr)}`)}
+          aria-invalid={visible ? true : undefined}
+          aria-describedby={visible ? `${id}-e` : undefined}
           className="font-mono"
-          placeholder="portal.example.com"
+          placeholder={kind === "sub" ? "sub.example.com" : kind === "node" ? "edge.example.com" : "portal.example.com"}
           autoCapitalize="off"
           spellCheck={false}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onBlur={() => setShown(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
         />
-      </Field>
-    </Dialog>
+        <Button
+          variant="soft"
+          icon={Plus}
+          disabled={!dom || (shown && !!error)}
+          aria-label={tr(`添加${kindOne(kind, tr)}`, `Add a ${kindOne(kind, tr)}`)}
+          onClick={add}
+        >
+          {tr("添加", "Add")}
+        </Button>
+      </div>
+      {visible && (
+        <p id={`${id}-e`} className="mt-1 text-footnote text-destructive">
+          {visible}
+        </p>
+      )}
+    </div>
   );
 }
 

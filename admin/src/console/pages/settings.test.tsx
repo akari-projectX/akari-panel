@@ -361,7 +361,10 @@ for (const id of IDS)
 
 test("overview", async () => {
   mount("/settings");
-  await screen.findByText("panel.toml 中有已废弃的键");
+  const strip = await screen.findByRole("region", { name: "需要注意" });
+  expect(strip.textContent).toContain("panel.toml 中有已废弃的键");
+  // Summaries are real values once their queries land.
+  await screen.findByText(/^主 \d+ · 订阅 \d+ · 节点 \d+$/);
 });
 
 test("edit, bar, save", async () => {
@@ -397,10 +400,9 @@ test("cleanup confirm", async () => {
 
 test("domains add + save", async () => {
   mount("/settings/domains");
-  fireEvent.click(await screen.findByRole("button", { name: "添加订阅域名" }));
-  const input = await screen.findByLabelText("域名");
+  const input = await screen.findByLabelText("新的订阅域名");
   fireEvent.change(input, { target: { value: "s.example.org" } });
-  fireEvent.submit(input.closest("form")!);
+  fireEvent.click(screen.getByRole("button", { name: "添加订阅域名" }));
   await screen.findByText("s.example.org");
   const bar = await screen.findByRole("region", { name: "保存栏" });
   await act(async () => {
