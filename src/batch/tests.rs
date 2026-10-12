@@ -288,6 +288,35 @@ async fn preview_and_selection() {
         preview_selection(&mut c, &bad).await.unwrap_err().code(),
         "user.status_filter_invalid"
     );
+    // Console views pass through to the list filter.
+    let view = |v: &str| Selection {
+        ids: None,
+        filter: Some(UserFilter {
+            view: Some(v.into()),
+            ..Default::default()
+        }),
+    };
+    assert_eq!(
+        preview_selection(&mut c, &view("lapsed"))
+            .await
+            .unwrap()
+            .total,
+        preview_selection(&mut c, &f).await.unwrap().total
+            + sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+                "SELECT count(*) FROM users u WHERE {}",
+                crate::api::STATUS_QUOTA
+            )))
+            .fetch_one(&mut *c)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        preview_selection(&mut c, &view("nope"))
+            .await
+            .unwrap_err()
+            .code(),
+        "user.view_invalid"
+    );
     assert_eq!(
         preview_selection(&mut c, &Selection::default())
             .await

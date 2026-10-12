@@ -1115,6 +1115,11 @@ async fn balance_http_endpoints() {
         ))
         .await;
     assert_eq!(r.json()[0]["balance_cents"], 1234);
+    // The withdrawable part and the latest entry ride along.
+    assert_eq!(r.json()[0]["withdrawable_cents"], 0);
+    assert_eq!(r.json()[0]["last_kind"], "admin_adjust");
+    assert_eq!(r.json()[0]["last_amount_cents"], 1234);
+    assert!(r.json()[0]["last_at"].is_string());
     assert_eq!(
         admin
             .get("/test/api/v1/balances")
@@ -1144,6 +1149,8 @@ async fn balance_http_endpoints() {
         ),
         (json!(v), json!(0))
     );
+    assert_eq!(r.json()[0]["last_kind"], Value::Null);
+    assert_eq!(r.json()[0]["withdrawable_cents"], 0);
     let r = uc.get("/test/api/v1/me/balance").await;
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.json()["balance_cents"], 1234);
@@ -2037,6 +2044,33 @@ async fn withdrawals() {
         .unwrap()
         .parse()
         .unwrap();
+    // The finance summary while w2 waits (w1 was cancelled).
+    let (w2_cents, w2_at): (i64, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as("SELECT amount_cents, created_at FROM withdrawals WHERE id = $1")
+            .bind(w2)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let sum = admin.get("/test/api/v1/finance/summary").await;
+    assert_eq!(sum.status, StatusCode::OK);
+    let sum = sum.json();
+    assert_eq!(
+        sum["withdrawals"],
+        json!({"pending": 1, "pending_cents": w2_cents, "oldest_pending_at": w2_at,
+               "approved": 0, "rejected": 0, "cancelled": 1})
+    );
+    assert_eq!(
+        sum["commissions"],
+        json!({"pending": 0, "pending_cents": 0, "credited": 2, "reversed": 0, "month_cents": 200})
+    );
+    assert_eq!(
+        sum["balances"],
+        json!({"users": 1, "total_cents": balance(&db, inviter).await})
+    );
+    assert_eq!(
+        ic.get("/test/api/v1/finance/summary").await.status,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         admin
             .post(

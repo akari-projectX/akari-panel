@@ -114,6 +114,10 @@ pub fn routes() -> Router<AppState> {
             get(commission::list_withdrawals),
         )
         .route(
+            "/{prefix}/api/v1/finance/summary",
+            get(commission::finance_summary),
+        )
+        .route(
             "/{prefix}/api/v1/withdrawals/{id}/approve",
             post(commission::approve_withdrawal),
         )

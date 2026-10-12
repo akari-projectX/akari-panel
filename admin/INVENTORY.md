@@ -69,34 +69,34 @@
 
 | 编号 | 功能 | 接口 | 来源 | 处理 |
 |---|---|---|---|---|
-| USR-01 | 用户表：邮箱（未验证标记、所有者标记、已注销）、角色、状态徽章（正常/已到期/流量用尽/已封禁/已注销/无套餐）、套餐、流量进度、到期、注册时间 | `GET /users` | 旧 + D12 | 实现 |
-| USR-02 | 搜索（邮箱 / ID 前缀，防抖）、状态筛选、套餐筛选、角色筛选、排序、分页（每页条数、跳页）与总数；筛选、搜索、页码都在 URL 里；超过 120 行虚拟滚动；手机为卡片列表 | `GET /users?q&status&plan_id&role&sort&limit&offset` | 旧 | 实现 |
-| USR-03 | "更多筛选"：从未使用 / 注册早于 / 最后登录早于（站点时区的日），筛选以小标签显示、可单独清除 | `never_used`、`registered_before`、`last_login_before` | D10 | 实现 |
-| USR-04 | 列选择（记住选择）：可加显示最后登录、余额、通行密钥数等 | `GET /users`（**后端新增**行字段 `last_login_at`） | W33-a | 实现 + 后端新增 |
-| USR-05 | 新建用户：邮箱（视为已验证）、密码、角色（管理员仅所有者可选）、可选套餐 + 周期 / 天数；提交前校验邮箱格式与密码长度，错误写在字段下 | `POST /users` | D1/D12 | 实现 |
-| USR-06 | 用户详情弹窗（宽弹窗 + 标签页：概览 / 流量 / 订单 / 账户与安全；底栏放封禁/解封、重置流量、续期；手机全屏）· 概览的当前订阅卡：套餐、周期、开始/到期、已用/总流量、重置方式、上次/下次重置（站点时区）、限速、状态 | `GET /users/{id}` | D12 | 实现 |
-| USR-07 | 分配 / 更换套餐（套餐 + 周期或天数，说明从现在开始、用量清零） | `PUT /users/{id}/plan` | D12 | 实现 |
-| USR-08 | 续期一个周期；延长 N 天（一次性套餐不显示） | `PATCH /users/{id}/plan` | D12 + 裁决④ | 实现 |
-| USR-09 | 重置套餐流量（确认框说明会恢复因超流量停用的账户、写审计） | `POST /users/{id}/plan/reset-traffic` | D12 | 实现 |
+| USR-01 | 用户列表（v2：左侧视图栏 + 右侧列表；手机为横向视图胶囊 + 卡片）：头像 + 邮箱（未验证 / 所有者 / 管理员标记，已注销划线去色）、`#ID · 注册日期`、状态徽章（正常/已到期/流量用尽/已封禁/已注销/无套餐）、套餐 + 本周期流量条、到期相对日（<3 天红、≤7 天黄，一次性 = 不过期）、最后使用（最后有流量的站点日）；行尾 ⋯ 菜单 | `GET /users`（**后端新增**行字段 `inviter_email`、`last_traffic_day`） | 旧 + D12 + v2 | 实现 + 后端新增 |
+| USR-02 | 视图（固定预设，带实时人数）：全部 / 正常 / 7 天内到期 / 流量将尽（≥80%）/ 已到期·用尽 / 从未使用 / 已封禁 / 管理员 / 邮箱未验证，以及按套餐（`?view=plan:<id>`）；搜索（邮箱 / ID 前缀，250ms 防抖，`/` 聚焦）、排序菜单（含流量使用率、最后登录、余额）、分页（每页条数、跳页）与"匹配 N 个"；视图、筛选、搜索、页码都在 URL 里（旧链接 `?filter=never`、`?status=` 仍可用）；超过 120 行虚拟滚动；页头一句话现状（账户数 · 正常 · 7 天内到期 N，可点） | `GET /users?q&status&plan_id&role&sort&limit&offset`（**后端新增** `view=expiring\|usage80\|lapsed\|unverified`、`counts=true`、排序 `-usage`/`-login`/`-balance`） | 旧 + v2 | 实现 + 后端新增 |
+| USR-03 | "更多筛选"弹出层：套餐、角色、从未使用、注册早于、最后登录早于（站点时区的日）；生效的条件以小标签显示、可单独清除，"清除全部" | `plan_id`、`role`、`never_used`、`registered_before`、`last_login_before` | D10 | 实现 |
+| USR-04 | 列选择（记住选择，桌面）：最后登录、余额、通行密钥数、邀请人、注册方式 | `GET /users`（**后端新增**行字段 `last_login_at`、`inviter_email`） | W33-a | 实现 + 后端新增 |
+| USR-05 | 新建用户（md 弹窗）：邮箱（视为已验证，即时格式校验）、密码（默认已生成强密码，可生成 / 显示 / 强度条）、角色单选卡（非所有者时"管理员"卡带锁与原因）、"同时分配套餐"开关 + 套餐 + 周期 / 天数并实时写出起止与流量；底栏"N 处需要修正"；完成后显示订阅链接 | `POST /users` | D1/D12 | 实现 |
+| USR-06 | 用户详情弹窗（xl + 标签页：概览 / 流量 / 账单（带订单数）/ 账户与安全，`?tab=`；手机全屏）：头部头像、邮箱、状态与标记，`#ID · 注册 · 最后登录 · 最后使用`；事实条（每个标签页可见，点击跳到对应标签）：套餐 + 到期、本周期流量、余额（含可提现）、登录方式；底栏右侧 封禁/解封、重置流量、续期（无套餐为"分配套餐"，一次性套餐续期禁用并说明），左侧 ⋯ 更多；已注销账户底栏只显示说明 · 概览的当前订阅卡：套餐、周期、开始/到期、已用/总流量、重置方式、上次/下次重置（站点时区）、限速、状态；封禁 / 流量用尽横幅；账户卡（注册方式、邮箱验证、邀请人可点） | `GET /users/{id}` | D12 + v2 | 实现 |
+| USR-07 | 分配 / 更换套餐（lg：套餐单选卡标"当前" + 周期分段（含自定义天数）+"现在 / 确认后"对照，写明剩余天数与流量不折算） | `PUT /users/{id}/plan` | D12 | 实现 |
+| USR-08 | 续期一个周期（底栏与订阅卡，确认框）；延长 N 天（订阅卡弹出层：7/30/90 快捷 + 校验 + 新到期日预览；一次性套餐不显示） | `PATCH /users/{id}/plan` | D12 + 裁决④ | 实现 |
+| USR-09 | 重置套餐流量（确认框影响清单：已用 → 0、到期不变、超流量停用立即恢复；写审计） | `POST /users/{id}/plan/reset-traffic` | D12 | 实现 |
 | USR-10 | 取消套餐（确认框说明影响，并输入邮箱确认） | `DELETE /users/{id}/plan` | 旧 | 实现 |
-| USR-11 | 套餐历史（含周期、状态；加载中 / 出错可重试 / 无记录） | `GET /users/{id}/plan` | 旧 | 实现 |
-| USR-12 | 封禁（原因必填，用户可见；说明立即踢线、订阅 404、写审计）/ 解除封禁；详情弹窗显示原因、时间、操作人；选"其他"时必须写说明（说明为何不能提交）；操作后列表徽章立即更新 | `POST /users/{id}/ban`、`/unban` | W28-c | 实现 |
-| USR-13 | 修改角色（提升/降级；他人管理员与"设为管理员"仅所有者；有套餐不能提升） | `PATCH /users/{id}` `{role}` | R47 | 实现 |
-| USR-14 | 设置新密码（结束该账户的会话） | `PATCH /users/{id}` `{password}` | 旧 | 实现 |
-| USR-15 | 踢下线（结束全部会话） | `POST /users/{id}/revoke-sessions` | 旧 | 实现 |
-| USR-16 | 查看并复制订阅链接（读取写审计）、二维码；读取中显示加载状态 | `GET /users/{id}/subscription` | W20 | 实现 |
-| USR-17 | 重置订阅（新链接 + 新凭据，旧客户端全部失效；确认框说明影响，并输入邮箱确认） | `POST /users/{id}/sub-token` | 高-3 | 实现 |
+| USR-11 | 套餐历史时间线（含周期、状态；加载中 / 出错可重试 / 无记录） | `GET /users/{id}/plan` | 旧 | 实现 |
+| USR-12 | 封禁（原因单选卡：滥用 / 共享账号 / 支付争议 / 违反服务条款 / 其他，"其他"必须写说明并写明为何不能提交；影响清单：立即踢线、订阅 404、套餐余额保留、写审计）/ 解除封禁（确认框列出原封禁原因与时间）；详情显示原因、时间、操作人；操作后列表徽章立即更新 | `POST /users/{id}/ban`、`/unban` | W28-c | 实现 |
+| USR-13 | 修改角色（账户与安全：分段控件，锁定时写明原因——仅所有者 / 有套餐不能提升 / 所有者不能在此修改；⋯ 更多 也可"设为管理员"） | `PATCH /users/{id}` `{role}` | R47 | 实现 |
+| USR-14 | 设置新密码（生成 + 强度条；结束该账户的会话） | `PATCH /users/{id}` `{password}` | 旧 | 实现 |
+| USR-15 | 踢下线（结束全部会话；账户与安全 与 ⋯ 更多） | `POST /users/{id}/revoke-sessions` | 旧 | 实现 |
+| USR-16 | 订阅链接卡（概览右栏）：默认打码，"显示"后才读取（读取写审计）、读取中骨架、链接可复制 + 二维码 | `GET /users/{id}/subscription` | W20 | 实现 |
+| USR-17 | 重置订阅（订阅卡与 ⋯ 更多；新链接 + 新凭据，旧客户端全部失效；确认框影响清单，并输入邮箱确认） | `POST /users/{id}/sub-token` | 高-3 | 实现 |
 | USR-18 | 标记邮箱已验证 | `POST /users/{id}/email/verify` | W24 | 实现 |
-| USR-19 | 登录方式：通行密钥列表、是否仅通行密钥；"重置登录方式"（删除通行密钥、恢复密码登录；确认框写明会删除几个通行密钥） | `GET /users/{id}/passkeys`、`POST /users/{id}/login-method/reset` | W27 | 实现 |
-| USR-20 | 转让所有者（仅所有者，目标为启用的管理员，输入确认） | `POST /users/{id}/owner` | R47 | 实现 |
-| USR-21 | 删除用户：先显示影响（余额、可提现、待审提现、待付/未开通订单、有效套餐、是否匿名化保留），输入邮箱确认 | `GET /users/{id}/delete-impact`、`DELETE /users/{id}?confirm=true` | 中-7 | 实现 |
-| USR-22 | 余额与明细（"订单"标签页：该用户的订单 + 余额明细，明细可"加载更多"，类型显示中文）；人工调整余额（增加/扣减 + 原因，预览调整后的余额） | `GET/POST /users/{id}/balance` | W16 | 实现 |
-| USR-23 | 流量明细：每日折线（下载/上传/计费）+ 按入口表（节点 · 入口、直连/中转、当前倍率、原始/计费；API `group=entrance`，next07 起取代按节点） | `GET /users/{id}/traffic` | W22 + next07 | 实现 |
-| USR-24 | 勾选（本页全选）→ 批量操作条，可在"已勾选的"与"全部匹配的 N 个"之间切换；换页、改筛选或排序后勾选自动清空 | — | Ops | 实现 |
-| USR-25 | 批量操作：延长 N 天、重置流量、封禁（原因）、解封、分配/更换套餐、取消套餐、调整余额、发送邮件 —— 先预览人数与样例，再确认 | `POST /users/batch/preview`、`POST /users/batch` | Ops | 实现 |
-| USR-26 | 批量任务列表（最近 10 个，可展开全部）：状态中文、进度、明细（失败/跳过在前，错误码翻译）、取消；任务结束后用户列表自动刷新 | `GET /users/batch`、`/users/batch/{id}`、`/cancel` | Ops | 实现 |
+| USR-19 | 登录方式：通行密钥列表、是否仅通行密钥；"重置登录方式"（删除通行密钥、恢复密码登录；确认框写明会删除几个通行密钥，有密钥时输入确认，按钮写"删除 N 个通行密钥"） | `GET /users/{id}/passkeys`、`POST /users/{id}/login-method/reset` | W27 | 实现 |
+| USR-20 | 转让所有者（仅所有者，目标为启用的管理员；⋯ 更多 与 账户与安全 的危险区；输入邮箱确认） | `POST /users/{id}/owner` | R47 | 实现 |
+| USR-21 | 删除用户（⋯ 更多 与 危险区）：先显示影响（余额、可提现、待审提现、待付/未开通订单、有效套餐、是否匿名化保留），输入邮箱确认 | `GET /users/{id}/delete-impact`、`DELETE /users/{id}?confirm=true` | 中-7 | 实现 |
+| USR-22 | 账单（"账单"标签页）：订单（点开到订单页，已退款 / 已取消金额划线）+ 余额明细（当前余额与可提现、类型中文、每行变动后余额，"加载更多"→"已全部加载"）；人工调整余额（sm：增加/扣减、两位小数校验、不能扣成负数、原因，实时"调整后余额"） | `GET/POST /users/{id}/balance` | W16 | 实现 |
+| USR-23 | 流量：每日图（下载面积 / 上传线 / 计费虚线，7/30 天，图例带合计）+ 按入口（节点 · 入口、直连/中转、当前倍率、原始/计费、占比条；API `group=entrance`），表下说明计费公式 | `GET /users/{id}/traffic` | W22 + next07 | 实现 |
+| USR-24 | 勾选（本页全选；手机工具栏"选择"进入勾选模式）→ 底部浮起批量操作条（延长 / 重置流量 / 封禁 / ⋯ / 删除），可在"已选 N 个"与"全部匹配的 N 个"之间切换；改视图、筛选、排序、换页、改每页条数后勾选自动清空 | — | Ops | 实现 |
+| USR-25 | 批量操作向导（lg，三步：选择操作（8 张单选卡）→ 参数（即时校验、"N 处需要修正"）→ 服务端预览（选中 / 将处理 / 跳过 + 本次操作一句话 + 跳过原因 + 前 5 个样例），确认按钮写明人数，封禁/取消套餐为红色）：延长 N 天、重置流量、封禁（原因）、解封、分配/更换套餐、取消套餐、调整余额、发送邮件；从批量条按钮进入直接到参数 | `POST /users/batch/preview`、`POST /users/batch` | Ops | 实现 |
+| USR-26 | 批量任务：页头"批量任务"弹出面板（`?jobs=1`；最近 10 个；运行中带转圈与数量；状态中文含"部分失败"；三色进度条 成功/跳过/失败；范围、操作人、时间）→ 任务明细弹窗（`?job=`；统计带 + 进度 + 明细，默认"失败与跳过"在前，错误码翻译；进行中可取消；结束后"重试失败的 N 个"= 以失败的用户新建同一操作的任务）；任务结束后用户列表自动刷新 | `GET /users/batch`、`/users/batch/{id}`、`/cancel`、`POST /users/batch` | Ops | 实现 |
 | USR-27 | 批量删除（勾选的 / 全部匹配的，后者需有筛选）：确认框列出预览数量、管理员不删、匿名化数量、样例，输入"删除 N 个账户"确认 | `POST /users/delete/preview`、`/users/delete` | D10 + 裁决⑦ | 实现 |
-| USR-28 | 导出 CSV（与列表完全相同的筛选，含从未使用 / 注册早于 / 最后登录早于） | `GET /users/export.csv` | Ops | 实现 |
+| USR-28 | 导出 CSV（桌面页头；与列表完全相同的筛选，含视图 / 从未使用 / 注册早于 / 最后登录早于；toast 复述条件） | `GET /users/export.csv`（接受 `view`） | Ops | 实现 |
 
 ## 5. 订单
 
@@ -125,10 +125,10 @@
 
 | 编号 | 功能 | 接口 | 处理 |
 |---|---|---|---|
-| FIN-01 | 提现审核：筛选状态/邮箱（在 URL 里）；显示链、地址、Memo、申请金额（元）与参考 USDT、实付与完整交易哈希（悬停全文、可复制）；"加载更多"到服务端上限 500 并明示 | `GET /withdrawals` | 实现 |
-| FIN-02 | 通过：填写实付 USDT 与交易哈希（备注可选；提交前校验金额与哈希格式）；拒绝：原因（退回余额） | `POST /withdrawals/{id}/approve`、`/reject` | 实现（R46） |
-| FIN-03 | 用户余额列表、按邮箱查找任意用户（在 URL 里）；明细；人工调整；出错可重试 | `GET /balances`、`/users/{id}/balance` | 实现 |
-| FIN-04 | 返利记录：筛选状态/邮箱（在 URL 里）；"加载更多"；出错可重试；提示返利设置的新位置 | `GET /commissions` | 实现 |
+| FIN-01 | 资金页头统计带（待审提现 N 笔 · ¥合计 · 最久等待、用户余额合计、本月返利（冻结中），可点切换子页；手机提现页隐藏）+ 子页 提现审核 / 余额 / 返利 + "返利规则"入口 · 提现审核队列（主从；手机为列表 → 全屏审核弹窗）：状态分段（待审核 N / 已打款 / 已拒绝 / 用户撤销 / 全部）+ 邮箱筛选（在 URL 里）；行：头像、邮箱、链徽章、等待时长（超 1 天黄色）/ 交易哈希缩写 / 拒绝原因，右侧金额与参考 USDT；待审最久在前；审核面板：用户（可点进账单）、编号、申请与等待时间、金额卡、链、地址与 Memo 可复制、封禁提醒、该用户余额/可提现与此前提现（首次提现提醒）；已打款显示实付与完整交易哈希（可复制）、审核人与时间；"加载更多"到服务端上限 500 并明示 | `GET /withdrawals`、**后端新增** `GET /finance/summary` | 实现 + 后端新增 |
+| FIN-02 | 通过：实付 USDT（偏离参考 5% 提示）与交易哈希（按链校验：TRC20 64 位十六进制、EVM 链 0x + 64 位，错误写在字段下）、备注可选；处理完自动跳到下一条；拒绝：展开拒绝面板，原因（"其他"必填说明）+"¥X 将退回余额（A → B）" | `POST /withdrawals/{id}/approve`、`/reject` | 实现（R46） |
+| FIN-03 | 余额：按邮箱查找任意用户（含余额为 0 的，在 URL 里）；列表含余额、可提现、最近一笔（类型中文 + 金额 + 日期）；点行打开余额明细弹窗（加载更多、出错可重试；"人工调整"复用用户详情的调整弹窗、"用户详情"跳转） | `GET /balances`（**后端新增**行字段 `withdrawable_cents`、`last_kind`、`last_amount_cents`、`last_at`）、`/users/{id}/balance` | 实现 + 后端新增 |
+| FIN-04 | 返利：按天分组的账本（粘顶日期头：日期 · 周几 · N 笔 · 当天合计）；行：时间、邀请人（可点进账单）、被邀请人 · 订单号（可点进订单）· 订单金额，右侧返利金额 + 状态（冻结至 / 已入账 / 已撤销 · 原因，撤销划线）；状态分段带计数、邀请人邮箱（在 URL 里）；"加载更多"；出错可重试；顶部横幅写当前规则并"去设置" | `GET /commissions` | 实现 |
 | FIN-05 | 邀请返利设置：开关、比例、仅首单、冻结天数、最低提现、可选 USDT 链（含 Plasma）、参考汇率——已移到 系统设置 → 收款与返利 → 邀请返利（`/settings/commission`）；旧地址 `/finance/settings` 跳转过去 | `GET/PUT /commission-settings` | 实现（R46） |
 
 ## 8. 工单
@@ -273,6 +273,7 @@
 | BE-01 | 后台登录页与后台应用的静态资源服务（`admin/dist/login` 在 `/{前缀}/app`，`admin/dist/console` 在 `/{前缀}/admin`，仅管理员会话），Turnstile 登录开启时登录页 CSP 放行 challenges.cloudflare.com | SH-01、SH-05、SH-07 |
 | BE-02 | 用户列表行字段 `last_login_at` | USR-04 |
 | BE-03 | 知识库文章 `slug`（唯一，迁移 1080；`terms` / `privacy` 供门户法律页使用），后台编辑 | CNT-06 |
+| BE-04 | 后台改版（人与钱）：用户列表 `view`（expiring/usage80/lapsed/unverified）、`counts=true`、排序 `-usage`/`-login`/`-balance`、行字段 `inviter_email`/`last_traffic_day`；`GET /finance/summary`；`GET /balances` 行字段 `withdrawable_cents`/`last_kind`/`last_amount_cents`/`last_at` | USR-01、USR-02、USR-04、FIN-01、FIN-03 |
 
 ## 附录 A：后端路由 → 清单编号
 
@@ -300,7 +301,7 @@
 | `GET /users/export.csv`、`/orders/export.csv`、`/traffic/export.csv` | USR-28、ORD-08、DSH-03（流量导出） |
 | `GET /orders`、`GET /orders/{id}`、`POST /orders/{id}/fulfil`、`/refund`、`GET /orders/{id}/refund-preview`、`POST /orders/manual` | ORD-* |
 | `GET/POST /coupons`、`GET/PATCH/DELETE /coupons/{id}`、`/coupon-batches*` | CPN-* |
-| `GET /balances`、`/commissions`、`GET/PUT /commission-settings`、`GET /withdrawals`、`POST …/approve`、`/reject` | FIN-* |
+| `GET /balances`、`/commissions`、`GET/PUT /commission-settings`、`GET /withdrawals`、`POST …/approve`、`/reject`、`GET /finance/summary` | FIN-* |
 | `GET /tickets`、`GET /tickets/{id}`、`POST …/replies`、`/close`、`/reopen`、`PUT …/assignee`、`GET /admins` | TKT-* |
 | `/announcements*`、`POST /content/preview`、`/kb/categories*`、`/kb/articles*` | CNT-* |
 | `GET/POST /servers`、`GET/PATCH/DELETE /servers/{id}`、`POST …/enroll-token`、`/install` | NOD-01…07 |
