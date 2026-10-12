@@ -267,6 +267,9 @@ pub struct OrderView {
     close_state: Option<String>,
     payment_method_id: Option<Uuid>,
     payment_method_name: Option<String>,
+    /// What the order does to the buyer's subscription (new / renew /
+    /// switch / reset; 中-2), shown as the ledger row's kind tag.
+    action: String,
 }
 
 const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
@@ -279,7 +282,7 @@ const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state, payment_method_id, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
-         AS payment_method_name FROM orders";
+         AS payment_method_name, action FROM orders";
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct EventView {

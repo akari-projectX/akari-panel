@@ -308,6 +308,8 @@ async fn manual_order_http() {
     assert_eq!(v["order"]["paid_via"], "manual");
     assert_eq!(v["order"]["amount_cents"], 990);
     assert_eq!(v["order"]["gift_cents"], 0);
+    assert_eq!(v["order"]["action"], "new");
+    assert_eq!(v["order"]["action"], "new");
     assert_eq!(v["events"][0]["outcome"], "manual_order");
     let r = c.get("/test/api/v1/orders?via=manual").await;
     assert_eq!(r.json().as_array().unwrap().len(), 1);
