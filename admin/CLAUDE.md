@@ -65,7 +65,7 @@ e2e：`scripts/e2e.sh`（`make e2e` 先跑门户套件 `scripts/e2e-portal.sh` �
 - 服务端错误一律经 `errorText(err, lang)`（`useErrText()`、`useAction()` 已内置）；新错误码在 `errors.gen.ts` 里中英各一份（`check-error-codes.mjs`）。
 - 日期时间用 `format.ts`（站点时区、数字格式，与语言无关）；相对时间与时长用 `ago(iso, lang)` / `duration(secs, lang)`；数字分组用 `toLocaleString()`（两种语言相同）。
 - 语言切换走 `LangProvider` 的 context：凡是用 `useTr()`/`useLang()` 的组件都会重渲染。**不要**在模块顶层或 `useMemo` 无依赖地把 `tr(...)` 的结果缓存起来（依赖里要有 `tr`/`lang`）。
-- `scripts/check-i18n.mjs`（`npm run check`）：源码里每个含中文的字符串/模板/JSX 文本必须是 `tr()` 的第一个参数、同时有 `en` 的对象里的 `zh`、`["中文", "English"]` 二元组的第一个、或 `lang === "en" ? … : "中文"` 的后一支；英文那一半含中文也报错。确实与语言无关的（语言自己的名字"中文"、品牌字形）在同一行写 `// i18n-ok: 原因`。改版前遗留的按文件计数记在 `scripts/i18n-baseline.json`，**只减不增**（新文件必须为 0；修好后用 `--write-baseline` 重写）。`--list` 列出全部。
+- `scripts/check-i18n.mjs`（`npm run check`）：源码里每个含中文的字符串/模板/JSX 文本必须是 `tr()` 的第一个参数、同时有 `en` 的对象里的 `zh`、`["中文", "English"]` 二元组的第一个、或 `lang === "en" ? … : "中文"` 的后一支；英文那一半含中文也报错。确实与语言无关的（语言自己的名字"中文"、品牌字形）在同一行写 `// i18n-ok: 原因`。改版前遗留的按文件计数记在 `scripts/i18n-baseline.json`，**只减不增**（新文件必须为 0；修好后用 `--write-baseline` 重写）。`--list` 列出全部。`protocols.gen.ts` 不查：清单（`proto/protocols.toml`，agent 严格解析、不能随意加键）只有中文标签，英文在 `protocol-form.ts` 的 `FIELD_EN`，`protocol-form.test.ts` 保证每个字段都有英文。
 
 ## 约定
 

@@ -171,7 +171,7 @@ export function useDeleteServer() {
       impacts: [
         {
           label: tr("同时删除的节点", "Nodes deleted with it"),
-          value: s.nodes.map((n) => n.name).join("、") || tr("无", "none"),
+          value: s.nodes.map((n) => n.name).join(tr("、", ", ")) || tr("无", "none"),
         },
         {
           label: tr("同时删除的入口", "Entrances deleted with it"),
@@ -207,6 +207,8 @@ export function useDeleteServer() {
   };
 }
 
+const QUOTA_WARNING = "流量额度已用完"; // i18n-ok: agent warning text matched as data, never shown
+
 function ServerBody({ s }: { s: ServerView }) {
   const tr = useTr();
   const lang = useLang();
@@ -237,7 +239,8 @@ function ServerBody({ s }: { s: ServerView }) {
       rules.data.disabled.length +
       (rules.data.muted ? 1 : 0)
     : 0;
-  const warnings = s.warnings.filter((w) => !(q.exceeded_at && w.includes("流量额度已用完")));
+  // The quota card already says the quota is used up: drop the agent's warning text for it.
+  const warnings = s.warnings.filter((w) => !(q.exceeded_at && w.includes(QUOTA_WARNING)));
   return (
     <>
       <BackLink />
@@ -860,7 +863,11 @@ function GroupNames({ ids }: { ids: string[] }) {
   const groups = useGroups();
   if (ids.length === 0) return <span className="text-warning">{tr("不在任何节点组", "In no node group")}</span>;
   const names = ids.map((g) => groups.data?.find((x) => x.id === g)?.name).filter(Boolean);
-  return <span className="truncate">{names.join("、") || tr(`${ids.length} 个节点组`, `${ids.length} groups`)}</span>;
+  return (
+    <span className="truncate">
+      {names.join(tr("、", ", ")) || tr(`${ids.length} 个节点组`, `${ids.length} groups`)}
+    </span>
+  );
 }
 
 /* ================= 监控 ================= */
@@ -1661,10 +1668,17 @@ function AlertsForm({
           dirty={dirty}
           busy={busy}
           onReset={() => setF(start)}
-          note={tr(
-            `已覆盖 ${overridden} 项、关闭 ${f.disabled.length} 种${f.muted ? "、已静音" : ""}`,
-            `${overridden} overridden, ${f.disabled.length} kinds off${f.muted ? ", muted" : ""}`,
-          )}
+          note={
+            f.muted
+              ? tr(
+                  `已覆盖 ${overridden} 项、关闭 ${f.disabled.length} 种、已静音`,
+                  `${overridden} overridden, ${f.disabled.length} kinds off, muted`,
+                )
+              : tr(
+                  `已覆盖 ${overridden} 项、关闭 ${f.disabled.length} 种`,
+                  `${overridden} overridden, ${f.disabled.length} kinds off`,
+                )
+          }
         />
       </form>
     </Card>

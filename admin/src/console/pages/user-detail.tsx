@@ -1615,7 +1615,7 @@ function LoginMethods({ id, disabled }: { id: string; disabled: boolean }) {
           ? tr("用户可以用密码或下面任一通行密钥登录。", "The user signs in with the password or any passkey below.")
           : tr(
               "此账户只允许通行密钥登录。用户丢失设备时，用「重置登录方式」恢复密码登录。",
-              "Passkeys only. When the user loses the device, 重置登录方式 brings the password back.",
+              "Passkeys only. When the user loses the device, “Reset sign-in methods” brings the password back.",
             )) +
           (d.password_login_disabled
             ? tr("账户已选择只用通行密钥登录。", " The account chose passkey-only sign-in.")
@@ -1637,10 +1637,11 @@ function LoginMethods({ id, disabled }: { id: string; disabled: boolean }) {
                 key={k.id}
                 icon={<Fingerprint className="size-4 text-muted-foreground" aria-hidden="true" />}
                 label={k.name}
-                description={tr(
-                  `添加于 ${dateOnly(k.created_at)} · 最近使用 ${k.last_used_at ? dateTime(k.last_used_at) : "从未"}`,
-                  `Added ${dateOnly(k.created_at)} · last used ${k.last_used_at ? dateTime(k.last_used_at) : "never"}`,
-                )}
+                description={`${tr(`添加于 ${dateOnly(k.created_at)}`, `Added ${dateOnly(k.created_at)}`)} · ${
+                  k.last_used_at
+                    ? tr(`最近使用 ${dateTime(k.last_used_at)}`, `last used ${dateTime(k.last_used_at)}`)
+                    : tr("最近使用 从未", "never used")
+                }`}
               />
             ))}
             {n === 0 && (

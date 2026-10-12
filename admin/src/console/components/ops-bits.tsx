@@ -18,7 +18,7 @@ import {
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { daysBefore, siteToday } from "../../shared/format";
-import type { Lang, Tr } from "../../shared/i18n";
+import { trFor, type Lang, type Tr } from "../../shared/i18n";
 
 export const ALERT_KINDS = [
   "offline",
@@ -115,8 +115,10 @@ export function waitText(iso: string | null | undefined, lang: Lang, until?: str
   const d = Math.floor(m / 1440);
   const h = Math.floor((m % 1440) / 60);
   const mm = m % 60;
-  if (lang === "en") return d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : m < 1 ? "<1 min" : `${mm} min`;
-  return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${mm} 分` : m < 1 ? "不到 1 分钟" : `${mm} 分钟`;
+  const tr = trFor(lang);
+  if (d) return tr(`${d} 天 ${h} 小时`, `${d}d ${h}h`);
+  if (h) return tr(`${h} 小时 ${mm} 分`, `${h}h ${mm}m`);
+  return m < 1 ? tr("不到 1 分钟", "<1 min") : tr(`${mm} 分钟`, `${mm} min`);
 }
 
 /** Small link line: "阈值与通道在 系统设置 → 告警通道与阈值 ›". */
@@ -138,8 +140,18 @@ export function dayLabel(day: string, tr: Tr, lang: Lang): string {
   if (day === today) return tr("今天", "Today");
   if (day === daysBefore(today, 1)) return tr("昨天", "Yesterday");
   const d = new Date(`${day}T12:00:00Z`);
-  if (lang === "en")
-    return d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
-  const wd = "日一二三四五六"[d.getUTCDay()];
-  return `${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日 周${wd}`;
+  return lang === "en"
+    ? d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" })
+    : `${d.getUTCMonth() + 1} 月 ${d.getUTCDate()} 日 ${WEEKDAYS[d.getUTCDay()][0]}`;
 }
+
+/** Short weekday names, Sunday first (`tr(...WEEKDAYS[d.getUTCDay()])`). */
+export const WEEKDAYS: [string, string][] = [
+  ["周日", "Sun"],
+  ["周一", "Mon"],
+  ["周二", "Tue"],
+  ["周三", "Wed"],
+  ["周四", "Thu"],
+  ["周五", "Fri"],
+  ["周六", "Sat"],
+];

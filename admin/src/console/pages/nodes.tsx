@@ -95,6 +95,13 @@ type Problem = {
   action: string;
 };
 
+// Agent warning texts (server data, matched, never shown) that the quota and
+// certificate problems above already report.
+const COVERED_WARNINGS = [
+  "流量额度已用完", // i18n-ok: agent warning text matched as data
+  "agent 证书", // i18n-ok: agent warning text matched as data
+];
+
 function useProblems(list: ServerView[]): Problem[] {
   const tr = useTr();
   const lang = useLang();
@@ -198,11 +205,11 @@ function useProblems(list: ServerView[]): Problem[] {
         to: `/nodes/${s.id}`,
         action: tr("查看", "Open"),
       });
-    for (const w of s.warnings.filter((w) => !w.includes("流量额度已用完") && !w.includes("agent 证书")))
+    for (const w of s.warnings.filter((w) => !COVERED_WARNINGS.some((c) => w.includes(c))))
       out.push({
         tone: "warning",
         icon: <TriangleAlert />,
-        title: `${s.name}：${warningTitle(w, tr)}`,
+        title: tr(`${s.name}：${warningTitle(w, tr)}`, `${s.name}: ${warningTitle(w, tr)}`),
         desc: lang === "zh" ? w : tr("打开服务器查看原文", "Open the server for the details"),
         to: `/nodes/${s.id}`,
         action: tr("查看", "Open"),
@@ -218,7 +225,7 @@ function useProblems(list: ServerView[]): Problem[] {
         `${behind.length} 台服务器的 agent 可更新到 ${newer}`,
         `${behind.length} servers can update their agent to ${newer}`,
       ),
-      desc: behind.map((s) => s.name).join("、"),
+      desc: behind.map((s) => s.name).join(tr("、", ", ")),
       to: "/updates",
       action: tr("去更新", "Update"),
     });

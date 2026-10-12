@@ -695,10 +695,12 @@ function Detail({
             )}
             {recent.length > 8 && (
               <p className="mt-2 px-1 text-footnote text-muted-foreground">
-                {tr(
-                  `只列出最近 8 笔，共 ${num(recent.length)} 笔${redemptions.length >= 200 ? "（最多取 200 笔）" : ""}`,
-                  `The latest 8 of ${num(recent.length)}${redemptions.length >= 200 ? " (200 at most)" : ""}`,
-                )}
+                {redemptions.length >= 200
+                  ? tr(
+                      `只列出最近 8 笔，共 ${num(recent.length)} 笔（最多取 200 笔）`,
+                      `The latest 8 of ${num(recent.length)} (200 at most)`,
+                    )
+                  : tr(`只列出最近 8 笔，共 ${num(recent.length)} 笔`, `The latest 8 of ${num(recent.length)}`)}
               </p>
             )}
           </section>
