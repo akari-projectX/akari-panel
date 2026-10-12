@@ -3,6 +3,7 @@ import { RotateCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { LENS_PATH } from '@/components/logo';
 import { R } from '@/lib/routes';
+import { useAuth } from '@/lib/auth';
 import { useT } from '@/i18n';
 import { cn } from '@/lib/utils';
 
@@ -61,6 +62,7 @@ export default function ErrorScreen({
   const tr = useT();
   const nav = useNavigate();
   const c = COPY[kind];
+  const { authed } = useAuth();
   const reload = onRetry ?? (() => window.location.reload());
 
   return (
@@ -95,12 +97,17 @@ export default function ErrorScreen({
           <nav className="mt-12 border-t border-border pt-7">
             <div className="text-[12px] tracking-[.16em] text-muted-foreground">{tr('常去的地方')}</div>
             <ul className="mt-4 flex flex-col">
-              {[
+              {/* 没登录的人点这些只会被送去登录页：给访客能直接去的地方 */}
+              {(authed ? [
                 { to: R.shop, label: '套餐商店', d: '订阅方案与流量包' },
                 { to: R.nodes, label: '节点状态', d: '当前可用线路与倍率' },
                 { to: R.help, label: '使用文档', d: '接入、计费与常见问题' },
                 { to: R.dashboard, label: '仪表盘', d: '账号状态、流量与订阅一览' },
-              ].map((l, i) => (
+              ] : [
+                { to: R.login, label: '登录', d: '继续使用你的订阅' },
+                { to: R.register, label: '注册', d: '创建一个新账号' },
+                { to: R.terms, label: '服务条款', d: '使用本站的约定' },
+              ]).map((l, i) => (
                 <li key={l.to}>
                   <Link
                     to={l.to}

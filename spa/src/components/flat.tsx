@@ -35,15 +35,19 @@ export function Section({
 /** v 为数字时滚动显示；fmt 给出写法（金额：v 是分，fmt = formatMoney），否则按 decimals + suffix 写 */
 export type Stat = { k: ReactNode; v: number | string; suffix?: string; decimals?: number; fmt?: (n: number) => string; x?: ReactNode };
 
-/** 统计条：竖线分隔的指标行 */
-export function StatRow({ items }: { items: Stat[] }) {
+/**
+ * 统计条：竖线分隔的指标行。
+ * still：原地渲染——没有入场，数字第一次直接是终值（之后值变了照常滚动）。给页面的最大内容块用（仪表盘），
+ * 免得 LCP 被启动画面淡出 + 入场 + 从 0 滚动拖到一秒之后。
+ */
+export function StatRow({ items, still = false }: { items: Stat[]; still?: boolean }) {
   const enter = useEnter();
   return (
     <div className="statrow">
       {items.map((s, i) => (
-        <div key={i} {...enter({ delay: stagger(i, 0.06) })}>
+        <div key={i} {...(still ? {} : enter({ delay: stagger(i, 0.06) }))}>
           <div className="stat-v">
-            {typeof s.v === 'number' ? <CountUp to={s.v} decimals={s.decimals ?? 0} format={s.fmt} /> : s.v}
+            {typeof s.v === 'number' ? <CountUp to={s.v} decimals={s.decimals ?? 0} format={s.fmt} instant={still} /> : s.v}
             {s.suffix?.trim() && <span className="stat-unit">{s.suffix.trim()}</span>}
           </div>
           <div className="stat-k">{s.k}</div>

@@ -33,7 +33,8 @@ export function AccountHeader() {
   const tp = useTp();
   const nav = useNavigate();
   const a = useAccountLine();
-  const sub = [a.email, a.plan, a.has ? tp('共 {n} GB', { n: Math.round(a.usage.total) }) : null].filter(Boolean).join(' · ');
+  /* 邮箱单独一行：和套餐名挤在一行时，长邮箱把套餐名截成「标…」 */
+  const sub = [a.has ? a.plan : null, a.has ? tp('共 {n} GB', { n: Math.round(a.usage.total) }) : null].filter(Boolean).join(' · ');
 
   return (
     <div className="flex items-start justify-between gap-2.5 px-3.5 pt-3 pb-2.5">
@@ -52,7 +53,8 @@ export function AccountHeader() {
             <b className="text-[14.5px] font-medium text-foreground">{a.plan ?? tr('还没有套餐')}</b>
           )}
         </div>
-        <div className="mt-px truncate text-[11.5px] text-muted-foreground">{sub}</div>
+        {sub && <div className="mt-px truncate text-[11.5px] text-muted-foreground">{sub}</div>}
+        {a.email && <div title={a.email} className="mt-px truncate text-[11.5px] text-muted-foreground">{a.email}</div>}
       </div>
       <DropdownMenuItem
         onSelect={() => nav(R.shop)}

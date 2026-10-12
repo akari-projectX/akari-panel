@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Headphones, LifeBuoy, MessageCircle, Plus, Send, UserRound } from 'lucide-react';
 import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FlowDialog, FlowFooter, ReadingDialog } from '@/components/ui/panels';
-import { Input } from '@/components/ui/input';
+import { ConfirmDialog, FlowDialog, FlowFooter, ReadingDialog } from '@/components/ui/panels';
+import TextField from '@/components/text-field';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -22,6 +22,7 @@ import { useApi, usePending } from '@/hooks/use-api';
 import { useAuth } from '@/lib/auth';
 import { K } from '@/lib/cache';
 import { useErrorText } from '@/lib/errors';
+import { fieldOf, useFieldErrors } from '@/lib/form-errors';
 import { formatDateTime, fromNow } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useT, useTp } from '@/i18n';
@@ -32,6 +33,9 @@ const PRIORITY: Record<TicketPriority, { text: string; cls: string; hint: string
   high: { text: '高', cls: 'bg-amber-500/12 text-warning', hint: '无法正常使用' },
   urgent: { text: '紧急', cls: 'bg-red-500/10 text-danger', hint: '完全不能用、涉及付款' },
 };
+
+/* 发送快捷键的写法：苹果设备是 ⌘，其余 Ctrl */
+const SEND_KEY = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent) ? '⌘ + Enter' : 'Ctrl + Enter';
 
 const CATEGORY: Record<TicketCategory, string> = {
   general: '一般问题',
@@ -107,6 +111,19 @@ export default function Tickets() {
   const replied = list.filter((t) => t.status === 'answered');
   const closedCount = list.filter((t) => t.status === 'closed').length;
 
+  const f = useFieldErrors(['subject', 'message'] as const);
+  const openNew = () => { f.clear(); setOpen(true); };
+
+  /* noValidate + 内联错误：提交时检查，第一个出错的字段被聚焦（按钮不预先置灰） */
+  const submitNew = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!f.check({
+      subject: !subject.trim() && tr('请填写问题标题'),
+      message: !message.trim() && tr('请描述遇到的问题'),
+    })) return;
+    create();
+  };
+
   const create = () => runCreate(async () => {
     try {
       const r = await ticketApi.create({
@@ -123,10 +140,22 @@ export default function Tickets() {
       tickets.setData(list);
       const hit = list.find((t) => t.id === r.id);
       if (hit) { setReply(''); setCurrent(hit); }
-    } catch (e) {
-      toast.error(errText(e));
+    } catch (err) {
+      const k = fieldOf(err, {
+        'ticket.subject_required': 'subject', 'ticket.subject_long': 'subject', 'ticket.subject_multiline': 'subject',
+        'ticket.message_required': 'message', 'ticket.message_long': 'message',
+      } as const);
+      if (k) f.set(k, errText(err));
+      else toast.error(errText(err));
     }
   });
+
+  /* 打开对话、发出回复后滚到最新一条：对话里要看的是最后说了什么 */
+  const endRef = useRef<HTMLDivElement>(null);
+  const msgCount = detail.data?.messages.length ?? 0;
+  useEffect(() => {
+    if (msgCount) endRef.current?.scrollIntoView({ block: 'end' });
+  }, [msgCount, detail.data?.id]);
 
   const send = () => runReply(async () => {
     if (!current || !reply.trim()) return;
@@ -177,7 +206,7 @@ export default function Tickets() {
       <Section
         title={<><Headphones className="size-4 text-brand" />{tr('我的工单')}</>}
         desc={tr('点击任意工单查看完整对话')}
-        extra={<Button className="h-9" onClick={() => setOpen(true)}><Plus />{tr('提交工单')}</Button>}
+        extra={<Button className="h-9" onClick={openNew}><Plus />{tr('提交工单')}</Button>}
       >
         {tickets.loading && !tickets.data ? <Loading />
           : tickets.error && !tickets.data ? <LoadError error={tickets.error} onRetry={tickets.reload} />
@@ -194,10 +223,17 @@ export default function Tickets() {
                 </span>
               }
               title={t.subject}
-              desc={`${tr(CATEGORY[t.category])} · ${tp('更新于 {d}', { d: formatDateTime(t.updated_at) })}`}
+              desc={
+                <>
+                  {tr(CATEGORY[t.category])}
+                  {/* 手机上右侧只留状态：优先级挪到这一行，标题不被两个徽章挤成三行 */}
+                  <span className="sm:hidden"> · {tp('{level}优先级', { level: tr(PRIORITY[t.priority].text) })}</span>
+                  {' · '}<span className="whitespace-nowrap">{tp('更新于 {d}', { d: formatDateTime(t.updated_at) })}</span>
+                </>
+              }
               extra={
                 <>
-                  <Badge variant="secondary" className={cn('rounded-full', PRIORITY[t.priority].cls)}>
+                  <Badge variant="secondary" className={cn('hidden rounded-full sm:inline-flex', PRIORITY[t.priority].cls)}>
                     {tp('{level}优先级', { level: tr(PRIORITY[t.priority].text) })}
                   </Badge>
                   <StatusTag {...STATE[t.status]} />
@@ -214,14 +250,13 @@ export default function Tickets() {
         title={tr('提交新工单')}
         description={tr('把现象、时间和用的客户端写清楚，能省掉一轮来回')}
       >
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="ticket-subject">{tr('问题标题')}</Label>
-            <Input
-              id="ticket-subject" value={subject} maxLength={TICKET_MAX_SUBJECT} onChange={(e) => setSubject(e.target.value)}
-              placeholder={tr('例如：香港节点无法连接')}
-            />
-          </div>
+        <form id="ticket-form" noValidate onSubmit={submitNew} className="space-y-4">
+          <TextField
+            {...f.field('subject', 'ticket-subject')}
+            label={tr('问题标题')} maxLength={TICKET_MAX_SUBJECT} autoComplete="off"
+            value={subject} onChange={(e) => setSubject(e.target.value)}
+            placeholder={tr('例如：香港节点无法连接')}
+          />
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="ticket-category">{tr('分类')}</Label>
@@ -265,17 +300,20 @@ export default function Tickets() {
             <p className="text-[12px] text-muted-foreground">{tr(PRIORITY[priority].hint)}</p>
           </fieldset>
           <div className="space-y-2">
-            <Label htmlFor="ticket-message">{tr('详细描述')}</Label>
+            <Label htmlFor="ticket-message" className="text-[13px] font-medium">{tr('详细描述')}</Label>
             <Textarea
               id="ticket-message" rows={6} maxLength={TICKET_MAX_BODY} className="resize-none"
-              value={message} onChange={(e) => setMessage(e.target.value)}
+              value={message} onChange={(e) => setMessage(e.target.value)} onInput={() => f.dismiss('message')}
+              aria-invalid={f.errors.message ? true : undefined}
+              aria-describedby={f.errors.message ? 'ticket-message-msg' : undefined}
               placeholder={tr('请描述问题现象、出现时间、使用的节点与客户端版本，以便我们更快定位。')}
             />
+            {f.errors.message && <p id="ticket-message-msg" role="alert" className="state-in text-[12.5px] leading-[1.6] text-danger">{f.errors.message}</p>}
           </div>
-        </div>
+        </form>
         <FlowFooter summary={<span className="tnum">{tp('还能写 {n} 字', { n: TICKET_MAX_BODY - message.length })}</span>}>
           <Button variant="outline" onClick={() => setOpen(false)}>{tr('取消')}</Button>
-          <Button disabled={creating || !subject.trim() || !message.trim()} onClick={create}>
+          <Button type="submit" form="ticket-form" disabled={creating}>
             {creating ? tr('提交中') : tr('提交工单')}
           </Button>
         </FlowFooter>
@@ -309,11 +347,22 @@ export default function Tickets() {
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); }}
             />
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" className="text-muted-foreground" disabled={closing} onClick={close}>
-                {tr('问题已解决，关闭工单')}
-              </Button>
-              <span className="ml-auto hidden text-[11.5px] text-muted-foreground sm:inline">Ctrl + Enter</span>
-              <Button disabled={replying || !reply.trim()} onClick={send}>
+              <ConfirmDialog
+                trigger={
+                  <Button variant="ghost" size="sm" className="-ml-2.5 text-muted-foreground" disabled={closing}>
+                    {tr('问题已解决，关闭工单')}
+                  </Button>
+                }
+                icon={<Headphones />}
+                title={tr('关闭这张工单？')}
+                consequences={[tr('关闭后不能再回复'), tr('问题再次出现时请新开一张')]}
+                confirmLabel={tr('关闭工单')}
+                pending={closing}
+                onConfirm={close}
+              />
+              {/* 发送按钮始终靠右（以前 ml-auto 挂在手机上隐藏的快捷键提示上，手机上发送按钮紧贴左边） */}
+              <span className="ml-auto hidden text-[11.5px] text-muted-foreground sm:inline">{SEND_KEY}</span>
+              <Button className="ml-auto sm:ml-0" disabled={replying || !reply.trim()} onClick={send}>
                 <Send />{replying ? tr('发送中') : tr('发送')}
               </Button>
             </div>
@@ -352,7 +401,7 @@ export default function Tickets() {
                       <span className="tnum text-[11.5px] text-muted-foreground">{formatDateTime(m.created_at)}</span>
                     </div>
                     <div className={cn(
-                      'mt-1.5 px-3.5 py-2.5 text-[14px] leading-[1.8] whitespace-pre-wrap',
+                      'mt-1.5 px-3.5 py-2.5 text-[14px] leading-[1.8] whitespace-pre-wrap [overflow-wrap:anywhere]',
                       mine ? 'rounded-2xl rounded-tr-md bg-brand text-white dark:text-primary-foreground'
                            : 'rounded-2xl rounded-tl-md bg-muted text-body',
                     )}>
@@ -362,6 +411,7 @@ export default function Tickets() {
                 </div>
               );
             })}
+              <div ref={endRef} />
               </>
             )}
         </div>

@@ -38,6 +38,8 @@ test('#57 tickets: category, priority, linked order; reply, the staff answer is 
   await page.getByText(subject).locator('visible=true').first().click();
   await expect(page.getByText('已经原路退回了，请查收。')).toBeVisible();
   await page.getByRole('button', { name: '问题已解决，关闭工单' }).click();
+  /* 关闭不能撤销：先确认 */
+  await page.getByRole('alertdialog').getByRole('button', { name: '关闭工单' }).click();
   await expect(page.getByText('工单已关闭').first()).toBeVisible();
 });
 

@@ -112,7 +112,8 @@ export default function OrderDetail() {
   });
 
   if (order.loading && !data) return <DashSkeleton hold={false} />;
-  if (order.error && !data) return <LoadError error={order.error} onRetry={order.reload} className="py-32" />;
+  /* 整页没取到时保留页面标题，用户知道自己在哪一页 */
+  if (order.error && !data) return <><PageTitle title={tr('订单详情')} /><LoadError error={order.error} onRetry={order.reload} className="py-24" /></>;
   if (!data) return null;
 
   const minutesLeft = Math.max(0, Math.ceil((new Date(data.expires_at).getTime() - now) / 60000));
@@ -240,8 +241,64 @@ export default function OrderDetail() {
         </div>
       )}
 
-      <div className="grid gap-x-14 border-t border-border lg:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="min-w-0">
+      {/*
+        宽屏两栏：左边付款方式 + 订单信息，右边金额单吊在侧边跟着滚；
+        手机上一栏，顺序是 金额单 → 付款 → 订单信息：先看到要付多少、还剩几分钟，再是付款方式，不再沉到页底。
+      */}
+      <div className="grid gap-x-14 border-t border-border lg:grid-cols-[minmax(0,1fr)_340px] lg:grid-rows-[auto_1fr]">
+        {/* ── 金额单：宽屏钉在右侧，跟着滚动 ── */}
+        <aside className="pt-8 pb-10 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:pt-11">
+          <div className="rounded-[14px] border border-border p-6 lg:sticky lg:top-24">
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] font-medium">{tr('金额明细')}</span>
+              <StatusTag {...state} />
+            </div>
+
+            <div className="mt-4">
+              {lines.filter(([, , hide]) => !hide).map(([k, v]) => (
+                <div key={k} className="flex justify-between py-1.5 text-[13px]">
+                  <span className="text-muted-foreground">{tr(k)}</span>
+                  <span className="tnum">{v < 0 ? `−${formatMoney(-v)}` : formatMoney(v)}</span>
+                </div>
+              ))}
+            </div>
+
+            <Separator className="my-4" />
+            <div className="flex items-baseline justify-between">
+              <span className="text-[13px] text-muted-foreground">{pending ? tr('应付金额') : tr('实付金额')}</span>
+              <span className="tnum text-[28px] leading-none font-medium tracking-[-0.03em] text-brand">{formatMoney(data.amount_cents)}</span>
+            </div>
+
+            {pending ? (
+              <>
+                <p className="mt-4 flex items-start gap-1.5 text-[12px] leading-[1.7] text-muted-foreground">
+                  <Clock className="mt-0.5 size-3.5 shrink-0" />
+                  {minutesLeft > 0
+                    ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: minutesLeft })
+                    : tr('订单即将超时关闭，请尽快完成支付')}
+                </p>
+                <Button variant="ghost" className="mt-4 h-9 w-full text-muted-foreground" disabled={cancelling} onClick={cancel}>
+                  <XCircle className="size-3.5" />{tr('取消订单')}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="mt-4 text-[12.5px] leading-[1.8] text-muted-foreground">
+                  {closed ? tr('这笔订单已关闭，可以重新选购套餐。')
+                    : data.refunded_at ? tr('这笔订单已退款。')
+                    : unfulfilled ? tr('款项已退回账户余额。')
+                    : tr('订单已完成。')}
+                </p>
+                <div className="mt-5 grid grid-cols-2 gap-2">
+                  <Button className="h-10" onClick={() => nav(R.dashboard)}>{tr('回到仪表盘')}</Button>
+                  <Button variant="outline" className="h-10" onClick={() => nav(R.shop)}>{tr('继续选购')}</Button>
+                </div>
+              </>
+            )}
+          </div>
+        </aside>
+
+        <div className="min-w-0 lg:col-start-1 lg:row-start-1">
           {/* ── 待支付：二维码 / 收银台 ── */}
           {pending && (qr || payUrl) && (
             <Section
@@ -303,6 +360,10 @@ export default function OrderDetail() {
             </Section>
           )}
 
+        </div>
+
+        {/* 与上面隔一条线（手机上上面是付款区或金额单；宽屏上面是付款区，没有付款区时不画） */}
+        <div className={cn('min-w-0 border-t border-border lg:col-start-1 lg:row-start-2', !pending && 'lg:border-t-0')}>
           {/* ── 订单信息 ── */}
           <Section title={<><FileText className="size-4 text-brand" />{tr('订单信息')}</>}>
             <div className="grid gap-x-10 sm:grid-cols-2">
@@ -315,58 +376,6 @@ export default function OrderDetail() {
             </div>
           </Section>
         </div>
-
-        {/* ── 金额单：宽屏钉在右侧，跟着滚动 ── */}
-        <aside className="pb-10 lg:pt-11">
-          <div className="rounded-[14px] border border-border p-6 lg:sticky lg:top-24">
-            <div className="flex items-center justify-between">
-              <span className="text-[13px] font-medium">{tr('金额明细')}</span>
-              <StatusTag {...state} />
-            </div>
-
-            <div className="mt-4">
-              {lines.filter(([, , hide]) => !hide).map(([k, v]) => (
-                <div key={k} className="flex justify-between py-1.5 text-[13px]">
-                  <span className="text-muted-foreground">{tr(k)}</span>
-                  <span className="tnum">{v < 0 ? `−${formatMoney(-v)}` : formatMoney(v)}</span>
-                </div>
-              ))}
-            </div>
-
-            <Separator className="my-4" />
-            <div className="flex items-baseline justify-between">
-              <span className="text-[13px] text-muted-foreground">{pending ? tr('应付金额') : tr('实付金额')}</span>
-              <span className="tnum text-[28px] leading-none font-medium tracking-[-0.03em] text-brand">{formatMoney(data.amount_cents)}</span>
-            </div>
-
-            {pending ? (
-              <>
-                <p className="mt-4 flex items-start gap-1.5 text-[12px] leading-[1.7] text-muted-foreground">
-                  <Clock className="mt-0.5 size-3.5 shrink-0" />
-                  {minutesLeft > 0
-                    ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: minutesLeft })
-                    : tr('订单即将超时关闭，请尽快完成支付')}
-                </p>
-                <Button variant="ghost" className="mt-4 h-9 w-full text-muted-foreground" disabled={cancelling} onClick={cancel}>
-                  <XCircle className="size-3.5" />{tr('取消订单')}
-                </Button>
-              </>
-            ) : (
-              <>
-                <p className="mt-4 text-[12.5px] leading-[1.8] text-muted-foreground">
-                  {closed ? tr('这笔订单已关闭，可以重新选购套餐。')
-                    : data.refunded_at ? tr('这笔订单已退款。')
-                    : unfulfilled ? tr('款项已退回账户余额。')
-                    : tr('订单已完成。')}
-                </p>
-                <div className="mt-5 grid grid-cols-2 gap-2">
-                  <Button className="h-10" onClick={() => nav(R.dashboard)}>{tr('回到仪表盘')}</Button>
-                  <Button variant="outline" className="h-10" onClick={() => nav(R.shop)}>{tr('继续选购')}</Button>
-                </div>
-              </>
-            )}
-          </div>
-        </aside>
       </div>
     </>
   );

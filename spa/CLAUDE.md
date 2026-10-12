@@ -27,7 +27,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 |---|---|
 | `src/api/` | **与面板的唯一边界**，页面只从 `@/api` 导入：`base.ts`（`/api/v1`、`/auth`、品牌图片、深链接）、`http.ts`（请求、`ApiError{status,code,params}`、会话事件：401 / 403 `account.banned` 广播给 AuthProvider）、`types.ts`（面板视图的形状，手工镜像 Rust 视图——改后端字段要同步）、`index.ts`（全部调用：auth / me / account（注销）/ passkey / shop / order / wallet / invite / ticket / content / page）、`guard.ts`（表单令牌、最短提交时间、蜜罐、Turnstile 令牌；`lib/form-guard` 在表单挂着时定期/回到前台/每次提交后经 `SiteProvider.refresh` 重新取 `/auth/options`，打开后才开启的 Turnstile 让页面重新加载一次；组件出错/超时/脚本加载失败时 `components/form-guard` 显示「人机验证加载失败，请刷新重试」+「重试」（脚本失败 = 重新加载页面，组件失败 = 重置组件））、`pow.ts`（关闭邮箱验证时注册的工作量证明）、`webauthn.ts`（options ↔ 浏览器 API 的 base64url 编解码） |
 | `src/lib/routes.ts` | 路由表与每页的账户范围（`PAGE_SCOPES`）。**顶层路径必须与面板 `access::PORTAL_PAGES` 一致**：面板测试 `access::tests::routes_match_the_portal` 读这个文件比对 |
-| `src/lib/auth.ts`、`auth-provider.tsx` | 登录态：`GET /me` 为准（401 或统一拒绝 404 = 没登录；同一浏览器里的管理员会话在门户上就是 404）；范围 `scopeOf`：full（AuthUser）/ renewal（到期或流量用完，ShopUser）/ banned（PortalUser）。管理员不在门户里（D4） |
+| `src/lib/auth.ts`、`auth-provider.tsx` | 登录态：`GET /me` 为准（401 或统一拒绝 404 = 没登录；同一浏览器里的管理员会话在门户上就是 404；第一次取就遇到网络 / 服务器错误且没有缓存 = `failed`，门禁显示「重试」，不送去登录页）；范围 `scopeOf`：full（AuthUser）/ renewal（到期或流量用完，ShopUser）/ banned（PortalUser）。管理员不在门户里（D4） |
 | `src/lib/sub-links.ts` | 订阅地址只用 `me.sub_url`（D11 随机路径、D8 订阅域名；相对地址补本站 origin）；格式选择按 `me.sub_formats`，一键导入按 `me.sub_import_clients`（面板 `sub::IMPORT_CLIENTS`，已按开着的格式筛过）在前端按各客户端 scheme 拼链接 |
 | `src/pages/registry.ts` | 全部页面按需加载（`lazyRetry`）；`pages/auth.tsx`（登录/注册/找回/重置）、`pages/legal.tsx`（条款/隐私）、`pages/dash/*`（用户中心） |
 | `src/i18n/` | `tr('简体原文')` + 英文词典 `dict.ts`（键 = 简体原文，按需加载）；错误码文案 `errors.ts`（`CODE_KEYS`：码 → `errors.*`，`errorText` 填 params，`<p>_cents` 另给 `<p>_yuan`） |
@@ -41,12 +41,12 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 |---|---|---|
 | `/` | 仪表盘（续费范围：缩减版 + 续费横幅；封禁：封禁说明） | 全部 |
 | `/shop` | 商店（服务端报价、优惠码（只在确认订单弹窗里填，列表不带码）、余额抵扣、折算与作废确认、拒绝原因、支付方式） | full、renewal |
-| `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台，轮询）、退款去向 | full、renewal |
+| `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台，轮询；手机上金额单在付款区上面）、退款去向 | full、renewal |
 | `/wallet` | 余额、流水、USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希；提现仅 full） | full、renewal |
 | `/invite` | 邀请链接（面板给的 `link_base`）、邀请码、返佣 | full |
 | `/nodes` | 可用入口（每个入口一行；倍率 = 此刻生效的倍率，D9；状态 在线/离线/维护中（中转健康检查失败或服务器额度用完 = 维护中，置灰，订阅里没有它）、负载等级、延迟参考（面板 TCP 测速优先），图例 + 每 30 秒刷新（`hooks/use-auto-reload`，仪表盘「订阅内的线路」同样）） | full |
 | `/traffic` | 流量明细（站点时区的日界；按线路 = 每个入口一行，显示此刻倍率与时段规则，不显示计费 ÷ 原始的混合比值） | full |
-| `/tickets` | 工单 | full、renewal、banned |
+| `/tickets` | 工单（新工单内联校验；对话打开 / 发出回复后滚到最新一条；关闭前确认） | full、renewal、banned |
 | `/help`、`/announcements` | 知识库、公告 | full、renewal |
 | `/account` | 设置（2026-10-12 用户裁决，走查 `design/portal-settings-audit-2026-10`）：**单页 + 分区锚点导航**（`components/settings/setting-row` 的 `SettingsNav`：桌面左侧吸顶竖排，手机页头下吸顶横排；旧链接 `?tab=security` → `#security`）。只放能改的东西，每项一行 `SettingRow`（左名称 + 说明，右当前值 + 操作）：`#account` 邮箱（已验证 / 未验证 +「验证」「更换」：`verify-email-dialog`、`settings/change-email-dialog` 两步弹窗；站点没开发信（`/auth/options.mail`）时两个按钮都不出现）、套餐一行摘要（详情在商店「当前套餐」）；`#security` 密码（`settings/password-dialog`，无密码账户用通行密钥设置第一个）、通行密钥（`settings/passkeys`：删除与开启「只用通行密钥」走确认弹窗，手机行内操作收进「⋯」）、退出所有设备（`/auth/logout`）；`#subscription` 订阅链接状态（正常 / 旧格式（可重置）/ 续费后可用）+ 重置，导入只在仪表盘；`#preferences` 界面语言（= 邮件语言，只在主动切换时同步，`AuthCtxValue.setMailLocale`）、明暗（浅 / 深 / 跟随系统，默认跟随）；`#danger` 注销（`settings/delete-account-dialog`：影响清单、可提现提示 + 去钱包、被阻止时给去处链接只留「知道了」）。确认本人的输入是 `components/holder-confirm` + `hooks/use-holder-confirm`（登录方式取不到时说明 + 重试，不默认给密码框） | full、renewal |
 | `/login`、`/register`、`/forgot`、`/reset` | 登录（密码 / 通行密钥）、注册（PoW 或邮箱验证码，`?invite=` 预填）、申请重置链接、按 `#token=` 设新密码 | 未登录 |
@@ -62,7 +62,8 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 - **会话**：httpOnly + SameSite=Strict cookie，前端不存令牌；sessionStorage 里的 `/me` 副本去掉 `sub_token`/`sub_url`。
 - **错误**：按 `code` 显示（`useErrorText`），不显示 `error` 原文；统一拒绝（404 空 body）不带信息。`scripts/check-error-codes.mjs` 读 `../src/error_codes.txt`：命名空间 auth/account/signup/shop/order/coupon/balance/withdrawal/invite/ticket/request 与 `kb.query_long` 的每个码都要有 `CODE_KEYS`，多余/重复映射也失败（后台的码由后台应用检查）。新增用户可见的码 → 这里加文案。
 - **文案**：所有界面中文经 `tr()`/`tp()`；`scripts/check-i18n.mjs` 要求每个含汉字的字符串都有英文条目、词典里没有没人用的条目（`--fix` 删掉）。改了中文文案要重跑字体子集（见「字体」）。
-- **表单**：一律 `noValidate`，不用浏览器原生校验气泡；字段用 `components/text-field`（标签 + 输入 + 常驻帮助 / 内联错误，`aria-invalid` + `aria-describedby`，密码框带显示 / 隐藏），校验与服务端错误码 → 字段用 `lib/form-errors`（`useFieldErrors`：提交时聚焦第一个出错的字段；`fieldOf` 把能对应字段的错误码画在字段下面，其余才用 toast）。区块加载失败（`data-state` 的 `LoadError`）同样按错误码显示。
+- **表单**：一律 `noValidate`，不用浏览器原生校验气泡；字段用 `components/text-field`（标签 + 输入 + 常驻帮助 / 内联错误，`aria-invalid` + `aria-describedby`，密码框带显示 / 隐藏），校验与服务端错误码 → 字段用 `lib/form-errors`（`useFieldErrors`：提交时聚焦第一个出错的字段；`fieldOf` 把能对应字段的错误码画在字段下面，其余才用 toast）。区块加载失败（`data-state` 的 `LoadError`）同样按错误码显示；整页加载失败时保留页面标题。提现、新工单同样走这一套（按钮不预先置灰，提交时逐项说明）。
+- **手机宽度**：任何页面在 390px 下都不能横向滚动（e2e `polish.spec.ts`）。两栏 `.split2` 用 `minmax(0, 1fr)`；提醒条（`.notice`、待支付订单）文字至少留 15rem，放不下时按钮换到下一行；访客页头在手机上只放一个按钮；列表行右侧在手机上只留一个状态（多余的徽章挪进说明行），日期 `whitespace-nowrap`；宽表格在手机上改成行式列表（钱包、订单、返佣、节点）或只留关键列（使用明细）。
 - **金额**：整数分，`lib/format.ts` 的 `yuan`/`formatMoney`/`parseYuan` 不经过浮点；前端不算价，报价全部来自 `/me/shop`；余额本身不为负（佣金追回不够时记欠款）。
 - **时间**：RFC 3339，按全站时区显示（`/me`、`/auth/options` 的 `timezone`）。
 - **退款显示**：`MyOrderView` 的 `refund_route`（original 原路退回 / balance 退到余额 / manual 支付渠道后台退款后登记）、`refund_balance_cents`/`refund_external_cents`、`refund_pending`（原路退款等渠道确认）、`refund_effect`（P1：none/cancel/rollback/restore）。
@@ -104,8 +105,9 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 - **切页**：`PageTransition` 旧页淡出下沉 4px（EXIT）→ 新页上浮 8px 淡入（FAST）。
 - **按下**：按钮、开关、`.press` 缩到 0.97，松手回弹；带下拉的按钮不缩。
 - **数字**：统计条的数字用 `CountUp`（直接写 DOM、不重渲染）；金额给 `fmt: formatMoney`（值是分，逐分滚动）。
+- **最大内容块原地渲染（LCP）**：页面的最大内容块不做入场、数字第一次直接是终值（`StatRow still` → `CountUp instant`，之后值变了照常滚动）。仪表盘的统计条就是它（#117 的入场让仪表盘 LCP 晚了 100–450 ms）；其余区块照常错峰。e2e `polish.spec.ts` 断言统计条里没有 `data-enter`。
 - **复制成功**：对勾加 `pop-in`。骨架屏延迟 120 ms 淡入（`load-in`），内容到后按入场替换。
-- **弹窗**（`components/ui/panels`：阅读 / 确认 / 流程 / 结果）：任何宽度都居中（2026-10-12 用户要求，不再贴底），四边 12px；`.panel` 跟随可见视口（`lib/visual-viewport` 写 `--vv-h`/`--vv-top`，软键盘弹出时挪到键盘上方）、限高 = 可见视口 − 上下 max(12px, 安全区)，超出在弹窗内部滚动、头尾不动；进场淡入 + 0.96 放大 + 上浮 8px，退场更快。
+- **弹窗**（`components/ui/panels`：阅读 / 确认 / 流程 / 结果）：任何宽度都居中（2026-10-12 用户要求，不再贴底），四边 12px；`.panel` 跟随可见视口（`lib/visual-viewport` 写 `--vv-h`/`--vv-top`，软键盘弹出时挪到键盘上方）、限高 = 可见视口 − 上下 max(12px, 安全区)，超出在弹窗内部滚动、头尾不动；进场淡入 + 0.96 放大 + 上浮 8px，退场更快。流程弹窗的底栏（`FlowFooter`）在手机上按钮另起一行等宽铺满，左边的小结独占上一行（以前和小结抢宽度，「提交申请」被挤出弹窗）。
 - **付款结果**（`components/pay-result`）：订单页轮询到已付款 / 超时，或商店当场付清（余额、优惠、折算全额抵扣、免费订单）带 `state.paid` 跳到订单页时弹出：成功 = 圆环 + 对勾描画、一次性撒花、金额 / 套餐 / 到期、「查看订阅」「返回仪表盘」；付了但没能开通 = 退回余额；超时 = 时钟轻摇 +「重新选购」。只弹一次（刷新不再出现）。
 - **减少动效**（`prefers-reduced-motion`）：位移、缩放、描线、撒花全部关闭，内容直接到位；弹出层进退场缩成 1 ms（Radix 要等 animationend）；加载指示器只放慢。**e2e 一律在 reduced motion 下跑**（`playwright.config.ts`），性能报告则照常播放动效。
 - 只动 `transform` / `opacity`（独立属性 `translate` / `scale` 优先，不覆盖元素自己的 transform）；唯一例外是结果图标的描线（56px SVG 的 `stroke-dashoffset`，只重绘不布局）。不引入动效库；特效代码按需加载。

@@ -48,9 +48,10 @@ export function toGB(bytes: number | null | undefined): number {
   return (bytes ?? 0) / GIB;
 }
 
-/** 字节 → "12.3 GB" / "512 MB" / "0 B" */
+/** 字节 → "1.5 TB" / "12.3 GB" / "512 MB" / "0 B"（套餐的 1 TB 不写成「1024 GB」） */
 export function formatBytes(bytes: number | null | undefined): string {
   const b = Math.max(0, bytes ?? 0);
+  if (b >= 1024 * GIB) return `${+(b / (1024 * GIB)).toFixed(1)} TB`;
   if (b >= GIB) return `${+(b / GIB).toFixed(b >= 100 * GIB ? 0 : 1)} GB`;
   if (b >= 1024 ** 2) return `${+(b / 1024 ** 2).toFixed(1)} MB`;
   if (b >= 1024) return `${+(b / 1024).toFixed(1)} KB`;
