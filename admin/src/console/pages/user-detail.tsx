@@ -9,11 +9,12 @@
 // own (data.ts). Also the new-user dialog and the balance adjustment
 // (reused by the finance page).
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { del, get, patch, post, put } from "../../shared/api";
 import {
   ago,
   bytes,
+  copyText,
   dateOnly,
   dateTime,
   daysBefore,
@@ -33,10 +34,11 @@ import { resetLabel, periodLabel } from "../terms";
 import { useCrumb, useMe } from "../session";
 import type { PlanView } from "../types";
 import { EMPTY_TERM, TermFields, termBody, type TermForm } from "./term-fields";
-import { userStatus, type UserRow } from "./users";
+import { Avatar, UserStatusBadge, type UserRow } from "./users";
 import {
   Ban,
   CalendarPlus,
+  Copy,
   ChevronDown,
   ChevronRight,
   KeyRound,
@@ -45,13 +47,15 @@ import {
   LogOut,
   Mail,
   RefreshCw,
+  ShieldCheck,
   Star,
   Trash2,
   UserPlus,
   Users,
   Wallet,
+  type LucideIcon,
 } from "lucide-react";
-import { Badge, type Tone } from "../../shared/ui/badge";
+import { Badge, Dot, type Tone } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { useConfirm } from "../../shared/ui/confirm";
 import { Dialog } from "../../shared/ui/dialog";
@@ -233,6 +237,15 @@ export function UserDetail({
   const [deleting, setDeleting] = useState(false);
   const u = q.data;
   useCrumb(u?.email);
+  // The dialog's header tile shows the account's avatar (as in the design).
+  const avatarEmail = u && !u.email_pending ? u.email : "?";
+  const avatarIcon = useMemo(
+    () =>
+      function UserAvatar() {
+        return <Avatar email={avatarEmail} className="size-9 text-callout" />;
+      } as unknown as LucideIcon,
+    [avatarEmail],
+  );
   const isAdmin = u?.role === "admin";
   const otherAdmin = isAdmin && u?.id !== me.id;
   const ownerOnly = !!otherAdmin && !me.is_owner;
@@ -319,7 +332,6 @@ export function UserDetail({
     }
   };
 
-  const status = u ? userStatus(u, tr) : null;
   const current = u?.subscription ?? null;
   const canBan = live && !u.is_owner && u.id !== me.id;
 
@@ -405,22 +417,29 @@ export function UserDetail({
         size="xl"
         dirty={false}
         onClose={onClose}
-        title={u?.email ?? tr("用户", "User")}
+        icon={avatarIcon}
+        title={
+          u ? (
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="truncate">{u.email_pending ? tr("（待绑定邮箱）", "(email pending)") : u.email}</span>
+              {!u.email_pending && <CopyIcon text={u.email} />}
+            </span>
+          ) : (
+            tr("用户", "User")
+          )
+        }
         description={
-          u &&
-          status && (
+          u && (
             <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-              <Badge tone={status.tone} dot>
-                {status.label}
-              </Badge>
-              {u.is_owner && <Badge tone="primary">{tr("所有者", "Owner")}</Badge>}
-              {isAdmin && <Badge tone="outline">{tr("管理员", "Admin")}</Badge>}
-              <span>
+              <span className="tnum">
                 {tr(`注册于 ${dateOnly(u.created_at)}`, `Signed up ${dateOnly(u.created_at)}`)} ·{" "}
                 {u.last_login_at
                   ? tr(`最后登录 ${ago(u.last_login_at, lang)}`, `Last sign-in ${ago(u.last_login_at, lang)}`)
                   : tr("从未登录", "Never signed in")}
               </span>
+              <UserStatusBadge user={u} />
+              {u.is_owner && <Badge tone="primary">{tr("所有者", "Owner")}</Badge>}
+              {isAdmin && <Badge tone="outline">{tr("管理员", "Admin")}</Badge>}
             </span>
           )
         }
@@ -629,6 +648,27 @@ export function UserDetail({
   );
 }
 
+/** Icon-only copy button (next to the address in the header). */
+function CopyIcon({ text }: { text: string }) {
+  const tr = useTr();
+  const toast = useToast();
+  return (
+    <Button
+      size="icon-sm"
+      variant="ghost"
+      icon={Copy}
+      aria-label={tr("复制邮箱", "Copy address")}
+      onClick={async () =>
+        toast(
+          (await copyText(text))
+            ? { tone: "success", title: tr("已复制", "Copied") }
+            : { tone: "error", title: tr("复制失败，请手动复制", "Copy failed; copy it by hand") },
+        )
+      }
+    />
+  );
+}
+
 function Stat({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="min-w-0">
@@ -666,7 +706,10 @@ function Overview({
                   u.email_pending ? (
                     <Badge tone="warning">{tr("待绑定邮箱", "Email pending")}</Badge>
                   ) : u.email_verified ? (
-                    <Badge tone="success">{tr("已验证", "Verified")}</Badge>
+                    <Badge tone="success">
+                      <ShieldCheck aria-hidden="true" />
+                      {tr("已验证", "Verified")}
+                    </Badge>
                   ) : (
                     <Badge tone="warning">{tr("未验证", "Unverified")}</Badge>
                   ),
@@ -693,9 +736,60 @@ function Overview({
             ))}
           </dl>
         </section>
-        {!isAdmin && <PlanHistoryList id={u.id} />}
+        {!isAdmin && <TopEntrances id={u.id} />}
       </div>
+      {!isAdmin && <PlanHistoryList id={u.id} />}
     </>
+  );
+}
+
+/** 概览: the last 30 days by entrance, top five (the 流量 tab has the rest). */
+function TopEntrances({ id }: { id: string }) {
+  const tr = useTr();
+  const to = siteToday();
+  const from = daysBefore(to, 29);
+  // Same key as the 流量 tab's 30-day view: one request for both.
+  const q = useQuery({
+    queryKey: ["traffic", "user-entrances", id, "30"],
+    queryFn: () => get<{ rows: EntranceRow[] }>(`/users/${id}/traffic?from=${from}&to=${to}&group=entrance`),
+  });
+  const rows = [...(q.data?.rows ?? [])].sort((a, b) => b.billed_bytes - a.billed_bytes).slice(0, 5);
+  const top = Math.max(1, ...rows.map((r) => r.billed_bytes));
+  return (
+    <section>
+      <SectionTitle>{tr("近 30 天流量 · 按入口", "Last 30 days · by entrance")}</SectionTitle>
+      {q.isPending ? (
+        <LoadingBlock rows={3} />
+      ) : q.error ? (
+        <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
+      ) : rows.length === 0 ? (
+        <p className="py-2 text-body text-muted-foreground">{tr("近 30 天没有流量。", "No traffic in 30 days.")}</p>
+      ) : (
+        <ul className="grid gap-2 pt-1" aria-label={tr("近 30 天流量 · 按入口", "Last 30 days · by entrance")}>
+          {rows.map((n, i) => (
+            <li key={n.entrance_id} className="grid grid-cols-[1fr_auto] items-center gap-x-3 gap-y-1">
+              <span className="flex min-w-0 items-center gap-1.5 text-body">
+                <Dot tone={n.kind === "relay" ? "warning" : n.kind ? "success" : "neutral"} />
+                <span className="truncate">
+                  {n.node ?? tr("已删除的节点", "Deleted node")} ·{" "}
+                  {n.entrance ?? tr("已删除的入口", "Deleted entrance")}
+                </span>
+              </span>
+              <span className="tnum text-footnote text-muted-foreground">
+                {bytes(n.billed_bytes)}
+                {n.rate_now !== null && ` · ${rateText(Math.round(n.rate_now * 1000))}`}
+              </span>
+              <div className="col-span-2 h-1.5 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
+                <div
+                  className="h-full rounded-full bg-chart-1"
+                  style={{ width: `${Math.max(2, (n.billed_bytes / top) * 100)}%`, opacity: 1 - i * 0.12 }}
+                />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -721,6 +815,7 @@ function SubscriptionCard({ user, onAssign, live }: { user: Detail; onAssign: ()
     );
   const p = pct(s.traffic_used_bytes, s.traffic_total_bytes);
   const left = s.expires_at ? Math.ceil((Date.parse(s.expires_at) - Date.now()) / 86400_000) : null;
+  const resetIn = s.next_reset_at ? Math.ceil((Date.parse(s.next_reset_at) - Date.now()) / 86400_000) : null;
   const cancel = async () => {
     const ok = await confirm({
       title: tr("取消套餐？", "Cancel the plan?"),
@@ -745,22 +840,24 @@ function SubscriptionCard({ user, onAssign, live }: { user: Detail; onAssign: ()
           <div className="text-footnote font-medium text-muted-foreground">
             {tr("当前订阅", "Current subscription")}
           </div>
-          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
             <span className="text-title3 font-semibold break-all">{s.plan_name}</span>
             <span className="text-body text-muted-foreground">
-              {periodLabel(s.period, tr, s.period_days)} · {resetLabel(s.reset_period, tr)}
+              · {periodLabel(s.period, tr, s.period_days)} · {resetLabel(s.reset_period, tr)}
             </span>
-            <Badge tone={s.status === "active" ? "success" : "danger"} dot>
-              {subStatusText(s.status, tr)}
-            </Badge>
+            {s.status !== "active" && (
+              <Badge tone="danger" dot>
+                {subStatusText(s.status, tr)}
+              </Badge>
+            )}
           </div>
         </div>
         {live && (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" icon={Layers} onClick={onAssign}>
+            <Button size="sm" variant="outline" onClick={onAssign}>
               {tr("更换套餐", "Change plan")}
             </Button>
-            <Button size="sm" variant="destructive-soft" onClick={() => void cancel()}>
+            <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void cancel()}>
               {tr("取消套餐", "Cancel plan")}
             </Button>
           </div>
@@ -774,8 +871,19 @@ function SubscriptionCard({ user, onAssign, live }: { user: Detail; onAssign: ()
             / {s.traffic_total_bytes === null ? tr("不限", "unlimited") : bytes(s.traffic_total_bytes)}
           </span>
         </Stat>
-        <Stat label={tr("到期", "Expires")}>{s.expires_at ? dateTime(s.expires_at) : tr("永久", "never")}</Stat>
-        <Stat label={tr("下次重置", "Next reset")}>{s.next_reset_at ? dateTime(s.next_reset_at) : "—"}</Stat>
+        <Stat label={tr("到期", "Expires")}>
+          {s.expires_at ? <span title={dateTime(s.expires_at)}>{dateOnly(s.expires_at)}</span> : tr("永久", "never")}
+        </Stat>
+        <Stat label={tr("下次重置", "Next reset")}>
+          {s.next_reset_at ? (
+            <span title={dateTime(s.next_reset_at)}>
+              {dateOnly(s.next_reset_at).slice(5)}
+              {resetIn !== null && resetIn > 0 && tr(` · ${resetIn} 天后`, ` · in ${resetIn} d`)}
+            </span>
+          ) : (
+            "—"
+          )}
+        </Stat>
         <Stat label={tr("限速", "Speed limit")}>
           {s.speed_limit_mbps ? `${s.speed_limit_mbps} Mbps` : tr("不限", "unlimited")}
         </Stat>
@@ -786,14 +894,10 @@ function SubscriptionCard({ user, onAssign, live }: { user: Detail; onAssign: ()
           <span className="tnum text-footnote font-semibold">{p.toFixed(1)}%</span>
         </div>
       )}
-      <KV
-        className="mt-3 text-footnote"
-        items={[
-          [tr("开始", "Started"), dateTime(s.starts_at)],
-          [tr("上次重置", "Last reset"), dateTime(s.last_reset_at)],
-          [tr("重置时区", "Reset time zone"), s.timezone],
-        ]}
-      />
+      <p className="tnum mt-3 text-footnote text-muted-foreground">
+        {tr("开始", "Started")} {dateTime(s.starts_at)} · {tr("上次重置", "Last reset")}{" "}
+        {s.last_reset_at ? dateTime(s.last_reset_at) : "—"} · {tr("重置时区", "Reset time zone")} {s.timezone}
+      </p>
     </section>
   );
 }

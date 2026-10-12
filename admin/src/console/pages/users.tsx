@@ -9,18 +9,35 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { apiBase } from "../../shared/base";
 import { get, qs } from "../../shared/api";
-import { bytes, dateOnly, dateTime, pct, yuan } from "../../shared/format";
-import { useTr, type Tr } from "../../shared/i18n";
+import { ago, bytes, dateOnly, dateTime, pct, yuan } from "../../shared/format";
+import { useLang, useTr, type Tr } from "../../shared/i18n";
+import { cn } from "../../shared/cn";
 import { DataTable, FilterChip, PAGE_SIZES, Pager, type Column } from "../../shared/ui/table";
 import { useDebounced } from "../kit";
 import { setQuery, useRoute } from "../router";
 import type { PlanView } from "../types";
-import { BatchDialog, BatchJobs, useBulkDelete, type Selection, type UserFilter } from "./user-batch";
+import { BatchDialog, BatchJobs, useBulkDelete, type Kind, type Selection, type UserFilter } from "./user-batch";
 import { CreateUserDialog, UserDetail } from "./user-detail";
-import { Download, KeyRound, ListFilter, Plus, Search, Trash2 } from "lucide-react";
+import {
+  Ban,
+  CalendarPlus,
+  Clock,
+  Download,
+  Filter,
+  Gauge,
+  KeyRound,
+  Layers,
+  Mail,
+  Plus,
+  RotateCcw,
+  Search,
+  Trash2,
+  UserX,
+  type LucideIcon,
+} from "lucide-react";
 import { Badge, type Tone } from "../../shared/ui/badge";
 import { Button, ButtonLink } from "../../shared/ui/button";
-import { Field, Input, Select, SwitchField } from "../../shared/ui/form";
+import { Field, Input, Segmented, Select, SwitchField } from "../../shared/ui/form";
 import { PageHeader } from "../../shared/ui/layout";
 import { Popover } from "../../shared/ui/menu";
 import { Meter, usageTone } from "../../shared/ui/meter";
@@ -53,21 +70,54 @@ export type UserRow = {
 const DEFAULT_LIMIT = 50;
 
 /** Status badge, same precedence as the server's status filter. */
-export function userStatus(u: UserRow, tr: Tr): { label: string; tone: Tone } {
-  if (u.erased) return { label: tr("已注销", "Erased"), tone: "outline" };
-  if (!u.enabled && u.disabled_reason !== "quota") return { label: tr("已封禁", "Banned"), tone: "danger" };
-  if (!u.enabled) return { label: tr("流量用尽", "Over quota"), tone: "warning" };
+export function userStatus(u: UserRow, tr: Tr): { label: string; tone: Tone; icon?: LucideIcon } {
+  if (u.erased) return { label: tr("已注销", "Erased"), tone: "outline", icon: UserX };
+  if (!u.enabled && u.disabled_reason !== "quota") return { label: tr("已封禁", "Banned"), tone: "danger", icon: Ban };
+  if (!u.enabled) return { label: tr("流量用尽", "Over quota"), tone: "warning", icon: Gauge };
   if (u.role === "user" && u.expires_at && Date.parse(u.expires_at) <= Date.now())
-    return { label: tr("已到期", "Expired"), tone: "warning" };
-  if (u.role === "user" && !u.plan_id) return { label: tr("无套餐", "No plan"), tone: "neutral" };
+    return { label: tr("已到期", "Expired"), tone: "warning", icon: Clock };
+  if (u.role === "user" && !u.plan_id) return { label: tr("无套餐", "No plan"), tone: "outline", icon: RotateCcw };
   return { label: tr("正常", "Active"), tone: "success" };
+}
+
+/** The status pill (dot when active, else an icon), as in the design. */
+export function UserStatusBadge({ user }: { user: UserRow }) {
+  const tr = useTr();
+  const s = userStatus(user, tr);
+  const Icon = s.icon;
+  return (
+    <Badge tone={s.tone} dot={!Icon}>
+      {Icon && <Icon aria-hidden="true" />}
+      {s.label}
+    </Badge>
+  );
+}
+
+/** Avatar colours (chart tokens, so both themes are covered). */
+const HUES = ["--chart-1", "--chart-3", "--chart-7", "--chart-5", "--chart-2", "--chart-6"];
+
+/** The address's initial on a soft gradient of a colour picked from the address. */
+export function Avatar({ email, large, className }: { email: string; large?: boolean; className?: string }) {
+  const c = `var(${HUES[(email.charCodeAt(0) || 0) % HUES.length]})`;
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-full font-semibold text-white uppercase",
+        large ? "size-10 text-headline" : "size-[30px] text-footnote",
+        className,
+      )}
+      style={{ background: `linear-gradient(180deg, color-mix(in srgb, ${c}, white 22%), ${c})` }}
+    >
+      {email.slice(0, 1) || "?"}
+    </span>
+  );
 }
 
 export function usePlans() {
   return useQuery({ queryKey: ["plans"], queryFn: () => get<PlanView[]>("/plans") });
 }
 
-const STATUSES = ["active", "expired", "quota", "banned", "erased"];
 const CLEAR_ALL = {
   q: null,
   status: null,
@@ -78,9 +128,28 @@ const CLEAR_ALL = {
   last_login_before: null,
   offset: null,
 };
+/** The status segments: four server statuses, plus "never used" (D10). */
+type Seg = "" | "all" | "active" | "expired" | "quota" | "banned" | "never";
+const SORTS = ["-created", "created", "email", "-traffic", "expires"];
+
+function sortName(s: string, tr: Tr): string {
+  switch (s) {
+    case "created":
+      return tr("注册时间（旧→新）", "Oldest first");
+    case "email":
+      return tr("邮箱", "Email");
+    case "-traffic":
+      return tr("已用流量（多→少）", "Most traffic");
+    case "expires":
+      return tr("到期（近→远）", "Expiring soonest");
+    default:
+      return tr("注册时间（新→旧）", "Newest first");
+  }
+}
 
 export function UsersPage() {
   const tr = useTr();
+  const lang = useLang();
   const { query } = useRoute();
   const limitParam = Number(query.get("limit"));
   const f = {
@@ -133,6 +202,11 @@ export function UsersPage() {
       get<{ users: UserRow[]; total: number }>(`/users${qs({ ...filterParams, limit: f.limit, offset: f.offset })}`),
     placeholderData: keepPreviousData,
   });
+  // The header's "N active" (the same list endpoint, one row).
+  const active = useQuery({
+    queryKey: ["users", "active-count"],
+    queryFn: () => get<{ total: number }>(`/users${qs({ status: "active", limit: 1 })}`),
+  });
   const plans = usePlans();
   const total = users.data?.total ?? 0;
   const filtered = Object.values(listFilter).some((v) => v !== undefined);
@@ -149,7 +223,7 @@ export function UsersPage() {
   const setSelected = (ids: Set<string>) => setPicked({ view, ids, all: ids.size > 0 && allMatching });
   const clearSelection = () => setPicked({ view, ids: new Set(), all: false });
 
-  const [batch, setBatch] = useState<{ selection: Selection; label: string } | null>(null);
+  const [batch, setBatch] = useState<{ selection: Selection; label: string; kind?: Kind } | null>(null);
   const [startDelete, deleting] = useBulkDelete();
   const [more, setMore] = useState(false);
   const planName = (id: string) =>
@@ -157,65 +231,127 @@ export function UsersPage() {
       ? tr("无套餐", "No plan")
       : (plans.data?.find((p) => p.id === id)?.name ?? tr("已删除的套餐", "Deleted plan"));
 
+  // The segments show the status filter, or "never used" on its own; any
+  // other combination (erased, or both) is shown as chips instead.
+  const seg: Seg = f.never_used
+    ? f.status
+      ? ""
+      : "never"
+    : !f.status
+      ? "all"
+      : f.status === "erased"
+        ? ""
+        : (f.status as Seg);
+  const onSeg = (v: Seg) =>
+    set(
+      v === "all"
+        ? { status: null, never_used: null }
+        : v === "never"
+          ? { status: null, never_used: "1" }
+          : { status: v || null, never_used: null },
+    );
+
+  const traffic = (u: UserRow) => {
+    const p = pct(u.traffic_used_bytes, u.traffic_limit_bytes);
+    return { p, limited: u.traffic_limit_bytes !== null };
+  };
+
   const columns: Column<UserRow>[] = [
     {
       key: "email",
-      header: tr("邮箱", "Email"),
+      header: tr("用户", "User"),
+      label: tr("用户", "User"),
       fixed: true,
       mobile: "title",
-      cell: (u) => (
-        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
-          <span className="min-w-0 font-medium break-all">
-            {u.email_pending ? tr("（待绑定邮箱）", "(email pending)") : u.email}
-          </span>
-          {u.is_owner && <Badge tone="primary">{tr("所有者", "Owner")}</Badge>}
-          {u.role === "admin" && !u.is_owner && <Badge tone="outline">{tr("管理员", "Admin")}</Badge>}
-          {u.email_pending && <Badge tone="warning">{tr("待绑定邮箱", "Email pending")}</Badge>}
-          {!u.email_verified && !u.erased && !u.email_pending && (
-            <Badge tone="warning">{tr("未验证", "Unverified")}</Badge>
-          )}
-          {u.signup_method === "passkey" && (
-            <KeyRound
-              className="size-3 shrink-0 text-faint"
-              aria-label={tr("通行密钥注册", "Signed up with a passkey")}
-            />
-          )}
-        </span>
-      ),
-    },
-    {
-      key: "status",
-      header: tr("状态", "Status"),
+      className: "md:min-w-64",
       cell: (u) => {
-        const s = userStatus(u, tr);
+        const t = traffic(u);
         return (
-          <Badge tone={s.tone} dot>
-            {s.label}
-          </Badge>
+          <div className="flex min-w-0 items-center gap-2.5 max-md:gap-3">
+            <Avatar email={u.email_pending ? "?" : u.email} className="max-md:size-9 max-md:text-callout" />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-body font-medium">
+                <span className="min-w-0 break-all">
+                  {u.email_pending ? tr("（待绑定邮箱）", "(email pending)") : u.email}
+                </span>
+                {u.is_owner && (
+                  <Badge tone="primary" className="px-1.5 text-caption">
+                    {tr("所有者", "Owner")}
+                  </Badge>
+                )}
+                {u.role === "admin" && !u.is_owner && (
+                  <Badge tone="outline" className="px-1.5 text-caption">
+                    {tr("管理员", "Admin")}
+                  </Badge>
+                )}
+                {u.email_pending && (
+                  <Badge tone="warning" className="px-1.5 text-caption">
+                    {tr("待绑定邮箱", "Email pending")}
+                  </Badge>
+                )}
+                {!u.email_verified && !u.erased && !u.email_pending && (
+                  <Badge tone="warning" className="px-1.5 text-caption">
+                    {tr("未验证", "Unverified")}
+                  </Badge>
+                )}
+                {u.signup_method === "passkey" && (
+                  <KeyRound
+                    className="size-3 shrink-0 text-faint"
+                    aria-label={tr("通行密钥注册", "Signed up with a passkey")}
+                  />
+                )}
+              </div>
+              <div className="tnum text-footnote font-normal text-faint max-md:hidden">
+                {tr(`注册于 ${dateOnly(u.created_at)}`, `Signed up ${dateOnly(u.created_at)}`)}
+              </div>
+              {/* Phone card: status and plan, then the usage bar. */}
+              <div className="mt-1 flex min-w-0 items-center gap-2 font-normal md:hidden">
+                <UserStatusBadge user={u} />
+                <span className="truncate text-footnote text-muted-foreground">
+                  {u.plan_name ?? (u.role === "admin" ? "" : tr("无套餐", "No plan"))}
+                </span>
+              </div>
+              {t.limited && (
+                <div className="mt-1.5 flex items-center gap-2 font-normal md:hidden">
+                  <Meter value={t.p} tone={usageTone(t.p)} className="flex-1" label={tr("流量用量", "Traffic used")} />
+                  <span className="tnum text-caption text-muted-foreground">{t.p.toFixed(0)}%</span>
+                </div>
+              )}
+            </div>
+          </div>
         );
       },
     },
     {
+      key: "status",
+      header: tr("状态", "Status"),
+      mobile: "hide",
+      cell: (u) => <UserStatusBadge user={u} />,
+    },
+    {
       key: "plan",
       header: tr("套餐", "Plan"),
+      mobile: "hide",
       cell: (u) =>
         u.plan_name ?? <span className="text-faint">{u.role === "admin" ? "—" : tr("无套餐", "No plan")}</span>,
     },
     {
       key: "traffic",
-      header: tr("流量", "Traffic"),
+      header: tr("本周期流量", "Traffic this period"),
+      mobile: "hide",
+      className: "md:min-w-44",
       cell: (u) => {
-        const p = pct(u.traffic_used_bytes, u.traffic_limit_bytes);
+        const t = traffic(u);
         return (
-          <div className="grid min-w-28 gap-1 md:min-w-36">
+          <div className="grid gap-1">
             <div className="tnum flex justify-between gap-2 text-caption text-muted-foreground">
               <span>
                 {bytes(u.traffic_used_bytes)}
-                {u.traffic_limit_bytes !== null && ` / ${bytes(u.traffic_limit_bytes)}`}
+                {t.limited ? ` / ${bytes(u.traffic_limit_bytes)}` : ""}
               </span>
-              {u.traffic_limit_bytes !== null && <span>{p.toFixed(0)}%</span>}
+              {t.limited && <span>{t.p.toFixed(0)}%</span>}
             </div>
-            {u.traffic_limit_bytes !== null && <Meter value={p} tone={usageTone(p)} />}
+            {t.limited && <Meter value={t.p} tone={usageTone(t.p)} label={tr("流量用量", "Traffic used")} />}
           </div>
         );
       },
@@ -223,19 +359,27 @@ export function UsersPage() {
     {
       key: "expires",
       header: tr("到期", "Expires"),
-      cell: (u) => <span className="tnum">{dateOnly(u.expires_at)}</span>,
-    },
-    {
-      key: "created",
-      header: tr("注册时间", "Signed up"),
       mobile: "hide",
-      cell: (u) => <span className="tnum">{dateOnly(u.created_at)}</span>,
+      cell: (u) => <span className="tnum">{dateOnly(u.expires_at)}</span>,
     },
     {
       key: "last_login",
       header: tr("最后登录", "Last sign-in"),
       mobile: "hide",
-      cell: (u) => (u.last_login_at ? dateTime(u.last_login_at) : tr("从未", "never")),
+      cell: (u) =>
+        u.last_login_at ? (
+          <span className="text-muted-foreground" title={dateTime(u.last_login_at)}>
+            {ago(u.last_login_at, lang)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">{tr("从未", "never")}</span>
+        ),
+    },
+    {
+      key: "created",
+      header: tr("注册时间", "Signed up"),
+      optional: true,
+      cell: (u) => <span className="tnum">{dateOnly(u.created_at)}</span>,
     },
     {
       key: "balance",
@@ -244,7 +388,13 @@ export function UsersPage() {
       cell: (u) => yuan(u.balance_cents),
       align: "right",
     },
-    { key: "passkeys", header: tr("通行密钥", "Passkeys"), optional: true, cell: (u) => u.passkeys, align: "right" },
+    {
+      key: "passkeys",
+      header: tr("通行密钥", "Passkeys"),
+      optional: true,
+      cell: (u) => u.passkeys,
+      align: "right",
+    },
     {
       key: "signup",
       header: tr("注册方式", "Signed up with"),
@@ -259,8 +409,12 @@ export function UsersPage() {
     },
   ];
 
+  // Chips: what the segments and the search box do not already show.
   const chips: { label: string; value: string; clear: Record<string, null> }[] = [];
-  if (f.status) chips.push({ label: tr("状态", "Status"), value: statusName(f.status, tr), clear: { status: null } });
+  if (f.status && seg === "")
+    chips.push({ label: tr("状态", "Status"), value: statusName(f.status, tr), clear: { status: null } });
+  if (f.never_used && seg === "")
+    chips.push({ label: tr("从未使用", "Never used"), value: tr("是", "yes"), clear: { never_used: null } });
   if (f.plan_id) chips.push({ label: tr("套餐", "Plan"), value: planName(f.plan_id), clear: { plan: null } });
   if (f.role)
     chips.push({
@@ -268,8 +422,6 @@ export function UsersPage() {
       value: f.role === "admin" ? tr("管理员", "Admin") : tr("用户", "User"),
       clear: { role: null },
     });
-  if (f.never_used)
-    chips.push({ label: tr("从未使用", "Never used"), value: tr("是", "yes"), clear: { never_used: null } });
   if (f.registered_before)
     chips.push({
       label: tr("注册早于", "Signed up before"),
@@ -282,6 +434,8 @@ export function UsersPage() {
       value: f.last_login_before,
       clear: { last_login_before: null },
     });
+  if (f.sort !== "-created")
+    chips.push({ label: tr("排序", "Sort"), value: sortName(f.sort, tr), clear: { sort: null } });
 
   const exportHref = `${apiBase}/users/export.csv${qs(filterParams)}`;
   const scope = (): { selection: Selection; label: string } =>
@@ -306,16 +460,38 @@ export function UsersPage() {
       <PageHeader
         title={tr("用户", "Users")}
         description={
-          users.data
-            ? filtered
-              ? tr(`${total.toLocaleString()} 个账户符合筛选`, `${total.toLocaleString()} accounts match`)
-              : tr(`共 ${total.toLocaleString()} 个账户`, `${total.toLocaleString()} accounts`)
-            : tr("账户、套餐与流量。", "Accounts, plans and traffic.")
+          users.data ? (
+            filtered ? (
+              tr(`${total.toLocaleString()} 个账户符合筛选`, `${total.toLocaleString()} accounts match`)
+            ) : (
+              <>
+                {tr("共 ", "")}
+                <span className="tnum">{total.toLocaleString()}</span>
+                {tr(" 个账户", " accounts")}
+                {active.data && (
+                  <>
+                    {" · "}
+                    {tr("正常 ", "")}
+                    <span className="tnum">{active.data.total.toLocaleString()}</span>
+                    {tr("", " active")}
+                  </>
+                )}
+              </>
+            )
+          ) : (
+            tr("账户、套餐与流量。", "Accounts, plans and traffic.")
+          )
         }
         actions={
           <>
-            <ButtonLink href={exportHref} download variant="outline" icon={Download}>
-              {tr("导出 CSV", "Export CSV")}
+            <ButtonLink
+              href={exportHref}
+              download
+              variant="outline"
+              icon={Download}
+              aria-label={tr("导出 CSV", "Export CSV")}
+            >
+              <span className="max-sm:hidden">{tr("导出 CSV", "Export CSV")}</span>
             </ButtonLink>
             <Button variant="primary" icon={Plus} onClick={() => setQuery({ new: "1" }, false)}>
               {tr("新建用户", "New user")}
@@ -340,7 +516,7 @@ export function UsersPage() {
         onRowClick={(u) => setQuery({ open: u.id, tab: null }, false)}
         toolbar={
           <>
-            <div className="relative min-w-0 flex-1 basis-56">
+            <div className="relative min-w-0 flex-1 basis-60">
               <Search
                 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-faint"
                 aria-hidden="true"
@@ -348,64 +524,61 @@ export function UsersPage() {
               <Input
                 type="search"
                 aria-label={tr("搜索邮箱或 ID", "Search email or id")}
-                placeholder={tr("搜索邮箱或 ID 开头…", "Search email or id prefix…")}
+                placeholder={tr("邮箱、用户 ID", "Email, user ID")}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-8"
               />
             </div>
-            <Select
-              aria-label={tr("状态", "Status")}
-              value={f.status}
-              onChange={(e) => set({ status: e.target.value || null })}
-              className="max-sm:flex-1"
-            >
-              <option value="">{tr("全部状态", "Any status")}</option>
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {statusName(s, tr)}
-                </option>
-              ))}
-            </Select>
-            <Select
-              aria-label={tr("套餐", "Plan")}
-              value={f.plan_id}
-              onChange={(e) => set({ plan: e.target.value || null })}
-              className="max-w-full max-sm:flex-1"
-            >
-              <option value="">{tr("全部套餐", "Any plan")}</option>
-              <option value="none">{tr("无套餐", "No plan")}</option>
-              {(plans.data ?? []).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </Select>
-            <Select
-              aria-label={tr("排序", "Sort")}
-              value={f.sort}
-              onChange={(e) => set({ sort: e.target.value })}
-              className="max-sm:flex-1"
-            >
-              <option value="-created">{tr("注册时间（新→旧）", "Newest first")}</option>
-              <option value="created">{tr("注册时间（旧→新）", "Oldest first")}</option>
-              <option value="email">{tr("邮箱", "Email")}</option>
-              <option value="-traffic">{tr("已用流量（多→少）", "Most traffic")}</option>
-              <option value="expires">{tr("到期（近→远）", "Expiring soonest")}</option>
-            </Select>
+            <Segmented<Seg>
+              label={tr("状态", "Status")}
+              value={seg}
+              onChange={onSeg}
+              options={[
+                { value: "all", label: tr("全部", "All") },
+                { value: "active", label: tr("正常", "Active") },
+                { value: "expired", label: tr("已到期", "Expired") },
+                { value: "quota", label: tr("流量用尽", "Over quota") },
+                { value: "banned", label: tr("已封禁", "Banned") },
+                { value: "never", label: tr("从未使用", "Never used") },
+              ]}
+            />
             <Popover
               open={more}
               onOpenChange={setMore}
-              align="start"
+              align="end"
               label={tr("更多筛选", "More filters")}
               className="w-[min(18rem,calc(100vw-32px))] p-3"
               trigger={
-                <Button variant="secondary" icon={ListFilter}>
-                  {tr("更多筛选", "More filters")}
+                <Button variant="ghost" size="pill" icon={Filter} aria-label={tr("更多筛选", "More filters")}>
+                  <span className="max-sm:hidden">{tr("套餐、注册时间…", "Plan, sign-up date…")}</span>
                 </Button>
               }
             >
               <div className="space-y-3">
+                <Field label={tr("套餐", "Plan")}>
+                  <Select value={f.plan_id} onChange={(e) => set({ plan: e.target.value || null })}>
+                    <option value="">{tr("全部套餐", "Any plan")}</option>
+                    <option value="none">{tr("无套餐", "No plan")}</option>
+                    {(plans.data ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label={tr("排序", "Sort")}>
+                  <Select
+                    value={f.sort}
+                    onChange={(e) => set({ sort: e.target.value === "-created" ? null : e.target.value })}
+                  >
+                    {SORTS.map((s) => (
+                      <option key={s} value={s}>
+                        {sortName(s, tr)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
                 <Field label={tr("角色", "Role")}>
                   <Select value={f.role} onChange={(e) => set({ role: e.target.value || null })}>
                     <option value="">{tr("全部", "Any")}</option>
@@ -414,13 +587,10 @@ export function UsersPage() {
                   </Select>
                 </Field>
                 <SwitchField
-                  label={tr("从未使用", "Never used")}
-                  description={tr(
-                    "从无套餐、付款、流量、余额与工单的普通用户",
-                    "Users with no plan, payment, traffic, balance or ticket ever",
-                  )}
-                  checked={f.never_used}
-                  onChange={(v) => set({ never_used: v ? "1" : null })}
+                  label={tr("只看已注销", "Erased only")}
+                  description={tr("有财务记录、匿名化保留的账户", "Accounts kept anonymized for their finance records")}
+                  checked={f.status === "erased"}
+                  onChange={(v) => set({ status: v ? "erased" : null })}
                 />
                 <Field label={tr("注册早于（站点时区的日）", "Signed up before (site day)")}>
                   <Input
@@ -441,13 +611,17 @@ export function UsersPage() {
                 </Field>
               </div>
             </Popover>
-            {chips.map((c) => (
-              <FilterChip key={c.label} label={c.label} value={c.value} onClear={() => set(c.clear)} />
-            ))}
-            {filtered && (
-              <Button size="sm" variant="ghost" onClick={clearFilters}>
-                {tr("清除筛选", "Clear filters")}
-              </Button>
+            {(chips.length > 0 || filtered) && (
+              <div className="flex w-full flex-wrap items-center gap-2">
+                {chips.map((c) => (
+                  <FilterChip key={c.label} label={c.label} value={c.value} onClear={() => set(c.clear)} />
+                ))}
+                {filtered && (
+                  <Button size="sm" variant="ghost" onClick={clearFilters}>
+                    {tr("清除筛选", "Clear filters")}
+                  </Button>
+                )}
+              </div>
             )}
           </>
         }
@@ -469,7 +643,28 @@ export function UsersPage() {
                 </Button>
               )
             )}
-            <Button size="sm" variant="outline" onClick={() => setBatch(scope())}>
+            <Button
+              size="sm"
+              variant="outline"
+              icon={CalendarPlus}
+              className="max-sm:hidden"
+              onClick={() => setBatch({ ...scope(), kind: "extend_expiry" })}
+            >
+              {tr("延长", "Extend")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              icon={Mail}
+              className="max-sm:hidden"
+              onClick={() => setBatch({ ...scope(), kind: "send_email" })}
+            >
+              {tr("发邮件", "Email")}
+            </Button>
+            <Button size="sm" variant="outline" icon={Ban} onClick={() => setBatch({ ...scope(), kind: "ban" })}>
+              {tr("封禁", "Ban")}
+            </Button>
+            <Button size="sm" variant="outline" icon={Layers} onClick={() => setBatch(scope())}>
               {tr("批量操作", "Bulk action")}
             </Button>
             {(!allMatching || filtered) && (
@@ -493,6 +688,7 @@ export function UsersPage() {
             total={total}
             offset={f.offset}
             limit={f.limit}
+            totalLabel={tr(`${total.toLocaleString()} 个结果`, `${total.toLocaleString()} results`)}
             onOffset={(o) => setQuery({ offset: o ? String(o) : null })}
             onLimit={(l) => setQuery({ limit: l === DEFAULT_LIMIT ? null : String(l), offset: null })}
           />
@@ -516,6 +712,7 @@ export function UsersPage() {
         <BatchDialog
           selection={batch.selection}
           label={batch.label}
+          initialKind={batch.kind}
           plans={plans.data ?? []}
           onClose={() => setBatch(null)}
           onDone={() => {

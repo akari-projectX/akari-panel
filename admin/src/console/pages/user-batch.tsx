@@ -46,7 +46,7 @@ export const BATCH_KINDS = [
   "add_balance",
   "send_email",
 ] as const;
-type Kind = (typeof BATCH_KINDS)[number];
+export type Kind = (typeof BATCH_KINDS)[number];
 
 export function batchKindName(k: string, tr: Tr): string {
   switch (k) {
@@ -78,12 +78,15 @@ type Errors = Partial<Record<"days" | "term" | "reason" | "amount" | "subject" |
 export function BatchDialog({
   selection,
   label,
+  initialKind,
   plans,
   onClose,
   onDone,
 }: {
   selection: Selection;
   label: string;
+  /** The action picked in the bulk bar (default: extend). */
+  initialKind?: Kind;
   plans: PlanView[];
   onClose: () => void;
   onDone: () => void;
@@ -92,7 +95,7 @@ export function BatchDialog({
   const confirm = useConfirm();
   const [run, busy] = useAction();
   const [previewing, setPreviewing] = useState(false);
-  const [kind, setKind] = useState<Kind>("extend_expiry");
+  const [kind, setKind] = useState<Kind>(initialKind ?? "extend_expiry");
   const [days, setDays] = useState("30");
   const [term, setTerm] = useState<TermForm>(EMPTY_TERM);
   const [amount, setAmount] = useState("");
@@ -566,22 +569,27 @@ export function useBulkDelete(): [(selection: Selection, label: string) => Promi
     }
     let result: { deleted: number; anonymized: number; failed: number } | null = null;
     const ok = await confirm({
-      title: tr("批量删除账户", "Delete accounts"),
-      description: label,
-      impact: tr(`将永久删除 ${p.deletable} 个账户`, `${p.deletable} accounts will be deleted for good`),
+      title: tr(`永久删除 ${p.deletable} 个账户？`, `Delete ${p.deletable} accounts for good?`),
+      description: tr(
+        "与用户自助注销相同：个人数据删除；有财务记录的账户匿名化保留订单与流水。此操作不可撤销，每个账户单独写入审计日志。",
+        "Same as a self-deletion: personal data is deleted; accounts with finance records are kept anonymized with their orders and ledger. This cannot be undone; each account is audited.",
+      ),
       impacts: [
-        { label: tr("删除", "Deleted"), value: p.deletable - p.anonymized },
-        { label: tr("匿名化保留（有财务记录）", "Kept anonymized (finance records)"), value: p.anonymized },
-        ...(p.admins > 0 ? [{ label: tr("管理员（不删除）", "Admins (kept)"), value: p.admins }] : []),
+        {
+          label: tr("将删除（含匿名化保留）", "Deleted (incl. kept anonymized)"),
+          value: tr(`${p.deletable} 个`, String(p.deletable)),
+        },
+        {
+          label: tr("匿名化保留（有财务记录）", "Kept anonymized (finance records)"),
+          value: tr(`${p.anonymized} 个`, String(p.anonymized)),
+        },
+        ...(p.admins > 0
+          ? [{ label: tr("管理员（不删除）", "Admins (kept)"), value: tr(`${p.admins} 个`, String(p.admins)) }]
+          : []),
       ],
       details: (
-        <div className="space-y-1.5 text-footnote text-muted-foreground">
-          <p>
-            {tr(
-              "与用户自助注销相同：个人数据删除；有财务记录的账户匿名化保留。每个账户单独写审计。",
-              "Same as a self-deletion: personal data is deleted; accounts with finance records are kept anonymized. Each account is audited.",
-            )}
-          </p>
+        <div className="space-y-1 text-footnote text-muted-foreground">
+          <p>{label}</p>
           {p.sample.length > 0 && (
             <p className="break-words">
               {tr("例如：", "For example: ")}
