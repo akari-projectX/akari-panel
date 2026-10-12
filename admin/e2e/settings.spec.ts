@@ -569,13 +569,16 @@ test("SET-15 SET-16 SET-17 SET-18: mail via SMTP (port validated), step-by-step 
   await expect(page).toHaveURL(/\/status\?mail=dead$/);
 });
 
-test("SET-19: payment methods — add (kind chooser, key files), test, edit in a dialog (numbers checked), enabling through the save bar, delete in the danger zone", async ({
+test("SET-19: payment methods — cards in the portal order, add (kind radio cards → editor, key files), test, edit in a dialog (numbers checked while typing), enabling through the save bar, delete from the danger zone's select", async ({
   page,
 }, info) => {
   const name = uniq(info, "支付宝");
   await openConsole(page, "/settings/payments");
   await page.getByRole("button", { name: "添加渠道" }).click();
-  await dialog(page, "添加支付方式").getByRole("button", { name: "支付宝当面付" }).click();
+  const kinds = dialog(page, "添加支付方式");
+  await kinds.getByRole("radio", { name: /支付宝当面付/ }).click();
+  await expect(kinds.getByRole("radio", { name: /余额/ })).toBeDisabled();
+  await kinds.getByRole("button", { name: "下一步" }).click();
   const d = dialog(page, "添加 支付宝当面付");
   await d.getByLabel("名称（用户可见）").fill(name);
   await setSwitch(d.getByRole("switch", { name: "启用", exact: true }), false);
@@ -584,10 +587,11 @@ test("SET-19: payment methods — add (kind chooser, key files), test, edit in a
   await d.getByLabel("APPID").fill("2021000000000001");
   await d.getByLabel("从文件读取 应用私钥").setInputFiles(join(PAY_DIR, "app-key.pem"));
   await d.getByLabel("从文件读取 支付宝公钥").setInputFiles(join(PAY_DIR, "alipay-pub.pem"));
-  await d.getByRole("button", { name: "保存" }).click();
+  await d.getByRole("button", { name: "添加", exact: true }).click();
   await toast(page, "支付方式已保存");
   const item = page.locator(`[data-method="${name}"]`);
   await expect(item).toContainText("停用");
+  await expect(item).toContainText("本月");
   // Test the connection (nobody listens on the gateway: reported, not thrown).
   await item.getByRole("button", { name: "测试连接" }).click();
   await expect(page.locator("[data-sonner-toast]").filter({ hasText: /连接/ }).first()).toBeVisible();
@@ -598,8 +602,9 @@ test("SET-19: payment methods — add (kind chooser, key files), test, edit in a
   await expect(e.getByLabel("应用公钥（上传到支付宝开放平台）")).toHaveValue(/^MIIB/);
   const timeout = e.getByLabel("订单有效期（分钟，5–120）");
   await timeout.fill("abc");
-  await e.getByRole("button", { name: "保存" }).click();
   await expect(e.getByText("请输入整数")).toBeVisible();
+  await expect(e.getByText("1 处需要修正")).toBeVisible();
+  await expect(e.getByRole("button", { name: "保存" })).toBeDisabled();
   await timeout.fill("20");
   await e.getByRole("button", { name: "保存" }).click();
   await toast(page, "支付方式已保存");
@@ -609,8 +614,10 @@ test("SET-19: payment methods — add (kind chooser, key files), test, edit in a
   await expect(bar(page)).toContainText("1 项未保存的修改");
   await bar(page).getByRole("button", { name: "放弃" }).click();
   await expect(item.getByRole("switch", { name: `启用 ${name}` })).toHaveAttribute("aria-checked", "false");
-  // Delete (unused), from the danger zone.
-  await page.getByRole("button", { name: `删除 ${name}` }).click();
+  // Delete (unused), from the danger zone: pick it in the select, then 删除….
+  const zone = page.getByRole("region", { name: "危险操作" });
+  await zone.getByLabel("要删除的渠道").selectOption({ label: name });
+  await zone.getByRole("button", { name: "删除…" }).click();
   await confirmDialog(page, name);
   await expect(item).toHaveCount(0);
 });

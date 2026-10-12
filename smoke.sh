@@ -2287,6 +2287,10 @@ last_json "d['active'] and d['config']['app_private_key_set'] and d['notify_url'
   && last_json "d['ok'] and d['result']=='keys_ok'" | matches True || { echo "FAIL: 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'payment_method.create' AND after::text LIKE '%changed%' AND after::text NOT LIKE '%PRIVATE%'")" = "1" ] \
   || { echo "FAIL: payment method audit"; exit 1; }
+# The list's per-method usage (admin redesign): this month's paid money/orders, ever used.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] \
+  && last_json "[(m['month_cents'], m['month_count'], m['used']) for m in d['methods'] if m['id'] == '$METHOD'] == [(0, 0, False)]" | matches True \
+  || { echo "FAIL: payment method usage"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT get_byte(secrets_enc, 0) = 1 AND position(convert_to('MII', 'UTF8') IN secrets_enc) = 0 FROM payment_methods WHERE id = '$METHOD'")" = "t" ] \
   || { echo "FAIL: payment secrets not sealed"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
