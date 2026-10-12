@@ -271,6 +271,12 @@ const FIX: Record<string, unknown> = {
     email_available: false,
   },
   "/settings/domains/impact": { removed: [] },
+  "/settings/dns-check": {
+    domain: "x.example.org",
+    addresses: [{ ip: "203.0.113.24", cloudflare: false }],
+    level: "ok",
+    message: "ok",
+  },
   "/me/passkeys": { passkeys: [{ current: true }] },
 };
 const calls: { method: string; path: string; body: unknown }[] = [];
@@ -402,10 +408,12 @@ test("cleanup confirm", async () => {
 
 test("domains add + save", async () => {
   mount("/settings/domains");
-  const input = await screen.findByLabelText("新的订阅域名");
-  fireEvent.change(input, { target: { value: "s.example.org" } });
-  fireEvent.click(screen.getByRole("button", { name: "添加订阅域名" }));
+  fireEvent.click(await screen.findByRole("button", { name: "添加订阅域名" }));
+  const dlg = await screen.findByRole("dialog", { name: "添加域名" });
+  fireEvent.change(within(dlg).getByLabelText(/^域名/), { target: { value: "s.example.org" } });
+  fireEvent.click(within(dlg).getByRole("button", { name: "添加" }));
   await screen.findByText("s.example.org");
+  await screen.findByText("新添加");
   const bar = await screen.findByRole("region", { name: "保存栏" });
   await act(async () => {
     fireEvent.click(within(bar).getByRole("button", { name: "保存" }));

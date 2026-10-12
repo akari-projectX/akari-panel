@@ -194,28 +194,33 @@ test("SET-01 SET-24: site name and time zone (confirmed), logo, footer, links an
   await expect(page.getByRole("switch", { name: "在门户显示 Android" })).toHaveAttribute("aria-checked", "false");
 });
 
-test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added inline, DNS check from the row menu), removal impact, per-user subscription domains, Cloudflare, certificate names, the passkey centre", async ({
+test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain list cards (added in a dialog with a live check, DNS check from the row menu), removal marked and confirmed with its impact, per-user subscription domains, Cloudflare, certificate names, the passkey centre", async ({
   page,
 }, info) => {
   await openConsole(page, "/settings/domains");
-  // SET-02: a subscription domain from the list's last row (a bad name is refused in place).
+  // SET-02: a subscription domain from the card's "添加" (a bad name is refused in the dialog).
   const sub = `${uniq(info, "sub")}.e2e.test`;
-  const input = page.getByLabel("新的订阅域名");
-  await input.fill("portal");
-  await input.press("Enter");
-  await expect(page.getByText(/不是完整域名/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "添加订阅域名" })).toBeDisabled();
-  await input.fill(sub);
   await page.getByRole("button", { name: "添加订阅域名" }).click();
-  await expect(input).toHaveValue("");
+  const add = dialog(page, "添加域名");
+  await expect(add.getByRole("radio", { name: /订阅域名/ })).toHaveAttribute("aria-checked", "true");
+  const input = add.getByLabel(/^域名/);
+  await input.fill("portal");
+  await expect(add.getByText(/不是完整域名/)).toBeVisible();
+  await expect(add.getByRole("button", { name: "添加", exact: true })).toBeDisabled();
+  await input.fill(sub);
+  await expect(add.getByText("即时检测")).toBeVisible();
+  await add.getByRole("button", { name: "添加", exact: true }).click();
+  await expect(add).toHaveCount(0);
+  await expect(page.locator(`[data-domain="${sub}"]`)).toContainText("新添加");
   await page.getByRole("button", { name: `更多操作 ${sub}` }).click();
-  await page.getByRole("menuitem", { name: "DNS 检测" }).click();
+  await page.getByRole("menuitem", { name: "重新检测 DNS" }).click();
   await expect(
     page
+      .locator(`[data-domain="${sub}"]`)
       .getByRole("status")
-      .filter({ hasText: /解析正常|注意|DNS|NXDOMAIN|no/i })
+      .filter({ hasText: /解析|DNS|NXDOMAIN|no/i })
       .first(),
-  ).toBeVisible();
+  ).toBeAttached();
   // SET-04 and Cloudflare trust in the same save.
   await setSwitch(page.getByRole("switch", { name: "每个用户随机分配订阅域名" }), true);
   await page.getByLabel("信任 Cloudflare（读取 CF-Connecting-IP）").selectOption("false");
@@ -226,14 +231,15 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added inline, DNS
   await expect(page.getByText(sub, { exact: true })).toBeVisible();
   // SET-03: removing it lists the impact on save and wants the domain typed.
   await page.getByRole("button", { name: `更多操作 ${sub}` }).click();
-  await page.getByRole("menuitem", { name: "移除" }).click();
+  await page.getByRole("menuitem", { name: "移除…" }).click();
+  await expect(page.locator(`[data-domain="${sub}"]`)).toContainText("保存时移除");
   await setSwitch(page.getByRole("switch", { name: "每个用户随机分配订阅域名" }), false);
   await page.getByLabel("信任 Cloudflare（读取 CF-Connecting-IP）").selectOption("");
   await save(page);
   await expect(dialog(page)).toContainText("以下地方会受影响");
   await confirmDialog(page, sub);
   await toast(page, "域名设置已保存");
-  await expect(page.getByText(sub, { exact: true })).toHaveCount(0);
+  await expect(page.locator(`[data-domain="${sub}"]`)).toHaveCount(0);
   // SET-09 (Cloudflare ranges): edited in a dialog, saved in the bar, then back to the shipped list.
   for (const ranges of ["173.245.48.0/20", ""]) {
     await page.getByRole("button", { name: "编辑网段" }).click();
@@ -255,7 +261,7 @@ test("SET-02 SET-03 SET-04 SET-05 SET-09 SET-27: domain lists (added inline, DNS
   const d = dialog(page, "通行密钥中心域名");
   await d.getByLabel("新的中心域名").fill("bad");
   await expect(d.getByText(/不是完整域名/)).toBeVisible();
-  await expect(d.getByRole("button", { name: "完成" })).toBeDisabled();
+  await expect(d.getByRole("button", { name: "继续…" })).toBeDisabled();
   await d.getByRole("button", { name: "取消" }).click();
   await expect(bar(page)).toHaveCount(0);
 });

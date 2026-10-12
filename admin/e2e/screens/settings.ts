@@ -112,6 +112,55 @@ export const shots: Shot[] = [
     },
   },
   {
+    name: "settings-domains-add",
+    open: async (page) => {
+      await goto(page, "/settings/domains");
+      await page.getByRole("button", { name: "添加主域名" }).click();
+      const d = page.getByRole("dialog", { name: "添加域名" });
+      await d.getByLabel(/^域名/).fill("portal.example.com");
+      await expect(d.getByText("即时检测")).toBeVisible();
+    },
+  },
+  {
+    name: "settings-domains-add-invalid",
+    open: async (page) => {
+      await goto(page, "/settings/domains");
+      await page.getByRole("button", { name: "添加订阅域名" }).click();
+      const d = page.getByRole("dialog", { name: "添加域名" });
+      await d.getByLabel(/^域名/).fill("https://sub.akari");
+      await expect(d.getByText("1 处需要修正")).toBeVisible();
+    },
+  },
+  {
+    name: "settings-domains-remove-impact",
+    open: async (page) => {
+      await goto(page, "/settings/domains");
+      const menus = page.getByRole("button", { name: /^更多操作 / });
+      for (let i = 0; i < (await menus.count()); i++) {
+        await menus.nth(i).click();
+        const remove = page.getByRole("menuitem", { name: "移除…" });
+        if (await remove.isEnabled()) {
+          await remove.click();
+          await saveAsks(page);
+          return;
+        }
+        await page.keyboard.press("Escape");
+      }
+      throw new Error("no removable domain");
+    },
+  },
+  {
+    name: "settings-domains-rpid",
+    open: async (page) => {
+      await goto(page, "/settings/domains");
+      await page
+        .getByRole("region", { name: "危险操作" })
+        .getByRole("button", { name: /^(设置|更换)…$/ })
+        .click();
+      await expect(page.getByRole("dialog", { name: "通行密钥中心域名" })).toBeVisible();
+    },
+  },
+  {
     name: "settings-login-invalid",
     open: async (page) => {
       await goto(page, "/settings/login");

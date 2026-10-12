@@ -21,7 +21,8 @@ import { SectionForm, useOwner, useWide } from "../components/settings-kit";
 import { useRoute } from "../router";
 import { useCrumb } from "../session";
 import { AccessSection, AccountSection, RetentionSection } from "./settings-access";
-import { BrandSection, DomainsSection, LinksSection, SiteSection } from "./settings-general";
+import { DomainsSection } from "./settings-domains";
+import { BrandSection, LinksSection, SiteSection } from "./settings-general";
 import {
   MOVED_OUT,
   OLD_IDS,
