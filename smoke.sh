@@ -1664,6 +1664,9 @@ if need_agent "protocol>=7" "Q1 two nodes on one server"; then
   [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
     && [ "$(last_json "sorted(n['name'] for n in d['nodes'])")" = "['test-node', 'test-node-b']" ] \
     || { echo "FAIL: the server does not list both nodes"; cat /tmp/akari-smoke/last; exit 1; }
+  # Admin redesign: each node carries its inbound's transport and security (null = xray defaults).
+  [ "$(last_json "all('transport' in n and 'security' in n for n in d['nodes'])")" = "True" ] \
+    || { echo "FAIL: server nodes lack transport/security"; cat /tmp/akari-smoke/last; exit 1; }
   [ "$(patch_code "$BASE/api/v1/entrances/$DIRECT_B" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] \
     || { echo "FAIL: node B joins the access group"; exit 1; }
   VLESS_DB=$(psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$USER_D' AND entrance_id='$DIRECT_B'")

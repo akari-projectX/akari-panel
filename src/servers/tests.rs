@@ -349,6 +349,25 @@ async fn two_nodes_on_one_server_share_one_agent() {
     assert_eq!(s["nodes"].as_array().unwrap().len(), 2);
     assert_eq!(s["nodes"][0]["entrances"][0]["kind"], "direct");
     assert_eq!(s["nodes"][1]["port"], 8443);
+    // The transport and security of each inbound (null = xray's defaults).
+    assert!(s["nodes"][0]["transport"].is_null());
+    assert!(s["nodes"][0]["security"].is_null());
+    sqlx::query(
+        "UPDATE nodes SET inbound = inbound || '{\"streamSettings\": \
+         {\"network\": \"ws\", \"security\": \"tls\"}}'::jsonb WHERE id = $1",
+    )
+    .bind(a)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let s = &c.get("/test/api/v1/servers").await.json()[0];
+    assert_eq!(s["nodes"][0]["transport"], "ws");
+    assert_eq!(s["nodes"][0]["security"], "tls");
+    sqlx::query("UPDATE nodes SET inbound = inbound - 'streamSettings' WHERE id = $1")
+        .bind(a)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     assert_eq!(
         c.get(&format!("/test/api/v1/servers/{sid}")).await.json()["name"],
         "hk"
