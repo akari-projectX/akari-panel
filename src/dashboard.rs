@@ -23,6 +23,15 @@
 //! giving back an order's balance part does not lower it; refunding the
 //! channel part, to the balance or in the provider's console, does
 //! (docs/PAYMENTS.md "Revenue").
+//!
+//! The daily series (`series`, the last `SERIES_DAYS` site days, every day
+//! present, oldest first: the chart, the KPI sparklines and the comparison
+//! with the previous period of the same length) uses the same definitions
+//! per site day: net revenue with refunds on the refund's day, orders and
+//! sign-ups like the windows, and the fleet's raw traffic (up + down) split
+//! by the entrance's kind (`traffic_entrance_daily` joined to `entrances`;
+//! entrances deleted since are `other_bytes`). `prev_today` is yesterday
+//! up to the same time of day. Both run in the same snapshot.
 
 use axum::Json;
 use axum::extract::State;
@@ -50,6 +59,34 @@ pub struct Window {
     /// Channel money refunded in the window (`refund_gateway_cents` by
     /// `refunded_at`): to the balance or in the provider's console.
     pub refunds_cents: i64,
+    pub signups: i64,
+}
+
+/// One site day of the series (see the module docs).
+#[derive(Serialize, Debug, Default, PartialEq, sqlx::FromRow)]
+pub struct Day {
+    pub day: NaiveDate,
+    /// Net: `gross_cents` − `refunds_cents` of that day.
+    pub revenue_cents: i64,
+    pub gross_cents: i64,
+    pub refunds_cents: i64,
+    pub orders: i64,
+    pub signups: i64,
+    /// Raw bytes (up + down) through direct entrances.
+    pub direct_bytes: i64,
+    /// Raw bytes (up + down) through relay entrances.
+    pub relay_bytes: i64,
+    /// Raw bytes of entrances deleted since (kind unknown).
+    pub other_bytes: i64,
+}
+
+/// Yesterday from its start up to the same time of day as now.
+#[derive(Serialize, Debug, Default, PartialEq, sqlx::FromRow)]
+pub struct PrevToday {
+    pub revenue_cents: i64,
+    pub gross_cents: i64,
+    pub refunds_cents: i64,
+    pub orders: i64,
     pub signups: i64,
 }
 
@@ -124,7 +161,61 @@ pub struct Dashboard {
     /// over the same range.
     pub traffic_days: Vec<crate::trafficlog::NodeDayRow>,
     pub traffic_top_nodes: Vec<crate::trafficlog::NodeRow>,
+    /// The last `SERIES_DAYS` site days, today last (see the module docs).
+    pub series: Vec<Day>,
+    pub prev_today: PrevToday,
 }
+
+/// Days in `series`: 30 for the chart and the 30-day window, and the 30
+/// before them for "compared with the previous period".
+pub const SERIES_DAYS: i64 = 60;
+
+/// The daily series: $1 = first day, $2 = last day (today), $3 = the site
+/// time zone. Each day is its local-midnight range (right across a DST
+/// change), summed with one index range scan per source and day
+/// (orders_paid_at / orders_refunded_at index-only, users_created_at), so
+/// no per-row time zone conversion; traffic is already per site day
+/// (traffic_entrance_daily_day).
+const SERIES_SQL: &str = "WITH days AS (SELECT g::date AS day, \
+       g::date::timestamp AT TIME ZONE $3 AS s, (g::date + 1)::timestamp AT TIME ZONE $3 AS e \
+       FROM generate_series($1::date, $2::date, interval '1 day') g), \
+     traffic AS (SELECT t.day, \
+       coalesce(sum(t.up_bytes) FILTER (WHERE e.kind = 'direct'), 0) \
+         + coalesce(sum(t.down_bytes) FILTER (WHERE e.kind = 'direct'), 0) AS direct, \
+       coalesce(sum(t.up_bytes) FILTER (WHERE e.kind = 'relay'), 0) \
+         + coalesce(sum(t.down_bytes) FILTER (WHERE e.kind = 'relay'), 0) AS relay, \
+       coalesce(sum(t.up_bytes) FILTER (WHERE e.id IS NULL), 0) \
+         + coalesce(sum(t.down_bytes) FILTER (WHERE e.id IS NULL), 0) AS other \
+       FROM traffic_entrance_daily t LEFT JOIN entrances e ON e.id = t.entrance_id \
+       WHERE t.day BETWEEN $1 AND $2 GROUP BY t.day) \
+     SELECT d.day, p.gross - r.refunds AS revenue_cents, p.gross AS gross_cents, \
+       r.refunds AS refunds_cents, p.orders, s.signups, \
+       LEAST(coalesce(t.direct, 0), 9223372036854775807)::bigint AS direct_bytes, \
+       LEAST(coalesce(t.relay, 0), 9223372036854775807)::bigint AS relay_bytes, \
+       LEAST(coalesce(t.other, 0), 9223372036854775807)::bigint AS other_bytes \
+     FROM days d \
+     CROSS JOIN LATERAL (SELECT coalesce(sum(amount_cents), 0)::bigint AS gross, count(*) AS orders \
+       FROM orders WHERE status = 'paid' AND paid_at >= d.s AND paid_at < d.e) p \
+     CROSS JOIN LATERAL (SELECT coalesce(sum(refund_gateway_cents), 0)::bigint AS refunds \
+       FROM orders WHERE refunded_at >= d.s AND refunded_at < d.e) r \
+     CROSS JOIN LATERAL (SELECT count(*) AS signups FROM users \
+       WHERE role = 'user' AND created_at >= d.s AND created_at < d.e) s \
+     LEFT JOIN traffic t ON t.day = d.day ORDER BY d.day";
+
+/// Yesterday up to now's time of day: $1 = today (site day), $2 = the site
+/// time zone, $3 = now (the snapshot's `at`).
+const PREV_TODAY_SQL: &str = "SELECT \
+     p.gross - r.refunds AS revenue_cents, p.gross AS gross_cents, r.refunds AS refunds_cents, \
+     p.orders, s.signups \
+     FROM (SELECT coalesce(sum(amount_cents), 0)::bigint AS gross, count(*) AS orders \
+           FROM orders WHERE status = 'paid' AND paid_at >= ($1::date - 1)::timestamp AT TIME ZONE $2 \
+           AND paid_at < $3::timestamptz - interval '1 day') p, \
+          (SELECT coalesce(sum(refund_gateway_cents), 0)::bigint AS refunds \
+           FROM orders WHERE refunded_at >= ($1::date - 1)::timestamp AT TIME ZONE $2 \
+           AND refunded_at < $3::timestamptz - interval '1 day') r, \
+          (SELECT count(*) AS signups FROM users \
+           WHERE role = 'user' AND created_at >= ($1::date - 1)::timestamp AT TIME ZONE $2 \
+           AND created_at < $3::timestamptz - interval '1 day') s";
 
 /// Days of fleet traffic on the dashboard (W22's per-node-day rollup: one
 /// row per node per day, so 14 days × 200 nodes = 2.8k rows).
@@ -248,6 +339,18 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
     )))
     .fetch_all(&mut *tx)
     .await?;
+    let series: Vec<Day> = sqlx::query_as(SERIES_SQL)
+        .bind(today_date - chrono::Duration::days(SERIES_DAYS - 1))
+        .bind(today_date)
+        .bind(&timezone)
+        .fetch_all(&mut *tx)
+        .await?;
+    let prev_today: PrevToday = sqlx::query_as(PREV_TODAY_SQL)
+        .bind(today_date)
+        .bind(&timezone)
+        .bind(at)
+        .fetch_one(&mut *tx)
+        .await?;
     let latest: Vec<LatestOrder> = sqlx::query_as(
         "SELECT id, out_trade_no, user_label, \
          (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, \
@@ -306,6 +409,8 @@ pub async fn read(pool: &sqlx::PgPool) -> Result<(Dashboard, Vec<Uuid>), ApiErro
             latest_orders: latest,
             traffic_days: Vec::new(),
             traffic_top_nodes: Vec::new(),
+            series,
+            prev_today,
         },
         online,
     ))

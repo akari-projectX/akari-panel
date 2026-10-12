@@ -105,6 +105,10 @@ akari -c <panel.toml on akari_bench_w21> serve &
 akari-bench http --data-dir <its data dir> --url <its url> --only dashboard,users_search,users_filtered,users_page1
 ```
 
+### 每日序列（管理后台重设计，2026-10-12）
+
+`GET /dashboard` 新增 `series`（最近 60 个站点日：净营收/实收/退款/订单/注册，以及按入口类型拆分的流量）和 `prev_today`，在同一个快照里读。每天按其本地零点区间做一次索引范围扫描（`orders_paid_at` / `orders_refunded_at` 仅索引，`users_created_at`），不对每行做时区换算；流量直接按 `traffic_entrance_daily_day` 读 60 天并关联 `entrances`。在开发库的临时 schema 中测得（20 万笔一年内的已支付订单、2% 已退款，5 万用户，400 个入口 × 90 天流量行，VACUUM ANALYZE 后）：`series` 查询 11.3 ms（第一版按 `AT TIME ZONE` 分组为 16.7 ms，其中订单 3.3 万行的分组占 7.7 ms），`prev_today` 0.2 ms；整个 `read()`（debug 构建，含原有窗口查询）29–57 ms。比 W21 的结果多出约 11 ms，仍在管理 API 的 50 ms 目标内；尚未在 bench 栈上以 16 客户端复测。
+
 ## Node list summary view (W17, 2026-10-02)（节点列表摘要视图）
 
 W14 时 `GET /nodes` 在 200 个 agent 上报下处于临界（p99 47–55 ms，响应体 480 KB）。W17 新增 `GET /nodes?view=summary`——只含列表所需的列：没有 inbound JSON，没有完整延迟集合（只留最佳 agent 结果），心跳裁剪为 CPU/内存/连接数/速率/在线用户，不含逐秒变化的 `lease_remaining_seconds`——并且两种视图都带强 ETag（`If-None-Match` → 空 304）。控制台的列表、套餐编辑器和发布表单中的节点选择器都读它；节点页读取 `GET /nodes/{id}`。
