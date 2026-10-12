@@ -5,14 +5,12 @@ import { CONSOLE, apiJson, dialog, openConsole, sql, toast, uniq, watch } from "
 
 test.describe.configure({ mode: "serial" });
 
-test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: tiles, traffic, needs-attention links, latest orders", async ({
+test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: needs-you queue, KPI tabs + chart, latest orders, servers", async ({
   page,
 }, info) => {
   const problems = watch(page);
-  const u = await apiJson<{ id: string }>("POST", "/users", {
-    email: `${uniq(info, "dash")}@e2e.test`,
-    password: "dash-pass-1",
-  });
+  const email = `${uniq(info, "dash")}@e2e.test`;
+  const u = await apiJson<{ id: string }>("POST", "/users", { email, password: "dash-pass-1" });
   const plan = await apiJson<{ id: string }>("POST", "/plans", {
     name: uniq(info, "dash plan"),
     period: "monthly",
@@ -25,41 +23,45 @@ test("DSH-01 DSH-02 DSH-03 DSH-04 DSH-05 DSH-07: tiles, traffic, needs-attention
     reason: "dashboard",
   });
   const { order } = await apiJson<{ order: { out_trade_no: string } }>("GET", `/orders/${id}`);
+  // A dead letter, so the queue has its mail row.
+  sql(
+    `INSERT INTO mail_outbox (kind, to_addr, subject, body_text, body_html, status, attempts, last_error, settled_at) ` +
+      `VALUES ('test', 'nobody@e2e.test', '${uniq(info, "dash dead")}', 'b', '<p>b</p>', 'dead', 8, '550 no such user', now())`,
+  );
   await openConsole(page, "");
   await expect(page.getByRole("heading", { level: 1, name: "仪表盘" })).toBeVisible();
-  // KPI cards; the period control (default 7 天, in the URL) switches the revenue window.
-  for (const t of ["7 天净营收", "有效订阅", "当前在线用户", "服务器在线"])
-    await expect(page.getByText(t, { exact: true })).toBeVisible();
+  // ① The queue: the row opens the filtered list; its detail is in words.
+  const mailRow = page.getByRole("link", { name: /封邮件发送失败/ });
+  await expect(mailRow).toContainText(/最近一封：/);
+  await mailRow.click();
+  await expect(page).toHaveURL(/\/status\?tab=mail&mail=dead/);
+  await page.goBack();
+  // ② KPI tabs are one chart's tabs; the period (default 7 天) and the metric are in the URL.
+  for (const t of ["近 7 天净营收", "近 7 天订单", "近 7 天注册", "近 7 天全网流量"])
+    await expect(page.getByRole("tab", { name: new RegExp(t) })).toBeVisible();
+  await expect(page.locator("[data-revenue-split]")).toContainText(/余额、抵扣、优惠券部分不算营收/);
   await page.getByRole("group", { name: "时间范围" }).getByRole("button", { name: "今日" }).click();
   await expect(page).toHaveURL(/[?&]range=today/);
-  await expect(page.getByText("今日净营收", { exact: true })).toBeVisible();
-  await expect(page.getByText(/¥42\.00/).first()).toBeVisible();
-  // Net revenue: collected, refunded (channel money, by refund day), net.
-  await expect(page.locator('[data-revenue-window="today"]')).toContainText(/实收¥[\d.]+退款¥[\d.]+净额-?¥[\d.]+/);
-  await expect(page.locator("[data-revenue-split]")).toContainText(/余额、抵扣、优惠券部分不算营收/);
-  await expect(page.getByRole("heading", { name: "全网流量" })).toBeVisible();
-  await expect(page.getByText("流量最多的节点")).toBeVisible();
-  // Other specs leave history of deleted nodes behind: more than one row is fine.
-  await expect(page.getByText("已删除的节点").first()).toBeVisible();
+  await expect(page.getByRole("tab", { name: /今日净营收/ })).toContainText(/实收 ¥[\d,.]+ · 退款 ¥[\d,.]+/);
+  await page.getByRole("tab", { name: /今日订单/ }).click();
+  await expect(page).toHaveURL(/[?&]metric=orders/);
+  await expect(page.getByRole("tab", { name: /今日订单/ })).toHaveAttribute("aria-selected", "true");
+  // ③ Servers.
+  await expect(page.getByRole("heading", { name: "服务器" })).toBeVisible();
+  await expect(page.getByText("本周期流量最多")).toBeVisible();
   // Latest orders → the order dialog.
-  await page.getByRole("link", { name: new RegExp(order.out_trade_no) }).click();
+  await expect(page.getByText(/¥42\.00/).first()).toBeVisible();
+  await page
+    .getByRole("link", { name: new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })
+    .first()
+    .click();
   await expect(page).toHaveURL(new RegExp(`/orders\\?open=${id}`));
   await expect(dialog(page, order.out_trade_no)).toBeVisible();
   await page.keyboard.press("Escape");
-  // Needs attention → the filtered view.
-  await page.goto(CONSOLE);
-  await page.getByRole("link", { name: /待审核提现/ }).click();
-  await expect(page).toHaveURL(/\/finance\?status=pending/);
-  await page.goBack();
-  await page.getByRole("link", { name: /已付款未开通的订单/ }).click();
-  await expect(page).toHaveURL(/\/orders\?unfulfilled=1/);
-  await page.goBack();
-  await page.getByRole("link", { name: /发送失败的邮件/ }).click();
-  await expect(page).toHaveURL(/\/status\?mail=dead/);
-  await page.goBack();
   // Refresh (and the 30 s poll) re-reads.
+  await page.goto(CONSOLE);
   const reread = page.waitForResponse((r) => r.url().endsWith("/api/v1/dashboard"));
-  await page.getByRole("button", { name: "刷新" }).click();
+  await page.getByRole("button", { name: "立即刷新" }).click();
   await reread;
   expect(problems).toEqual([]);
 });

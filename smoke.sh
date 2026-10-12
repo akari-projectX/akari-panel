@@ -2826,6 +2826,9 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 # The daily series: 60 site days ending today, agreeing with the 30-day window; traffic by entrance kind.
 [ "$(last_json "len(d['series']) == 60 and d['series'][-1]['day'] == d['today_date'] and sum(x['gross_cents'] for x in d['series'][-30:]) == d['d30']['gross_cents'] and sum(x['revenue_cents'] for x in d['series'][-30:]) == d['d30']['revenue_cents'] and sum(x['orders'] for x in d['series'][-30:]) == d['d30']['orders'] and all(min(x['direct_bytes'], x['relay_bytes'], x['other_bytes']) >= 0 for x in d['series']) and 'signups' in d['prev_today']")" = "True" ] \
   || { echo "FAIL: dashboard series"; cat /tmp/akari-smoke/last; exit 1; }
+# The pending queues' details and the new subscriptions (same snapshot).
+[ "$(last_json "d['pending_detail']['withdrawals_cents'] >= 0 and d['pending_detail']['alerts_unacked'] <= d['pending']['alerts_firing'] and (d['pending_detail']['order_sample_id'] is None) == (d['pending']['orders_unfulfilled'] == 0) and 0 <= d['subscribers_7d'] <= d['subscribers']")" = "True" ] \
+  || { echo "FAIL: dashboard pending detail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
 
 echo "== W31: system status =="
