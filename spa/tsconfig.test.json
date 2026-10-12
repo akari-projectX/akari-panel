@@ -10,7 +10,8 @@
   "include": [
     "src",
     "e2e",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.perf.config.ts"
   ],
   "exclude": []
 }

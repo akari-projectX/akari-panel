@@ -116,3 +116,15 @@ node spa/e2e/seed.ts >"$E2E_SEED"
 echo "e2e: $E2E_ORIGIN/"
 cd spa
 E2E_BASE="$E2E_ORIGIN" npx playwright test "$@"
+
+# Performance report (report only, never fails the run; user ruling
+# 2026-10-07: real metrics instead of a bundle-size gate). Set
+# E2E_PERF_OUT=<dir> to measure cold load / LCP / TTI / route switches on
+# desktop and a throttled mid-range phone (spa/e2e/perf/); the Markdown
+# summary lands in <dir>/summary.md (CI: the e2e job summary).
+if [ -n "${E2E_PERF_OUT:-}" ]; then
+  mkdir -p "$E2E_PERF_OUT"
+  E2E_BASE="$E2E_ORIGIN" npx playwright test --config playwright.perf.config.ts \
+    || echo "::warning::portal performance measurement failed (report only)"
+  node e2e/perf/summary.mjs "$E2E_PERF_OUT" >"$E2E_PERF_OUT/summary.md" || true
+fi
