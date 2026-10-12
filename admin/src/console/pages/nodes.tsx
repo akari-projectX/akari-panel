@@ -27,7 +27,7 @@ import {
 } from "./node-dialogs";
 import { ApplyError, WarningList, entranceState, healthText } from "./node-common";
 import { ServerDialog } from "./server-dialog";
-import { UpdateBadge } from "./updates";
+import { UpdateBadge } from "./update-status";
 import {
   Activity,
   ArrowRightLeft,
