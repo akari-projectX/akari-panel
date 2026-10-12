@@ -50,6 +50,7 @@ import { alertKindName, mailReason, waitText } from "../components/ops-bits";
 import { OrdStatus, orderState } from "../components/status";
 import { useQS } from "../router";
 import { useServers } from "../servers";
+import { useAfterReady } from "../session";
 import type { ServerView } from "../types";
 import { downloadFile } from "./download";
 import { useUpdateStatus } from "./update-status";
@@ -485,6 +486,7 @@ function Business({ d }: { d: Dashboard | undefined }) {
   const lang = useLang();
   const toast = useToast();
   const [range, metric, patch] = useRange();
+  const afterReady = useAfterReady();
   const [exporting, setExporting] = useState(false);
   const n = DAYS[range];
   const series = d?.series ?? [];
@@ -693,7 +695,7 @@ function Business({ d }: { d: Dashboard | undefined }) {
         })}
       </div>
       <div className="px-2 pt-3 pb-2">
-        {!d ? (
+        {!d || !afterReady ? (
           <Skeleton className="mx-2 h-[260px]" />
         ) : (
           <Suspense fallback={<Skeleton className="mx-2 h-[260px]" />}>

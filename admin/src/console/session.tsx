@@ -1,7 +1,7 @@
 // The signed-in admin and the site facts every page needs (time zone,
 // site name, logo), loaded once by the shell; the page breadcrumb.
 import { useQuery } from "@tanstack/react-query";
-import { createContext, useContext, useEffect } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import { get, type Me } from "../shared/api";
 
 export type Site = { siteName: string; timezone: string; logoUrl: string | null };
@@ -39,4 +39,24 @@ export function useCrumb(label: string | null | undefined): void {
     set(label ?? null);
     return () => set(null);
   }, [label, set]);
+}
+
+/**
+ * True once the open page is ready (`main[data-ready]`): heavy extras that
+ * are not the page's data (the dashboard chart, i.e. recharts) mount only
+ * then, so loading and running their code does not hold up the first screen.
+ */
+export function useAfterReady(): boolean {
+  const [ok, setOk] = useState(() => !!document.querySelector("main[data-ready]"));
+  useEffect(() => {
+    if (ok) return;
+    const check = () => {
+      if (document.querySelector("main[data-ready]")) setOk(true);
+    };
+    const obs = new MutationObserver(check);
+    obs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ["data-ready"], childList: true });
+    check();
+    return () => obs.disconnect();
+  }, [ok]);
+  return ok;
 }

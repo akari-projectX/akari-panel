@@ -493,7 +493,10 @@ function PlanCard({
             <Gauge className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
             <dd className="min-w-0 truncate">
               <span className="tnum">
-                {p.traffic_quota_bytes ? bytes(p.traffic_quota_bytes) : tr("不限流量", "Unlimited")}
+                {p.traffic_quota_bytes
+                  ? // A configured quota reads as entered ("50 GiB", not "50.0 GiB").
+                    bytes(p.traffic_quota_bytes).replace(/\.0 /, " ")
+                  : tr("不限流量", "Unlimited")}
               </span>
               <span className="text-muted-foreground"> · {resetLabel(p.period, tr)}</span>
             </dd>

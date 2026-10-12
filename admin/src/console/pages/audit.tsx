@@ -871,7 +871,9 @@ export function AuditPage() {
           />
         </Card>
       ) : (
-        <div className="grid gap-5">
+        // grid-cols-1 (minmax(0, 1fr)): a long entry wraps or truncates
+        // instead of widening the day column (and zooming a phone out).
+        <div className="grid grid-cols-1 gap-5">
           {days.map(([day, evs]) => (
             <section key={day}>
               <div className="mb-2 flex items-baseline gap-2 px-1">

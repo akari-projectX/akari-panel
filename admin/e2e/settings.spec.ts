@@ -635,7 +635,8 @@ test("SET-19: payment methods — cards in the portal order, add (kind radio car
   const timeout = e.getByLabel("订单有效期（分钟，5–120）");
   await timeout.fill("abc");
   await expect(e.getByText("请输入整数")).toBeVisible();
-  await expect(e.getByText("1 处需要修正")).toBeVisible();
+  // The count beside the save button is desktop only (a phone's footer has no room).
+  if (!isMobile(info)) await expect(e.getByText("1 处需要修正")).toBeVisible();
   await expect(e.getByRole("button", { name: "保存" })).toBeDisabled();
   await timeout.fill("20");
   await e.getByRole("button", { name: "保存" }).click();
@@ -773,7 +774,7 @@ test("SET-20 SET-21 SET-22: install and certificates, probes (turning the TCP pr
   const tcpWas = (await tcp.getAttribute("aria-checked")) === "true";
   await setSwitch(tcp, false);
   await page.getByRole("button", { name: "添加地址" }).click();
-  await page.getByLabel("测速地址 1").fill("https://www.example.com/");
+  await page.getByLabel("测速地址 1", { exact: true }).fill("https://www.example.com/");
   await save(page);
   const saved = page.locator("[data-sonner-toast]", { hasText: "测速设置已保存" });
   await expect(page.getByRole("alertdialog").or(saved).first()).toBeVisible();
