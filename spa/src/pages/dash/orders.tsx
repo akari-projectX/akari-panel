@@ -73,7 +73,7 @@ export default function Orders() {
         <StatRow
           items={[
             {
-              k: tr('累计消费'), v: formatMoney(paidTotal),
+              k: tr('累计消费'), v: paidTotal, fmt: formatMoney,
               x: tr('已付款、未退款的订单（含余额支付）'),
             },
             {
@@ -82,7 +82,7 @@ export default function Orders() {
             },
             { k: tr('待支付'), v: pendingCount, suffix: tr(' 笔'), x: tr('超时未支付将自动关闭') },
             {
-              k: tr('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—',
+              k: tr('账户余额'), v: balance.data ? balance.data.balance_cents : '—', fmt: formatMoney,
               x: tr('下单时可以选择抵扣'),
             },
           ]}
@@ -145,7 +145,7 @@ export default function Orders() {
                     >
                       <TableCell className="pl-0"><code className="text-[12.5px]">{o.out_trade_no}</code></TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="rounded-full bg-brand/10 text-brand-ink">{o.plan_name}</Badge>
+                        <Badge variant="secondary" title={o.plan_name} className="max-w-[220px] rounded-full bg-brand/10 text-brand-ink"><span className="min-w-0 truncate">{o.plan_name}</span></Badge>
                       </TableCell>
                       <TableCell className="text-sm">{typeText(o)}</TableCell>
                       <TableCell className="text-sm">{periodText(o.period, o.period_days, tr, tp)}</TableCell>

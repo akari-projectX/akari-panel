@@ -12,6 +12,8 @@
 function plain(html: string | null | undefined, limit = Infinity): string {
   return (html ?? '')
     .slice(0, limit)
+    /* 列表项之间加分隔点：不然摘要里「香港 01」「香港 02」两项连成「香港 01 香港 02」 */
+    .replace(/<li\b[^>]*>/gi, ' · ')
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')

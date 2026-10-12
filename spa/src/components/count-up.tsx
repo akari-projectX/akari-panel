@@ -16,6 +16,8 @@ type Props = {
   format?: (v: number) => string;
   /** 滚动中的数值取整（金额 = 分）。默认：给了 format 时为 true */
   integer?: boolean;
+  /** 第一次不滚，直接写终值（页面的最大内容块，见 flat 的 StatRow still）；之后值变了照常滚动 */
+  instant?: boolean;
 };
 
 /**
@@ -31,8 +33,10 @@ type Props = {
  * 而调用方传的 suffix 是翻译过的（tr(' 台') / tr(' 元') / tr(' 张')），
  * 切一次语言要是重启动画，整页数字全部归零重新滚。现在 DOM 完全归这个组件所有。
  */
-export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '', prefix = '', format, integer }: Props) {
-  const started = useRef(false);
+export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '', prefix = '', format, integer, instant = false }: Props) {
+  /* instant：一挂载就算「已经滚完」，首帧写终值（见下面的 layout effect） */
+  const started = useRef(instant);
+  const first = useRef(instant);
   /* 屏幕上此刻的数值：值变化时从这里滚到新值 */
   const shown = useRef(0);
   /* 刷新时等启动画面开始淡出再滚，否则数字在遮罩底下就滚完了，露出来已经是终值 */
@@ -72,13 +76,15 @@ export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '',
   /*
    * 每次渲染后校正一次文本，代价是一句 textContent。
    * 用 layout effect 而不是 effect：effect 在绘制之后才跑，首帧会先闪一下空白。
+   *   · instant 的第一次 → 直接写终值
    *   · 还没开始动画 → 写 0（reduced motion 时直接写终值，不做动画）
    *   · 已经停在终值 → 重写一遍（切语言换掉 suffix 时走的就是这一支，只改文本不重播）
    *   · 动画进行中 → 不插手，交给 rAF，新格式下一帧自然生效
    */
   useLayoutEffect(() => {
     fmt.current = { decimals, suffix, prefix, format, integer: integer ?? !!format };
-    if (!started.current) write(still ? to : 0);
+    if (first.current) { first.current = false; write(to); }
+    else if (!started.current) write(still ? to : 0);
     else if (shown.current === to) write(to);
   });
 

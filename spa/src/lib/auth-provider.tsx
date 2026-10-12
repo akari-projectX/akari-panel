@@ -10,6 +10,7 @@ import {
 import { setSiteTimeZone } from '@/lib/format';
 import { sameSiteOptions, turnstileOn } from '@/api/guard';
 import { PageLoading } from '@/components/loading';
+import { LoadError } from '@/components/data-state';
 
 /* ───────────── 站点公开配置 ───────────── */
 
@@ -76,6 +77,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authed, setAuthed] = useState(() => readCache<Me>(K.me) !== undefined);
   const [booting, setBooting] = useState(() => readCache<Me>(K.me) === undefined);
   const [passkeyPrompt, setPasskeyPrompt] = useState(false);
+  /* 第一次取 /me 出错（不是 401 / 404，是网络或服务器错误）且没有缓存：不知道登没登录 */
+  const [failed, setFailed] = useState(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -121,7 +124,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     fetchAccount()
       .then(apply)
-      .catch(() => { /* 网络错误：保留缓存里的账户，页面各区块自己报错 */ })
+      .catch(() => {
+        /* 网络错误：有缓存就保留缓存里的账户，页面各区块自己报错；没有缓存时记下来，门禁显示「重试」而不是送去登录页 */
+        if (alive.current && readCache<Me>(K.me) === undefined) setFailed(true);
+      })
       .finally(() => { if (alive.current) setBooting(false); });
   }, [fetchAccount, apply]);
 
@@ -154,15 +160,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [drop]);
 
   const refresh = useCallback(async () => {
-    await load().catch(() => { /* 刷新失败保留旧数据 */ });
+    await load().then(() => setFailed(false), () => { /* 刷新失败保留旧数据 */ });
   }, [load]);
 
   const dismissPasskeyPrompt = useCallback(() => setPasskeyPrompt(false), []);
 
   const value = useMemo<AuthCtxValue>(() => ({
-    authed, booting, me, plan, scope: me ? scopeOf(me) : undefined,
+    authed, booting, failed, me, plan, scope: me ? scopeOf(me) : undefined,
     passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh, setMailLocale,
-  }), [authed, booting, me, plan, passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh, setMailLocale]);
+  }), [authed, booting, failed, me, plan, passkeyPrompt, dismissPasskeyPrompt, signIn, signOut, refresh, setMailLocale]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }
@@ -171,9 +177,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 /** 用户中心的门禁。未登录时把当前地址塞进 redirect，登录后能回到原来那一页 */
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const { authed, booting } = useAuth();
+  const { authed, booting, failed, refresh } = useAuth();
   const loc = useLocation();
   if (booting) return <PageLoading className="min-h-[60vh]" />;
+  /* 连不上面板：不知道登没登录，不能当成「没登录」送去登录页（已登录的人会以为自己被登出了） */
+  if (!authed && failed) return <LoadError onRetry={() => void refresh()} className="min-h-[60vh]" />;
   if (!authed) {
     const from = encodeURIComponent(loc.pathname + loc.search);
     return <Navigate to={`/login?redirect=${from}`} replace />;

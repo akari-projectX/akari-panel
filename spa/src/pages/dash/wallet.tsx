@@ -3,8 +3,8 @@ import { ArrowDownToLine, Check, Copy, History, Wallet as WalletIcon } from 'luc
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { FlowDialog, FlowFooter } from '@/components/ui/panels';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import TextField from '@/components/text-field';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PageTitle, Row, Section, StatRow } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
@@ -17,6 +17,7 @@ import { useApi, usePending } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
 import { useErrorText } from '@/lib/errors';
+import { fieldOf, useFieldErrors } from '@/lib/form-errors';
 import { formatDateTime, formatMoney, parseYuan, signedMoney, type StatusTone } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useT, useTp } from '@/i18n';
@@ -91,7 +92,7 @@ function WithdrawalDetail({ w }: { w: Withdrawal }) {
       {w.memo && <span>Memo <span className="font-mono">{w.memo}</span></span>}
       {w.usdt_amount && <span className="tnum">{tr('实付')} {w.usdt_amount} USDT</span>}
       {w.txid && <span className="flex min-w-0 items-center gap-1.5">{tr('交易哈希')} <Mono value={w.txid} label="交易哈希" /></span>}
-      {w.note && <span className="max-w-[320px] truncate">{w.note}</span>}
+      {w.note && <span title={w.note} className="max-w-[320px] truncate">{w.note}</span>}
     </span>
   );
 }
@@ -160,12 +161,28 @@ export default function Wallet() {
     withdrawals.reload();
   };
 
-  const submit = () => runSubmit(async () => {
-    if (!cents || !chain) return;
+  const f = useFieldErrors(['amount', 'address', 'memo'] as const);
+  const openDialog = () => { f.clear(); setOpen(true); };
+
+  /* noValidate + 内联错误（lib/form-errors）：提交时逐项检查，第一个出错的字段被聚焦；按钮不预先置灰 */
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!f.check({
+      amount: !amount.trim() ? tr('请输入提现金额')
+        : !cents ? tr('请输入正确的金额，最多两位小数')
+        : cents > withdrawable ? tp('超过了可提现金额（{v}）', { v: formatMoney(withdrawable) })
+        : min > 0 && cents < min ? tp('最低提现 {v}', { v: formatMoney(min) })
+        : undefined,
+      address: !address.trim() && tr('请输入收款地址'),
+    }) || !cents || !chain) return;
+    void send(cents, chain);
+  };
+
+  const send = (amountCents: number, net: UsdtChain) => runSubmit(async () => {
     try {
       await walletApi.withdraw({
-        amount_cents: cents, chain, address: address.trim(),
-        ...(chain === 'ton' && memo.trim() ? { memo: memo.trim() } : {}),
+        amount_cents: amountCents, chain: net, address: address.trim(),
+        ...(net === 'ton' && memo.trim() ? { memo: memo.trim() } : {}),
       });
       setOpen(false);
       setAmount('');
@@ -173,8 +190,15 @@ export default function Wallet() {
       setMemo('');
       toast.success(tr('提现申请已提交'), { description: tr('金额已从余额扣除，审核通过后以 USDT 打款；撤回或驳回会退回余额') });
       refresh();
-    } catch (e) {
-      toast.error(errText(e));
+    } catch (err) {
+      /* 能对应到字段的错误码画在字段下面，其余的用 toast */
+      const k = fieldOf(err, {
+        'withdrawal.amount_range': 'amount', 'withdrawal.below_minimum': 'amount', 'withdrawal.exceeds': 'amount',
+        'balance.insufficient': 'amount', 'withdrawal.address_invalid': 'address',
+        'withdrawal.memo_invalid': 'memo', 'withdrawal.memo_unexpected': 'memo',
+      } as const);
+      if (k) f.set(k, errText(err));
+      else toast.error(errText(err));
     }
   });
 
@@ -189,8 +213,9 @@ export default function Wallet() {
     }
   });
 
-  if (balance.loading && !balance.data) return <><PageTitle title={tr('钱包')} /><Loading /></>;
-  if (balance.error && !balance.data) return <LoadError error={balance.error} onRetry={balance.reload} className="py-32" />;
+  /* 加载中也带上副标题：数据到了标题区不再往下跳一行 */
+  if (balance.loading && !balance.data) return <><PageTitle title={tr('钱包')} sub={tr('账户余额、收支流水与提现。余额可以在下单时抵扣。')} /><Loading /></>;
+  if (balance.error && !balance.data) return <><PageTitle title={tr('钱包')} /><LoadError error={balance.error} onRetry={balance.reload} className="py-24" /></>;
   const b = balance.data;
 
   return (
@@ -213,11 +238,13 @@ export default function Wallet() {
         />
         {full && (
           <div className="mt-8">
-            <Button className="h-11 px-6" disabled={withdrawable <= 0 || pendingW.length > 0 || chains.length === 0} onClick={() => setOpen(true)}>
+            <Button className="h-11 px-6" disabled={withdrawable <= 0 || pendingW.length > 0 || chains.length === 0} onClick={openDialog}>
               <ArrowDownToLine />{tr('申请提现')}
             </Button>
-            {pendingW.length > 0 && <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('同一时间只能有一笔待审核的提现申请。')}</p>}
-            {invite.data && chains.length === 0 && <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('暂未开放提现。')}</p>}
+            {/* 按钮置灰时说清楚为什么（只说一条，按优先级） */}
+            {pendingW.length > 0 ? <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('同一时间只能有一笔待审核的提现申请。')}</p>
+              : invite.data && chains.length === 0 ? <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('暂未开放提现。')}</p>
+              : b && withdrawable <= 0 && <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('现在没有可提现的金额：佣金过了冻结期才能提现。')}</p>}
             <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('提现以 USDT 打款到你填写的链上地址。')}</p>
           </div>
         )}
@@ -241,7 +268,8 @@ export default function Wallet() {
                       <span className="flex items-center gap-2">
                         <StatusTag {...W_STATUS[w.status]} />
                         {w.status === 'pending' && (
-                          <Button variant="link" size="xs" disabled={cancelling} onClick={() => cancel(w.id)}>{tr('撤回')}</Button>
+                          /* 手机上的点击区至少 32px 高（xs 的链接按钮只有 20px） */
+                          <Button variant="outline" size="sm" disabled={cancelling} onClick={() => cancel(w.id)}>{tr('撤回')}</Button>
                         )}
                       </span>
                     }
@@ -345,50 +373,43 @@ export default function Wallet() {
         title={tr('申请提现')}
         description={tr('提交后金额立即从余额扣除，管理员核对后以 USDT 打款到你的地址')}
       >
-        <div className="space-y-4">
+        <form id="withdraw-form" noValidate onSubmit={submit} className="space-y-4">
+          <TextField
+            {...f.field('amount', 'w-amount')}
+            label={tr('提现金额（元）')} inputMode="decimal" autoComplete="off" placeholder="0.00"
+            value={amount} onChange={(e) => setAmount(e.target.value)}
+            help={cents !== null && cents > 0 && cents <= withdrawable && usdtEstimate(cents, invite.data?.usdt_rate_cents)
+              ? tp('约 {v} USDT（按参考汇率，以实际打款为准）', { v: usdtEstimate(cents, invite.data?.usdt_rate_cents) ?? '' })
+              : min > 0 ? tp('可提现 {v}，最低 {m}', { v: formatMoney(withdrawable), m: formatMoney(min) }) : tp('可提现 {v}', { v: formatMoney(withdrawable) })}
+          />
           <div className="space-y-2">
-            <Label htmlFor="w-amount">{tr('提现金额（元）')}</Label>
-            <Input
-              id="w-amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
-              placeholder={formatMoney(withdrawable).replace('¥', '')}
-            />
-            {amount && !cents && <p className="text-[12px] text-destructive">{tr('请输入正确的金额，最多两位小数')}</p>}
-            {cents !== null && cents > withdrawable && <p className="text-[12px] text-destructive">{tr('超过了可提现金额')}</p>}
-            {cents !== null && cents > 0 && usdtEstimate(cents, invite.data?.usdt_rate_cents) && (
-              <p className="tnum text-[12px] text-muted-foreground">
-                {tp('约 {v} USDT（按参考汇率，以实际打款为准）', { v: usdtEstimate(cents, invite.data?.usdt_rate_cents) ?? '' })}
-              </p>
-            )}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="w-chain">{tr('USDT 网络')}</Label>
+            <Label htmlFor="w-chain" className="text-[13px] font-medium">{tr('USDT 网络')}</Label>
             <Select value={chain ?? ''} onValueChange={(v) => setChain(v as UsdtChain)}>
-              <SelectTrigger id="w-chain" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger id="w-chain" className="h-10 w-full" aria-describedby="w-chain-msg"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {chains.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
-            <p className="text-[12px] text-muted-foreground">{tr('网络选错资金无法找回：请和收款方（钱包或交易所充值页）显示的网络保持一致。')}</p>
+            <p id="w-chain-msg" className="text-[12.5px] leading-[1.6] text-muted-foreground">{tr('网络选错资金无法找回：请和收款方（钱包或交易所充值页）显示的网络保持一致。')}</p>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="w-address">{tr('收款地址')}</Label>
-            <Input
-              id="w-address" value={address} maxLength={200} spellCheck={false} autoComplete="off"
-              className="font-mono text-[13px]" onChange={(e) => setAddress(e.target.value)}
-              placeholder={chain ? ADDRESS_HINT[chain].placeholder : ''}
-            />
-            {chain && <p className="text-[12px] text-muted-foreground">{tr(ADDRESS_HINT[chain].hint)}</p>}
-          </div>
+          <TextField
+            {...f.field('address', 'w-address')}
+            label={tr('收款地址')} maxLength={200} spellCheck={false} autoComplete="off" className="font-mono text-[13px]"
+            value={address} onChange={(e) => setAddress(e.target.value)}
+            placeholder={chain ? ADDRESS_HINT[chain].placeholder : ''}
+            help={chain ? tr(ADDRESS_HINT[chain].hint) : undefined}
+          />
           {chain === 'ton' && (
-            <div className="space-y-2">
-              <Label htmlFor="w-memo">{tr('Memo（选填）')}</Label>
-              <Input id="w-memo" value={memo} maxLength={120} spellCheck={false} autoComplete="off" onChange={(e) => setMemo(e.target.value)} />
-            </div>
+            <TextField
+              {...f.field('memo', 'w-memo')}
+              label={tr('Memo（选填）')} maxLength={120} spellCheck={false} autoComplete="off"
+              value={memo} onChange={(e) => setMemo(e.target.value)}
+            />
           )}
-        </div>
+        </form>
         <FlowFooter summary={<>{tr('可提现')} <b className="tnum text-[15px] font-normal text-foreground">{formatMoney(withdrawable)}</b></>}>
           <Button variant="outline" onClick={() => setOpen(false)}>{tr('取消')}</Button>
-          <Button disabled={submitting || !cents || cents > withdrawable || !chain || !address.trim()} onClick={submit}>
+          <Button type="submit" form="withdraw-form" disabled={submitting}>
             {submitting ? tr('提交中') : tr('提交申请')}
           </Button>
         </FlowFooter>

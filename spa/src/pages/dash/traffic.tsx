@@ -22,6 +22,9 @@ import { addDays, daysLeft, formatDate, monthStart, siteToday, toGB, trafficUsag
 import { ruleText, trafficByEntrance, trafficDays } from '@/lib/traffic';
 import { useT, useTp } from '@/i18n';
 
+/* 表格里的流量一律两位小数：以前同一行里 8.55 / 2.7 / 9.6 小数位各不相同，列也对不齐 */
+const gb2 = (v: number) => `${v.toFixed(2)} GB`;
+
 const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
 
 /* 图例与提示框读的是这里的 label，得跟着语言走，所以在组件里按当前语言组装 */
@@ -76,7 +79,7 @@ export default function Traffic() {
   const any = sum > 0;
 
   if (logs.loading && !logs.data) return <DashSkeleton hold={false} />;
-  if (logs.error && !logs.data) return <LoadError error={logs.error} onRetry={logs.reload} className="py-32" />;
+  if (logs.error && !logs.data) return <><PageTitle title={tr('使用明细')} /><LoadError error={logs.error} onRetry={logs.reload} className="py-24" /></>;
 
   return (
     <>
@@ -187,7 +190,7 @@ export default function Traffic() {
                         {rates.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} stroke="none" />)}
                       </Pie>
                       <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
-                      <ChartLegend content={<ChartLegendContent nameKey="name" />} className="flex-wrap gap-2" />
+                      <ChartLegend content={<ChartLegendContent nameKey="name" />} />
                     </PieChart>
                   </ChartContainer>
                 </>
@@ -229,8 +232,8 @@ export default function Traffic() {
                     {rates.map((n) => (
                       <TableRow key={n.name} className="hover:bg-brand/[.03]">
                         <TableCell className="pl-0">{n.name}</TableCell>
-                        <TableCell className="tnum">{n.value} GB</TableCell>
-                        <TableCell className="tnum">{n.billed} GB</TableCell>
+                        <TableCell className="tnum">{gb2(n.value)}</TableCell>
+                        <TableCell className="tnum">{gb2(n.billed)}</TableCell>
                         <TableCell className="tnum pr-0">
                           {n.rate != null ? `×${n.rate}` : '—'}
                           {n.rules.map((x, i) => (
@@ -251,8 +254,9 @@ export default function Traffic() {
                 <TableHeader>
                   <TableRow className="flat-head hover:bg-transparent">
                     <TableHead className="w-32 pl-0">{tr('日期')}</TableHead>
-                    <TableHead className="w-32">{tr('下行')}</TableHead>
-                    <TableHead className="w-32">{tr('上行')}</TableHead>
+                    {/* 手机上只留 日期 / 合计 / 计费 / 占比，表格不必横向滚动 */}
+                    <TableHead className="hidden w-32 sm:table-cell">{tr('下行')}</TableHead>
+                    <TableHead className="hidden w-32 sm:table-cell">{tr('上行')}</TableHead>
                     <TableHead className="w-32">{tr('合计')}</TableHead>
                     <TableHead className="w-32">{tr('计费')}</TableHead>
                     <TableHead className="pr-0">{tr('占比')}</TableHead>
@@ -262,14 +266,14 @@ export default function Traffic() {
                   {[...data].reverse().map((d) => (
                     <TableRow key={d.day} className="hover:bg-brand/[.03]">
                       <TableCell className="tnum pl-0">{d.day}</TableCell>
-                      <TableCell className="tnum">{d.down} GB</TableCell>
-                      <TableCell className="tnum">{d.up} GB</TableCell>
-                      <TableCell className="tnum font-medium">{(d.down + d.up).toFixed(1)} GB</TableCell>
-                      <TableCell className="tnum">{d.billed.toFixed(1)} GB</TableCell>
+                      <TableCell className="tnum hidden sm:table-cell">{gb2(d.down)}</TableCell>
+                      <TableCell className="tnum hidden sm:table-cell">{gb2(d.up)}</TableCell>
+                      <TableCell className="tnum font-medium">{gb2(d.down + d.up)}</TableCell>
+                      <TableCell className="tnum">{gb2(d.billed)}</TableCell>
                       <TableCell className="pr-0">
                         <div className="flex items-center gap-2.5">
                           {/* 条长按当期最大单日归一，与右侧真实占比同向可比 */}
-                          <Progress value={((d.down + d.up) / maxDay) * 100} className="h-1.5 max-w-45" />
+                          <Progress value={((d.down + d.up) / maxDay) * 100} className="hidden h-1.5 max-w-45 sm:block" />
                           <Badge variant="secondary" className="rounded-full bg-brand/10 text-brand-ink">
                             {sum > 0 ? (((d.down + d.up) / sum) * 100).toFixed(1) : '0.0'}%
                           </Badge>

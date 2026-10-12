@@ -50,7 +50,8 @@ export default function OpenOrderNotice({
       )}
     >
       <Clock className="size-4 shrink-0 text-warning" />
-      <div className="min-w-0 flex-1">
+      {/* 文字至少留 15rem：手机上按钮换到下一行，而不是把标题挤成三行、套餐名截成「旗舰 Ultra(…」 */}
+      <div className="min-w-[min(15rem,100%)] flex-1 basis-0">
         <div className={cn('font-medium', compact ? 'text-[13.5px]' : 'text-[14.5px]')}>{tr('你有一笔待支付的订单')}</div>
         <div className="mt-0.5 truncate text-[12.5px] text-muted-foreground">
           {summary}
@@ -58,7 +59,7 @@ export default function OpenOrderNotice({
           {expired ? tr('即将自动关闭') : tp('{t} 前未支付将自动关闭', { t: formatTime(order.expires_at) })}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
         <Button size="sm" variant="ghost" disabled={cancelling} onClick={cancel} className="text-muted-foreground">
           {tr('取消订单')}
         </Button>

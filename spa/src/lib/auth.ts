@@ -25,6 +25,8 @@ export type AuthCtxValue = {
   authed: boolean;
   /** 还不知道登没登录（第一次 /me 没回来）——此时用户中心先显示加载态 */
   booting: boolean;
+  /** 第一次取 /me 出了网络 / 服务器错误、又没有缓存：登录状态未知（门禁显示重试，不送去登录页） */
+  failed: boolean;
   me?: Me;
   scope?: Scope;
   /** 当前套餐（banned 没有；没有套餐是 plan: null） */

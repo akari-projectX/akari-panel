@@ -89,7 +89,13 @@ export default function Nodes() {
 
       <Section
         title={tr('全部线路')}
-        desc={data.length ? tp('共 {n} 条线路，点击「倍率」列可切换排序', { n: data.length }) : undefined}
+        /* 「点倍率列排序」只对宽屏的表格成立：手机上是列表，没有列头 */
+        desc={data.length ? (
+          <>
+            <span className="md:hidden">{tp('共 {n} 条线路，按倍率从低到高排列', { n: data.length })}</span>
+            <span className="hidden md:inline">{tp('共 {n} 条线路，点击「倍率」列可切换排序', { n: data.length })}</span>
+          </>
+        ) : undefined}
       >
         <NodeLegend className="mb-4" />
         <div className="mb-4.5 md:max-w-[480px]">
