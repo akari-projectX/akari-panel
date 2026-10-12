@@ -231,13 +231,28 @@ pub struct TemplateView {
     /// An override is stored (`version` > 0).
     pub custom: bool,
     pub version: i64,
+    /// When and by whom the override was last saved (admin redesign v2:
+    /// "已自定义 · 时间 · 人"); None for the default.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_by: Option<String>,
     pub placeholders: Vec<Placeholder>,
     pub required: &'static [&'static str],
 }
 
 async fn view_all(conn: &mut PgConnection) -> Result<Vec<TemplateView>, ApiError> {
-    let rows: Vec<(String, String, String, String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT kind, locale, subject, body, html_source, version FROM mail_templates",
+    type Stored = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+    );
+    let rows: Vec<Stored> = sqlx::query_as(
+        "SELECT kind, locale, subject, body, html_source, version, updated_at, updated_by \
+         FROM mail_templates",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -261,6 +276,8 @@ async fn view_all(conn: &mut PgConnection) -> Result<Vec<TemplateView>, ApiError
                 default_body: db,
                 custom: stored.is_some(),
                 version: stored.map_or(0, |r| r.5),
+                updated_at: stored.map(|r| r.6),
+                updated_by: stored.and_then(|r| r.7.clone()),
                 placeholders: COMMON.iter().chain(allowed.iter()).copied().collect(),
                 required,
             });

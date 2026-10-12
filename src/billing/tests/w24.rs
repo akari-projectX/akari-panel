@@ -569,6 +569,44 @@ async fn two_methods_are_isolated() {
         before_a,
         "A never asked about B's orders"
     );
+    // The list's per-method usage: this month's paid money and orders, ever used.
+    let admin = user_client(&state, db.owner().await).await;
+    let v = admin.get(BASE).await.json();
+    let of = |id: Uuid| {
+        v["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == json!(id))
+            .unwrap()
+            .clone()
+    };
+    let (va, vb) = (of(a), of(b));
+    assert_eq!(
+        (&va["month_cents"], &va["month_count"], &va["used"]),
+        (&json!(0), &json!(0), &json!(false))
+    );
+    assert_eq!(
+        (&vb["month_cents"], &vb["month_count"], &vb["used"]),
+        (&json!(1000), &json!(2), &json!(true))
+    );
+    // Paid before this site month: used, but not in the month's totals.
+    sqlx::query("UPDATE orders SET paid_at = paid_at - interval '40 days' WHERE id = $1")
+        .bind(oid)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let vb = admin.get(BASE).await.json()["methods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == json!(b))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&vb["month_cents"], &vb["month_count"], &vb["used"]),
+        (&json!(500), &json!(1), &json!(true))
+    );
     drop((state, ma, mb));
     db.drop().await;
 }

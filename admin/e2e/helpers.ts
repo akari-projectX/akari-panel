@@ -187,6 +187,9 @@ export async function nav(page: Page, info: TestInfo, name: string): Promise<voi
 /** Open the account menu (sidebar card on a desktop, avatar on a phone) and pick `item`. */
 export async function accountMenu(page: Page, item: string | RegExp): Promise<void> {
   // Either language (the menu switches it); theme and language are radio items in it.
+  // A menu still fading out dismisses itself on the next press of its trigger,
+  // which would close the menu again at once: wait until the last one is gone.
+  await expect(page.locator("[data-slot=menu-content]")).toHaveCount(0);
   await page.getByRole("button", { name: /^(账户菜单|Account menu)$/ }).click();
   const menu = page.getByRole("menu");
   await menu

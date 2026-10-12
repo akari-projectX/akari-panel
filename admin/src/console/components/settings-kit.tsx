@@ -9,7 +9,7 @@
 // - 行：标签与说明在左、控件在右（手机上叠放），错误写在字段下面并关联到
 //   控件（aria-invalid / aria-describedby）。
 import type { UseQueryResult } from "@tanstack/react-query";
-import { CircleAlert, Lock, Search, TriangleAlert } from "lucide-react";
+import { CircleAlert, Globe2, Lock, Search, TriangleAlert } from "lucide-react";
 import { useBlocker } from "react-router";
 import {
   createContext,
@@ -28,8 +28,8 @@ import { cn } from "../../shared/cn";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
-import { useConfirm } from "../../shared/ui/confirm";
 import { Input, Kbd, MOD_KEY, Switch } from "../../shared/ui/form";
+import { Dialog } from "../../shared/ui/dialog";
 import { Banner } from "../../shared/ui/layout";
 import { useToast } from "../../shared/ui/toast";
 import { useErrText } from "../kit";
@@ -82,9 +82,15 @@ export function useSavePart(part: SavePart): void {
  * 保存 ⌘S), saves the parts in order (each confirms its dangerous changes),
  * and guards leaving (in-app navigation and the browser) with unsaved edits.
  */
-export function SectionForm({ children }: { children: ReactNode }) {
+export function SectionForm({
+  children,
+  placeName,
+}: {
+  children: ReactNode;
+  /** The name of where a blocked navigation goes ("放弃修改，去「X」"). */
+  placeName?: (pathname: string) => string | undefined;
+}) {
   const tr = useTr();
-  const confirm = useConfirm();
   const toast = useToast();
   const errText = useErrText();
   const parts = useRef(new Map<string, { current: SavePart }>());
@@ -165,19 +171,7 @@ export function SectionForm({ children }: { children: ReactNode }) {
   const blocker = useBlocker(
     ({ currentLocation, nextLocation }) => dirty.current && currentLocation.pathname !== nextLocation.pathname,
   );
-  useEffect(() => {
-    if (blocker.state !== "blocked") return;
-    void confirm({
-      title: tr("放弃未保存的修改？", "Discard unsaved changes?"),
-      description: tr(
-        `这个分区还有 ${count} 项修改没有保存，离开后不会保存。`,
-        `${count} changes in this section are not saved; they are lost if you leave.`,
-      ),
-      confirmLabel: tr("放弃修改", "Discard"),
-      tone: "warning",
-    }).then((ok) => (ok ? blocker.proceed() : blocker.reset()));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blocker.state]);
+  const target = blocker.state === "blocked" ? placeName?.(blocker.location.pathname) : undefined;
   useEffect(() => {
     if (count === 0) return;
     const onUnload = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -220,6 +214,36 @@ export function SectionForm({ children }: { children: ReactNode }) {
           style={place ? { left: place.left, width: place.width } : undefined}
         />
       )}
+      <Dialog
+        open={blocker.state === "blocked"}
+        onClose={() => blocker.reset?.()}
+        size="sm"
+        tone="warning"
+        icon={TriangleAlert}
+        title={tr("有未保存的修改", "Unsaved changes")}
+        description={tr(
+          `这个分区有 ${count} 项修改还没有保存。`,
+          `${count} ${count === 1 ? "change" : "changes"} in this section are not saved.`,
+        )}
+        footer={
+          <>
+            <Button variant="destructive-soft" onClick={() => blocker.proceed?.()}>
+              {target ? tr(`放弃修改，去「${target}」`, `Discard and go to ${target}`) : tr("放弃修改", "Discard")}
+            </Button>
+            <div className="flex-1" />
+            <Button variant="primary" data-autofocus onClick={() => blocker.reset?.()}>
+              {tr("继续编辑", "Keep editing")}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-body text-muted-foreground">
+          {tr(
+            "离开后这些修改会丢失。要保留它们，先点保存栏里的「保存」（或按 ⌘S）。",
+            "They are lost if you leave. To keep them, press Save in the save bar (or ⌘S) first.",
+          )}
+        </p>
+      </Dialog>
     </SaveContext.Provider>
   );
 }
@@ -606,6 +630,25 @@ function timeZones(): string[] {
 }
 
 /** The site time zone: a button that opens a searchable list ("" = the default). */
+const OFFSETS = new Map<string, string>();
+
+/** A zone's UTC offset now ("+08:00"; "" when the browser cannot tell). */
+export function zoneOffset(zone: string): string {
+  let o = OFFSETS.get(zone);
+  if (o === undefined) {
+    try {
+      const part = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
+        .formatToParts(new Date())
+        .find((p) => p.type === "timeZoneName")?.value;
+      o = part === "GMT" ? "+00:00" : (part?.replace("GMT", "") ?? "");
+    } catch {
+      o = "";
+    }
+    OFFSETS.set(zone, o);
+  }
+  return o;
+}
+
 export function TimeZonePicker({
   value,
   defaultZone,
@@ -625,8 +668,9 @@ export function TimeZonePicker({
   const all = useMemo(timeZones, []);
   const hits = useMemo(() => {
     const t = q.trim().toLowerCase().replace(/\s+/g, "_");
-    return (t ? all.filter((z) => z.toLowerCase().includes(t)) : all).slice(0, 80);
+    return (t ? all.filter((z) => z.toLowerCase().includes(t) || zoneOffset(z).includes(t)) : all).slice(0, 80);
   }, [all, q]);
+  const cur = value || defaultZone;
   const pick = (z: string) => {
     onChange(z);
     setOpen(false);
@@ -646,7 +690,13 @@ export function TimeZonePicker({
           disabled={disabled}
           {...aria}
         >
-          <span className="truncate">{value || tr(`默认（${defaultZone}）`, `Default (${defaultZone})`)}</span>
+          <Globe2 className="size-4 text-faint" aria-hidden="true" />
+          <span className="flex-1 truncate text-left">
+            {value || tr(`默认（${defaultZone}）`, `Default (${defaultZone})`)}
+          </span>
+          <span className="text-footnote text-faint tabular-nums" aria-hidden="true">
+            UTC{zoneOffset(cur)}
+          </span>
         </Button>
       }
     >
@@ -658,7 +708,7 @@ export function TimeZonePicker({
         <Input
           data-nodirty
           aria-label={tr("搜索时区", "Search time zones")}
-          placeholder={tr("搜索，如 Tokyo", "Search, e.g. Tokyo")}
+          placeholder={tr("搜索城市或 +08:00", "Search a city or +08:00")}
           className="pl-8"
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -689,9 +739,12 @@ export function TimeZonePicker({
             role="option"
             aria-selected={value === z}
             onClick={() => pick(z)}
-            className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-body hover:bg-accent aria-selected:font-semibold aria-selected:text-primary"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-body hover:bg-accent aria-selected:font-semibold aria-selected:text-primary"
           >
-            {z}
+            <span className="flex-1">{z}</span>
+            <span className="text-footnote font-normal text-faint tabular-nums" aria-hidden="true">
+              {zoneOffset(z)}
+            </span>
           </button>
         ))}
         {hits.length === 0 && (
@@ -837,7 +890,7 @@ export function OwnerNotice({ what }: { what?: string }) {
   return (
     <Banner tone="info" icon={<Lock />} title={tr("仅所有者可修改", "Owner only")}>
       {tr(
-        `你以管理员身份登录，${what ?? "这个分区"}对你只读。需要修改时请联系所有者。`,
+        `你以管理员身份登录，${what ?? tr("这个分区", "this section")}对你只读。需要修改时请联系所有者。`,
         `You are signed in as an admin: ${what ?? "this section"} is read-only for you. Ask the owner to change it.`,
       )}
     </Banner>

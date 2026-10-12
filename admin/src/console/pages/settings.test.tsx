@@ -271,6 +271,12 @@ const FIX: Record<string, unknown> = {
     email_available: false,
   },
   "/settings/domains/impact": { removed: [] },
+  "/settings/dns-check": {
+    domain: "x.example.org",
+    addresses: [{ ip: "203.0.113.24", cloudflare: false }],
+    level: "ok",
+    message: "ok",
+  },
   "/me/passkeys": { passkeys: [{ current: true }] },
 };
 const calls: { method: string; path: string; body: unknown }[] = [];
@@ -332,6 +338,8 @@ function mount(path: string) {
 
 const IDS = [
   "site",
+  "brand",
+  "links",
   "domains",
   "signup",
   "login",
@@ -345,11 +353,11 @@ const IDS = [
   "payments",
   "commission",
   "mail",
-  "templates",
   "notices",
   "alerts",
   "access",
   "retention",
+  "account",
 ];
 
 for (const id of IDS)
@@ -362,9 +370,9 @@ for (const id of IDS)
 test("overview", async () => {
   mount("/settings");
   const strip = await screen.findByRole("region", { name: "需要注意" });
-  expect(strip.textContent).toContain("panel.toml 中有已废弃的键");
+  expect(strip.textContent).toContain("个已废弃的键");
   // Summaries are real values once their queries land.
-  await screen.findByText(/^主 \d+ · 订阅 \d+ · 节点 \d+$/);
+  await screen.findByText("Asia/Shanghai");
 });
 
 test("edit, bar, save", async () => {
@@ -400,10 +408,12 @@ test("cleanup confirm", async () => {
 
 test("domains add + save", async () => {
   mount("/settings/domains");
-  const input = await screen.findByLabelText("新的订阅域名");
-  fireEvent.change(input, { target: { value: "s.example.org" } });
-  fireEvent.click(screen.getByRole("button", { name: "添加订阅域名" }));
+  fireEvent.click(await screen.findByRole("button", { name: "添加订阅域名" }));
+  const dlg = await screen.findByRole("dialog", { name: "添加域名" });
+  fireEvent.change(within(dlg).getByLabelText(/^域名/), { target: { value: "s.example.org" } });
+  fireEvent.click(within(dlg).getByRole("button", { name: "添加" }));
   await screen.findByText("s.example.org");
+  await screen.findByText("新添加");
   const bar = await screen.findByRole("region", { name: "保存栏" });
   await act(async () => {
     fireEvent.click(within(bar).getByRole("button", { name: "保存" }));
@@ -419,13 +429,21 @@ test("guard on leave", async () => {
   await act(async () => {
     void router.navigate("/settings/domains");
   });
-  await screen.findByRole("alertdialog");
+  const dlg = await screen.findByRole("dialog", { name: "有未保存的修改" });
+  expect(dlg.textContent).toContain("放弃修改，去「域名与证书」");
   expect(router.state.location.pathname).toBe("/settings/site");
 });
 
 test("redirects", async () => {
   const r = mount("/settings/security");
   await waitFor(() => expect(r.state.location.pathname).toBe("/settings/access"));
+  cleanup();
+  const r3 = mount("/settings/branding");
+  await waitFor(() => expect(r3.state.location.pathname).toBe("/settings/brand"));
+  cleanup();
+  const r4 = mount("/settings?section=notify");
+  await waitFor(() => expect(r4.state.location.pathname).toBe("/settings/notices"));
+  cleanup();
   const r2 = mount("/settings/mail?outbox=dead");
   await waitFor(() => expect(r2.state.location.pathname + r2.state.location.search).toBe("/status?mail=dead"));
 });

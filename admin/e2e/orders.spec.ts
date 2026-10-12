@@ -86,7 +86,7 @@ test("ORD-07 ORD-01 ORD-02 ORD-03 ORD-05 ORD-06: manual orders (3 steps), the da
   await statuses.getByRole("button", { name: /^待支付/ }).click();
   // Nothing matches: says so, with a way back.
   await expect(page.getByText("没有符合条件的订单")).toBeVisible();
-  await expect(page.getByRole("button", { name: "清除筛选" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "清除筛选", exact: true })).toBeVisible();
   await statuses.getByRole("button", { name: /^已付款/ }).click();
   await expect(row(page, "¥15.00")).toBeVisible();
   await expect(page.getByText("共 2 条 · 已全部加载")).toBeVisible();

@@ -53,6 +53,7 @@ async fn edited_template_is_used_by_enqueue() {
         .unwrap();
     assert_eq!(row["custom"], false);
     assert_eq!(row["version"], 0);
+    assert!(row["updated_at"].is_null() && row["updated_by"].is_null());
     assert_eq!(row["label"], "注册验证码");
     assert!(row["subject"].as_str().unwrap().contains("{site}"));
     assert_eq!(row["placeholders"][0]["name"], "site");
@@ -201,6 +202,9 @@ async fn edited_template_is_used_by_enqueue() {
         .unwrap();
     assert_eq!(row["custom"], true);
     assert_eq!(row["version"], 2);
+    // v2's "已自定义 · 时间 · 人": when and by whom it was last saved.
+    assert!(row["updated_at"].as_str().is_some_and(|t| t.contains('T')));
+    assert!(row["updated_by"].as_str().is_some_and(|b| !b.is_empty()));
     assert_eq!(row["subject"], "s2 {site}");
     assert!(
         row["default_subject"]
