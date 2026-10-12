@@ -1635,10 +1635,10 @@ export function NodesDialogs({ serverId }: { serverId?: string }) {
   const entId = query.get("entrance");
   const forId = query.get("for");
   let ent: { e: EntranceView; n: ServerNode; s: ServerView } | null = null;
-  let forNode: ServerNode | undefined;
+  let forNode: { n: ServerNode; s: ServerView } | undefined;
   for (const s of list)
     for (const n of s.nodes) {
-      if (n.id === forId) forNode = n;
+      if (n.id === forId) forNode = { n, s };
       for (const e of n.entrances) if (e.id === entId) ent = { e, n, s };
     }
   return (
@@ -1663,8 +1663,8 @@ export function NodesDialogs({ serverId }: { serverId?: string }) {
       )}
       {creating === "relay" && servers.isSuccess && (
         <RelayDialog
-          node={forNode}
-          servers={forNode ? undefined : list}
+          target={forNode}
+          servers={list}
           groups={groups.data ?? []}
           onClose={() => patchQs({ new: null, for: null })}
         />
