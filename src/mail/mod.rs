@@ -766,6 +766,10 @@ pub fn routes() -> axum::Router<AppState> {
             post(overrides::preview),
         )
         .route(
+            "/{prefix}/api/v1/settings/mail-templates/test-draft",
+            post(overrides::send_test_draft),
+        )
+        .route(
             "/{prefix}/api/v1/settings/mail-templates/{kind}/{locale}",
             axum::routing::put(overrides::put).delete(overrides::reset),
         )

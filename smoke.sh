@@ -3149,6 +3149,24 @@ echo "branding: ok"
 [ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='test/zh'")" = "settings.mail_template.update,settings.mail_template.reset" ] \
   || { echo "FAIL: template audit"; exit 1; }
 [ "$(code -b "$TJA" "$BASE/api/v1/settings/mail-templates")" = "403" ] || { echo "FAIL: customer reached the templates"; exit 1; }
+# Validation errors say where (field + 1-based line/column); "send current
+# draft" (test-draft) validates like the preview and answers like the stored
+# template's /test (Mailpit is gone here: both report the same failure).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"s","body":"第一行\n第二行 {nope}"}')" = "400" ] \
+  && [ "$(last_json "(d['code'], d['params']['field'], d['params']['line'], d['params']['column'])")" = "('mail_template.placeholder_unknown', 'body', 2, 5)" ] \
+  || { echo "FAIL: template error position"; cat /tmp/akari-smoke/last; exit 1; }
+DRAFT='{"kind":"test","locale":"zh","subject":"冒烟草稿 {site}","body":"冒烟草稿正文","to":"draft@akari.test"}'
+[ "$(code -X POST "$BASE/api/v1/settings/mail-templates/test-draft" -H 'Content-Type: application/json' -d "$DRAFT")" = "401" ] || { echo "FAIL: anonymous test-draft"; exit 1; }
+[ "$(api_json "$TJA" POST "$BASE/api/v1/settings/mail-templates/test-draft" "$DRAFT")" = "403" ] || { echo "FAIL: customer sent a test draft"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test-draft" '{"kind":"test","locale":"zh","subject":"s","body":"x\n{nope}","to":"draft@akari.test"}')" = "400" ] \
+  && [ "$(last_json "(d['code'], d['params']['line'])")" = "('mail_template.placeholder_unknown', 2)" ] \
+  || { echo "FAIL: invalid test draft"; cat /tmp/akari-smoke/last; exit 1; }
+STORED_TEST=$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test/zh/test" '{"to":"draft@akari.test"}')
+STORED_CODE=$(last_json "d.get('code')")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test-draft" "$DRAFT")" = "$STORED_TEST" ] \
+  && last_json "d.get('code')" | matches -xF "$STORED_CODE" \
+  || { echo "FAIL: test draft answers differently from /test ($STORED_TEST $STORED_CODE)"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM mail_templates WHERE kind='test'")" = "0" ] || { echo "FAIL: test draft stored the template"; exit 1; }
 echo "mail templates: ok"
 
 # Node summary view: the list's columns only, ETag + 304.

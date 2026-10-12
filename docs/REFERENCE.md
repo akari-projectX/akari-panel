@@ -232,6 +232,11 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | GET/PUT | /api/v1/settings/mail | admin | W15 系统设置 → 邮件：服务商（W31：`smtp` 或 `resend`；缺省 = 保持）、SMTP 主机/端口/安全方式/凭据（密码只写，加密保存）、Resend `api_key`（只写，加密保存；视图：`api_key_set`）、发件人、通知开关（`notify_refund`：退款通知，缺省 = 不变） |
 | POST | /api/v1/settings/mail/test | admin | W15：`{to}`：立即用已保存的设置发送测试邮件（502 = 服务器的应答） |
 | POST | /api/v1/settings/mail/diagnose | admin | W31：`{to}`：对已保存的服务商做逐步检查——配置、DNS、TCP、TLS（隐式 465 / STARTTLS 587，检测不匹配）、问候、AUTH、发送——始终 200 `{provider, ok, steps: [{step, status ok\|warn\|fail\|skip, elapsed_ms, code mail.diag.*, params, message: {zh, en}}]}`；审计 `settings.mail.test` |
+| GET | /api/v1/settings/mail-templates | admin | 运维：每个邮件种类 × zh/en 的生效主题/正文、`html_source`、`starter_html`、默认值、`custom`、`version`、占位符白名单与必需占位符 |
+| PUT/DELETE | /api/v1/settings/mail-templates/{kind}/{locale} | admin | 运维：`{version, subject, body, html_source?}` 保存覆盖（`version` 乐观并发，409 `mail_template.version_conflict`）/ 删除 = 恢复默认。校验错误的 `params` 带 `field`（`subject`/`body`/`html_source`），有位置的再带 `line`、`column`（从 1 起，列按字符计，`\r\n`/`\r`/`\n` 各算一次换行）：`placeholder_unknown`（占位符的 `{`）、`subject_multiline`、`body_control`/`html_control`（第一个控制字符）、`html_forbidden`（最靠前的禁用结构）；`placeholder_missing` 只有 `field`（正文/主题缺 = `body`，源码缺 = `html_source`） |
+| POST | /api/v1/settings/mail-templates/preview | admin | 运维：`{kind, locale, subject, body, html_source?}` 校验（与保存相同的错误与 `params`）后用示例值渲染 → `{subject, text, html}` |
+| POST | /api/v1/settings/mail-templates/{kind}/{locale}/test | admin | 运维：`{to}`：用**已保存**的模板（或默认）+ 示例值立即发送；应答同 `/settings/mail/test`（`{ok:true}`、400 `mail.to_invalid`/`mail.test_needs_host`、502 `mail.test_failed`），审计 `settings.mail.test`（`template` = 种类） |
+| POST | /api/v1/settings/mail-templates/test-draft | admin | 后台重设计（admin-redesign-1012）「发送当前草稿」：`{kind, locale, subject, body, html_source?, to}`（拒绝未知字段）：**未保存**的草稿按预览同样校验（400 带位置 `params`），用示例值渲染后走与上一行相同的发送路径（同样应答与审计）；不保存任何东西 |
 | GET | /api/v1/system/status | admin | W31 系统状态：每个面板实例（主机 CPU/内存/负载/磁盘、RSS、版本、agent 会话；Valkey 心跳）、PostgreSQL、Valkey、反向代理（Caddy，经主域名探测）、后台任务（结算、对账、邮件、告警：上次运行、耗时、滞后、过期、上次错误、积压）；缓存 5 秒 |
 | GET | /api/v1/mail/outbox | admin | W15：outbox 行 `?status=dead\|pending\|sent&before&limit`（不含正文） |
 | POST | /api/v1/mail/outbox/{id}/retry | admin | W15：重新入队死信（不适用于已过期的验证码/链接） |
