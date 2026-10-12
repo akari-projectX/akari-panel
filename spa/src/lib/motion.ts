@@ -9,6 +9,9 @@ import { useBootOut } from '@/lib/boot';
  *          FAST  小件：行、按钮、数字跳变、切页外壳
  *          BASE  块级：标题、统计条、卡片、正文块；也是启动画面淡出的时长
  *          SLOW  只给首屏大件：导航栏落下、落地页英雄区
+ *          ROLL  数字从旧值滚到新值（余额到账、流量刷新）；第一次从 0 滚上去用 CountUp 自己的 1.6 秒
+ *          CELEBRATE  付款成功的一次性撒花（components/celebrate），播完即卸载
+ *   按下   按钮、开关、可点的行按下时缩到 0.97（--dur-press，松手按 --ease-spring 回弹），见 index.css「按下」
  *   位移   块级上浮 RISE，小件与列表行 NUDGE。方向统一向上浮起，不左右滑。
  *   错峰   每项 STEP，最多排到第 CAP 项——列表再长，最后一行也不必等。
  *
@@ -18,7 +21,7 @@ import { useBootOut } from '@/lib/boot';
  * 以前用 motion 库，它压缩后 40 kB，又被页头、切页外壳引用，成了每个页面首屏必经的下载；
  * 而全站用到的只是「淡入上浮」「淡出」这几种，CSS 关键帧就能做，还不占主线程。
  */
-export const DUR = { exit: 0.14, fast: 0.26, base: 0.42, slow: 0.7 } as const;
+export const DUR = { exit: 0.14, fast: 0.26, base: 0.42, slow: 0.7, roll: 0.6, celebrate: 1.3 } as const;
 
 const RISE = 12;
 export const NUDGE = 6;

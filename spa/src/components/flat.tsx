@@ -30,7 +30,8 @@ export function Section({
   );
 }
 
-export type Stat = { k: ReactNode; v: number | string; suffix?: string; decimals?: number; x?: ReactNode };
+/** v 为数字时滚动显示；fmt 给出写法（金额：v 是分，fmt = formatMoney），否则按 decimals + suffix 写 */
+export type Stat = { k: ReactNode; v: number | string; suffix?: string; decimals?: number; fmt?: (n: number) => string; x?: ReactNode };
 
 /** 统计条：竖线分隔的指标行 */
 export function StatRow({ items }: { items: Stat[] }) {
@@ -40,7 +41,7 @@ export function StatRow({ items }: { items: Stat[] }) {
       {items.map((s, i) => (
         <div key={i} {...enter({ delay: stagger(i, 0.06) })}>
           <div className="stat-v">
-            {typeof s.v === 'number' ? <CountUp to={s.v} decimals={s.decimals ?? 0} /> : s.v}
+            {typeof s.v === 'number' ? <CountUp to={s.v} decimals={s.decimals ?? 0} format={s.fmt} /> : s.v}
             {s.suffix?.trim() && <span className="stat-unit">{s.suffix.trim()}</span>}
           </div>
           <div className="stat-k">{s.k}</div>

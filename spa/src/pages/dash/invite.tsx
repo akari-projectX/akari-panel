@@ -121,7 +121,7 @@ export default function Invite() {
                   <div className="flex flex-col gap-2.5 sm:flex-row">
                     <Input aria-label={tr('邀请链接')} readOnly value={link} className="h-11 font-mono text-[13px]" />
                     <Button className="h-11 shrink-0 px-5" onClick={() => copy('link', link, '邀请链接')}>
-                      {copied === 'link' ? <Check /> : <Copy />}{copied === 'link' ? tr('已复制') : tr('复制链接')}
+                      {copied === 'link' ? <Check className="pop-in" /> : <Copy />}{copied === 'link' ? tr('已复制') : tr('复制链接')}
                     </Button>
                   </div>
                 ) : (
@@ -155,7 +155,7 @@ export default function Invite() {
                         </span>
                         <span className="flex shrink-0 items-center gap-1">
                           <Button variant="ghost" size="sm" onClick={() => copy(x.code, inviteLink(x.code, c.link_base), '邀请链接')}>
-                            {copied === x.code ? <Check /> : <Copy />}{tr('复制链接')}
+                            {copied === x.code ? <Check className="pop-in" /> : <Copy />}{tr('复制链接')}
                           </Button>
                           <ConfirmDialog
                             trigger={
@@ -191,9 +191,9 @@ export default function Invite() {
               <StatRow
                 items={[
                   { k: tr('已邀请'), v: i.invited_count, suffix: tr(' 人'), x: tr('通过你的链接完成注册') },
-                  { k: tr('冻结中'), v: formatMoney(i.pending_cents), x: tr('过了冻结期自动入账') },
-                  { k: tr('已入账'), v: formatMoney(i.credited_cents), x: tr('已进入账户余额') },
-                  { k: tr('可提现'), v: formatMoney(i.withdrawable_cents), x: tp('账户余额 {v}', { v: formatMoney(i.balance_cents) }) },
+                  { k: tr('冻结中'), v: i.pending_cents, fmt: formatMoney, x: tr('过了冻结期自动入账') },
+                  { k: tr('已入账'), v: i.credited_cents, fmt: formatMoney, x: tr('已进入账户余额') },
+                  { k: tr('可提现'), v: i.withdrawable_cents, fmt: formatMoney, x: tp('账户余额 {v}', { v: formatMoney(i.balance_cents) }) },
                 ]}
               />
               <div className="mt-8">

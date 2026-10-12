@@ -153,7 +153,7 @@ function ListView() {
         extra={
           subUrl && (
             <Button variant="outline" className="h-9" onClick={handleCopySubscribe}>
-              {copied === 'sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+              {copied === 'sub' ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
               {copied === 'sub' ? tr('已复制') : tr('复制订阅地址')}
             </Button>
           )
@@ -475,7 +475,7 @@ function ArticleView({ id }: { id: string }) {
           </div>
           {subUrl && (
             <Button variant="outline" className="h-9" onClick={handleCopySub}>
-              {copied === 'art-sub' ? <Check className="size-3.5 text-success" /> : <Copy className="size-3.5" />}
+              {copied === 'art-sub' ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
               {copied === 'art-sub' ? tr('已复制') : tr('复制订阅链接')}
             </Button>
           )}

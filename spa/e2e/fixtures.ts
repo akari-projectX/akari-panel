@@ -70,3 +70,15 @@ export async function authenticator(page: Page): Promise<CDPSession> {
 
 /** 手机上导航收在菜单里，直接按地址进页面 */
 export const open = (page: Page, path: string) => page.goto(path);
+
+/**
+ * 付款结果弹窗（components/pay-result）：等它出现，核对标题与小结里的套餐名，再从右上角关掉。
+ * 弹窗开着时页面其余部分对无障碍树是隐藏的（getByRole 找不到页面标题），所以先处理它。
+ */
+export async function payResult(page: Page, title: string, plan?: string, timeout = 10_000) {
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: title })).toBeVisible({ timeout });
+  if (plan) await expect(dialog.getByText(plan, { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '关闭' }).click();
+  await expect(dialog).toHaveCount(0);
+}

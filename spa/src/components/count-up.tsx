@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { useBootOut } from '@/lib/boot';
-import { useInViewOnce, useReducedMotion } from '@/lib/motion';
+import { DUR, useInViewOnce, useReducedMotion } from '@/lib/motion';
 
-type Props = { to: number; duration?: number; decimals?: number; suffix?: string; prefix?: string };
+type Props = {
+  to: number;
+  /** 第一次（从 0 滚到值）的时长，秒 */
+  duration?: number;
+  decimals?: number;
+  suffix?: string;
+  prefix?: string;
+  /**
+   * 自定义写法：拿到的是滚动中的数值（已按 integer 取整），返回要显示的文本。
+   * 金额传 `formatMoney`（值是分，integer 默认为 true，不会出现半分）。给了它就不看 decimals / prefix / suffix。
+   */
+  format?: (v: number) => string;
+  /** 滚动中的数值取整（金额 = 分）。默认：给了 format 时为 true */
+  integer?: boolean;
+};
 
 /**
- * 进入视口后数字滚动增长。
+ * 数字滚动：进入视口后从 0 滚到值；之后值再变（余额到账、流量刷新）就从旧值滚到新值（DUR.roll，更短）。
  *
  * 动画期间**直接写 DOM**，不走 setState。
  * 原来每帧一次 setVal，一行统计条有四个数字就是每秒 240 次组件渲染，
@@ -14,13 +28,13 @@ type Props = { to: number; duration?: number; decimals?: number; suffix?: string
  * 因此这个 span 的**子节点必须留空**：以前它既由 JSX 渲染 `{prefix}{to}{suffix}`，
  * 又被 effect 用 textContent 覆盖，两边抢同一块文本。textContent 会把 React 建的
  * 文本节点整个换掉，React 之后再更新时改的是已经脱离文档的节点，屏幕上什么都不会变；
- * 显示之所以还对，全靠 prefix/suffix 在依赖数组里、变一次就重跑一次 effect——
  * 而调用方传的 suffix 是翻译过的（tr(' 台') / tr(' 元') / tr(' 张')），
- * 于是切一次语言，整页数字全部归零重新滚。现在 DOM 完全归这个组件所有。
+ * 切一次语言要是重启动画，整页数字全部归零重新滚。现在 DOM 完全归这个组件所有。
  */
-export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '', prefix = '' }: Props) {
+export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '', prefix = '', format, integer }: Props) {
   const started = useRef(false);
-  const done = useRef(false);
+  /* 屏幕上此刻的数值：值变化时从这里滚到新值 */
+  const shown = useRef(0);
   /* 刷新时等启动画面开始淡出再滚，否则数字在遮罩底下就滚完了，露出来已经是终值 */
   const ready = useBootOut();
   const [ref, seen] = useInViewOnce<HTMLSpanElement>('-60px');
@@ -29,44 +43,60 @@ export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '',
 
   /* 格式只影响怎么写，不影响写什么，所以放 ref：换语言不该重启动画。
      赋值在下面的 layout effect 里做，渲染期间不碰 ref */
-  const fmt = useRef({ decimals, suffix, prefix });
+  const fmt = useRef({ decimals, suffix, prefix, format, integer: integer ?? !!format });
 
   const write = useCallback((v: number) => {
     const el = ref.current;
     if (!el) return;
-    const { decimals: d, prefix: p, suffix: s } = fmt.current;
-    el.textContent = `${p}${v.toFixed(d)}${s}`;
+    const { decimals: d, prefix: p, suffix: s, format: f, integer: int } = fmt.current;
+    const n = int ? Math.round(v) : v;
+    shown.current = n;
+    el.textContent = f ? f(n) : `${p}${n.toFixed(d)}${s}`;
   }, [ref]);
+
+  /* 从 shown 滚到 target；返回取消函数 */
+  const roll = useCallback((target: number, seconds: number) => {
+    const from = shown.current;
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const p = Math.min((now - start) / (seconds * 1000), 1);
+      write(from + (target - from) * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else write(target);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [write]);
 
   /*
    * 每次渲染后校正一次文本，代价是一句 textContent。
    * 用 layout effect 而不是 effect：effect 在绘制之后才跑，首帧会先闪一下空白。
    *   · 还没开始动画 → 写 0（reduced motion 时直接写终值，不做动画）
-   *   · 已经动画完 → 写终值。切语言换掉 suffix 时走的就是这一支，只改文本不重播
+   *   · 已经停在终值 → 重写一遍（切语言换掉 suffix 时走的就是这一支，只改文本不重播）
    *   · 动画进行中 → 不插手，交给 rAF，新格式下一帧自然生效
    */
   useLayoutEffect(() => {
-    fmt.current = { decimals, suffix, prefix };
+    fmt.current = { decimals, suffix, prefix, format, integer: integer ?? !!format };
     if (!started.current) write(still ? to : 0);
-    else if (done.current) write(to);
+    else if (shown.current === to) write(to);
   });
 
+  /*
+   * 第一次：进入视口后从 0 滚上去；之后值变了：从屏幕上的值滚到新值。
+   * 滚到一半值又变了，清理函数停掉旧的一段，再从停下的地方滚向最新的值。
+   */
   useEffect(() => {
-    if (!inView || started.current) return;
-    started.current = true;
-    if (still) { write(to); done.current = true; return; }
-
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const p = Math.min((now - start) / (duration * 1000), 1);
-      write(to * (1 - Math.pow(1 - p, 3)));
-      if (p < 1) raf = requestAnimationFrame(tick);
-      else done.current = true;
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [inView, to, duration, still, write]);
+    if (!started.current) {
+      if (!inView) return;
+      started.current = true;
+      if (still) { write(to); return; }
+      return roll(to, duration);
+    }
+    if (shown.current === to) return;
+    if (still) { write(to); return; }
+    return roll(to, DUR.roll);
+  }, [inView, to, duration, still, write, roll]);
 
   /**
    * 安全网：交叉观察器偶尔会漏掉首屏内的元素（移动端复现过——同一行两个数字，
@@ -82,7 +112,6 @@ export default function CountUp({ to, duration = 1.6, decimals = 0, suffix = '',
       const r = el.getBoundingClientRect();
       if (r.height > 0 && r.top < window.innerHeight && r.bottom > 0) {
         started.current = true;
-        done.current = true;
         write(to);
       }
     }, 2000);
