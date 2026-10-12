@@ -420,7 +420,8 @@ export function KnowledgeBase() {
           onClose={() => patch({ open: null, slug: null, in: null }, true)}
         />
       )}
-      {query.get("cats") && (
+      {/* Opened by a link before the categories arrived: wait (the draft rows start from them). */}
+      {query.get("cats") && cats.data && (
         <CategoriesDialog
           cats={catList}
           articles={all}
