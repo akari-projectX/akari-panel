@@ -3190,6 +3190,9 @@ echo "branding: ok"
   && last_json "d['code']" | matches -x 'mail_template.placeholder_missing' || { echo "FAIL: template without {link} accepted"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/test/zh" '{"version":0,"subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   || { echo "FAIL: save template"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] \
+  && last_json "[(r['updated_at'] is not None, bool(r['updated_by'])) for r in d if r['kind'] == 'test' and r['locale'] == 'zh'] == [(True, True)]" | matches True \
+  || { echo "FAIL: template updated_at / updated_by"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   && last_json "d['text']" | matches -F '冒烟自定义正文' || { echo "FAIL: template preview"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/settings/mail-templates/test/zh")" = "200" ] && last_json "d['reset']" | matches True || { echo "FAIL: restore default"; exit 1; }

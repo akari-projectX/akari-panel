@@ -105,7 +105,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   await saveButton(page).click();
   await toast(page, "模板已保存");
   // Shown as customised without a reload.
-  await expect(page.getByText("已自定义 · 已保存")).toBeVisible();
+  await expect(page.getByText(/^已自定义 · /)).toBeVisible();
   if (isMobile(info))
     await expect(page.getByLabel("模板", { exact: true }).locator("option:checked")).toContainText("已自定义");
   else
@@ -114,12 +114,14 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
     ).toBeVisible();
   expect((await template()).custom).toBe(true);
 
-  // 发送测试 sends the current (unsaved) draft.
+  // 发送测试 offers the current (unsaved) draft, chosen by default when there is one.
   await body.fill(`${needed}\n\nE2E 草稿`);
-  await expect(page.getByText("未保存的修改")).toBeVisible();
+  await expect(page.getByText("未保存的修改").first()).toBeVisible();
   const to = `${uniq(info, "draft")}@e2e.test`;
-  await page.getByRole("button", { name: "发送测试（当前草稿）" }).click();
-  const d = dialog(page, "发送测试（当前草稿）");
+  await page.getByRole("button", { name: "发送测试", exact: true }).click();
+  const d = dialog(page, "发送测试邮件");
+  await expect(d.getByRole("radio", { name: /当前草稿/ })).toHaveAttribute("aria-checked", "true");
+  await expect(d.getByRole("radio", { name: /已保存的版本/ })).toBeEnabled();
   await d.getByLabel("测试收件地址").fill(to);
   await d.getByRole("button", { name: "发送", exact: true }).click();
   await toast(page, `测试邮件已发出：${to}`);
@@ -144,7 +146,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   );
   await page.getByRole("button", { name: "中文", exact: true }).click();
   await expect(page.getByRole("button", { name: "中文", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByText("已自定义 · 已保存")).toBeVisible();
+  await expect(page.getByText(/^已自定义 · /)).toBeVisible();
 
   // HTML source: starts from the generated HTML; a forbidden tag is refused by the
   // server's check (shown in the error strip, save off); saved, still the source after a reload.
@@ -181,7 +183,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   await page.getByRole("button", { name: "恢复默认" }).click();
   await confirmDialog(page, undefined, "恢复默认");
   await toast(page, "已恢复默认");
-  await expect(page.getByText("默认模板", { exact: true })).toBeVisible();
+  await expect(page.getByText("使用默认模板", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "自动排版", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect((await template()).custom).toBe(false);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkDraft, placeholdersIn } from "./check";
+import { checkDraft, closest, placeholdersIn } from "./check";
 
 describe("placeholdersIn", () => {
   it("finds names with line and column, like the panel's scanner", () => {
@@ -33,5 +33,13 @@ describe("checkDraft", () => {
       ["subject", "empty"],
       ["html_source", "empty"],
     ]);
+  });
+});
+
+describe("closest", () => {
+  it("suggests the allowed name an unknown one most likely meant", () => {
+    expect(closest("order_number", ["site", "order_no", "plan_name"])).toBe("order_no");
+    expect(closest("cdoe", ["site", "code", "minutes"])).toBe("code");
+    expect(closest("zzzzzz", ["site", "code"])).toBeUndefined();
   });
 });

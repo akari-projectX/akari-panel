@@ -372,6 +372,7 @@ function RotateDialog({ a, onClose }: { a: Access; onClose: () => void }) {
         open
         size="md"
         icon={CircleCheck}
+        dirty={false}
         onClose={() => loadPage(`/${done.admin_prefix}/admin/settings/access`)}
         title={tr("新的后台地址", "The new console address")}
         description={tr(

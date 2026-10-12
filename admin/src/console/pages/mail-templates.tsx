@@ -29,6 +29,7 @@ import { Link, useBlocker } from "react-router";
 import { ApiError, del, get, post, put } from "../../shared/api";
 import { cn } from "../../shared/cn";
 import { errorCode } from "../../shared/errors";
+import { dateTime } from "../../shared/format";
 import { useTr, type Tr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
@@ -39,8 +40,9 @@ import { Field, Input, Kbd, MOD_KEY, Segmented, Select } from "../../shared/ui/f
 import { Callout } from "../../shared/ui/layout";
 import { ErrorState, LoadingBlock, Skeleton } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
+import { RadioCards } from "../components/inputs";
 import { FormError, useDebounced, useErrText } from "../kit";
-import { useQueryParam } from "../router";
+import { useQS, useQueryParam } from "../router";
 import { useCrumb, useMe } from "../session";
 import { checkDraft, type MailField, type Problem } from "./mail-editor/check";
 import type { EditorHandle } from "./mail-editor/code-editor";
@@ -60,6 +62,9 @@ type Template = {
   default_body: string;
   custom: boolean;
   version: number;
+  /** The override's last save (null for the default). */
+  updated_at?: string | null;
+  updated_by?: string | null;
   placeholders: { name: string; description: string }[];
   required: string[];
 };
@@ -139,7 +144,12 @@ function problemText(tr: Tr, p: Problem, source: boolean): string {
     .join(" ");
   const what =
     p.kind === "unknown"
-      ? tr(`未知变量 {${p.name}}`, `unknown placeholder {${p.name}}`)
+      ? p.suggest
+        ? tr(
+            `未知变量 {${p.name}}，是不是 {${p.suggest}}？`,
+            `unknown placeholder {${p.name}}; did you mean {${p.suggest}}?`,
+          )
+        : tr(`未知变量 {${p.name}}`, `unknown placeholder {${p.name}}`)
       : p.kind === "missing"
         ? tr(`缺少必需变量 {${p.name}}`, `the required placeholder {${p.name}} is missing`)
         : p.kind === "empty"
@@ -162,12 +172,20 @@ function serverProblem(e: unknown, text: string): Problem | null {
   };
 }
 
+/** The query without the phone tab (switching 编辑 / 预览 / 变量 is not leaving). */
+function withoutTab(search: string): string {
+  const q = new URLSearchParams(search);
+  q.delete("tab");
+  return q.toString();
+}
+
 /** Leaving with unsaved changes (another template, language or page) asks first. */
 function useLeaveGuard(dirty: boolean) {
   const tr = useTr();
   const confirm = useConfirm();
   const blocker = useBlocker(
-    ({ currentLocation: a, nextLocation: b }) => dirty && (a.pathname !== b.pathname || a.search !== b.search),
+    ({ currentLocation: a, nextLocation: b }) =>
+      dirty && (a.pathname !== b.pathname || withoutTab(a.search) !== withoutTab(b.search)),
   );
   const asking = useRef(false);
   useEffect(() => {
@@ -274,7 +292,13 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
   };
 
   // ---- view state ------------------------------------------------------------
-  const [tab, setTab] = useState<"edit" | "preview" | "vars">("edit");
+  // The phone's 编辑 / 预览 / 变量 tab lives in the URL (?tab=), replacing the entry.
+  const [tabParam] = useQueryParam("tab");
+  const tab: "edit" | "preview" | "vars" = tabParam === "preview" || tabParam === "vars" ? tabParam : "edit";
+  const [, patchQS] = useQS();
+  const setTab = (t: "edit" | "preview" | "vars") => {
+    if (t !== tab) patchQS({ tab: t === "edit" ? null : t }, true);
+  };
   const [target, setTarget] = useState<"html" | "text">("html");
   const [view, setView] = useState<"html" | "text">("html");
   const [width, setWidth] = useState<"desktop" | "phone">("desktop");
@@ -538,6 +562,13 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
                 )}
               >
                 <span className="flex-1 truncate">{label(k)}</span>
+                {on && dirty && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-warning"
+                    role="img"
+                    aria-label={tr("未保存的修改", "Unsaved changes")}
+                  />
+                )}
                 {custom(k) && (
                   <span
                     className={cn("size-1.5 shrink-0 rounded-full", on ? "bg-primary-foreground" : "bg-primary")}
@@ -816,7 +847,15 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
           </>
         ) : (
           <span className="text-muted-foreground">
-            {cur.custom ? tr("已自定义 · 已保存", "Custom · saved") : tr("默认模板", "Default template")}
+            {cur.custom
+              ? [
+                  tr("已自定义", "Custom"),
+                  cur.updated_at ? dateTime(cur.updated_at) : tr("已保存", "saved"),
+                  cur.updated_by,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : tr("使用默认模板", "Using the default template")}
           </span>
         )}
       </span>
@@ -831,8 +870,8 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
       >
         {tr("恢复默认", "Reset to default")}
       </Button>
-      <Button variant="outline" size="sm" icon={Send} disabled={problems.length > 0} onClick={() => setTestOpen(true)}>
-        {tr("发送测试（当前草稿）", "Send a test (current draft)")}
+      <Button variant="outline" size="sm" icon={Send} onClick={() => setTestOpen(true)}>
+        {tr("发送测试", "Send a test")}
       </Button>
       <Button variant="primary" size="sm" loading={saving} disabled={!canSave} onClick={() => void save()}>
         {tr("保存", "Save")}
@@ -878,7 +917,17 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
           value={tab}
           onChange={setTab}
           options={[
-            { value: "edit", label: tr("编辑", "Edit") },
+            {
+              value: "edit",
+              label: (
+                <>
+                  {tr("编辑", "Edit")}
+                  {problems.length > 0 && (
+                    <span className="ml-1 size-1.5 rounded-full bg-destructive" aria-hidden="true" />
+                  )}
+                </>
+              ),
+            },
             { value: "preview", label: tr("预览", "Preview") },
             { value: "vars", label: tr("变量", "Placeholders") },
           ]}
@@ -919,6 +968,9 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
         open={testOpen}
         onClose={() => setTestOpen(false)}
         defaultTo={me.email}
+        dirty={dirty}
+        draftOk={problems.length === 0}
+        savedPath={`${path}/test`}
         body={{
           kind,
           locale,
@@ -931,24 +983,43 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
   );
 }
 
-/** 发送测试（当前草稿）: the draft as it is in the editor, with sample values. */
+/**
+ * 发送测试: the current draft as it is in the editor (unsaved; not while it
+ * has errors) or the saved version, with sample values (ruling ⑥).
+ */
 function TestDraft({
   open,
   onClose,
   defaultTo,
+  dirty,
+  draftOk,
+  savedPath,
   body,
 }: {
   open: boolean;
   onClose: () => void;
   defaultTo: string;
+  dirty: boolean;
+  draftOk: boolean;
+  savedPath: string;
   body: { kind: string; locale: string; subject: string; body: string; html_source: string | null };
 }) {
   const tr = useTr();
   const toast = useToast();
   const [to, setTo] = useState(defaultTo);
+  const [which, setWhich] = useState<"draft" | "saved">("saved");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [invalid, setInvalid] = useState(false);
+  // Each opening starts from the draft when there is a sendable one.
+  const [wasOpen, setWasOpen] = useState(false);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setWhich(dirty && draftOk ? "draft" : "saved");
+      setError(null);
+    }
+  }
   const send = useCallback(async () => {
     const addr = to.trim();
     if (!/^[^\s@]+@[^\s@]+$/.test(addr)) {
@@ -958,7 +1029,8 @@ function TestDraft({
     setBusy(true);
     setError(null);
     try {
-      await post("/settings/mail-templates/test-draft", { ...body, to: addr });
+      if (which === "draft") await post("/settings/mail-templates/test-draft", { ...body, to: addr });
+      else await post(savedPath, { to: addr });
       toast({ tone: "success", title: tr(`测试邮件已发出：${addr}`, `Test mail sent to ${addr}`) });
       onClose();
     } catch (e) {
@@ -966,22 +1038,23 @@ function TestDraft({
     } finally {
       setBusy(false);
     }
-  }, [to, body, toast, tr, onClose]);
+  }, [to, which, body, savedPath, toast, tr, onClose]);
   return (
     <Dialog
       open={open}
       onClose={onClose}
       dirty={false}
-      size="sm"
+      size="md"
       icon={Send}
-      title={tr("发送测试（当前草稿）", "Send a test (current draft)")}
+      title={tr("发送测试邮件", "Send a test mail")}
       description={tr(
-        "发送编辑器里的当前草稿（不必先保存），使用示例数据和已保存的发信设置。",
-        "Sends the draft in the editor (no need to save first) with sample values over the saved mail settings.",
+        "用示例数据渲染，经已保存的发信设置立即发出。",
+        "Rendered with sample values and sent right away over the saved mail settings.",
       )}
       onSubmit={() => void send()}
       footer={
         <>
+          <div className="flex-1" />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
           <Button type="submit" variant="primary" icon={Send} loading={busy}>
             {tr("发送", "Send")}
@@ -989,7 +1062,32 @@ function TestDraft({
         </>
       }
     >
-      <div className="grid gap-3">
+      <div className="grid gap-4">
+        <Field group label={tr("发送哪个版本", "Which version")}>
+          <RadioCards<"draft" | "saved">
+            value={which}
+            onChange={setWhich}
+            cols={2}
+            label={tr("发送哪个版本", "Which version")}
+            items={[
+              {
+                value: "draft",
+                title: tr("当前草稿", "Current draft"),
+                desc: dirty
+                  ? tr("编辑器里未保存的内容", "What is in the editor, unsaved")
+                  : tr("与已保存的版本相同", "Same as the saved version"),
+                disabled: draftOk
+                  ? undefined
+                  : tr("草稿有错误，修正后才能发送", "The draft has errors; fix them first"),
+              },
+              {
+                value: "saved",
+                title: tr("已保存的版本", "Saved version"),
+                desc: tr("下一封真实邮件用的就是它", "What the next real mail uses"),
+              },
+            ]}
+          />
+        </Field>
         <Field
           label={tr("测试收件地址", "Test address")}
           error={invalid ? tr("请输入有效的邮箱地址", "Enter a valid email address") : undefined}
