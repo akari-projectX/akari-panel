@@ -61,7 +61,7 @@ export default defineConfig({
     outDir: "dist/app",
     assetsDir: "assets",
     emptyOutDir: true,
-    /* 体积预算脚本（scripts/bundle-budget.mjs）按清单算首屏 JS */
+    /* 体积报告（scripts/bundle-report.mjs，只报告不阻断）按清单算首屏 JS */
     manifest: true,
     sourcemap: false,
     /* 不把小图片内联成 data: 地址：CSP 的 default-src 'self' 不允许 data: 图片 */

@@ -28,7 +28,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 
 ```bash
 make dev-up        # docker compose: PG 5432 / Valkey 6379（仅 127.0.0.1）
-make spa           # npm ci + 门户构建（tsc + vite build + check-dist/check-bundles/体积预算）→ spa/dist/app
+make spa           # npm ci + 门户构建（tsc + vite build + check-dist/check-bundles）→ spa/dist/app
 make admin         # 新后台：npm ci + 检查 + 两次 vite build（登录页、控制台）→ admin/dist
 make panel         # cargo build --release（嵌入当前 spa/dist）
 make check         # shellcheck + cargo fmt --check + clippy -D warnings + spa `npm run check` + admin `npm run check`

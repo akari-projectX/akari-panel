@@ -13,12 +13,13 @@ W36-b（R45 修订）起 spa/ 就是用户门户：源码来自 Akari-theme（mw
 npm ci
 npm run dev            # Vite 开发服务器；/api、/auth、/brand 转发到 PANEL_URL（默认 http://127.0.0.1:18480）
 npm run check          # tsc -b + oxlint（任何警告即失败）+ 错误码覆盖 + 词典检查 + vitest（make check 调它）
-npm run build          # tsc -b && vite build → dist/app，然后 check-dist、check-bundles、bundle-budget
+npm run build          # tsc -b && vite build → dist/app，然后 check-dist、check-bundles
+npm run report:size    # 体积报告（只报告；--base <json> 出差值，见「体积与性能」）
 npm run e2e            # = ../scripts/e2e-portal.sh（make e2e；见「端到端」）
 npx knip               # 可选：查未用的文件/导出/依赖
 ```
 
-CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typecheck → lint → check:errors → check:i18n → test → build。
+CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typecheck → lint → check:errors → check:i18n → test → build。另有不阻断的 `spa-size` job（体积报告）。
 
 ## 结构
 
@@ -31,8 +32,8 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `src/pages/registry.ts` | 全部页面按需加载（`lazyRetry`）；`pages/auth.tsx`（登录/注册/找回/重置）、`pages/legal.tsx`（条款/隐私）、`pages/dash/*`（用户中心） |
 | `src/i18n/` | `tr('简体原文')` + 英文词典 `dict.ts`（键 = 简体原文，按需加载）；错误码文案 `errors.ts`（`CODE_KEYS`：码 → `errors.*`，`errorText` 填 params，`<p>_cents` 另给 `<p>_yuan`） |
 | `src/components/server-html.tsx` | 全站唯一的 `dangerouslySetInnerHTML`：只接面板服务端渲染并清洗过的公告 / 知识库 / 条款 HTML（`src/markdown.rs`） |
-| `e2e/` | Playwright：`seed.ts`（经后台接口灌数据）、`panel.ts`（接口客户端、Mailpit、psql）、`fixtures.ts`（每个用例收集 CSP 违规与页面异常，必须为空）、`*.spec.ts`、`mock-alipay.py`、`tls-proxy.mjs` |
-| `scripts/` | `check-dist.mjs`、`check-bundles.mjs`、`bundle-budget.mjs`、`check-error-codes.mjs`、`check-i18n.mjs`、`collect-text.mjs` + `subset-akari-font.py`（字体子集） |
+| `e2e/` | Playwright：`seed.ts`（经后台接口灌数据）、`panel.ts`（接口客户端、Mailpit、psql）、`fixtures.ts`（每个用例收集 CSP 违规与页面异常，必须为空）、`*.spec.ts`、`mock-alipay.py`、`tls-proxy.mjs`；`perf/`（性能报告，另一份配置 `playwright.perf.config.ts`，见「体积与性能」） |
+| `scripts/` | `check-dist.mjs`、`check-bundles.mjs`、`bundle-report.mjs`、`check-error-codes.mjs`、`check-i18n.mjs`、`collect-text.mjs` + `subset-akari-font.py`（字体子集） |
 
 ## 路由表
 
@@ -73,9 +74,12 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 桌面（Desktop Chrome）与手机（Pixel 7）各跑一遍；会改状态的用例每个视口用自己的账户（`mine(info, 'shop')` → `shop-desktop@e2e.test`）。
 验收清单是 `research/portal-gap.md`，用例标题里的 `#n` 对应清单行号。本机（WSL）缺 `libgbm` 时把 mesa 的库放进一个目录并设 `LD_LIBRARY_PATH`；`PANEL_BIN=…/debug/akari` 可用 debug 构建。
 
-## 体积预算（`scripts/bundle-budget.mjs`，KiB）
+## 体积与性能（只报告，不设门槛）
 
-initialJs 145（gzip）、initialCss 30、totalJs 440、totalCss 40、fonts 1450（原始字节）。调高前先看 `vite build` 的输出找出谁变大；新的重页面/重依赖用 `lazyRetry` 拆出去。
+2026-10-07 用户裁决：门户与后台都**不设硬性体积预算**（原 145 KiB 首屏 JS 门槛已删除），在交互感、性能、美观之间平衡，以真实性能指标为准；明显退化时在 PR 正文里说明理由，CI 不阻断。
+
+- **体积**：`scripts/bundle-report.mjs` 读 Vite 清单，报首屏 JS/CSS（gzip）、全部 JS/CSS、字体与每个分包；CI `spa-size` job 同时构建基线分支，差值写进任务摘要（`continue-on-error`，不是必需检查）。新的重页面/重依赖照旧用 `lazyRetry` 拆出去，特效代码（撒花等）按需加载。
+- **性能**：`e2e/perf/perf.spec.ts`（`playwright.perf.config.ts`）在 e2e 跑完后对同一个真实面板测：冷启动（新上下文、空缓存）登录页与仪表盘的 FCP、LCP、TTI（简化：FCP 之后最后一个长任务结束）、内容就绪，以及仪表盘出发的客户端切页耗时（含切页动画）；画像 desktop（不限速）与 mobile-mid（Pixel 7 + CPU 4× + 150 ms RTT、1.6 Mbps），各取 5 次中位数。`E2E_PERF_OUT=<目录>` 才跑（CI e2e job 设了，结果在任务摘要），测量失败只出警告。动效照常播放（验收用例则全部在 reduced motion 下跑）。
 
 ## 字体
 

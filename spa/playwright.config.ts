@@ -6,6 +6,8 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: 'e2e',
+  /* 性能报告另有配置（playwright.perf.config.ts），不在验收用例里跑 */
+  testIgnore: 'perf/**',
   outputDir: 'test-results',
   fullyParallel: false,
   workers: 1,
@@ -23,6 +25,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     locale: 'zh-CN',
+    /* 验收与截图一律在「减少动效」下跑：入场、切页、撒花都不播，结果与时序稳定（动效本身由 reduced-motion 分支保证可用） */
+    reducedMotion: 'reduce',
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'] } },
