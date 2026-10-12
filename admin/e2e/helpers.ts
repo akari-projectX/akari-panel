@@ -138,9 +138,11 @@ export async function openRow(page: Page, text: string | RegExp): Promise<void> 
   else await r.click();
 }
 
-/** The open dialog / drawer. */
+/** The open dialog (or confirmation, which is an alertdialog); the top one without a name. */
 export function dialog(page: Page, name?: string | RegExp): Locator {
-  return name ? page.getByRole("dialog", { name }) : page.getByRole("dialog").last();
+  return name
+    ? page.getByRole("dialog", { name }).or(page.getByRole("alertdialog", { name }))
+    : page.getByRole("dialog").or(page.getByRole("alertdialog")).last();
 }
 
 /** Wait for a toast with `text`. */
@@ -154,15 +156,38 @@ export async function confirmDialog(
   typed?: string,
   button: string | RegExp = /确认|永久删除|开始|删除|确认退款/,
 ): Promise<void> {
-  const d = dialog(page);
+  const d = page.getByRole("alertdialog").last();
   if (typed !== undefined) await d.getByLabel("确认文字").fill(typed);
   await d.getByRole("button", { name: button }).last().click();
 }
 
-/** Open the mobile navigation drawer when on a phone, then click `name`. */
+const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A navigation link by its label (a pending-count badge may follow it). */
+function navLink(scope: Locator, name: string): Locator {
+  return scope.getByRole("link", { name: new RegExp(`^${esc(name)}(\\s|$)`) }).first();
+}
+
+/** Go to a page: the sidebar on a desktop; on a phone the tab bar, else 更多 → the page. */
 export async function nav(page: Page, info: TestInfo, name: string): Promise<void> {
-  if (isMobile(info)) await page.getByRole("button", { name: "菜单", exact: true }).click();
-  await page.getByRole("navigation", { name: "主导航" }).last().getByRole("link", { name, exact: true }).click();
+  if (!isMobile(info)) {
+    await navLink(page.getByRole("navigation", { name: "主导航" }), name).click();
+    return;
+  }
+  const tabs = page.getByRole("navigation", { name: "标签栏" });
+  const tab = navLink(tabs, name);
+  if (await tab.count()) {
+    await tab.click();
+    return;
+  }
+  await navLink(tabs, "更多").click();
+  await navLink(page.getByRole("navigation", { name: "全部页面" }), name).click();
+}
+
+/** Open the account menu (sidebar card on a desktop, avatar on a phone) and pick `item`. */
+export async function accountMenu(page: Page, item: string | RegExp): Promise<void> {
+  await page.getByRole("button", { name: "账户菜单" }).click();
+  await page.getByRole("menuitem", { name: item }).click();
 }
 
 /** The canonical rejection as a client sees it (status, headers minus Date, body). */
