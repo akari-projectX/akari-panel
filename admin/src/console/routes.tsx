@@ -5,11 +5,15 @@ import { createBrowserRouter, Navigate, type RouteObject } from "react-router";
 import { adminBase } from "../shared/base";
 import { useTr } from "../shared/i18n";
 import { ConsoleApp, BootSkeleton } from "./app";
-import { PAGES } from "./pages";
+import { PAGES, SUB_PAGES } from "./pages";
 import { setRouter } from "./router";
 
 function lazyPage(id: string): RouteObject["lazy"] {
   return async () => ({ Component: await PAGES[id]() });
+}
+
+function lazySubPage(path: string): RouteObject["lazy"] {
+  return async () => ({ Component: await SUB_PAGES[path]() });
 }
 
 function Fallback() {
@@ -27,6 +31,7 @@ export function makeRouter() {
         HydrateFallback: Fallback,
         children: [
           { index: true, lazy: lazyPage("dashboard") },
+          ...Object.keys(SUB_PAGES).map((path) => ({ path, lazy: lazySubPage(path) })),
           ...pages.map((id) => ({ path: `${id}/*`, lazy: lazyPage(id) })),
           { path: "*", element: <Navigate to="/" replace /> },
         ],

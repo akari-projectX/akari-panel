@@ -23,6 +23,14 @@ export const PAGES: Record<string, Loader> = {
   more: () => import("./pages/more").then((m) => m.MorePage),
 };
 
+/**
+ * Full pages below a navigation page (the nav id stays the first path
+ * segment, so the sidebar highlights the parent). Own chunks, like PAGES.
+ */
+export const SUB_PAGES: Record<string, Loader> = {
+  "settings/mail-templates": () => import("./pages/mail-templates").then((m) => m.MailTemplatesPage),
+};
+
 /** Start loading a page's chunk (idempotent: the module cache dedupes). */
 export function prefetchPage(id: string): void {
   void PAGES[id]?.().catch(() => {});
