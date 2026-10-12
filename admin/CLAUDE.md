@@ -7,7 +7,7 @@
 | 包 | 入口 | 产物 | 服务（`src/console.rs`） |
 |---|---|---|---|
 | 登录页 | `login.html` → `src/login/` | `dist/login` | `/{prefix}/app`（公开，只在后台前缀下；`no-store`）、`/{prefix}/app/assets/*`（immutable） |
-| 控制台 | `index.html` → `src/console/` | `dist/console`（按页面分包） | `/{prefix}/admin`、`/{prefix}/admin/*`、`/{prefix}/admin/assets/*`（只对管理员会话，`private, no-store`；其他一律规范拒绝） |
+| 控制台 | `index.html` → `src/console/` | `dist/console`（按页面分包） | `/{prefix}/admin`、`/{prefix}/admin/*`、`/{prefix}/admin/assets/*`（只对管理员会话；index 与无哈希文件 `private, no-store`，带内容哈希的资源 `private, max-age=31536000, immutable`（主管 2026-10-12）；JS/CSS 有构建时写的 `.br`/`.gz`（`scripts/precompress.mjs`），按 `Accept-Encoding` 下发；字体样式表 `fonts.css` 在首屏 ready 后才挂上（`shared/fonts.ts`）；其他一律规范拒绝） |
 
 - `vite.config.ts`：`ADMIN_ENTRY=login|console` 各构建一次；`base` 分别为 `/app/`、`/admin/`（面板运行时只在**下发的 HTML** 里把 `"/app/assets/`、`"/admin/assets/` 改写到前缀下，**不要改 base**）；`modulePreload: false`、`cssCodeSplit: false`。控制台**按页面分包**（2026-10 改版：react-router 懒加载路由，每个页面一个 chunk；recharts、CodeMirror、命令面板 cmdk 各在自己的 chunk 里，用到时才加载）：`experimental.renderBuiltUrl` 让 JS/CSS 里引用的分包与字体都写成**相对于引用它的文件**的路径，所以天然落在入口脚本所在的前缀下；只有 HTML 里是绝对路径（由面板改写）。
 - `loginGuard`：登录页的依赖图里不得出现 `src/console/`，也不得出现控制台专用库（recharts、cmdk、react-router、react-query、react-virtual、CodeMirror、d3）——登录页保持单个小包。登录页只带自己的小错误表（`src/login/app.tsx` 的 `LOGIN_ERRORS`，`check-error-codes.mjs` 校验其中的码都已登记）。

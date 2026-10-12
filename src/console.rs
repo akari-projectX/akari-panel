@@ -35,9 +35,36 @@ struct LoginAssets;
 #[folder = "admin/dist/console"]
 struct ConsoleAssets;
 
-/// The console is session-gated: never stored by any cache.
+/// The console is session-gated: its index and any unhashed file are never
+/// stored by any cache.
 const CONSOLE_CACHE: &str = "private, no-store";
+/// Content-hashed console files (lead decision 2026-10-12, T1): the admin's
+/// own browser may keep them — still session-gated on every fetch; the JS
+/// holds no secret and no prefix, and a revoked session cannot use cached
+/// code against the API. Never shared caches.
+const CONSOLE_IMMUTABLE: &str = "private, max-age=31536000, immutable";
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+
+/// Whether `key` is a content-hashed build file directly under `assets/`
+/// (Vite's `<name>-<8 chars of [A-Za-z0-9_-]>.<ext>`).
+fn hashed(key: &str) -> bool {
+    let Some(file) = key.strip_prefix("assets/") else {
+        return false;
+    };
+    if file.contains('/') {
+        return false;
+    }
+    let Some((stem, ext)) = file.rsplit_once('.') else {
+        return false;
+    };
+    let b = stem.as_bytes();
+    !ext.is_empty()
+        && b.len() > 9
+        && b[b.len() - 9] == b'-'
+        && b[b.len() - 8..]
+            .iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+}
 
 /// `/{prefix}/app[/…]`: the admin sign-in page under the admin prefix; the
 /// portal's pages at `/` (D11) otherwise.
@@ -86,7 +113,7 @@ pub async fn login_asset(
     }
     let key = format!("assets/{rel}");
     match encoded::<LoginAssets>(&key, &headers) {
-        Some((data, enc)) => file_response(&key, data, enc, IMMUTABLE),
+        Some(a) => file_response(&key, a, IMMUTABLE),
         None => reject::not_found(),
     }
 }
@@ -96,10 +123,7 @@ pub async fn login_asset(
 /// `<key>.br` / `<key>.gz`). The copies themselves are never served by
 /// name. Without this the panel sent every chunk uncompressed when no
 /// compressing proxy sits in front (and the phone timing measured that).
-fn encoded<A: RustEmbed>(
-    key: &str,
-    headers: &HeaderMap,
-) -> Option<(Vec<u8>, Option<&'static str>)> {
+fn encoded<A: RustEmbed>(key: &str, headers: &HeaderMap) -> Option<Asset> {
     if key.ends_with(".br") || key.ends_with(".gz") {
         return None;
     }
@@ -112,10 +136,37 @@ fn encoded<A: RustEmbed>(
         if accepts(accept, enc)
             && let Some(f) = A::get(&format!("{key}.{ext}"))
         {
-            return Some((f.data.to_vec(), Some(enc)));
+            return Some(Asset::of(f, Some(enc)));
         }
     }
-    Some((plain.data.to_vec(), None))
+    Some(Asset::of(plain, None))
+}
+
+/// One variant of an asset: its bytes, `Content-Encoding` and a strong
+/// ETag of exactly these bytes (so each encoding has its own).
+#[derive(Debug, PartialEq)]
+struct Asset {
+    data: Vec<u8>,
+    encoding: Option<&'static str>,
+    etag: String,
+}
+
+impl Asset {
+    fn of(f: rust_embed::EmbeddedFile, encoding: Option<&'static str>) -> Self {
+        let h = f.metadata.sha256_hash();
+        let etag = format!(
+            "\"{}\"",
+            h[..12]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        Asset {
+            data: f.data.to_vec(),
+            encoding,
+            etag,
+        }
+    }
 }
 
 /// Whether an `Accept-Encoding` value accepts `enc` (a listed token whose
@@ -154,7 +205,9 @@ pub async fn console_index(
     html_response(html, CONSOLE_CACHE)
 }
 
-/// `/{prefix}/admin/assets/*`: same gate as the index; never cached.
+/// `/{prefix}/admin/assets/*`: same gate as the index; content-hashed files
+/// may stay in the admin's browser cache (`CONSOLE_IMMUTABLE`), the rest
+/// never.
 pub async fn console_asset(
     Path((_, rel)): Path<(String, String)>,
     headers: HeaderMap,
@@ -164,8 +217,13 @@ pub async fn console_asset(
         return reject::not_found();
     }
     let key = format!("assets/{rel}");
+    let cache = if hashed(&key) {
+        CONSOLE_IMMUTABLE
+    } else {
+        CONSOLE_CACHE
+    };
     match encoded::<ConsoleAssets>(&key, &headers) {
-        Some((data, enc)) => file_response(&key, data, enc, CONSOLE_CACHE),
+        Some(a) => file_response(&key, a, cache),
         None => reject::not_found(),
     }
 }
@@ -198,27 +256,24 @@ fn html_response(html: String, cache: &'static str) -> Response {
         .into_response()
 }
 
-fn file_response(
-    key: &str,
-    data: Vec<u8>,
-    encoding: Option<&'static str>,
-    cache: &'static str,
-) -> Response {
+fn file_response(key: &str, a: Asset, cache: &'static str) -> Response {
     let mime = mime_guess::from_path(key)
         .first_or_octet_stream()
         .to_string();
     let mime = HeaderValue::from_str(&mime)
         .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    let etag = HeaderValue::from_str(&a.etag).unwrap_or_else(|_| HeaderValue::from_static("\"\""));
     let mut res = (
         [
             (header::CONTENT_TYPE, mime),
             (header::CACHE_CONTROL, HeaderValue::from_static(cache)),
             (header::VARY, HeaderValue::from_static("Accept-Encoding")),
+            (header::ETAG, etag),
         ],
-        data,
+        a.data,
     )
         .into_response();
-    if let Some(enc) = encoding {
+    if let Some(enc) = a.encoding {
         res.headers_mut()
             .insert(header::CONTENT_ENCODING, HeaderValue::from_static(enc));
     }
@@ -285,21 +340,21 @@ mod tests {
         };
         let raw = ConsoleAssets::get(&key).unwrap().data.to_vec();
         let mut h = HeaderMap::new();
-        assert_eq!(
-            encoded::<ConsoleAssets>(&key, &h).unwrap(),
-            (raw.clone(), None)
-        );
+        let plain = encoded::<ConsoleAssets>(&key, &h).unwrap();
+        assert_eq!((&plain.data, plain.encoding), (&raw, None));
         h.insert(
             header::ACCEPT_ENCODING,
             HeaderValue::from_static("gzip, br"),
         );
-        let (br, enc) = encoded::<ConsoleAssets>(&key, &h).unwrap();
-        assert_eq!(enc, Some("br"));
-        assert!(br.len() < raw.len());
+        let br = encoded::<ConsoleAssets>(&key, &h).unwrap();
+        assert_eq!(br.encoding, Some("br"));
+        assert!(br.data.len() < raw.len());
+        assert_ne!(br.etag, plain.etag);
         h.insert(header::ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
-        let (gz, enc) = encoded::<ConsoleAssets>(&key, &h).unwrap();
-        assert_eq!(enc, Some("gzip"));
-        assert_eq!(&gz[..2], [0x1f, 0x8b], "gzip magic");
+        let gz = encoded::<ConsoleAssets>(&key, &h).unwrap();
+        assert_eq!(gz.encoding, Some("gzip"));
+        assert_eq!(&gz.data[..2], [0x1f, 0x8b], "gzip magic");
+        assert!(gz.etag != br.etag && gz.etag != plain.etag);
         assert!(encoded::<ConsoleAssets>(&format!("{key}.br"), &h).is_none());
         assert!(encoded::<ConsoleAssets>(&format!("{key}.gz"), &h).is_none());
     }
@@ -385,9 +440,72 @@ mod tests {
             );
         }
         if let Some(p) = console_asset_path() {
+            // Content-hashed: the admin's browser may keep it (lead
+            // decision 2026-10-12); still gated on every fetch.
             let r = admin_live.get(&p).await;
             assert_eq!(r.status, StatusCode::OK, "{p}");
+            assert_eq!(header(&r, header::CACHE_CONTROL), CONSOLE_IMMUTABLE);
+            assert_eq!(header(&r, header::VARY), "Accept-Encoding");
+            let plain_etag = header(&r, header::ETAG).to_string();
+            assert!(plain_etag.starts_with('"'), "{plain_etag}");
+            // Each encoding: its own bytes, length and ETag.
+            let mut br = session(&state, admin_id).await;
+            br.headers = vec![("accept-encoding".into(), "gzip, br".into())];
+            let rb = br.get(&p).await;
+            if header(&rb, header::CONTENT_ENCODING) == "br" {
+                assert_ne!(header(&rb, header::ETAG), plain_etag);
+                assert_eq!(header(&rb, header::CACHE_CONTROL), CONSOLE_IMMUTABLE);
+                assert_eq!(
+                    header(&rb, header::CONTENT_LENGTH),
+                    rb.body.len().to_string()
+                );
+                assert!(rb.body.len() < r.body.len());
+            }
+            // Without an admin session the same request (with any encoding)
+            // is the canonical rejection, which carries no cache headers.
+            for c in [&anon, &forged, &user, &revoked] {
+                let mut c2 = Client::new(&state, rand_ip());
+                c2.cookie = c.cookie.clone();
+                c2.headers = vec![("accept-encoding".into(), "br".into())];
+                let rr = c2.get(&p).await;
+                assert_eq!(rr.fingerprint(), canonical, "{p}");
+                assert!(rr.headers.get(header::CACHE_CONTROL).is_none());
+                assert!(rr.headers.get(header::ETAG).is_none());
+            }
+            // The copies are not files of their own.
+            assert_eq!(
+                admin_live.get(&format!("{p}.br")).await.fingerprint(),
+                canonical
+            );
+        }
+        // Unhashed files (the font licences) are never stored.
+        if let Some(k) = ConsoleAssets::iter().find(|k| k.starts_with("assets/licenses/")) {
+            let r = admin_live.get(&format!("/test/admin/{k}")).await;
+            assert_eq!(r.status, StatusCode::OK, "{k}");
             assert_eq!(header(&r, header::CACHE_CONTROL), CONSOLE_CACHE);
+        }
+        let rej = anon.get("/test/admin").await;
+        assert!(rej.headers.get(header::CACHE_CONTROL).is_none());
+    }
+
+    #[test]
+    fn content_hashed_names() {
+        for k in [
+            "assets/index-DxEQB5AG.js",
+            "assets/latin.e45385a5-DpVQewLV.woff2",
+            "assets/fonts-BI5Q7SlS.css",
+        ] {
+            assert!(hashed(k), "{k}");
+        }
+        for k in [
+            "index.html",
+            "assets/licenses/Inter-OFL.txt",
+            "assets/Inter-OFL.txt",
+            "assets/app.js",
+            "assets/-DxEQB5AG",
+            "other/index-DxEQB5AG.js",
+        ] {
+            assert!(!hashed(k), "{k}");
         }
     }
 

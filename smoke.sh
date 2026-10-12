@@ -4535,7 +4535,13 @@ AJS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 
 ACSS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.css" /tmp/akari-smoke/last | sed -n 1p)
 [ -n "$AJS" ] && [ -n "$ACSS" ] || { echo "FAIL: console index lacks prefixed /admin/assets/ script or stylesheet"; exit 1; }
 [ "$(cache_of -b "$AJAR" "$BASE/admin")" = "private, no-store" ] || { echo "FAIL: console index cacheable"; exit 1; }
-[ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, no-store" ] || { echo "FAIL: console asset cacheable"; exit 1; }
+# Content-hashed console files: the admin's own browser may keep them (private, never shared); still
+# session-gated; brotli by Accept-Encoding; without a session = the canonical rejection, no cache headers.
+[ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, max-age=31536000, immutable" ] || { echo "FAIL: console asset cache header"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -b "$AJAR" -H 'Accept-Encoding: br' "http://127.0.0.1:8080$AJS" | tr -d '\r' | matches -i '^content-encoding: br$' \
+  || { echo "FAIL: console asset not served pre-compressed"; exit 1; }
+[ "$(cache_of -H 'Accept-Encoding: br' "http://127.0.0.1:8080$AJS")" = "" ] || { echo "FAIL: console asset rejection carries a cache header"; exit 1; }
+[ "$(fp "http://127.0.0.1:8080$AJS")" = "$REJ" ] || { echo "FAIL: console asset served without a session"; exit 1; }
 [ "$(cache_of "http://127.0.0.1:8080$JS")" = "public, max-age=31536000, immutable" ] || { echo "FAIL: portal asset not immutable"; exit 1; }
 CT=$(curl -s --noproxy '*' -b "$AJAR" -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$AJS")
 echo "$CT" | matches javascript || { echo "FAIL: console asset content-type '$CT'"; exit 1; }
