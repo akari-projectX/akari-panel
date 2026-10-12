@@ -56,7 +56,7 @@ import type { ServerView } from "../types";
 import { NodesDialogs } from "./node-dialogs";
 import { ServerPage } from "./node-server";
 import { warningTitle } from "./node-common";
-import { useUpdateStatus } from "./update-status";
+import { UpdateBadge, useUpdateStatus } from "./update-status";
 
 export function NodesPage() {
   const { sub, query } = useRoute();
@@ -515,6 +515,7 @@ function Fleet() {
         )}
         actions={
           <>
+            <UpdateBadge />
             <Button variant="outline" icon={Plus} className="max-sm:hidden" onClick={() => patch({ new: "node" })}>
               {tr("添加节点", "Add node")}
             </Button>

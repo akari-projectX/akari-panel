@@ -1,112 +1,147 @@
 // INVENTORY §10 (servers, nodes, entrances) and §11 (plans, node groups).
+// v2: the fleet overview (/nodes: needs-attention list, server rows that
+// link to the server page, grouped search, filters 全部 / 需要关注 / 正常),
+// the server page (/nodes/<id>: tabs 节点与入口 / 监控 / 流量额度 / 告警规则 /
+// 设置) and URL-driven dialogs (?new=, ?node=&ntab=, ?entrance=&etab=,
+// ?action=install|enroll).
 import { expect, test, type Page } from "@playwright/test";
 
 import { ADMIN, USER, apiJson, confirmDialog, dialog, openConsole, sql, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
-const server = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
-const nodeRow = (page: Page, name: string) => page.locator(`li[data-node="${name}"]`);
+const serverRow = (page: Page, name: string) => page.locator(`[data-server="${name}"]`);
+const nodeCard = (page: Page, name: string) => page.locator(`section[data-node="${name}"]`);
+const tab = (page: Page, name: string | RegExp) =>
+  page.getByRole("tablist", { name: "服务器" }).getByRole("tab", { name });
+const box = (scope: ReturnType<typeof dialog> | Page, name: RegExp) => scope.getByRole("textbox", { name });
 
 async function menu(page: Page, label: string, item: string) {
   await page.getByRole("button", { name: label, exact: true }).click();
   await page.getByRole("menuitem", { name: item }).click();
 }
 
-test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers — add with an install command, reissue, edit, quota, alert rules, status, delete", async ({
+async function openServer(page: Page, name: string) {
+  await serverRow(page, name).click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+}
+
+test("NOD-01 NOD-02 NOD-03 NOD-04 NOD-05 NOD-06 NOD-07 NOD-08 NOD-09: servers — add with an install command, reissue, settings, quota, alert rules, monitor, delete", async ({
   page,
 }, info) => {
   const name = uniq(info, "srv");
   await openConsole(page, "/nodes");
-  for (const t of ["服务器在线", "落地节点", "入口", "健康检查失败"])
+  for (const t of ["服务器在线", "落地节点", "入口", "探测失败已隐藏"])
     await expect(page.getByText(t, { exact: true }).first()).toBeVisible();
-  // NOD-03: add → the one-time install command with its countdown.
+  // NOD-03: name + TLS domain → the one-time install command (step 2).
   await page.getByRole("button", { name: "添加服务器" }).first().click();
   let d = dialog(page, "添加服务器");
-  await d.getByLabel("名称（内部，唯一）").fill(name);
-  await d.getByRole("button", { name: "添加" }).click();
+  await box(d, /^名称/).fill(name);
+  await d.getByRole("button", { name: "生成安装命令" }).click();
   await toast(page, "服务器已添加");
-  d = dialog(page);
-  await expect(d.getByText("在服务器上以 root 执行（一次性）")).toBeVisible();
-  await expect(d.getByText(/后过期/).first()).toBeVisible();
+  d = dialog(page, `安装 agent · ${name}`);
+  await expect(d.getByText("只显示这一次。")).toBeVisible();
   await expect(d.getByText(/\/install\//).first()).toBeVisible();
-  await d.getByRole("button", { name: "完成" }).click();
-  const card = server(page, name);
-  await expect(card.getByText("待安装")).toBeVisible();
-  await expect(card.getByText("这台服务器上还没有节点。")).toBeVisible();
-  // The search term lives in the URL; no match has its own state.
+  await expect(d.getByText("等待 agent 首次连接…")).toBeVisible();
+  await expect(d.getByRole("button", { name: "在此服务器添加节点" })).toBeDisabled();
+  // Closing before the agent connected asks first; 返回复制 has the focus.
+  await d.getByRole("button", { name: "关闭", exact: true }).last().click();
+  const ask = dialog(page, "确定已经复制安装命令？");
+  await expect(ask.getByRole("button", { name: "返回复制" })).toBeFocused();
+  await ask.getByRole("button", { name: "返回复制" }).click();
+  d = dialog(page, `安装 agent · ${name}`);
+  await d.getByRole("button", { name: "关闭", exact: true }).last().click();
+  await dialog(page, "确定已经复制安装命令？").getByRole("button", { name: "仍然关闭" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // NOD-01 / NOD-02: the row (a link to the server page), waiting for its agent.
+  const row = serverRow(page, name);
+  await expect(row.getByText("等待安装")).toBeVisible();
+  // Filters live in the URL: a server without its agent needs a look.
+  const filters = page.getByRole("group", { name: "筛选" });
+  await filters.getByRole("button", { name: /^需要关注/ }).click();
+  await expect(page).toHaveURL(/[?&]view=issue/);
+  await expect(row).toBeVisible();
+  await filters.getByRole("button", { name: /^正常/ }).click();
+  await expect(row).toHaveCount(0);
+  await filters.getByRole("button", { name: /^全部/ }).click();
+  await expect(page).not.toHaveURL(/[?&]view=/);
+  // The search term lives in the URL; results are grouped; no match has its own state.
   const search = page.getByLabel("搜索服务器、节点或入口");
   await search.fill(name);
   await expect(page).toHaveURL(new RegExp(`[?&]q=${encodeURIComponent(name)}`));
-  await expect(card).toBeVisible();
+  await expect(page.getByRole("region", { name: "服务器" })).toContainText(name);
   await search.fill(`${name}-no-such-thing`);
-  await expect(page.getByText("没有匹配的服务器或节点")).toBeVisible();
-  await page.getByRole("button", { name: "清除搜索" }).click();
-  await expect(card).toBeVisible();
+  await expect(page.getByText(`没有匹配「${name}-no-such-thing」的服务器、节点或入口`)).toBeVisible();
+  await page.getByRole("button", { name: "清除搜索" }).first().click();
+  await expect(row).toBeVisible();
   await expect(page).not.toHaveURL(/[?&]q=/);
-  // NOD-04: a new install command; a manual bootstrap file.
-  await menu(page, `服务器 ${name} 的操作`, "安装命令");
-  await expect(dialog(page).getByText("在服务器上以 root 执行（一次性）")).toBeVisible();
-  await dialog(page).getByRole("button", { name: "完成" }).click();
-  await menu(page, `服务器 ${name} 的操作`, "手动引导文件");
-  await expect(dialog(page).getByText("引导文件（含一次性注册令牌，不含私钥）")).toBeVisible();
-  await dialog(page).getByRole("button", { name: "完成" }).click();
-  // NOD-05: edit — check the domain's resolution, set the billing rate cap.
-  await menu(page, `服务器 ${name} 的操作`, "编辑服务器");
-  d = dialog(page);
-  await d.getByLabel("服务器域名（TLS）").fill("localhost");
-  await d.getByRole("button", { name: "检查解析" }).click();
-  await expect(d.getByRole("status")).not.toHaveText(/检查中/);
-  await d.getByLabel("服务器域名（TLS）").fill("");
-  await d.getByLabel("计费速率上限（上下行合计 Mbps，留空 = 默认）").fill("100");
-  await d.getByRole("button", { name: "保存" }).click();
+  // The server page.
+  await openServer(page, name);
+  await expect(page).toHaveURL(/\/nodes\/[0-9a-f-]{36}/);
+  await expect(tab(page, /^节点与入口/)).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("这台服务器上还没有节点。")).toBeVisible();
+  // NOD-04: a new install command; a new enrollment token (consequences first).
+  await page.getByRole("button", { name: "安装命令" }).first().click();
+  d = dialog(page, `安装命令 · ${name}`);
+  await expect(d.getByText("已生成新命令，之前的命令已失效。")).toBeVisible();
+  await expect(d.getByText(/\/install\//).first()).toBeVisible();
+  await d.getByRole("button", { name: "关闭", exact: true }).last().click();
+  await dialog(page, "确定已经复制安装命令？").getByRole("button", { name: "仍然关闭" }).click();
+  await menu(page, `服务器 ${name} 的操作`, "重新生成注册令牌");
+  d = dialog(page, `重新生成注册令牌 · ${name}`);
+  await expect(d.getByText(/之前的证书会被吊销/)).toBeVisible();
+  await d.getByRole("button", { name: "生成注册令牌" }).click();
+  await toast(page, "已生成新的注册令牌");
+  await expect(d.getByText("引导文件（含一次性注册令牌，不含私钥）")).toBeVisible();
+  await d.getByRole("button", { name: "完成" }).click();
+  // NOD-05: settings — check the domain's resolution, set the billing rate cap.
+  await tab(page, "设置").click();
+  await expect(page).toHaveURL(/[?&]tab=settings/);
+  await box(page, /^TLS 域名/).fill("localhost");
+  await page.getByRole("button", { name: "检查解析" }).click();
+  await expect(page.getByRole("status").filter({ hasText: /解析|Cloudflare|检查失败/ })).toBeVisible();
+  await box(page, /^TLS 域名/).fill("");
+  await box(page, /^计费速率上限/).fill("100");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "已保存");
   // NOD-06: the traffic quota.
-  await card.getByRole("button", { name: "流量额度" }).click();
-  d = dialog(page);
-  await d.getByRole("button", { name: "仅上行" }).click();
-  await d.getByLabel("每周期额度（GiB，留空 = 不限）").fill("10");
+  await tab(page, /^流量额度/).click();
+  await page.getByRole("radio", { name: /^仅上行/ }).click();
+  await box(page, /^每周期额度/).fill("10");
   // A day outside 1–31 is an error under the field; nothing is sent.
-  await d.getByLabel("每月重置日（1–31，留空 = 不重置）").fill("32");
-  await d.getByRole("button", { name: "保存" }).click();
-  await expect(d.getByText("请输入 1–31 的整数")).toBeVisible();
-  await expect(d.getByText("1 处需要修正")).toBeVisible();
-  await d.getByLabel("每月重置日（1–31，留空 = 不重置）").fill("1");
-  await expect(d.getByText("本周期已用")).toBeVisible();
-  await d.getByRole("button", { name: "保存" }).click();
+  await box(page, /^每月重置日/).fill("32");
+  await expect(page.getByText("请输入 1–31 的整数")).toBeVisible();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText("1 处需要修正")).toBeVisible();
+  await box(page, /^每月重置日/).fill("1");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "流量额度已保存");
-  await expect(card.getByText(/仅上行 · 每月 1 日重置/)).toBeVisible();
+  await expect(page.locator("main")).toContainText("本周期已用 · 仅上行");
   // Over quota: the red state and its explanation.
   sql(`UPDATE servers SET traffic_quota_tx_bytes = 21474836480 WHERE name = '${name}'`);
   await page.reload();
-  await expect(card.getByText(/本周期额度已用完/)).toBeVisible();
-  await expect(card.getByText("超额停用")).toBeVisible();
+  await expect(page.getByText("本周期流量额度已用完。").first()).toBeVisible();
+  await expect(page.getByText("额度用尽").first()).toBeVisible();
   // NOD-09: alert rules of this server.
-  await menu(page, `服务器 ${name} 的操作`, "告警规则");
-  d = dialog(page);
-  await d.getByRole("switch", { name: "静音", exact: true }).click();
-  await d.getByLabel("离线多少秒告警").fill("5");
-  await d.getByRole("button", { name: "保存" }).click();
-  await expect(d.getByText("请输入 30–86400 的整数")).toBeVisible();
-  await d.getByLabel("离线多少秒告警").fill("600");
-  await d.getByRole("checkbox", { name: "CPU 过高" }).click();
-  await d.getByRole("button", { name: "保存" }).click();
+  await tab(page, /^告警规则/).click();
+  await page.getByRole("switch", { name: /^静音这台服务器/ }).click();
+  await box(page, /^离线多少秒告警/).fill("5");
+  await expect(page.getByText("不能小于 30")).toBeVisible();
+  await box(page, /^离线多少秒告警/).fill("600");
+  await page.getByRole("checkbox", { name: "CPU 过高" }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await toast(page, "告警规则已保存");
-  // NOD-08: status and latency.
-  await menu(page, `服务器 ${name} 的操作`, "状态与测速");
-  d = dialog(page, `服务器 · ${name}`);
-  await expect(d.getByText("还没有测速结果。")).toBeVisible();
-  await expect(d.getByText("历史")).toBeVisible();
-  await d.getByRole("button", { name: "立即测速" }).click();
-  await expect(page.locator("[data-sonner-toast]").first()).toBeVisible();
-  await page.keyboard.press("Escape");
-  // NOD-07: delete (type the name).
+  // NOD-08: status and latency (监控).
+  await tab(page, "监控").click();
+  await expect(page.getByText("机器状态")).toBeVisible();
+  await expect(page.getByText("还没有测速结果。")).toBeVisible();
+  // NOD-07: delete (type the name) → back to the list, which follows at once.
   await menu(page, `服务器 ${name} 的操作`, "删除服务器");
   await confirmDialog(page, name);
   await toast(page, "删除已开始");
-  // The list follows at once (no reload, no 10 s poll): deleting, or gone.
+  await expect(page).toHaveURL(/\/nodes(\?|$)/);
   await expect(async () => {
-    if (await card.count()) await expect(card.getByText("删除中")).toBeVisible({ timeout: 1000 });
+    if (await row.count()) await expect(row.getByText("删除中")).toBeVisible({ timeout: 1000 });
   }).toPass({ timeout: 5000 });
 });
 
@@ -118,90 +153,104 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   const node = uniq(info, "edge");
   const port = 20000 + Math.floor(Math.random() * 20000);
   await openConsole(page, "/nodes");
-  // NOD-10: a landing node from the REALITY template.
-  await page.getByRole("button", { name: "添加节点" }).first().click();
-  let d = dialog(page, "添加落地节点");
-  await d.getByRole("combobox", { name: "服务器", exact: true }).selectOption({ label: srv });
-  await d.getByLabel("名称（内部，唯一）").fill(node);
-  await d.getByLabel("地区（用户可见）").fill("东京");
-  await d.getByLabel("协议模板").selectOption("vless_reality");
-  await d.getByLabel("端口", { exact: true }).fill(String(port));
-  await d.getByLabel("倍率").fill("1.5");
-  // Tags are the entrance's (the direct one here), not the node's.
-  await d.getByRole("textbox", { name: "添加标签" }).fill("原生, 流媒体");
+  await openServer(page, srv);
+  // NOD-10: the wizard from the server (step 1 is skipped), REALITY template.
+  await menu(page, `服务器 ${srv} 的操作`, "在此服务器添加节点");
+  let d = dialog(page, "新建落地节点");
+  await expect(d.locator("[aria-current=step]")).toContainText("协议");
+  await d.getByRole("radio", { name: /^VLESS \+ REALITY/ }).click();
+  await d.getByRole("button", { name: "下一步" }).click();
+  await box(d, /^端口/).fill(String(port));
   await d.getByRole("button", { name: "检测目标站点" }).click();
   await expect(d.getByRole("status")).toBeVisible();
-  await d.getByRole("button", { name: "添加", exact: true }).click();
-  await toast(page, "节点已添加");
-  // NOD-11 / NOD-15: the row and its entrance table.
-  const row = nodeRow(page, node);
-  await expect(row.getByText(`:${port}`, { exact: true })).toBeVisible();
-  await expect(row.getByText("东京")).toBeVisible();
-  await expect(row.getByText("VLESS", { exact: true })).toBeVisible();
-  const entrances = row.locator("li[data-entrance]");
+  await d.getByRole("button", { name: "下一步" }).click();
+  await box(d, /^节点名称/).fill(node);
+  await box(d, /^地区/).fill("东京");
+  await box(d, /^倍率/).fill("1.5");
+  // Tags are the entrance's (the direct one here), not the node's.
+  await d.getByRole("textbox", { name: "添加标签" }).fill("原生, 流媒体");
+  await d.getByRole("button", { name: "创建节点" }).click();
+  await toast(page, `已创建节点「${node}」`);
+  // NOD-11 / NOD-15: the node card and its entrances.
+  const card = nodeCard(page, node);
+  await expect(card).toContainText(`:${port}`);
+  await expect(card).toContainText("东京");
+  await expect(card).toContainText("VLESS");
+  const entrances = card.locator("li[data-entrance]");
   await expect(entrances).toHaveCount(1);
   await expect(entrances.first()).toContainText("1.5x");
   await expect(entrances.first()).toContainText("订阅中");
   await expect(entrances.first().locator("[data-entrance-tag]")).toHaveText(["原生", "流媒体"]);
-  // The entrance list folds (a 44 px toggle) and the row is a button (keyboard).
-  await row.getByRole("button", { name: `收起 ${node} 的入口` }).click();
+  // The entrance list folds (a 44 px toggle).
+  await card.getByRole("button", { name: `收起 ${node} 的入口` }).click();
   await expect(entrances).toHaveCount(0);
-  await row.getByRole("button", { name: `展开 ${node} 的入口` }).click();
+  await card.getByRole("button", { name: `展开 ${node} 的入口` }).click();
   await expect(entrances).toHaveCount(1);
-  // NOD-14: the node's block-rules switch (confirmed).
-  await row.getByRole("switch", { name: `${node} 的审计规则` }).click();
-  await confirmDialog(page);
-  await toast(page, "审计规则已开启");
+  // NOD-14: outbound blocking is part of the node form (the rebuild confirmed on save).
+  await card.getByRole("button", { name: `编辑节点 ${node}` }).click();
+  d = dialog(page, `节点 · ${node}`);
+  await d.getByRole("tab", { name: "审计与流量" }).click();
+  await expect(page).toHaveURL(/[?&]ntab=audit/);
+  await d.getByRole("switch", { name: "出站拦截" }).click();
+  await expect(d.getByText("改动：出站拦截")).toBeVisible();
+  await d.getByRole("button", { name: /^保存/ }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("开启出站拦截？");
+  await confirmDialog(page, undefined, "开启并重建");
+  await toast(page, "出站拦截已开启");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(card.getByText("出站拦截 开")).toBeVisible();
   // NOD-12 / NOD-13 / NOD-20: the node dialog (with a day of traffic history).
   sql(
     `INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, down_bytes, billed_bytes) ` +
       `SELECT u.id, akari_site_day(now()), n.id, e.id, 1048576, 2097152, 3145728 FROM users u, nodes n JOIN entrances e ON e.node_id = n.id ` +
       `WHERE u.email = '${USER}' AND n.name = '${node}'`,
   );
-  await row.getByRole("button", { name: node, exact: true }).click();
+  await card.getByRole("button", { name: `编辑节点 ${node}` }).click();
   d = dialog(page, `节点 · ${node}`);
   await d.getByRole("tab", { name: "审计与流量" }).click();
-  await expect(d.getByText("已开启")).toBeVisible();
-  await expect(d.getByText("节点流量（近 30 天）")).toBeVisible();
-  await expect(d.getByText("用量最高的用户")).toBeVisible();
-  await expect(d.getByText(USER)).toBeVisible();
+  await expect(d.getByRole("switch", { name: "出站拦截" })).toHaveAttribute("aria-checked", "true");
+  await expect(d.getByText("节点流量 · 30 天")).toBeVisible();
+  await expect(d.getByRole("list", { name: "用量最高的用户" })).toContainText(USER);
   // One form, one save: the display name and the inbound together.
   await d.getByRole("tab", { name: "基本" }).click();
-  await d.getByLabel("显示名称").fill(`${node} 显示`);
-  await d.getByRole("tab", { name: "入站" }).click();
+  await box(d, /^显示名称/).fill(`${node} 显示`);
+  await d.getByRole("tab", { name: /^入站/ }).click();
+  await expect(d.getByText("当前入站")).toBeVisible();
   await d.getByRole("button", { name: "编辑 JSON" }).click();
-  const box = d.getByLabel("Xray 入站 JSON（对象，不含 tag）");
-  const inbound = JSON.parse(await box.inputValue());
-  await expect(d.getByText(/协议变化会重新发放凭据/)).toBeVisible();
+  const json = box(d, /^Xray 入站 JSON/);
+  const inbound = JSON.parse(await json.inputValue());
   // A new protocol re-issues every user's credentials: confirmed first, cancelling sends nothing.
-  await box.fill(JSON.stringify({ ...inbound, protocol: "vmess" }));
-  await d.getByRole("button", { name: "保存", exact: true }).click();
+  await json.fill(JSON.stringify({ ...inbound, protocol: "vmess" }));
+  await expect(d.getByText("协议会变化：")).toBeVisible();
+  await d.getByRole("button", { name: /^保存/ }).click();
   const reissue = page.getByRole("alertdialog");
-  await expect(reissue).toContainText("重新发放凭据");
-  await expect(reissue).toContainText("受影响的用户");
+  await expect(reissue).toContainText("重新发放全部凭据");
+  await expect(reissue).toContainText("重新发放凭据的用户");
   await reissue.getByRole("button", { name: "取消" }).click();
   await expect(reissue).toHaveCount(0);
-  await expect(row.getByText(`:${port}`, { exact: true })).toBeVisible();
-  await box.fill(JSON.stringify({ ...inbound, port: port + 1 }));
-  await d.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(card).toContainText(`:${port}`);
+  await json.fill(JSON.stringify({ ...inbound, port: port + 1 }));
+  await expect(d.getByText(/改动：显示名.*入站/)).toBeVisible();
+  await d.getByRole("button", { name: /^保存/ }).click();
   await toast(page, "入站已保存，agent 将重建配置");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(row.getByText(`:${port + 1}`, { exact: true })).toBeVisible();
-  await expect(row.getByRole("button", { name: new RegExp(`^${node} 显示`) })).toBeVisible();
-  // NOD-17: a relay entrance.
+  await expect(card).toContainText(`:${port + 1}`);
+  await expect(card.getByText(`${node} 显示`)).toBeVisible();
+  // NOD-17: a relay entrance (the same entrance form in create mode).
   await menu(page, `节点 ${node} 的操作`, "添加中转入口");
-  d = dialog(page);
-  await d.getByLabel("名称", { exact: true }).fill("IPLC");
-  await d.getByLabel("倍率").fill("2");
+  d = dialog(page, `添加中转入口 · ${node}`);
+  await box(d, /^入口名称/).fill("IPLC");
   await d.getByRole("textbox", { name: "添加标签" }).fill("IPLC 专线");
-  await d.getByLabel("连接端口").fill("30001");
-  await d.getByLabel("监听端口（节点上）").fill(String(port + 2));
+  await box(d, /^端口/).fill("30001");
+  await box(d, /^落地监听端口/).fill(String(port + 2));
   // The egress hint; the dial IP typed in as the egress is called out.
   await expect(d.getByText(/curl -4 ifconfig\.me/).first()).toBeVisible();
-  await d.getByLabel("连接地址（中转机）").fill("198.51.100.4");
+  await box(d, /^连接地址/).fill("198.51.100.4");
   await d.getByRole("textbox", { name: "添加出口 IP / CIDR" }).fill("198.51.100.4");
   await expect(d.getByText(/连接地址也在出口列表里/)).toBeVisible();
-  await d.getByLabel("连接地址（中转机）").fill("relay.example.com");
+  await box(d, /^连接地址/).fill("relay.example.com");
+  // The path strip follows the form.
+  await expect(d.getByText("relay.example.com:30001")).toBeVisible();
   // An address that is not an IP / CIDR is called out as a red chip under the field.
   const egress = d.getByRole("textbox", { name: "添加出口 IP / CIDR" });
   await egress.fill("203.0.113.300");
@@ -211,81 +260,87 @@ test("NOD-10 NOD-11 NOD-12 NOD-13 NOD-14 NOD-15 NOD-16 NOD-17 NOD-18 NOD-19 NOD-
   await d.getByRole("button", { name: "移除 203.0.113.300" }).click();
   await egress.fill("203.0.113.0/24");
   await expect(d.getByText(/连接地址也在出口列表里/)).toHaveCount(0);
-  await d.getByRole("button", { name: "添加" }).click();
-  await toast(page, "中转入口已添加");
+  await d.getByRole("tab", { name: /倍率与时段/ }).click();
+  await box(d, /^基础倍率/).fill("2");
+  await d.getByRole("button", { name: "添加入口" }).click();
+  await toast(page, "已添加中转入口");
   await expect(entrances).toHaveCount(2);
-  const relay = row.locator("li[data-entrance]", { hasText: "IPLC" });
-  await expect(relay).toContainText("中转");
+  const relay = card.locator("li[data-entrance]", { hasText: "IPLC" });
   await expect(relay).toContainText("relay.example.com:30001");
+  await expect(relay).toContainText("2x");
   await expect(relay.locator("[data-entrance-tag]")).toHaveText(["IPLC 专线"]);
-  // NOD-18: a relay that fails its probe.
+  // NOD-18: a relay that fails its probe — hidden, and listed under 需要处理.
   sql(
     `UPDATE entrances SET hidden_since = now() WHERE name = 'IPLC' AND node_id = (SELECT id FROM nodes WHERE name = '${node}')`,
   );
   await page.reload();
-  await expect(row.getByText(/已从订阅隐藏并已告警，恢复后自动显示/)).toBeVisible();
-  // Filters (in the URL): relays only, then what needs a look, then everything.
-  const filters = page.getByRole("group", { name: "筛选" });
-  await filters.getByRole("button", { name: "中转入口" }).click();
-  await expect(page).toHaveURL(/[?&]view=relay/);
-  await expect(entrances).toHaveCount(1);
-  await expect(entrances.first()).toContainText("IPLC");
-  await filters.getByRole("button", { name: /有异常/ }).click();
-  await expect(page).toHaveURL(/[?&]view=issue/);
-  await expect(entrances).toHaveCount(1);
-  await expect(entrances.first()).toContainText("IPLC");
-  await filters.getByRole("button", { name: "全部" }).click();
-  await expect(page).not.toHaveURL(/[?&]view=/);
-  await expect(entrances).toHaveCount(2);
-  // NOD-16 / NOD-19: the direct entrance — base rate, time windows (overlap warned), heat map.
+  await expect(relay).toContainText("已隐藏");
+  const serverUrl = page.url();
+  await openConsole(page, "/nodes");
+  await expect(page.getByRole("region", { name: "需要处理" })).toContainText(
+    `${srv} / ${node} · 已从订阅隐藏、已告警，恢复后自动显示`,
+  );
+  await page.goto(serverUrl);
+  // NOD-16 / NOD-19: the direct entrance — tags, base rate (one save for both tabs).
   await entrances.first().getByRole("button").click();
   d = dialog(page);
-  await expect(d.getByText("当前倍率")).toBeVisible();
-  // One save for the connection tab and the multiplier tab.
+  await expect(d).toContainText("直连入口");
+  await expect(d).toContainText("订阅中显示为");
   await expect(d.getByRole("button", { name: "移除 原生" })).toBeVisible();
   await d.getByRole("button", { name: "移除 流媒体" }).click();
   await d.getByRole("textbox", { name: "添加标签" }).fill("高速");
   await d.getByRole("tab", { name: /倍率与时段/ }).click();
-  await d.getByLabel("基础倍率（0–100）").fill("1");
+  await expect(page).toHaveURL(/[?&]etab=rate/);
+  await box(d, /^基础倍率/).fill("1");
+  await expect(d.getByText(/改动：标签、基础倍率/)).toBeVisible();
   await d.getByRole("button", { name: "保存", exact: true }).click();
-  await toast(page, "入口已保存");
+  await toast(page, "已保存入口");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(entrances.first().locator("[data-entrance-tag]")).toHaveText(["原生", "高速"]);
   await expect(relay.locator("[data-entrance-tag]")).toHaveText(["IPLC 专线"]);
-  await d.getByRole("button", { name: "添加规则" }).click();
-  await d.getByRole("button", { name: "添加规则" }).click();
-  await expect(d.getByRole("status").filter({ hasText: /重叠/ })).toBeVisible();
-  // Times are time inputs (HH:MM); the heat map shows each hour's value.
+  // Time windows: two identical rules overlap (warned); the heat map shows each hour's value.
+  await entrances.first().getByRole("button").click();
+  d = dialog(page);
+  await d.getByRole("tab", { name: /倍率与时段/ }).click();
+  await d.getByRole("button", { name: "添加时段规则" }).click();
+  await d.getByRole("button", { name: "添加时段规则" }).click();
+  await expect(d.getByText("与其他规则在部分时段重叠，重叠处取最高倍率").first()).toBeVisible();
   await expect(d.getByLabel("规则 1 开始")).toHaveAttribute("type", "time");
   await expect(d.getByLabel("规则 1 结束")).toHaveValue("00:00");
-  await d.getByRole("button", { name: "删除规则" }).last().click();
+  await d.getByRole("button", { name: "删除规则 2" }).click();
+  await expect(d.getByText("与其他规则在部分时段重叠，重叠处取最高倍率")).toHaveCount(0);
+  const heat = d.getByRole("group", { name: "一周 7×24 倍率热力图" });
+  await expect(heat.getByRole("button", { name: "周一 20:00 2x" })).toBeVisible();
+  // A cell selected from the keyboard (or by dragging) becomes a rule.
+  await heat.getByRole("button", { name: "周六 10:00 1x" }).press("Enter");
+  await d.getByLabel("新规则倍率").fill("3");
+  await d.getByRole("button", { name: "生成规则" }).click();
+  await expect(d.getByLabel("规则 2 开始")).toHaveValue("10:00");
+  await expect(d.getByLabel("规则 2 结束")).toHaveValue("11:00");
+  await expect(heat.getByRole("button", { name: "周六 10:00 3x" })).toBeVisible();
   await d.getByRole("button", { name: "保存", exact: true }).click();
-  await toast(page, "时段规则已保存（写入审计）");
-  const heat = d.getByRole("table", { name: "一周 7×24 倍率热力图" });
-  await expect(heat).toBeVisible();
-  await expect(heat.getByRole("cell", { name: "2", exact: true }).first()).toBeVisible();
-  await page.keyboard.press("Escape");
+  await toast(page, "已保存入口");
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(entrances.first().getByText("1", { exact: true })).toBeVisible();
+  await expect(entrances.first()).toContainText("时段 2");
   // Delete the relay (type its name).
   await relay.getByRole("button").click();
-  await dialog(page).getByRole("button", { name: "删除入口" }).click();
+  await dialog(page, "IPLC").getByRole("button", { name: "删除入口" }).click();
   const del = page.getByRole("alertdialog");
-  await expect(del).toContainText("删除中转入口「IPLC」？");
+  await expect(del).toContainText("删除入口「IPLC」？");
   await expect(del).toContainText("所属节点组");
   await confirmDialog(page, "IPLC");
   await toast(page, "入口已删除");
   await expect(entrances).toHaveCount(1);
   // NOD-12: disable (confirmed), enable, delete (type the name).
   await menu(page, `节点 ${node} 的操作`, "停用");
-  await confirmDialog(page);
-  await expect(row.getByText("已停用")).toBeVisible();
+  await confirmDialog(page, undefined, "停用节点");
+  await expect(card.getByText("已停用").first()).toBeVisible();
   await menu(page, `节点 ${node} 的操作`, "启用");
-  await confirmDialog(page);
-  await expect(row.getByText("已停用")).toHaveCount(0);
+  await expect(card.getByText("已停用")).toHaveCount(0);
   await menu(page, `节点 ${node} 的操作`, "删除节点");
   await confirmDialog(page, node);
   await toast(page, "节点已删除");
-  await expect(row).toHaveCount(0);
+  await expect(card).toHaveCount(0);
 });
 
 test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance's own traffic and multiplier history", async ({
@@ -308,53 +363,60 @@ test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance'
     `INSERT INTO traffic_entrance_daily (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) ` +
       `VALUES ('${e.id}', '${nodeId}', akari_site_day(now()), 1048576, 2097152, 3145728, 1)`,
   );
+  // Old deep links still open the entrance (on its server page now).
   const url = `/nodes?open=entrance:${e.id}`;
   await openConsole(page, url);
-  let d = dialog(page);
+  await expect(page).toHaveURL(new RegExp(`/nodes/${serverId}\\?.*entrance=${e.id}`));
+  let d = dialog(page, e.name);
   await d.getByRole("tab", { name: /倍率与时段/ }).click();
-  const rate = d.getByLabel("基础倍率（0–100）");
+  const rate = box(d, /^基础倍率/);
   const save = (x: typeof d) => x.getByRole("button", { name: "保存", exact: true }).click();
   // NOD-22: an empty multiplier is an error under the field (never 0x), nothing is sent.
   await rate.fill("");
+  await expect(d.getByText(/倍率不能留空/)).toBeVisible();
   await save(d);
-  await expect(d.getByText(/请填写倍率/)).toBeVisible();
   expect((await view()).rate_permille).toBe(1000);
   // 0x asks first; cancelling sends nothing.
   await rate.fill("0");
+  await expect(d.getByText("0x = 免费，保存时需要确认")).toBeVisible();
   await save(d);
   await expect(dialog(page)).toContainText("0x（免费）");
   await dialog(page).getByRole("button", { name: "取消" }).click();
   expect((await view()).rate_permille).toBe(1000);
 
   // Two forms on the same entrance: the first save wins, the second is
-  // refused (409) and overwrites nothing.
+  // refused (409), says so in place and overwrites nothing.
   const other = await page.context().newPage();
   await openConsole(other, url);
-  const d2 = dialog(other);
+  const d2 = dialog(other, e.name);
   await d2.getByRole("tab", { name: /倍率与时段/ }).click();
-  await expect(d2.getByLabel("基础倍率（0–100）")).toHaveValue("1");
+  await expect(box(d2, /^基础倍率/)).toHaveValue("1");
   await d2.getByRole("tab", { name: "连接" }).click();
   await rate.fill("10");
   await save(d);
-  await toast(page, "入口已保存");
+  await toast(page, "已保存入口");
   await expect(page.locator("[data-sonner-toast]", { hasText: "不追溯" }).first()).toBeVisible();
-  await d2.getByLabel("排序").fill("7");
+  await box(d2, /^排序/).fill("7");
   await save(d2);
-  await toast(other, "入口已被修改（可能是其他管理员），请关闭后重新打开再保存");
+  await expect(d2.getByText("此入口已被他人修改。")).toBeVisible();
+  await expect(d2.getByText("已被他人修改，不能保存")).toBeVisible();
+  await expect(d2.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
   await other.close();
   const after = await view();
   expect([after.rate_permille, after.sort]).toEqual([10000, 0]);
 
   // NOD-23: the entrance's own days and its multiplier history (who, old → new).
-  d = dialog(page);
-  await d.getByRole("tab", { name: "流量与记录" }).click();
-  await expect(d.getByText("入口流量（近 30 天）")).toBeVisible();
-  const days = d.getByRole("list", { name: "每日流量" });
-  await expect(days).toContainText("原始 3.0 MiB");
-  const history = d.getByRole("list", { name: "倍率变更记录" });
-  await expect(history.getByText("1x → 10x")).toBeVisible();
-  await expect(history).toContainText(ADMIN);
+  await openConsole(page, `/nodes/${serverId}?entrance=${e.id}&etab=traffic`);
+  d = dialog(page, e.name);
+  await expect(d.getByRole("tab", { name: "流量与记录" })).toHaveAttribute("aria-selected", "true");
+  await expect(d.getByText("30 天原始")).toBeVisible();
+  await d.getByText("每日明细").click();
+  const days = d.getByRole("table", { name: "每日流量" });
+  await expect(days).toContainText("3.0 MiB");
+  await expect(d).toContainText("1x → 10x");
+  await expect(d).toContainText(ADMIN);
   await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await apiJson("DELETE", `/nodes/${nodeId}`);
 });
 
