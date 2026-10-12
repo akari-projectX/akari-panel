@@ -67,24 +67,30 @@ test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, filters, more filters as
   await expect(row(page, `${tag}-b@e2e.test`)).toBeVisible();
   await expect(row(page, `${tag}-a@e2e.test`)).toContainText("正常");
   await expect(row(page, `${tag}-b@e2e.test`)).toContainText("无套餐");
-  // Plan filter → only a; status filter (none expired).
+  // Plan filter (in 更多筛选) → only a, shown as a chip.
+  await page.getByRole("button", { name: "更多筛选" }).click();
   await page.getByLabel("套餐", { exact: true }).selectOption({ label: `${tag}-plan` });
+  await page.keyboard.press("Escape");
   await expect(row(page, `${tag}-b@e2e.test`)).toHaveCount(0);
   await expect(row(page, `${tag}-a@e2e.test`)).toBeVisible();
   await expect(page.getByRole("button", { name: /清除筛选：套餐/ })).toBeVisible();
   await page.getByRole("button", { name: /清除筛选：套餐/ }).click();
-  await page.getByLabel("状态", { exact: true }).selectOption("expired");
+  // Status segments (none expired).
+  const status = page.getByRole("group", { name: "状态", exact: true });
+  await status.getByRole("button", { name: "已到期" }).click();
   await expect(page.getByText("没有匹配的记录")).toBeVisible();
-  await page.getByLabel("状态", { exact: true }).selectOption("");
-  // D10 more filters: never used + signed up before tomorrow.
+  await expect(page).toHaveURL(/status=expired/);
+  await status.getByRole("button", { name: "全部" }).click();
+  // D10: never used (a segment) + signed up / last sign-in before tomorrow (更多筛选, chips).
+  await status.getByRole("button", { name: "从未使用" }).click();
+  await expect(status.getByRole("button", { name: "从未使用" })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "更多筛选" }).click();
-  await page.getByRole("switch", { name: "从未使用" }).click();
   const tomorrow = new Date(Date.now() + 2 * 86400_000).toISOString().slice(0, 10);
   await page.getByLabel("注册早于（站点时区的日）").fill(tomorrow);
   await page.getByLabel("最后登录早于").fill(tomorrow);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: /清除筛选：从未使用/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /清除筛选：注册早于/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /清除筛选：最后登录早于/ })).toBeVisible();
   await expect(row(page, `${tag}-b@e2e.test`)).toBeVisible();
   await expect(row(page, `${tag}-a@e2e.test`)).toHaveCount(0);
   await expect(page).toHaveURL(/never_used=1/);
@@ -96,6 +102,7 @@ test("USR-01 USR-02 USR-03 USR-04 USR-28: list, search, filters, more filters as
   await expect(exportLink).toHaveAttribute("href", new RegExp(`q=${tag}`));
   await page.getByRole("button", { name: "清除筛选", exact: true }).click();
   await expect(row(page, `${tag}-a@e2e.test`)).toBeVisible();
+  await expect(status.getByRole("button", { name: "全部" })).toHaveAttribute("aria-pressed", "true");
   // Column chooser (remembered).
   await page.getByRole("button", { name: "显示的列" }).click();
   await page.getByRole("checkbox", { name: "余额" }).click();
@@ -374,13 +381,15 @@ test("USR-24 USR-25 USR-26 USR-27: selection, bulk action jobs, bulk delete with
   await dialog(page, "批量操作").getByRole("button", { name: "取消" }).click();
   // The selection belongs to the view: changing the sort drops it.
   await expect(page.getByTestId("bulk-bar")).toBeVisible();
-  await page.getByLabel("排序").selectOption("email");
+  await page.getByRole("button", { name: "更多筛选" }).click();
+  await page.getByLabel("排序", { exact: true }).selectOption("email");
+  await page.keyboard.press("Escape");
   await expect(page.getByTestId("bulk-bar")).toHaveCount(0);
   // Bulk delete of the selection (their balance makes them anonymized).
   for (const n of ["a", "b"]) await row(page, `${tag}-${n}@e2e.test`).getByRole("checkbox", { name: "选择" }).click();
   await page.getByTestId("bulk-bar").getByRole("button", { name: "删除" }).click();
   const del = page.getByRole("alertdialog");
-  await expect(del).toContainText("将永久删除 2 个账户");
+  await expect(del).toContainText("永久删除 2 个账户？");
   await expect(del).toContainText("匿名化保留");
   await expect(del.getByRole("button", { name: "永久删除" })).toBeDisabled();
   await confirmDialog(page, "删除 2 个账户", "永久删除");
