@@ -88,8 +88,24 @@ const CLAIMED = new Set(Object.values(ENTITIES).flat().concat(GLOBAL));
 /** Searches and previews: never refetched by a write (they are asked for). */
 const PASSIVE = new Set(["palette", "delete-preview", "mail-template-preview", "content-preview", "refund-preview"]);
 
+/**
+ * POSTs that only compute an answer (checks, previews, impact counts) and
+ * change nothing: they refetch nothing (the settings pages run DNS checks on
+ * open; each used to refetch every settings query).
+ */
+const READ_ONLY_POSTS = [
+  /^\/settings\/dns-check$/,
+  /^\/settings\/domains\/impact$/,
+  /^\/settings\/mail-templates\/preview$/,
+  /^\/inbound-templates\/check-(dest|domain)$/,
+  /^\/content\/preview$/,
+  /^\/plans\/[^/]+\/impact$/,
+  /^\/users\/(batch|delete)\/preview$/,
+];
+
 /** Query-key roots to refetch after a write to `path` (exported for tests). */
 export function affected(path: string): ((root: string) => boolean) | "all" {
+  if (READ_ONLY_POSTS.some((r) => r.test(path))) return () => false;
   const seg = path.split("/").filter(Boolean)[0] ?? "";
   const roots = ENTITIES[seg];
   if (!roots) return "all";
