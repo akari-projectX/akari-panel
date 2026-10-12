@@ -54,10 +54,10 @@ check-generated:
 
 # Playwright end-to-end against a real panel (release build, real CSP) on its
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).
-# Needs `make dev-up` and `npx playwright install chromium` once.
+# Needs `make dev-up` and `npx playwright install chromium` once. Both suites
+# run even when the first fails (one CI run reports both); either failing fails.
 e2e: dev-up spa admin panel
-	./scripts/e2e-portal.sh
-	./scripts/e2e.sh
+	./scripts/e2e-portal.sh; p=$$?; ./scripts/e2e.sh; a=$$?; [ $$p -eq 0 ] && [ $$a -eq 0 ]
 
 # Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own
 # Postgres database and Valkey db index (SMOKE_VALKEY_DB to override); default
