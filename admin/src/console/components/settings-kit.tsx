@@ -6,6 +6,8 @@
 // - useDraft：表单 = 服务器的值 + 只记改动的补丁，所以重新获取（窗口回到
 //   前台、别处的写入）不会冲掉正在编辑的内容；补丁里与服务器相同的键自动
 //   去掉，"未保存的修改"数就是补丁的键数。数字框保存原始字符串，保存前校验。
+//   保存成功后用 saved()（不是 reset()）：只去掉这次发出去的修改，保存进行
+//   中又改的内容留在保存栏里。
 // - 行：标签与说明在左、控件在右（手机上叠放），错误写在字段下面并关联到
 //   控件（aria-invalid / aria-describedby）。
 import type { UseQueryResult } from "@tanstack/react-query";
@@ -318,7 +320,13 @@ export type Draft<T> = {
   /** Keys edited (and different from the server). */
   edited: (keyof T)[];
   isEdited: (k: keyof T) => boolean;
+  /** Drop every edit (放弃). */
   reset: () => void;
+  /**
+   * After a save that started from this render's draft: drop the edits it
+   * sent, keep the ones made while it ran (they stay in the save bar).
+   */
+  saved: () => void;
 };
 
 export function useDraft<T extends object>(base: T | undefined): Draft<T> {
@@ -340,6 +348,12 @@ export function useDraft<T extends object>(base: T | undefined): Draft<T> {
     edited,
     isEdited: (k) => edited.includes(k),
     reset: useCallback(() => setPatch({}), []),
+    saved: () =>
+      setPatch((p) => {
+        const n = { ...p };
+        for (const k of Object.keys(n) as (keyof T)[]) if (k in patch && same(n[k], patch[k])) delete n[k];
+        return n;
+      }),
   };
 }
 

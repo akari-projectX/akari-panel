@@ -95,7 +95,7 @@ function InstallForm({ d }: { d: SettingsView }) {
         { ok: tr("安装与证书设置已保存", "Install settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -299,7 +299,7 @@ function ProbeForm({ d }: { d: SettingsView }) {
         { ok: tr("测速设置已保存", "Probe settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -497,7 +497,7 @@ function BlockList({ b }: { b: BlockRules }) {
         { ok: tr("拦截规则已保存", "Block rules saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -797,7 +797,7 @@ function SourceForm({ u }: { u: UpdateStatus }) {
         { ok: tr("更新源设置已保存", "Update source saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -925,7 +925,7 @@ function KeysForm({ d }: { d: SettingsView }) {
         { ok: tr("发布公钥已保存", "Release keys saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });

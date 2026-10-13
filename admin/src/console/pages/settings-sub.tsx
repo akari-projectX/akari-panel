@@ -154,7 +154,7 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
         { ok: tr("订阅设置已保存", "Subscription settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });

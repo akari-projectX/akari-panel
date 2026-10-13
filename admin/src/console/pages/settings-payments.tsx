@@ -225,7 +225,7 @@ function PaymentList({ p }: { p: Payments }) {
         { ok: tr("支付方式已保存", "Payment methods saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -1054,7 +1054,7 @@ function CommissionForm({ c }: { c: Commission }) {
       );
       if (r === undefined) return false;
       await settled();
-      f.reset();
+      f.saved();
       return true;
     },
   });

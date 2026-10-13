@@ -234,7 +234,7 @@ function TransportForm({ m, onDiagnose }: { m: Mail; onDiagnose: () => void }) {
         { ok: tr("发信设置已保存", "Mail settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -642,7 +642,7 @@ function NoticesForm({ m }: { m: Mail }) {
         { ok: tr("通知设置已保存", "Notice settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -888,7 +888,7 @@ function AlertsForm({ s }: { s: AlertSettings }) {
         ok: tr("告警设置已保存", "Alert settings saved"),
       });
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });

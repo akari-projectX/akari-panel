@@ -192,9 +192,16 @@ export function dialog(page: Page, name?: string | RegExp): Locator {
     : page.getByRole("dialog").or(page.getByRole("alertdialog")).last();
 }
 
-/** Wait for a toast with `text`. */
+/**
+ * Wait for a new toast with `text`. Each call takes one toast and marks it, so
+ * the same action done twice within a toast's lifetime (4.5 s) waits for the
+ * second toast instead of passing on the first one while the second save is
+ * still running.
+ */
 export async function toast(page: Page, text: string | RegExp): Promise<void> {
-  await expect(page.locator("[data-sonner-toast]", { hasText: text }).first()).toBeVisible();
+  const t = page.locator("[data-sonner-toast]:not([data-e2e-seen])", { hasText: text }).first();
+  await expect(t).toBeVisible();
+  await t.evaluate((el) => el.setAttribute("data-e2e-seen", ""));
 }
 
 /** Confirm the open confirmation (typing the phrase when asked). */

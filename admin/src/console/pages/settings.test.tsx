@@ -436,6 +436,39 @@ test("edit, bar, save", async () => {
   expect(put.register_enabled).toBe(true);
 });
 
+test("an edit made while a save runs stays in the save bar", async () => {
+  // Hold the PUT until the second edit is in.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let sending = false;
+  const base = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    if (String(init?.method).toUpperCase() === "PUT") {
+      sending = true;
+      await held;
+    }
+    return base(url, init);
+  });
+  mount("/settings/login");
+  fireEvent.click(await screen.findByRole("switch", { name: "密码登录后引导绑定通行密钥" }));
+  const bar = screen.getByRole("region", { name: "保存栏" });
+  await act(async () => {
+    fireEvent.click(within(bar).getByRole("button", { name: "保存" }));
+  });
+  await waitFor(() => expect(sending).toBe(true));
+  const min = screen.getByLabelText("最短提交时间（秒，0 = 关闭）");
+  fireEvent.change(min, { target: { value: "5" } });
+  await act(async () => release());
+  await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+  await waitFor(() => expect(screen.getByRole("button", { name: /^保存/ }).getAttribute("aria-busy")).toBeNull());
+  // The sent edit left the bar; the one typed meanwhile is still there.
+  expect(screen.getByRole("region", { name: "保存栏" }).textContent).toContain("1 项未保存的修改");
+  expect((min as HTMLInputElement).value).toBe("5");
+  const put = calls.find((c) => c.method === "PUT")!.body as Record<string, unknown>;
+  expect(put.passkey_prompt).toBe(false);
+  expect(put.min_submit_secs).toBe(2);
+});
+
 test("cleanup confirm", async () => {
   mount("/settings/cleanup");
   const sw = await screen.findByRole("switch", { name: "自动清理" });

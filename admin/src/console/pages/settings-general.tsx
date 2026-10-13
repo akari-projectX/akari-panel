@@ -132,7 +132,7 @@ function SiteForm({ d }: { d: SettingsView }) {
         { ok: tr("站点设置已保存", "Site settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -272,7 +272,7 @@ function BrandForm({ b }: { b: Branding }) {
         ok: tr("品牌设置已保存", "Branding saved"),
       });
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -531,7 +531,7 @@ function LinksForm({ b }: { b: Branding }) {
         { ok: tr("链接已保存", "Links saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
