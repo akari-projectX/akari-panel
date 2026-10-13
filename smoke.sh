@@ -2609,59 +2609,12 @@ EVER=$(last_json "[m['version'] for m in d['methods'] if m['id']=='$EMETHOD'][0]
 # reserved and watched).
 echo "== C2 USDT on-chain: method (RPC sealed) -> unique amount -> transfer -> credited at the depth; unmatched -> ignored =="
 CADDR="0x52908400098527886E0F7030069857D2E4169EE7"
-cat >"$PAY/rpc.py" <<'PY'
-import json, time, urllib.parse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-TOKEN = "0xc2132d05d31c914a87c6611c10748aeb04b58e8f"
-TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-S = {"head": 1000, "logs": [], "t0": int(time.time()) - 1000, "n": 0}
-def topic(a): return "0x" + "0" * 24 + a[2:].lower()
-def bhash(n): return "0x%064x" % (n << 8)
-def log(l): return {"address": TOKEN, "topics": [TRANSFER, topic("0x" + "3" * 40), topic(l["to"])],
-    "data": "0x%064x" % l["units"], "blockNumber": hex(l["block"]), "blockHash": bhash(l["block"]),
-    "transactionHash": l["tx"], "logIndex": "0x0", "removed": False}
-class H(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-    def answer(self, obj):
-        b = json.dumps(obj).encode(); self.send_response(200)
-        self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b)))
-        self.end_headers(); self.wfile.write(b)
-    def do_POST(self):
-        u = urllib.parse.urlparse(self.path); q = dict(urllib.parse.parse_qsl(u.query))
-        raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        if u.path == "/control/pay":
-            S["head"] += 1; S["n"] += 1
-            tx = "0x%064x" % (0x5a0000 + S["n"])
-            S["logs"].append({"to": q["to"].lower(), "units": int(q["units"]), "block": S["head"], "tx": tx})
-            return self.answer({"tx": tx})
-        if u.path == "/control/mine":
-            S["head"] += int(q["n"]); return self.answer({"head": S["head"]})
-        r = json.loads(raw); m = r["method"]; p = r.get("params", [])
-        if m == "eth_chainId": res = hex(137)
-        elif m == "eth_blockNumber": res = hex(S["head"])
-        elif m == "eth_call": res = "0x%064x" % 6
-        elif m == "eth_getLogs":
-            f = p[0]; lo, hi = int(f["fromBlock"], 16), int(f["toBlock"], 16)
-            res = [log(l) for l in S["logs"] if lo <= l["block"] <= min(hi, S["head"])
-                   and f["address"].lower() == TOKEN and topic(l["to"]) == f["topics"][2]]
-        elif m == "eth_getTransactionReceipt":
-            mine = [l for l in S["logs"] if l["tx"] == p[0]]
-            res = None if not mine else {"status": "0x1", "blockNumber": hex(mine[0]["block"]),
-                "blockHash": bhash(mine[0]["block"]), "logs": [log(l) for l in mine]}
-        elif m == "eth_getBlockByNumber":
-            n = int(p[0], 16)
-            res = None if n > S["head"] else {"number": hex(n), "hash": bhash(n), "timestamp": hex(S["t0"] + n)}
-        else:
-            return self.answer({"jsonrpc": "2.0", "id": r["id"], "error": {"code": -32601, "message": "no"}})
-        self.answer({"jsonrpc": "2.0", "id": r["id"], "result": res})
-ThreadingHTTPServer(("127.0.0.1", 18091), H).serve_forever()
-PY
-pkill -f "$PAY/rpc.py\$" 2>/dev/null || true
+# The mock node: scripts/mock-chain-rpc.py (shared with the portal e2e).
 python3 -c "$TIE_PY"'
 import runpy, sys
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
-' "$PAY/rpc.py" >"$LOG/mock-rpc.log" 2>&1 &
+' scripts/mock-chain-rpc.py 18091 >"$LOG/mock-rpc.log" 2>&1 &
 for _ in $(seq 1 20); do curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/mine?n=0" >/dev/null && break; sleep 0.2; done
 RPC_URL="http://127.0.0.1:18091/"
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
@@ -2677,7 +2630,7 @@ last_json "d['config']['rpc_urls_set'] and d['config']['address']=='$CADDR' and 
     -d "{\"kind\":\"usdt_chain\",\"display_name\":\"dup\",\"config\":{\"chain\":\"polygon\",\"address\":\"$CADDR\"}}")" = "409" ] \
   && last_json "d['code']" | matches '^payments.chain_address_in_use$' || { echo "FAIL: second method on the same address"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments/$CMETHOD/test" -H "$J" -d '{}')" = "200" ] \
-  && last_json "d['ok'] and d['result']=='rpc_ok'" | matches True || { echo "FAIL: USDT 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
+  && last_json "d['ok'] and d['result']=='rpc_ok' and d['details']['chain_id']==137 and d['details']['decimals']==6" | matches True || { echo "FAIL: USDT 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H "$J" \
     -d '{"email":"smoke-usdt@smoke.test","password":"usdt-password-123"}')" = "201" ] || { echo "FAIL: create USDT buyer"; exit 1; }
 UJAR="$LOG/usdt-cookies"
@@ -2713,6 +2666,15 @@ done
 last_json "d['transfers'][0]['amount']=='1.000000' and d['transfers'][0]['reason']=='no_order' and d['watchers'][0]['method_id']=='$CMETHOD' and d['watchers'][0]['last_error'] is None" | matches True \
   || { echo "FAIL: unmatched transfer list"; cat /tmp/akari-smoke/last; exit 1; }
 CSTRAY=$(last_json "d['transfers'][0]['id']")
+# C2b: the assign dialog's candidates (unpaid orders of the method; the paid one is not one) and the
+# dashboard's 需要你处理 count.
+[ "$(code -b "$JAR" "$BASE/api/v1/payments/chain-transfers/$CSTRAY/candidates")" = "200" ] \
+  && last_json "'$CORDER' not in [o['id'] for o in d['orders']]" | matches True \
+  || { echo "FAIL: assign candidates"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$UJAR" "$BASE/api/v1/payments/chain-transfers/$CSTRAY/candidates")" = "403" ] || { echo "FAIL: candidates for a user"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
+  && last_json "d['pending']['chain_unmatched'] >= 1 and d['pending_detail']['chain_unmatched_units'] >= 1000000" | matches True \
+  || { echo "FAIL: dashboard unmatched on-chain transfers"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/payments/chain-transfers/$CSTRAY/assign" -H "$J" -d "{\"order_id\":\"$CORDER\",\"reason\":\"smoke\"}")" = "409" ] \
   && last_json "d['code']" | matches '^chain.order_paid$' || { echo "FAIL: assign to a paid order"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/payments/chain-transfers/$CSTRAY/ignore" -H "$J" -d '{"reason":"smoke: refunded by hand"}')" = "204" ] \

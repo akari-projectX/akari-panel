@@ -162,6 +162,10 @@ pub struct TestOutcome {
     pub message: String,
     pub code: Option<String>,
     pub sub_code: Option<String>,
+    /// Kind-specific facts the console shows next to the message (USDT
+    /// on-chain: `chain_id`, `expected_chain_id`, `head`, `decimals`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 /// One configured payment method's gateway client.
@@ -353,6 +357,7 @@ pub mod mock {
                     message: "ok".into(),
                     code: None,
                     sub_code: None,
+                    details: None,
                 }
             })
         }

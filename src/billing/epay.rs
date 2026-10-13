@@ -305,6 +305,7 @@ pub fn judge_test(r: Result<Query, CallError>) -> TestOutcome {
         message,
         code,
         sub_code: None,
+        details: None,
     };
     match r {
         Ok(_) => out(

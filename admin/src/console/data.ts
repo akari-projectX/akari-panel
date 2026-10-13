@@ -69,6 +69,7 @@ const ENTITIES: Record<string, string[]> = {
   commissions: FINANCE,
   "commission-settings": FINANCE,
   balances: FINANCE,
+  payments: [...ORDERS, ...USERS, "chain-transfers", "withdrawals"],
   tickets: ["tickets", "ticket"],
   announcements: CONTENT,
   kb: CONTENT,

@@ -5,6 +5,7 @@
  * 另外加两个只为截图的套餐（多周期、仅限续费），看 1–4 个套餐时的排版。拍不到的图记一条注解，不让整套失败。
  */
 import type { Browser, Locator, Page } from '@playwright/test';
+import { Client } from './panel.ts';
 import { admin, mine, seed, signIn, test } from './fixtures.ts';
 
 test.describe.configure({ mode: 'serial' });
@@ -136,13 +137,75 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
     })),
   ];
   const notes: string[] = [];
-  for (const device of ['desktop', 'mobile'] as const) {
-    for (const theme of ['light', 'dark'] as const) {
-      await shotsFor(device, theme, browser, shots, (s) => notes.push(s));
+  /* USDT 链上收款（C2b）：临时启用一个方式（高确认数：拍摄期间一直「确认中」），一单等待转账，一单已看到转账 */
+  const usdt = await usdtSetup().catch((e) => { notes.push(`usdt setup: ${(e as Error).message}`); return null; });
+  if (usdt) {
+    const order = (id: string, text: string) => async (page: Page) => {
+      await page.goto(`/orders/${id}`);
+      await page.getByTestId('chain-status').getByText(text).first().waitFor({ timeout: WAIT });
+    };
+    shots.push(
+      { name: 'usdt-order', account: usdt.waiting.email, run: order(usdt.waiting.order, '等待转账') },
+      { name: 'usdt-confirming', account: usdt.seen.email, run: order(usdt.seen.order, '确认中') },
+    );
+  }
+  try {
+    for (const device of ['desktop', 'mobile'] as const) {
+      for (const theme of ['light', 'dark'] as const) {
+        await shotsFor(device, theme, browser, shots, (s) => notes.push(s));
+      }
     }
+  } finally {
+    await usdt?.done().catch(() => undefined);
   }
   for (const n of notes) {
     info.annotations.push({ type: 'screen-skipped', description: n });
     console.log(`[screens] skipped ${n}`);
   }
 });
+
+/**
+ * 截图用的 USDT 链上收款方式（模拟 JSON-RPC 节点，见 usdt.spec.ts）：两个账户各下一单，其中一单按精确金额转账、
+ * 确认数设得很高，所以拍摄期间一直是「已收到，确认中」。结束时停用该方式。
+ */
+async function usdtSetup() {
+  const rpc = process.env.E2E_MOCK_RPC;
+  if (!rpc) throw new Error('E2E_MOCK_RPC is not set');
+  const a = await admin();
+  const addr = `0x${'5'.repeat(40)}`;
+  const config = { chain: 'polygon', address: addr, rate_cents: 720, confirmations: 900 };
+  const existing = (await a.call<{ methods: { id: string; version: number; config: { address?: string } }[] }>('GET', '/api/v1/settings/payments'))
+    .methods.find((m) => m.config.address?.toLowerCase() === addr);
+  const method = existing
+    ? await a.call<{ id: string; version: number }>('PUT', `/api/v1/settings/payments/${existing.id}`, {
+      version: existing.version, display_name: 'USDT（Polygon）', enabled: true, config: { ...config, rpc_urls: rpc },
+    })
+    : await a.call<{ id: string; version: number }>('POST', '/api/v1/settings/payments', {
+      kind: 'usdt_chain', display_name: 'USDT（Polygon）', enabled: true, config: { ...config, rpc_urls: rpc },
+    });
+  const plans = await a.call<{ id: string; name: string }[]>('GET', '/api/v1/plans');
+  const plan = plans.find((p) => p.name === seed.plan)?.id;
+  if (!plan) throw new Error('no seed plan');
+  const make = async (who: string) => {
+    const email = `${who}-${Date.now()}@e2e.test`;
+    await a.call('POST', '/api/v1/users', { email, password: seed.password });
+    const c = await Client.user(email, seed.password);
+    const o = await c.call<{ id: string; chain: { amount_units: number } }>('POST', '/api/v1/me/orders', { plan_id: plan, period: 'month', method_id: method.id });
+    return { email, order: o.id, units: o.chain.amount_units, c };
+  };
+  const waiting = await make('usdt-shot-wait');
+  const seen = await make('usdt-shot-seen');
+  const r = await fetch(`${rpc}/control/pay?to=${addr}&units=${seen.units}`, { method: 'POST' });
+  if (!r.ok) throw new Error(`mock RPC: ${r.status}`);
+  /* 监听每 5 秒一轮：等它记下这笔转账 */
+  for (let i = 0; i < 40; i++) {
+    const o = await seen.c.call<{ chain: { transfer: unknown } | null }>('GET', `/api/v1/me/orders/${seen.order}`);
+    if (o.chain?.transfer) break;
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  const done = async () => {
+    const m = (await a.call<{ methods: { id: string; version: number }[] }>('GET', '/api/v1/settings/payments')).methods.find((x) => x.id === method.id);
+    if (m) await a.call('PUT', `/api/v1/settings/payments/${method.id}`, { version: m.version, display_name: 'USDT（Polygon）', enabled: false, config });
+  };
+  return { waiting, seen, done };
+}

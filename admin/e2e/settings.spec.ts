@@ -979,3 +979,56 @@ test("SET-20 SET-21 SET-22: install and certificates, probes (turning the TCP pr
   await confirmDialog(page, rule);
   await expect(item).toHaveCount(0);
 });
+
+test("SET-29: USDT on-chain method — the name and the official token follow the network, the rate in yuan, RPC endpoints kept secret, network/address/token fixed once saved, 测试连接 shows chain id, head and decimals", async ({
+  page,
+}, info) => {
+  const name = uniq(info, "USDT");
+  // One receiving address per network: each project its own.
+  const addr = `0x${(isMobile(info) ? "e" : "f").repeat(40)}`;
+  await openConsole(page, "/settings/payments");
+  await page.getByRole("button", { name: "添加渠道" }).click();
+  const kinds = dialog(page, "添加支付方式");
+  await kinds.getByRole("radio", { name: /USDT 链上收款/ }).click();
+  await kinds.getByRole("button", { name: "下一步" }).click();
+  const d = dialog(page, "添加 USDT 链上收款");
+  const nameBox = d.getByLabel("名称（用户可见）");
+  const token = d.getByLabel(/^代币合约/);
+  await expect(nameBox).toHaveValue("USDT（Polygon）");
+  await expect(token).toHaveValue("0xc2132D05D31c914a87C6611C10748AEb04B58e8F");
+  await d.getByLabel("网络").selectOption("plasma");
+  await expect(nameBox).toHaveValue("USDT（Plasma）");
+  await expect(token).toHaveValue("0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb");
+  await expect(d.getByText(/Plasma 的官方 USDT 合约（默认）/)).toBeVisible();
+  await d.getByLabel("网络").selectOption("polygon");
+  await expect(token).toHaveValue("0xc2132D05D31c914a87C6611C10748AEb04B58e8F");
+  await nameBox.fill(name);
+  await d.getByLabel(/^收款地址/).fill(addr);
+  await d.getByLabel(/^RPC 端点/).fill(must("E2E_MOCK_RPC"));
+  await d.getByLabel(/^汇率/).fill("720");
+  await expect(d.getByText(/1 USDT = ¥7\.20/)).toBeVisible();
+  await expect(d.getByLabel(/^确认数/)).toHaveAttribute("placeholder", "32");
+  await d.getByRole("button", { name: "添加", exact: true }).click();
+  await toast(page, "支付方式已保存");
+  const item = page.locator(`[data-method="${name}"]`);
+  await expect(item).toBeVisible();
+  // Edit: the receiver is fixed, the RPC endpoints are never shown; 测试连接 against the mock node.
+  await item.getByRole("button", { name: `编辑 ${name}` }).click();
+  const e = dialog(page, `编辑 ${name}`);
+  await expect(e.getByLabel("网络")).toBeDisabled();
+  await expect(e.getByLabel(/^收款地址/)).toHaveAttribute("readonly", "");
+  await expect(e.getByLabel(/^代币合约/)).toHaveValue("0xc2132D05D31c914a87C6611C10748AEb04B58e8F");
+  await expect(e.getByText(/已设置 1 个（不显示）/)).toBeVisible();
+  await expect(e.getByLabel(/^RPC 端点/)).toHaveValue("");
+  await e.getByRole("button", { name: "测试连接" }).click();
+  const result = e.getByTestId("chain-test-result");
+  await expect(e.getByText("测试连接：连接正常")).toBeVisible();
+  await expect(result).toContainText("137");
+  await expect(result).toContainText("1,000");
+  await expect(result).toContainText("6");
+  await expectFits(page, "SET-29 USDT method dialog");
+  await page.screenshot({ path: `test-results/screens/set-29-usdt-method-${info.project.name}.png` });
+  await e.getByRole("button", { name: "取消" }).click();
+  await expect(e).toBeHidden();
+  expect(sql(`SELECT config->>'token_contract' IS NULL FROM payment_methods WHERE display_name = '${name}'`)).toBe("t");
+});

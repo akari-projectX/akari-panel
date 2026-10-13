@@ -11,7 +11,7 @@
 // (needs a custom rule set; the editor shot covers the dialog).
 import { expect, type Page } from "@playwright/test";
 
-import { go, goto, type Shot } from "./shared";
+import { go, goto, need, type Shot } from "./shared";
 
 /** Edit a field without saving (the save bar shows up). */
 async function edit(page: Page, label: string, value: string) {
@@ -280,6 +280,17 @@ export const shots: Shot[] = [
         .first()
         .click();
       await expect(page.getByRole("dialog")).toBeVisible();
+    },
+  },
+  {
+    // C2b (new, no v2 design): the USDT on-chain method with its 测试连接 result (people.ts makes it).
+    name: "settings-payments-usdt-test",
+    open: async (page, c) => {
+      await goto(page, "/settings/payments");
+      await page.getByRole("button", { name: `编辑 ${need(c.extra.chainMethod, "USDT method")}` }).click();
+      const d = page.getByRole("dialog");
+      await d.getByRole("button", { name: "测试连接" }).click();
+      await expect(d.getByTestId("chain-test-result")).toBeVisible();
     },
   },
   {
