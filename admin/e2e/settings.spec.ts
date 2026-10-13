@@ -513,7 +513,9 @@ test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), 
   await expect(page.getByText(/已开启：修改入口倍率会改变线路名/)).toHaveCount(0);
 });
 
-test("SET-11: routing rules — add (an empty value is flagged), move, save, restore defaults", async ({ page }) => {
+test("SET-11: routing rules (block / direct) — add (an empty value is flagged), move, save, restore defaults", async ({
+  page,
+}) => {
   await openConsole(page, "/settings/routing");
   const rules = page.getByRole("combobox", { name: "类型" });
   const count = await rules.count();
@@ -528,7 +530,12 @@ test("SET-11: routing rules — add (an empty value is flagged), move, save, res
   await save(page);
   await toast(page, "分流规则已保存");
   await page.reload();
-  await expect(page.getByRole("textbox", { name: "值" }).nth(count - 1)).toHaveValue("example.org");
+  // Saved into the routing's block section (rejected rules come first).
+  await expect
+    .poll(() =>
+      page.getByRole("textbox", { name: "值" }).evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value)),
+    )
+    .toContain("example.org");
   await page.getByRole("region", { name: "危险操作" }).getByRole("button", { name: "恢复默认" }).click();
   await confirmDialog(page, undefined, "恢复默认");
   await save(page);

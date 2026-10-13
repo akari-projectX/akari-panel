@@ -782,12 +782,15 @@ fn w26_golden_state_hash() {
 fn rows(name: &str, server: Option<&str>, inbounds: &Value, creds: &[Cred]) -> Vec<NodeRow> {
     creds
         .iter()
-        .filter_map(|(tag, protocol, account)| {
+        .enumerate()
+        .filter_map(|(i, (tag, protocol, account))| {
             let ib = inbounds
                 .as_array()?
                 .iter()
                 .find(|i| i["tag"] == tag.as_str())?;
             Some(NodeRow {
+                entrance_id: uuid::Uuid::from_u128(i as u128 + 1),
+                region: None,
                 name: name.into(),
                 display_name: None,
                 tags: vec![],
@@ -813,6 +816,7 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
     let mut named = rows("jp-1", Some("203.0.113.7"), &arr, &creds);
     for r in &mut named {
         r.display_name = Some("东京 01".into());
+        r.region = Some("日本".into());
         r.tags = vec!["IPLC".into(), "0.5x".into()];
         // Entrance addresses: another host and port, or only a port.
         match r.entrance.as_str() {
@@ -834,6 +838,9 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
     named.extend(one("a", Some("a.example.com")));
     named.extend(one("b", Some("nat.example.org")));
     named.extend(one("c", None));
+    for (i, r) in named.iter_mut().enumerate() {
+        r.entrance_id = uuid::Uuid::from_u128(100 + i as u128);
+    }
 
     let edge_inbounds = json!([
         {"tag": "kcp", "protocol": "vless", "port": 1, "streamSettings": {"network": "kcp"}},
@@ -946,6 +953,8 @@ fn sub_fixtures() -> Vec<(&'static str, Vec<NodeRow>)> {
         &[c("dup", "vmess", json!({"id": "c1"}))],
     ));
     edge.push(NodeRow {
+        entrance_id: uuid::Uuid::from_u128(999),
+        region: None,
         name: "123".into(),
         display_name: None,
         tags: vec![],
@@ -995,8 +1004,7 @@ fn w26_golden_subscriptions() {
 }
 
 /// W30: which format each client's User-Agent gets (real UA strings of
-/// the clients' current releases), and the routing template of Clash and
-/// sing-box with custom rules and mirror URLs.
+/// the clients' current releases), and a profile without any routing.
 #[test]
 fn w30_golden_client_formats() {
     let rows = &sub_fixtures()[0].1;
@@ -1023,70 +1031,95 @@ fn w30_golden_client_formats() {
     }
     check_golden("w30_client_formats.golden", &out);
 
-    use crate::sub::routing::{Action, Match, Routing, Rule};
-    let routing = Routing {
-        rules: vec![
-            Rule {
-                kind: Match::DomainSuffix,
-                value: "example.org".into(),
-                action: Action::Proxy,
-            },
-            Rule {
-                kind: Match::DomainKeyword,
-                value: "tracker".into(),
-                action: Action::Reject,
-            },
-            Rule {
-                kind: Match::Domain,
-                value: "intra.example.com".into(),
-                action: Action::Direct,
-            },
-            Rule {
-                kind: Match::IpCidr,
-                value: "10.8.0.0/16".into(),
-                action: Action::Direct,
-            },
-            Rule {
-                kind: Match::IpCidr,
-                value: "fd00::/8".into(),
-                action: Action::Direct,
-            },
-            Rule {
-                kind: Match::Geosite,
-                value: "geolocation-!cn".into(),
-                action: Action::Proxy,
-            },
-            Rule {
-                kind: Match::Geoip,
-                value: "cn".into(),
-                action: Action::Direct,
-            },
+    // No routing at all: only the final rule, no providers / rule sets.
+    use crate::sub::routing::{Config, Routing};
+    let none = Routing {
+        config: serde_json::from_value::<Config>(json!({})).unwrap(),
+        ..Routing::default()
+    };
+    let (_, clash) = render_for(Some("format=clash"), "x", rows, &none);
+    assert!(
+        clash.trim_end().ends_with("rules:\n  - MATCH,🚀 默认代理"),
+        "{clash}"
+    );
+    assert!(!clash.contains("rule-providers") && !clash.contains("nameserver-policy"));
+    let (_, sb) = render_for(Some("format=sing-box"), "x", rows, &none);
+    let sb: Value = serde_json::from_str(sb.trim_end()).unwrap();
+    assert!(sb["route"].get("rule_set").is_none());
+    assert_eq!(
+        sb["dns"]["rules"],
+        json!([{"query_type": ["A", "AAAA"], "server": "fakeip"}])
+    );
+}
+
+/// 2026-10-13 `sub-service-groups`: service groups with pinned lines and
+/// failover (lines the user lacks skipped, a service with nothing left on
+/// the default proxy), region and tag groups, every item type (a remote
+/// rule-set: Clash only), custom DNS without fake-ip and a named domestic
+/// resolver; then global mode with the client's own DNS. The fixture's
+/// lines: `sub_fixtures` "named" (region 日本, tag IPLC, ids 100..).
+#[test]
+fn routing_golden_services_failover_dns() {
+    use crate::sub::routing::Routing;
+    let rows = &sub_fixtures()[1].1;
+    let line = |n: u128| uuid::Uuid::from_u128(n).to_string();
+    let config = json!({
+        "mode": "rules",
+        "block": [{"type": "category", "value": "ads"}, {"type": "domain_keyword", "value": "tracker"}],
+        "direct": [
+            {"type": "category", "value": "private"},
+            {"type": "domain", "value": "intra.example.com"},
+            {"type": "ip_cidr", "value": "10.8.0.0/16"},
+            {"type": "ip_cidr", "value": "fd00::/8"},
+            {"type": "geosite", "value": "cn"},
+            {"type": "geoip", "value": "cn"}
         ],
+        "services": [
+            {"key": "netflix", "name": "Netflix", "emoji": "🎬",
+             "items": [{"type": "category", "value": "netflix"}],
+             "primary": line(101),
+             "backups": [{"entrance": line(4242)}, {"entrance": line(102)}, {"region": "日本"}, {"region": "美国"}]},
+            {"key": "ai", "name": "AI 服务", "emoji": "🤖",
+             "items": [{"type": "category", "value": "ai"},
+                       {"type": "rule_set", "value": "https://rules.example.org/Claude.yaml"},
+                       {"type": "domain_suffix", "value": "anthropic.com"}],
+             "primary": null, "backups": [{"tag": "IPLC"}]},
+            {"key": "games", "name": "游戏: #1", "emoji": "",
+             "items": [{"type": "category", "value": "steam"},
+                       {"type": "rule_set", "value": "https://rules.example.org/Game.list?x=1"}],
+             "primary": line(4243), "backups": [{"tag": "没有"}]}
+        ],
+        "rest": {"region": "日本"},
+        "tag_groups": ["IPLC", "0.5x"],
+        "dns": {"mode": "custom", "fakeip": false,
+                "cn": ["https://doh.pub/dns-query", "tls://1.12.12.12"],
+                "intl": ["https://dns.google/dns-query", "8.8.8.8"]}
+    });
+    let routing = Routing {
+        config: serde_json::from_value::<crate::sub::routing::Config>(config)
+            .unwrap()
+            .parse()
+            .unwrap(),
         clash_url: "https://mirror.example.net/{kind}/{name}.list".into(),
         singbox_url: "https://mirror.example.net/{kind}/{name}.srs".into(),
     };
     for (fmt, query) in [("clash", "format=clash"), ("sing-box", "format=sing-box")] {
         let (ct, body) = render_for(Some(query), "x", rows, &routing);
         check_golden(
-            &format!("w30_custom_routing.{fmt}.golden"),
+            &format!("routing_services.{fmt}.golden"),
             &format!("content-type: {ct}\n{body}"),
         );
     }
-    // No rules: only the final rule, no providers / rule sets.
-    let none = Routing {
-        rules: vec![],
-        ..Routing::default()
-    };
-    let (_, clash) = render_for(Some("format=clash"), "x", rows, &none);
-    assert!(
-        clash.trim_end().ends_with("rules:\n  - MATCH,PROXY"),
-        "{clash}"
-    );
-    assert!(!clash.contains("rule-providers"));
-    let (_, sb) = render_for(Some("format=sing-box"), "x", rows, &none);
-    let sb: Value = serde_json::from_str(sb.trim_end()).unwrap();
-    assert!(sb["route"].get("rule_set").is_none());
-    assert!(sb["dns"].get("rules").is_none());
+    let mut global = routing.clone();
+    global.config.mode = crate::sub::routing::Mode::Global;
+    global.config.dns.mode = crate::sub::routing::DnsMode::Client;
+    for (fmt, query) in [("clash", "format=clash"), ("sing-box", "format=sing-box")] {
+        let (ct, body) = render_for(Some(query), "x", rows, &global);
+        check_golden(
+            &format!("routing_global.{fmt}.golden"),
+            &format!("content-type: {ct}\n{body}"),
+        );
+    }
 }
 
 /// Inbounds for the validation goldens: protocols.rs's matrix cases and

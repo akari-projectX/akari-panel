@@ -1858,20 +1858,26 @@ async fn subscription_routing_settings() {
     let state = AppState::for_test(db.pool.clone()).await;
     let c = admin_client(&state, &db).await;
     let v = c.get("/test/api/v1/settings").await.json();
-    assert_eq!(v["subscription"]["rules"]["source"], "default");
+    assert_eq!(v["subscription"]["routing"]["source"], "default");
     assert_eq!(
-        v["subscription"]["rules"]["effective"]
-            .as_array()
-            .unwrap()
-            .len(),
-        crate::sub::routing::default_rules().len()
+        v["subscription"]["routing"]["effective"],
+        serde_json::to_value(crate::sub::routing::recommended()).unwrap()
     );
     let version = v["version"].as_i64().unwrap();
 
     for (body, code) in [
         (
-            json!({"version": version, "rules": [{"type": "geosite", "value": "c n", "action": "direct"}]}),
+            json!({"version": version, "routing": {"direct": [{"type": "geosite", "value": "c n"}]}}),
             "settings.sub_rule_invalid",
+        ),
+        (
+            json!({"version": version, "routing": {"services": [{"key": "x", "name": "X",
+                "primary": Uuid::new_v4()}]}}),
+            "settings.sub_entrance_unknown",
+        ),
+        (
+            json!({"version": version, "routing": {"dns": {"mode": "custom", "cn": ["1.1.1.1"], "intl": ["nope"]}}}),
+            "settings.sub_dns_server_invalid",
         ),
         (
             json!({"version": version, "rule_set_clash_url": "https://m.example/x.list"}),
@@ -1886,7 +1892,7 @@ async fn subscription_routing_settings() {
         .put(
             "/test/api/v1/settings/subscription",
             json!({"version": version,
-                   "rules": [{"type": "domain_suffix", "value": "Corp.Example", "action": "direct"}],
+                   "routing": {"direct": [{"type": "domain_suffix", "value": "Corp.Example"}]},
                    "rule_set_singbox_url": "https://m.example/{kind}/{name}.srs"}),
         )
         .await;
@@ -1897,14 +1903,15 @@ async fn subscription_routing_settings() {
         String::from_utf8_lossy(&r.body)
     );
     let v = r.json();
-    assert_eq!(v["subscription"]["rules"]["source"], "settings");
+    assert_eq!(v["subscription"]["routing"]["source"], "settings");
     assert_eq!(
-        v["subscription"]["rules"]["value"][0]["value"],
+        v["subscription"]["routing"]["value"]["direct"][0]["value"],
         "corp.example"
     );
     assert_eq!(v["version"], version + 1);
     let eff = state.settings().get();
-    assert_eq!(eff.sub_routing.rules.len(), 1);
+    assert_eq!(eff.sub_routing.config.direct.len(), 1);
+    assert!(eff.sub_routing.config.services.is_empty());
     assert_eq!(
         eff.sub_routing.singbox_url,
         "https://m.example/{kind}/{name}.srs"
@@ -1917,7 +1924,7 @@ async fn subscription_routing_settings() {
     let r = c
         .put(
             "/test/api/v1/settings/subscription",
-            json!({"version": version, "rules": []}),
+            json!({"version": version, "routing": {}}),
         )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT);
@@ -1925,7 +1932,7 @@ async fn subscription_routing_settings() {
     let r = c
         .put(
             "/test/api/v1/settings/subscription",
-            json!({"version": version + 1, "rules": null, "rule_set_singbox_url": ""}),
+            json!({"version": version + 1, "routing": null, "rule_set_singbox_url": ""}),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);
@@ -1970,7 +1977,7 @@ async fn subscription_routing_settings() {
         json!(["clash", "links"])
     );
     assert_eq!(
-        audits[0].1.as_ref().unwrap()["rules"][0]["value"],
+        audits[0].1.as_ref().unwrap()["routing"]["direct"][0]["value"],
         "corp.example"
     );
     db.drop().await;

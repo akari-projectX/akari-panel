@@ -88,6 +88,11 @@ pub(crate) fn net_of(ib: &Inbound) -> Option<Net> {
 
 pub(crate) struct Proxy {
     pub name: String,
+    /// The entrance (line) this proxy is, its node's region and the
+    /// entrance's tags: what the routing groups select by (`groups.rs`).
+    pub entrance: Option<uuid::Uuid>,
+    pub region: Option<String>,
+    pub tags: Vec<String>,
     /// Manifest protocol id.
     pub protocol: &'static str,
     /// vless/vmess uuid, trojan password, shadowsocks "server_psk:user_key",
@@ -196,6 +201,9 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
         let name = unique_name(&mut names, name);
         proxies.push(Proxy {
             name,
+            entrance: Some(row.entrance_id),
+            region: row.region.clone(),
+            tags: row.tags.clone(),
             protocol: spec.id.as_str(),
             id_or_password,
             flow: flow.to_string(),

@@ -1,20 +1,26 @@
-//! sing-box format (W30: a complete client configuration for sing-box
-//! 1.12+, the SFA/SFI/SFM apps' remote profile): DNS (remote over the
-//! proxy, the local resolver for directly routed lists), a TUN and a local
-//! mixed inbound, a PROXY selector over the proxies, direct, and the
-//! routing template (`routing.rs`) as route rules and remote rule sets.
+//! sing-box format (a complete client configuration for sing-box 1.12+,
+//! the SFA/SFI/SFM apps' remote profile): DNS (`dns.rs`), a TUN and a
+//! local mixed inbound, the user's routing groups (`groups.rs`) as
+//! selector / urltest outbounds, the proxies, direct, and the routing
+//! (`routing.rs`) as route rules and remote rule sets.
+//!
+//! sing-box has no `fallback` group: a service's 推荐 group is a urltest
+//! over the same chain (the fastest working line, not the first one).
+//! Remote rule-set links are Clash-format lists sing-box cannot load; they
+//! are left out here (logged).
 //! Renders the neutral client proxies (`proxy.rs`).
 
 use serde_json::{Value, json};
 
+use super::dns::{self, sing_box_server};
+use super::groups::{self, Kind, Member, Plan, TEST_INTERVAL, TEST_URL};
 use super::proxy::{Proxy, log_omitted};
-use super::routing::Routing;
+use super::routing::{DnsMode, Matcher, Routing, Target};
 
-const PROXY: &str = "PROXY";
 const DIRECT: &str = "direct";
 
 pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing) -> Value {
-    let outbounds: Vec<Value> = proxies
+    let kept: Vec<&Proxy> = proxies
         .iter()
         .filter(|p| match p.omitted_from("sing-box") {
             Some(why) => {
@@ -23,6 +29,11 @@ pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing) -> Value {
             }
             None => true,
         })
+        .collect();
+    let lines: Vec<groups::Line<'_>> = kept.iter().map(|p| groups::Line::from(*p)).collect();
+    let plan = groups::plan(&lines, routing);
+    let outbounds: Vec<Value> = kept
+        .iter()
         .map(|p| {
             let kind = match p.protocol {
                 "ss2022" => "shadowsocks",
@@ -103,37 +114,152 @@ pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing) -> Value {
             Value::Object(obj)
         })
         .collect();
-    let mut tags: Vec<Value> = outbounds.iter().map(|o| o["tag"].clone()).collect();
-    if tags.is_empty() {
-        tags.push(json!(DIRECT));
-    }
-    let selector = json!({"type": "selector", "tag": PROXY, "outbounds": tags});
-    let mut dns = json!({
-        "servers": [
-            {"type": "https", "tag": "remote", "server": "1.1.1.1", "detour": PROXY},
-            {"type": "https", "tag": "local", "server": "223.5.5.5"},
-        ],
-        "final": "remote",
-        "strategy": "prefer_ipv4",
-    });
-    let direct_lists = routing.direct_geosites();
-    if !direct_lists.is_empty() {
-        dns["rules"] = json!([{"rule_set": direct_lists, "server": "local"}]);
-    }
+    let fakeip =
+        routing.config.dns.mode != DnsMode::Client && routing.config.dns.effective().fakeip;
     json!({
         "log": {"level": "warn"},
-        "dns": dns,
+        "dns": dns_section(routing, &plan),
         "inbounds": [
             {"type": "tun", "tag": "tun-in",
              "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
              "auto_route": true, "strict_route": true},
             {"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080},
         ],
-        "outbounds": std::iter::once(selector)
+        "outbounds": group_outbounds(&plan)
+            .into_iter()
             .chain(outbounds)
             .chain(std::iter::once(json!({"type": "direct", "tag": DIRECT})))
             .collect::<Vec<Value>>(),
-        "route": routing.sing_box(PROXY, DIRECT),
-        "experimental": {"cache_file": {"enabled": true}},
+        "route": route(routing, &plan),
+        "experimental": {"cache_file": if fakeip {
+            json!({"enabled": true, "store_fakeip": true})
+        } else {
+            json!({"enabled": true})
+        }},
     })
+}
+
+fn group_outbounds(plan: &Plan) -> Vec<Value> {
+    plan.groups
+        .iter()
+        .map(|g| {
+            let members: Vec<&str> = g
+                .members
+                .iter()
+                .map(|m| match m {
+                    Member::Name(n) => n.as_str(),
+                    Member::Direct => DIRECT,
+                })
+                .collect();
+            match g.kind {
+                Kind::Select => json!({"type": "selector", "tag": g.name, "outbounds": members}),
+                Kind::UrlTest | Kind::Fallback => json!({
+                    "type": "urltest", "tag": g.name, "outbounds": members,
+                    "url": TEST_URL, "interval": format!("{}s", TEST_INTERVAL),
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Route rules (sniff, DNS hijack, then the routing's sections), the
+/// remote rule sets they use, everything else to the default proxy.
+fn route(routing: &Routing, plan: &Plan) -> Value {
+    let mut rules = vec![
+        json!({"action": "sniff"}),
+        json!({"protocol": "dns", "action": "hijack-dns"}),
+    ];
+    for (items, target) in routing.sections() {
+        let to = match target {
+            Target::Reject => None,
+            Target::Direct => Some(DIRECT.to_string()),
+            Target::Service(i) => match plan.services.get(i).cloned().flatten() {
+                Some(n) => Some(n),
+                None => continue,
+            },
+        };
+        for it in items.iter() {
+            for m in it.matchers() {
+                let mut r = match m {
+                    Matcher::List(k, n) => json!({"rule_set": [format!("{}-{n}", k.id())]}),
+                    Matcher::Domain(v) => json!({"domain": [v]}),
+                    Matcher::Suffix(v) => json!({"domain_suffix": [v]}),
+                    Matcher::Keyword(v) => json!({"domain_keyword": [v]}),
+                    Matcher::Cidr(v) => json!({"ip_cidr": [v]}),
+                    Matcher::Remote { url, .. } => {
+                        tracing::info!(url, "remote rule-set left out of the sing-box profile");
+                        continue;
+                    }
+                };
+                match &to {
+                    Some(o) => r["outbound"] = json!(o),
+                    None => r["action"] = json!("reject"),
+                }
+                rules.push(r);
+            }
+        }
+    }
+    let rule_set: Vec<Value> = routing
+        .lists()
+        .into_iter()
+        .map(|(k, name)| {
+            json!({"type": "remote", "tag": format!("{}-{name}", k.id()), "format": "binary",
+                   "url": Routing::list_url(&routing.singbox_url, k, &name), "update_interval": "1d"})
+        })
+        .collect();
+    let mut route = json!({
+        "rules": rules,
+        "final": plan.default,
+        "auto_detect_interface": true,
+        "default_domain_resolver": "local",
+    });
+    if !rule_set.is_empty() {
+        route["rule_set"] = json!(rule_set);
+    }
+    route
+}
+
+/// DNS: `local` = the first domestic server (the lines' own names via
+/// `route.default_domain_resolver`, and the directly routed lists),
+/// `remote` = the first foreign server through the default proxy; sing-box
+/// takes one server per role, so later list entries are Clash-only. The
+/// client mode: the system resolver only.
+fn dns_section(routing: &Routing, plan: &Plan) -> Value {
+    let d = routing.config.dns.effective();
+    if d.mode == DnsMode::Client {
+        return json!({"servers": [{"type": "local", "tag": "local"}], "final": "local"});
+    }
+    let mut servers = Vec::new();
+    let local = dns::first(&d.cn);
+    if local.as_ref().is_some_and(|s| s.ip().is_none()) {
+        let boot = dns::bootstrap(&d);
+        servers.push(json!({"type": "udp", "tag": "bootstrap", "server": boot[0]}));
+    }
+    servers.push(match &local {
+        Some(s) => sing_box_server(s, "local", "bootstrap"),
+        None => json!({"type": "local", "tag": "local"}),
+    });
+    servers.push(match dns::first(&d.intl) {
+        Some(s) => {
+            let mut r = sing_box_server(&s, "remote", "local");
+            r["detour"] = json!(plan.default);
+            r
+        }
+        None => json!({"type": "local", "tag": "remote"}),
+    });
+    let mut rules = Vec::new();
+    let direct = routing.direct_geosites();
+    if !direct.is_empty() {
+        rules.push(json!({"rule_set": direct, "server": "local"}));
+    }
+    if d.fakeip {
+        servers.push(json!({"type": "fakeip", "tag": "fakeip",
+                            "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"}));
+        rules.push(json!({"query_type": ["A", "AAAA"], "server": "fakeip"}));
+    }
+    let mut out = json!({"servers": servers, "final": "remote", "strategy": "prefer_ipv4"});
+    if !rules.is_empty() {
+        out["rules"] = json!(rules);
+    }
+    out
 }

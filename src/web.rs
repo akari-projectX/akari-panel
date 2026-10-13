@@ -379,6 +379,10 @@ fn inner_router(state: AppState) -> Router {
             put(settings::put_subscription),
         )
         .route(
+            "/{prefix}/api/v1/settings/subscription/catalog",
+            get(settings::subscription_catalog),
+        )
+        .route(
             "/{prefix}/api/v1/settings/nodes",
             put(settings::put_node_ops),
         )

@@ -283,9 +283,10 @@ pub struct Stored {
     /// Q3 (W28-a): the site time zone (IANA; NULL = Asia/Shanghai): traffic
     /// history days, plan monthly resets, the dashboard's days.
     pub timezone: Option<String>,
-    /// W30: the subscriptions' routing template (NULL = built-in) and the
-    /// rule list URL templates (NULL = built-in).
-    pub sub_rules: Option<Value>,
+    /// The subscriptions' routing (`sub::routing::Config`, migration 1107;
+    /// NULL = the recommended built-in) and the rule list URL templates
+    /// (NULL = built-in).
+    pub sub_routing: Option<Value>,
     pub sub_rule_set_clash_url: Option<String>,
     pub sub_rule_set_singbox_url: Option<String>,
     /// PR ② section 5: the subscription formats and the portal's import
@@ -307,7 +308,7 @@ const STORED_COLS: &str = "version, sub_domain_per_user, trust_cloudflare, \
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
      install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
-     extra_release_keys, timezone, sub_rules, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
+     extra_release_keys, timezone, sub_routing, sub_rule_set_clash_url, sub_rule_set_singbox_url, \
      sub_formats, sub_import_clients, sub_name_rate, passkey_domain, updated_at";
 
 fn select_stored(lock: bool) -> sqlx::AssertSqlSafe<String> {
@@ -1713,7 +1714,7 @@ pub async fn put_passkey_domain(
 /// The subscription settings as stored (each None = the built-in default).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubscriptionValues {
-    pub rules: Option<Vec<crate::sub::routing::Rule>>,
+    pub routing: Option<crate::sub::routing::Config>,
     pub rule_set_clash_url: Option<String>,
     pub rule_set_singbox_url: Option<String>,
     pub formats: Option<Vec<String>>,
@@ -1725,8 +1726,8 @@ pub struct SubscriptionValues {
 impl SubscriptionValues {
     fn of(s: &Stored) -> Self {
         Self {
-            rules: s
-                .sub_rules
+            routing: s
+                .sub_routing
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok()),
             rule_set_clash_url: s.sub_rule_set_clash_url.clone(),
@@ -1739,7 +1740,7 @@ impl SubscriptionValues {
 
     fn audit(&self) -> Value {
         json!({
-            "rules": self.rules,
+            "routing": self.routing,
             "rule_set_clash_url": self.rule_set_clash_url,
             "rule_set_singbox_url": self.rule_set_singbox_url,
             "formats": self.formats,
@@ -1768,7 +1769,7 @@ pub async fn apply_update_subscription(
     }
     let old = SubscriptionValues::of(&cur);
     let new = SubscriptionValues {
-        rules: change.rules.unwrap_or_else(|| old.rules.clone()),
+        routing: change.routing.unwrap_or_else(|| old.routing.clone()),
         rule_set_clash_url: change
             .rule_set_clash_url
             .unwrap_or_else(|| old.rule_set_clash_url.clone()),
@@ -1784,18 +1785,23 @@ pub async fn apply_update_subscription(
     if new == old {
         return Ok(cur);
     }
-    let rules = new
-        .rules
+    if let Some(c) = &new.routing
+        && new.routing != old.routing
+    {
+        crate::sub::routing::check_entrances(&mut *conn, c).await?;
+    }
+    let routing = new
+        .routing
         .as_ref()
         .map(serde_json::to_value)
         .transpose()
         .map_err(anyhow::Error::from)?;
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE panel_settings SET sub_rules = $1, sub_rule_set_clash_url = $2, \
+        "UPDATE panel_settings SET sub_routing = $1, sub_rule_set_clash_url = $2, \
          sub_rule_set_singbox_url = $3, sub_formats = $4, sub_import_clients = $5, \
          sub_name_rate = $6, version = version + 1, updated_at = now() WHERE id = 1 RETURNING {STORED_COLS}"
     )))
-    .bind(rules)
+    .bind(routing)
     .bind(&new.rule_set_clash_url)
     .bind(&new.rule_set_singbox_url)
     .bind(&new.formats)
@@ -1820,7 +1826,7 @@ pub async fn apply_update_subscription(
 /// Some(None) = the default).
 #[derive(Debug, Default)]
 pub struct SubscriptionChange {
-    pub rules: Option<Option<Vec<crate::sub::routing::Rule>>>,
+    pub routing: Option<Option<crate::sub::routing::Config>>,
     pub rule_set_clash_url: Option<Option<String>>,
     pub rule_set_singbox_url: Option<Option<String>>,
     pub formats: Option<Option<Vec<String>>>,
@@ -1832,10 +1838,10 @@ pub struct SubscriptionChange {
 #[serde(deny_unknown_fields)]
 pub struct SubscriptionReq {
     pub version: i64,
-    /// The routing template: absent = unchanged, null = the built-in
-    /// default, [] = no rules.
+    /// The routing (`sub::routing::Config`, replaced as a whole): absent
+    /// = unchanged, null = the recommended built-in.
     #[serde(default, deserialize_with = "crate::api::double_option")]
-    pub rules: Option<Option<Vec<crate::sub::routing::Rule>>>,
+    pub routing: Option<Option<crate::sub::routing::Config>>,
     /// Rule list URL templates (`{kind}`, `{name}`): absent = unchanged,
     /// null or "" = the built-in default.
     #[serde(default, deserialize_with = "crate::api::double_option")]
@@ -1897,10 +1903,10 @@ impl SubscriptionReq {
             })
         };
         Ok(SubscriptionChange {
-            rules: match self.rules {
+            routing: match self.routing {
                 None => None,
                 Some(None) => Some(None),
-                Some(Some(r)) => Some(Some(crate::sub::routing::parse(r)?)),
+                Some(Some(c)) => Some(Some(c.parse()?)),
             },
             rule_set_clash_url: url(self.rule_set_clash_url)?,
             rule_set_singbox_url: url(self.rule_set_singbox_url)?,
@@ -1939,10 +1945,63 @@ pub async fn put_subscription(
     Ok(Json(view(&state, Vec::new()).await?))
 }
 
+/// One entrance as the routing editor picks lines from it.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct CatalogEntrance {
+    pub id: Uuid,
+    pub name: String,
+    /// The node's user-facing name (display name, else its name).
+    pub node: String,
+    pub region: Option<String>,
+    pub tags: Vec<String>,
+    pub enabled: bool,
+}
+
+/// GET /api/v1/settings/subscription/catalog (admin): what the routing
+/// editor offers — the built-in categories and common services
+/// (`sub::catalog`, the single source of truth), every entrance (lines are
+/// pinned by id), and the node regions and entrance tags in use (region /
+/// tag groups).
+pub async fn subscription_catalog(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let entrances: Vec<CatalogEntrance> = sqlx::query_as(
+        "SELECT e.id, e.name, coalesce(n.display_name, n.name) AS node, n.region, e.tags, \
+         e.enabled AND n.enabled AS enabled \
+         FROM entrances e JOIN nodes n ON n.id = e.node_id \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
+    )
+    .fetch_all(state.pg())
+    .await?;
+    let mut regions: Vec<String> = Vec::new();
+    let mut tags: Vec<String> = Vec::new();
+    for e in &entrances {
+        if let Some(r) = e.region.as_deref().map(str::trim).filter(|r| !r.is_empty())
+            && !regions.iter().any(|x| x == r)
+        {
+            regions.push(r.to_string());
+        }
+        for t in &e.tags {
+            if !tags.contains(t) {
+                tags.push(t.clone());
+            }
+        }
+    }
+    Ok(Json(json!({
+        "categories": crate::sub::catalog::CATEGORIES,
+        "services": crate::sub::catalog::SERVICES,
+        "entrances": entrances,
+        "regions": regions,
+        "tags": tags,
+    })))
+}
+
 /// The 订阅 section of the settings view.
 #[derive(Serialize)]
 pub struct SubscriptionView {
-    pub rules: Field<Vec<crate::sub::routing::Rule>>,
+    pub routing: Field<crate::sub::routing::Config>,
     pub rule_set_clash_url: Field<String>,
     pub rule_set_singbox_url: Field<String>,
     /// Section 5: the formats on and the import buttons on (stored, null =
@@ -1959,7 +2018,7 @@ impl SubscriptionView {
     fn of(s: &Stored) -> Self {
         let v = SubscriptionValues::of(s);
         Self {
-            rules: Field::of(v.rules, crate::sub::routing::default_rules()),
+            routing: Field::of(v.routing, crate::sub::routing::recommended()),
             rule_set_clash_url: Field::of(
                 v.rule_set_clash_url,
                 crate::sub::routing::DEFAULT_CLASH_URL.to_string(),

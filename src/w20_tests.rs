@@ -551,7 +551,9 @@ async fn format_switches_answer_the_uniform_rejection() {
     );
     let ok = ua_get("clash-verge/v2", "").await;
     assert_eq!(ok.status, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&ok.body).starts_with("proxies:"));
+    // The recommended routing's DNS block comes first.
+    assert!(String::from_utf8_lossy(&ok.body).starts_with("dns:\n"));
+    assert!(String::from_utf8_lossy(&ok.body).contains("\nproxies:\n"));
     // Unknown client: falls through to Clash.
     assert_eq!(ua_get("curl/8", "").await.status, StatusCode::OK);
     for (ua, q) in [

@@ -13,6 +13,15 @@ import { invalidateOnWrite, makeQueryClient } from "../data";
 import { MeContext } from "../session";
 import { SettingsPage } from "./settings";
 
+const ROUTING = {
+  mode: "rules" as const,
+  block: [],
+  direct: [{ type: "geosite", value: "cn" }],
+  services: [],
+  rest: null,
+  tag_groups: [],
+  dns: { mode: "recommended" as const, fakeip: true, cn: [], intl: [] },
+};
 const S = {
   version: 7,
   main: {
@@ -70,11 +79,7 @@ const S = {
     release_keys: [{ id: "abc", label: "official", official: true }],
   },
   subscription: {
-    rules: {
-      value: null,
-      effective: [{ type: "geosite", value: "cn", action: "direct" }],
-      default: [{ type: "geosite", value: "cn", action: "direct" }],
-    },
+    routing: { value: null, effective: ROUTING, default: ROUTING },
     rule_set_clash_url: { value: null, effective: "https://r/{kind}/{name}", default: "https://r/{kind}/{name}" },
     rule_set_singbox_url: { value: null, effective: "https://s/{kind}/{name}", default: "https://s/{kind}/{name}" },
     formats: { value: null, effective: ["clash", "sing-box", "links"] },

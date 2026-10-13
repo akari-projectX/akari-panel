@@ -53,6 +53,8 @@ fuzz_target!(|data: &[u8]| {
         "fresh account does not fit its inbound"
     );
     let rows = [NodeRow {
+        entrance_id: uuid::Uuid::nil(),
+        region: Some("fuzz".into()),
         name: "fuzz".into(),
         display_name: None,
         tags: vec!["t".into()],
