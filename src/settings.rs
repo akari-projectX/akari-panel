@@ -1938,8 +1938,18 @@ pub async fn put_subscription(
     user.require_admin()?;
     let version = req.version;
     let change = req.change()?;
+    // Remote rule-sets the panel has no good copy of yet are downloaded and
+    // validated first (no lock held); any failure refuses the whole save.
+    let fetched = match &change.routing {
+        Some(Some(c)) => crate::sub::rulesets::fetch_new(&state, c).await?,
+        _ => Vec::new(),
+    };
     let mut tx = state.pg().begin().await?;
     apply_update_subscription(&mut tx, &Actor::of(&user), version, change).await?;
+    for c in &fetched {
+        crate::sub::rulesets::apply_store(&mut tx, c).await?;
+    }
+    crate::sub::rulesets::apply_prune(&mut tx).await?;
     tx.commit().await?;
     reload_logged(&state).await;
     Ok(Json(view(&state, Vec::new()).await?))
@@ -1960,8 +1970,9 @@ pub struct CatalogEntrance {
 /// GET /api/v1/settings/subscription/catalog (admin): what the routing
 /// editor offers — the built-in categories and common services
 /// (`sub::catalog`, the single source of truth), every entrance (lines are
-/// pinned by id), and the node regions and entrance tags in use (region /
-/// tag groups).
+/// pinned by id), the node regions and entrance tags in use (region /
+/// tag groups), and the state of the panel's remote rule-set copies
+/// (`rule_sets`, `sub::rulesets::Status`).
 pub async fn subscription_catalog(
     State(state): State<AppState>,
     user: AuthUser,
@@ -1989,12 +2000,16 @@ pub async fn subscription_catalog(
             }
         }
     }
+    // The panel's copies of the remote rule-sets (counts, last download,
+    // refresh errors): the editor shows them next to each link.
+    let rule_sets = crate::sub::rulesets::status_of(&state, &[]).await?;
     Ok(Json(json!({
         "categories": crate::sub::catalog::CATEGORIES,
         "services": crate::sub::catalog::SERVICES,
         "entrances": entrances,
         "regions": regions,
         "tags": tags,
+        "rule_sets": rule_sets,
     })))
 }
 

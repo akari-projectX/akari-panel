@@ -831,8 +831,7 @@ Clash 与 sing-box 订阅按下面的顺序分流，纯链接格式不受影响�
 
 每一段的条目可以是：内置分类（如「中国大陆网站」= `geosite:cn`，「AI 服务」= `geosite:category-ai-!cn`，完整清单
 见目录接口）、GeoSite / GeoIP 列表名、域名（精确 / 后缀 / 关键词）、IP 段、https 远程规则集链接（Clash 的
-`.yaml`（payload）/`.list`/`.txt`，Clash 订阅原样作 `behavior: classical` 的 rule-provider；**sing-box 订阅暂不带
-远程规则集**——下载、转换、托管在后续版本做，暂时只记 info 日志）。每段最多 64 条，服务最多 32 个。
+`.yaml`（payload）/`.list`/`.txt`；见下「远程规则集」）。每段最多 64 条，服务最多 32 个，远程规则集合计最多 32 个。
 「全局代理」模式（`mode: global`）：只有局域网直连，其余全部走默认代理（分流设置保留但不生效）。
 
 **订阅里的分组**（按用户生成，只含该用户套餐可用的入口；组名固定，客户端按组名记住用户的选择）：
@@ -880,6 +879,34 @@ meta-rules-dat，国内访问 jsDelivr 不稳定时可改成镜像（`rule_set_c
 且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次启动时经默认代理进行（规则未加载前全部流量走
 默认代理）。修改写审计 `settings.subscription.update`，用户下次刷新订阅生效。
 
+**远程规则集（路由 PR 2，迁移 1108）**：分流里任一段都可以放 https 规则集链接，如
+`https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Claude/Claude.yaml`。
+
+- **格式**：Clash 的 `.yaml`（`payload:` 列表）、`.list`、`.txt`；每行是 classical 规则 `类型,值[,选项]`
+  （`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`IP-CIDR6`），或 domain / ipcidr 列表的裸写法
+  （`example.com`、`+.example.com`（含子域）、`.example.com`（只含子域）、`1.2.3.0/24`、`2001:db8::/32`）；
+  `#`、`//`、`;` 开头的行是注释。
+- **Clash 订阅**：原样引用这个链接（`behavior: classical` 的 rule-provider，扩展名 `.yaml`/`.yml` 为 yaml、其余 text），
+  由客户端自己下载。classical 行为按「类型,值」逐行解析，裸写法的列表（如 MetaCubeX 的 domain 列表）在 Clash 里
+  可能识别不了，这类列表请改用内置分类或 GeoSite 名。
+- **sing-box 订阅**：sing-box 不能直接读 Clash 列表，所以**面板下载、转换并托管**一份：
+  `https://<订阅域名>/<订阅路径>/rules/<id>.json`（sing-box `source` 规则集，`id` = 链接 SHA-256 前 32 位；
+  每个用户用自己的订阅域名），订阅里以 `type: remote`、`format: source`、`update_interval: 1d` 引用。sing-box
+  表达不了的规则（PROCESS-NAME、USER-AGENT、DOMAIN-REGEX、通配符、GEOIP/GEOSITE、AND/OR/NOT 等）**跳过**，
+  后台显示跳过的条数与类型；一条都用不了的列表、以及面板还没有可用副本的链接，sing-box 订阅里不出现（记 info 日志）。
+  **需要配置订阅域名或主域名**（托管地址是绝对 URL），否则 sing-box 订阅不带远程规则集。托管地址公开、无秘密，
+  未知 id 返回统一的 404；响应 `Cache-Control: public, max-age=3600` + ETag。
+- **保存时校验**：保存分流时面板下载每个**新加的**链接（已有可用副本的不重复下载）并解析，失败则整次保存被拒（422，
+  后台显示链接与原因），什么都不改。编辑器里可先用「测试」（`POST …/rule-set/check`）看条数与前 20 条样例，不保存。
+- **安全（防 SSRF）**：只接受 https；面板自己解析域名，**任何一个**解析结果是回环、内网（10/8、172.16/12、192.168/16）、
+  链路本地 / 云元数据（169.254.0.0/16、`fd00:ec2::254`）、CGNAT、ULA、组播、文档 / 基准测试 / 保留地址（含内嵌这些
+  IPv4 的 IPv6 形式）就拒绝，然后直接连接已检查的地址（不会被 DNS 重绑定绕过）、按域名校验证书；重定向最多 3 次、
+  每一跳重新检查；整个下载 15 秒超时、正文上限 5 MiB、不接受压缩响应、不信任 Content-Type；只有管理员能触发。
+- **每日刷新**：每个实例每 5 分钟尝试一轮（advisory 锁，同一时刻只有一个实例在刷新），超过一天没检查的链接带
+  `If-None-Match` / `If-Modified-Since` 重新下载（304 = 没变）；**失败时保留上一份副本**并记录错误（失败的链接每小时
+  重试）；某个链接连续失败 2 天，系统状态页的「远程规则集刷新」任务变红。分流里不再引用的链接，其副本随保存或下一轮
+  刷新删除。升级前就保存在分流里的链接由第一轮刷新补上副本。
+
 **从 W30 规则升级（迁移 1107）**：已自定义的旧规则逐条保留（类型与值不变）：拒绝 → 拦截、直连 → 直连、代理 → 一个
 名为「代理」、未选线路（= 默认代理）的服务。新模型按段匹配（拦截 → 直连 → 服务），所以旧列表本来就是
 「拒绝 → 直连 → 代理」的顺序（内置默认与在它基础上增删的都是）时结果完全一致；交错排列的列表里，排在前面的
@@ -897,7 +924,10 @@ Clash、sing-box、base64 链接三种输出格式，以及门户里每个客户
 **验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：mihomo v1.19（`mihomo -t` 校验配置，并实际运行加载
 rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；2026-10-13 的
 服务分流 / 容灾 / DNS 输出（含自定义 DNS、主机名 DoH、不下发 DNS、全局模式、远程规则集）用 mihomo v1.19.13
-（`-t` 与实际运行）与 sing-box 1.12.9（`check` 与去掉 TUN 后实际运行）验证通过；黄金文件
+（`-t` 与实际运行）与 sing-box 1.12.9（`check` 与去掉 TUN 后实际运行）验证通过；路由 PR 2 的托管规则集：带面板托管
+规则集的 sing-box 配置（`routing_services_hosted.sing-box.golden`）`sing-box check` 通过，转换出的 source 规则集
+`sing-box rule-set compile` 通过、`rule-set match` 的后缀语义（`claude.ai` 含本域与子域、`.sub.example` 只含子域）
+符合预期（sing-box 1.12.9）；黄金文件
 （`testdata/w26/sub_*.golden`、`routing_*.golden`、`w30_client_formats.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：
 Clash Verge Rev、Clash Meta for Android、FlClash、Mihomo Party、Stash、Shadowrocket、SFA/SFI/SFM、Hiddify、
 v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前请在真机上各导入一次。

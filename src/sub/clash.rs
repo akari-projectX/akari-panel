@@ -268,9 +268,7 @@ fn providers_yaml(routing: &Routing, providers: &[Provider]) -> String {
                 Routing::list_url(&routing.clash_url, *k, n),
             ),
             Provider::Remote { url, .. } => {
-                let path = url.split(['?', '#']).next().unwrap_or_default();
-                let yaml = path.ends_with(".yaml") || path.ends_with(".yml");
-                ("classical", if yaml { "yaml" } else { "text" }, url.clone())
+                ("classical", super::routing::clash_format(url), url.clone())
             }
         };
         out.push_str(&format!(

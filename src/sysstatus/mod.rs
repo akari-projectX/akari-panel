@@ -63,10 +63,19 @@ pub enum Job {
     Mail,
     /// Alert evaluation (every 30 s, one instance wins the round) + delivery.
     Alerts,
+    /// Remote rule-set refresh (every 5 min, one instance wins the round;
+    /// an error while a list has failed for 2 days, `sub::rulesets`).
+    RuleSets,
 }
 
 impl Job {
-    pub const ALL: [Job; 4] = [Job::Settlement, Job::Reconciliation, Job::Mail, Job::Alerts];
+    pub const ALL: [Job; 5] = [
+        Job::Settlement,
+        Job::Reconciliation,
+        Job::Mail,
+        Job::Alerts,
+        Job::RuleSets,
+    ];
 
     /// Normal period; a job without a success for 6 periods is `stale`.
     fn period_secs(self) -> i64 {
@@ -75,6 +84,7 @@ impl Job {
             Job::Reconciliation => 10,
             Job::Mail => 2,
             Job::Alerts => 30,
+            Job::RuleSets => 300,
         }
     }
 }

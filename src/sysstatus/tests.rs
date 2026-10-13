@@ -282,7 +282,13 @@ async fn status_endpoint_reports_the_fleet() {
         jobs.iter()
             .map(|x| x["job"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["settlement", "reconciliation", "mail", "alerts"]
+        [
+            "settlement",
+            "reconciliation",
+            "mail",
+            "alerts",
+            "rule_sets"
+        ]
     );
     let settle = &jobs[0];
     assert_eq!(settle["lag_secs"], 0);

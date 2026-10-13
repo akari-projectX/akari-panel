@@ -420,6 +420,10 @@ pub struct Limits {
     /// loopback mock; https or loopback http only).
     pub turnstile_verify_url: String,
     pub entrance_health_interval_secs: u64,
+    /// Remote rule-sets may be downloaded over plain http from 127.0.0.1
+    /// (smoke's fixture server; `sub::rulesets::fetch`). Never in
+    /// production: the SSRF guard refuses loopback otherwise.
+    pub rule_set_fetch_loopback: bool,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
 }
@@ -451,6 +455,7 @@ impl Default for Limits {
             probe_manual_cooldown_secs: PROBE_MANUAL_COOLDOWN_SECS,
             turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
             entrance_health_interval_secs: ENTRANCE_HEALTH_INTERVAL_SECS,
+            rule_set_fetch_loopback: false,
             test_overrides: Vec::new(),
         }
     }
@@ -469,6 +474,7 @@ impl Limits {
             1,
             ENTRANCE_HEALTH_INTERVAL_SECS,
         ),
+        ("rule_set_fetch_loopback", 0, 1),
     ];
 
     /// The fail-closed lease actually granted: [1h, 30d].
@@ -499,6 +505,7 @@ impl Limits {
                 "probe_manual_cooldown_secs" => self.probe_manual_cooldown_secs = v,
                 "sub_rate_per_token" => self.sub_rate_per_token = v as i64,
                 "entrance_health_interval_secs" => self.entrance_health_interval_secs = v,
+                "rule_set_fetch_loopback" => self.rule_set_fetch_loopback = v == 1,
                 _ => anyhow::bail!("{TEST_LIMITS_ENV}: {name:?} cannot be overridden"),
             }
             self.test_overrides.push(format!("{name}={v}"));

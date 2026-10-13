@@ -1055,7 +1055,8 @@ fn w30_golden_client_formats() {
 /// 2026-10-13 `sub-service-groups`: service groups with pinned lines and
 /// failover (lines the user lacks skipped, a service with nothing left on
 /// the default proxy), region and tag groups, every item type (a remote
-/// rule-set: Clash only), custom DNS without fake-ip and a named domestic
+/// rule-set: Clash loads the link; sing-box the panel-hosted copy when there
+/// is one), custom DNS without fake-ip and a named domestic
 /// resolver; then global mode with the client's own DNS. The fixture's
 /// lines: `sub_fixtures` "named" (region 日本, tag IPLC, ids 100..).
 #[test]
@@ -1110,6 +1111,21 @@ fn routing_golden_services_failover_dns() {
             &format!("content-type: {ct}\n{body}"),
         );
     }
+    // Routing PR 2: the panel hosts a converted copy of a remote rule-set
+    // (here only Claude.yaml has a usable one): the sing-box profile
+    // references it as a remote `source` rule set on the subscription
+    // origin; Game.list (no copy) stays out.
+    let claude = "https://rules.example.org/Claude.yaml";
+    let hosted = crate::sub::rulesets::Hosted::new(
+        "https://sub.example.com/feed",
+        [(claude.to_string(), crate::sub::rulesets::id_of(claude))],
+    );
+    let (ct, body) =
+        crate::sub::render_hosted(crate::sub::Format::SingBox, rows, &routing, &hosted);
+    check_golden(
+        "routing_services_hosted.sing-box.golden",
+        &format!("content-type: {ct}\n{body}"),
+    );
     let mut global = routing.clone();
     global.config.mode = crate::sub::routing::Mode::Global;
     global.config.dns.mode = crate::sub::routing::DnsMode::Client;

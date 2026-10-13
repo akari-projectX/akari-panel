@@ -22,6 +22,12 @@ pub fn normalize_inbound(inbound: &Value) -> Result<Value, String> {
     crate::api::normalize_inbound(inbound).map_err(|e| e.message().to_string())
 }
 
+/// Routing PR 2: whether the rule-set fetch policy (`sub::rulesets::fetch`,
+/// without the loopback test switch) accepts `url`.
+pub fn rule_set_target_ok(url: &str) -> bool {
+    crate::sub::rulesets::fetch::target(url, Default::default()).is_ok()
+}
+
 /// `sub::plausible_token` (subscription path segment).
 pub fn sub_plausible_token(token: &str) -> bool {
     crate::sub::plausible_token(token)

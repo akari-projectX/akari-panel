@@ -6,8 +6,10 @@
 //!
 //! sing-box has no `fallback` group: a service's 推荐 group is a urltest
 //! over the same chain (the fastest working line, not the first one).
-//! Remote rule-set links are Clash-format lists sing-box cannot load; they
-//! are left out here (logged).
+//! Remote rule-set links are Clash-format lists sing-box cannot load: the
+//! panel hosts a converted copy (`rulesets`) and the profile references
+//! that as a remote `source` rule set; a link without a usable copy is
+//! left out (logged).
 //! Renders the neutral client proxies (`proxy.rs`).
 
 use serde_json::{Value, json};
@@ -16,10 +18,11 @@ use super::dns::{self, sing_box_server};
 use super::groups::{self, Kind, Member, Plan, TEST_INTERVAL, TEST_URL};
 use super::proxy::{Proxy, log_omitted};
 use super::routing::{DnsMode, Matcher, Routing, Target};
+use super::rulesets::Hosted;
 
 const DIRECT: &str = "direct";
 
-pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing) -> Value {
+pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing, hosted: &Hosted) -> Value {
     let kept: Vec<&Proxy> = proxies
         .iter()
         .filter(|p| match p.omitted_from("sing-box") {
@@ -130,7 +133,7 @@ pub(crate) fn render_sing_box(proxies: &[Proxy], routing: &Routing) -> Value {
             .chain(outbounds)
             .chain(std::iter::once(json!({"type": "direct", "tag": DIRECT})))
             .collect::<Vec<Value>>(),
-        "route": route(routing, &plan),
+        "route": route(routing, &plan, hosted),
         "experimental": {"cache_file": if fakeip {
             json!({"enabled": true, "store_fakeip": true})
         } else {
@@ -163,8 +166,10 @@ fn group_outbounds(plan: &Plan) -> Vec<Value> {
 }
 
 /// Route rules (sniff, DNS hijack, then the routing's sections), the
-/// remote rule sets they use, everything else to the default proxy.
-fn route(routing: &Routing, plan: &Plan) -> Value {
+/// remote rule sets they use (the lists, then the panel-hosted copies of
+/// remote rule-set links), everything else to the default proxy.
+fn route(routing: &Routing, plan: &Plan, hosted: &Hosted) -> Value {
+    let mut remote: Vec<(String, String)> = Vec::new();
     let mut rules = vec![
         json!({"action": "sniff"}),
         json!({"protocol": "dns", "action": "hijack-dns"}),
@@ -186,10 +191,21 @@ fn route(routing: &Routing, plan: &Plan) -> Value {
                     Matcher::Suffix(v) => json!({"domain_suffix": [v]}),
                     Matcher::Keyword(v) => json!({"domain_keyword": [v]}),
                     Matcher::Cidr(v) => json!({"ip_cidr": [v]}),
-                    Matcher::Remote { url, .. } => {
-                        tracing::info!(url, "remote rule-set left out of the sing-box profile");
-                        continue;
-                    }
+                    Matcher::Remote { url, provider } => match hosted.url_of(url) {
+                        Some(at) => {
+                            if !remote.iter().any(|(t, _)| *t == provider) {
+                                remote.push((provider.clone(), at.to_string()));
+                            }
+                            json!({"rule_set": [provider]})
+                        }
+                        None => {
+                            tracing::info!(
+                                provider = %provider,
+                                "remote rule-set without a usable copy left out of the sing-box profile"
+                            );
+                            continue;
+                        }
+                    },
                 };
                 match &to {
                     Some(o) => r["outbound"] = json!(o),
@@ -206,6 +222,10 @@ fn route(routing: &Routing, plan: &Plan) -> Value {
             json!({"type": "remote", "tag": format!("{}-{name}", k.id()), "format": "binary",
                    "url": Routing::list_url(&routing.singbox_url, k, &name), "update_interval": "1d"})
         })
+        .chain(remote.into_iter().map(|(tag, url)| {
+            json!({"type": "remote", "tag": tag, "format": "source", "url": url,
+                   "update_interval": "1d"})
+        }))
         .collect();
     let mut route = json!({
         "rules": rules,

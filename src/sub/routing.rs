@@ -35,6 +35,9 @@ pub const MAX_TAG_GROUPS: usize = 16;
 pub const MAX_NAME_CHARS: usize = 32;
 pub const MAX_EMOJI_CHARS: usize = 8;
 pub const MAX_URL_CHARS: usize = 512;
+/// At most this many distinct remote rule-set links in the whole routing
+/// (each one is downloaded and hosted by the panel, `rulesets`).
+pub const MAX_RULE_SETS: usize = 32;
 
 /// Built-in rule list URLs (`{kind}` = geosite|geoip, `{name}` = the
 /// list): MetaCubeX meta-rules-dat on jsDelivr (text for Clash/Stash,
@@ -246,15 +249,28 @@ pub(crate) fn list_name(v: &str) -> bool {
         })
 }
 
-/// A remote rule-set URL: https, no whitespace, quotes or control
-/// characters, at most 512 characters.
+/// A remote rule-set URL: https (or http to 127.0.0.1, which only the
+/// test switch `rule_set_fetch_loopback` lets the panel download: saving
+/// one fails anywhere else), no whitespace, quotes, control characters or
+/// fragment, at most 512 characters.
 pub(crate) fn rule_set_url(v: &str) -> bool {
     v.len() <= MAX_URL_CHARS
         && v.len() > "https://".len() + 3
-        && v.starts_with("https://")
+        && (v.starts_with("https://") || v.starts_with("http://127.0.0.1:"))
         && !v
             .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\'))
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\' | '#'))
+}
+
+/// The Clash rule-provider format of a remote list: `yaml` for `.yaml` /
+/// `.yml` paths, else `text`.
+pub(crate) fn clash_format(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    if path.ends_with(".yaml") || path.ends_with(".yml") {
+        "yaml"
+    } else {
+        "text"
+    }
 }
 
 fn item_error(section: &str, index: usize, detail: &str) -> ApiError {
@@ -448,7 +464,7 @@ impl Config {
                 tag_groups.push(t);
             }
         }
-        Ok(Config {
+        let config = Config {
             mode: self.mode,
             block,
             direct,
@@ -456,7 +472,31 @@ impl Config {
             rest: self.rest.map(parse_ref).transpose()?,
             tag_groups,
             dns: super::dns::parse(self.dns)?,
-        })
+        };
+        if config.rule_set_urls().len() > MAX_RULE_SETS {
+            return Err(bad_request!(
+                "settings.sub_rule_sets_too_many",
+                "at most {max} remote rule-set links",
+                max = MAX_RULE_SETS
+            ));
+        }
+        Ok(config)
+    }
+
+    /// Every remote rule-set link, deduplicated, in section order.
+    pub fn rule_set_urls(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let items = self
+            .block
+            .iter()
+            .chain(&self.direct)
+            .chain(self.services.iter().flat_map(|s| s.items.iter()));
+        for it in items.filter(|it| it.kind == Match::RuleSet) {
+            if !out.contains(&it.value) {
+                out.push(it.value.clone());
+            }
+        }
+        out
     }
 
     /// Every entrance the configuration names (primaries, backups, rest).

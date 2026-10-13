@@ -1,0 +1,6 @@
+payload:
+  - '+.google.com'
+  - '.only-subs.example'
+  - '*.wild.example'
+  - 1.2.3.4
+  - '2400:cb00::/32'

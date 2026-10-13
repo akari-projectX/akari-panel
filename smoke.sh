@@ -110,8 +110,11 @@ telegram_api_url = "https://tg.example.com"
 TOML
 # W25: the timers smoke shortens are built-in constants now; this TEST-ONLY
 # variable (logged at startup) shortens them: 8 subscription fetches per
-# token and window, a 5 s "立即测速" cooldown, node alerts every 5 s.
-SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2"
+# token and window, a 5 s "立即测速" cooldown, node alerts every 5 s, rule-set
+# downloads from the loopback list host.
+# rule_set_fetch_loopback=1: remote rule-sets may come from the local list
+# host below (plain http to 127.0.0.1; refused in production).
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -836,6 +839,74 @@ done
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit subscription is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
 [ "$(fp -A "clash-meta/1.19" "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit (clash UA) differs"; exit 1; }
 echo "sub token + rate limit: ok"
+
+echo "== routing PR 2: remote rule-sets (downloaded on save, hosted for sing-box, check endpoint) =="
+# A local list host on 127.0.0.1:18205 (the panel may fetch plain http from
+# loopback only under AKARI_TEST_LIMITS rule_set_fetch_loopback=1; production
+# refuses loopback/private addresses and anything but https).
+RS_DIR="$LOG/rule-sets"; mkdir -p "$RS_DIR"
+printf 'payload:\n  - DOMAIN-SUFFIX,claude.ai\n  - DOMAIN-KEYWORD,claude\n  - IP-CIDR,160.79.104.0/23,no-resolve\n  - PROCESS-NAME,Claude.exe\n' >"$RS_DIR/Claude.yaml"
+printf '<html><body>Not Found</body></html>\n' >"$RS_DIR/page.list"
+python3 -c "$TIE_PY"'
+import functools, http.server, sys
+H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
+H.func.log_message = lambda *a: None
+http.server.ThreadingHTTPServer(("127.0.0.1", 18205), H).serve_forever()
+' "$RS_DIR" >/dev/null 2>&1 &
+RS_PID=$!
+for _ in $(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/18205) 2>/dev/null && break; sleep 0.1; done
+RS_URL="http://127.0.0.1:18205/Claude.yaml"
+RS_ID=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:32])" "$RS_URL")
+rs_put() { # $1 = the AI service's items (JSON)
+  [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (rule-sets)"; exit 1; }
+  code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$(last_json "d['version']"),\"routing\":{\"services\":[{\"key\":\"ai\",\"name\":\"AI\",\"items\":$1}]}}"
+}
+# The check endpoint: admin only, counts + samples, nothing stored.
+[ "$(code -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "401" ] \
+  && [ "$(code -b "$UJAR" -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "403" ] \
+  || { echo "FAIL: rule-set check is not admin-only"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "200" ] \
+  && [ "$(last_json "(d['id'], d['kept'], d['counts']['unsupported'], d['clash_format'], d['sample'][0]['value'])")" = "('$RS_ID', 3, 1, 'yaml', 'claude.ai')" ] \
+  && [ "$(psql_q "SELECT count(*) FROM sub_rule_sets")" = "0" ] \
+  || { echo "FAIL: rule-set check"; cat /tmp/akari-smoke/last; exit 1; }
+# A bad first add refuses the save (nothing saved): not a list, a private
+# address.
+[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"http://127.0.0.1:18205/page.list\"}]")" = "422" ] \
+  && [ "$(last_json "d['code']")" = "settings.sub_rule_set_invalid" ] \
+  || { echo "FAIL: an HTML page saved as a rule-set"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"https://169.254.169.254/latest/meta-data\"}]")" = "422" ] \
+  && [ "$(last_json "d['code']")" = "settings.sub_rule_set_blocked" ] \
+  || { echo "FAIL: SSRF guard (metadata address)"; cat /tmp/akari-smoke/last; exit 1; }
+# A good one: downloaded, stored, hosted publicly on the subscription path.
+[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"$RS_URL\"}]")" = "200" ] \
+  || { echo "FAIL: save a rule-set"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT kept FROM sub_rule_sets WHERE id = '$RS_ID'")" = "3" ] || { echo "FAIL: rule-set not stored"; exit 1; }
+[ "$(code -D "$LOG/rs.h" "$SUBBASE/rules/$RS_ID.json")" = "200" ] \
+  && [ "$(last_json "(d['version'], d['rules'][0]['domain_suffix'], d['rules'][1]['ip_cidr'])")" = "(3, ['claude.ai'], ['160.79.104.0/23'])" ] \
+  && tr -d '\r' <"$LOG/rs.h" | matches -i '^cache-control: public, max-age=3600$' \
+  || { echo "FAIL: hosted rule-set"; cat "$LOG/rs.h" /tmp/akari-smoke/last; exit 1; }
+RS_ETAG=$(tr -d '\r' <"$LOG/rs.h" | sed -n 's/^[Ee][Tt][Aa][Gg]: //p')
+[ "$(code -H "If-None-Match: $RS_ETAG" "$SUBBASE/rules/$RS_ID.json")" = "304" ] || { echo "FAIL: hosted rule-set ETag"; exit 1; }
+# Unknown / malformed ids, the admin prefix, the internal name: the
+# canonical rejection, byte for byte.
+for p in "$SUBBASE/rules/00000000000000000000000000000000.json" "$SUBBASE/rules/$RS_ID" "$SUBBASE/rules/" \
+         "$BASE/sub-rules/$RS_ID.json" "$BASE/$SUBP/rules/$RS_ID.json" "$ROOT/_/sub-rules/$RS_ID.json"; do
+  [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: $p is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
+done
+# Clash keeps the original link (a classical rule-provider).
+for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^    url: \"$RS_URL\"" && break; sleep 0.25; done
+subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^    url: \"$RS_URL\"" || { echo "FAIL: clash rule-provider"; exit 1; }
+# Back to the built-in routing: the copy is dropped with the link.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$(last_json "d['version']"),\"routing\":null}")" = "200" ] \
+  && [ "$(psql_q "SELECT count(*) FROM sub_rule_sets")" = "0" ] \
+  && [ "$(fp "$SUBBASE/rules/$RS_ID.json")" = "$REJ" ] \
+  || { echo "FAIL: dropped rule-set still hosted"; exit 1; }
+kill "$RS_PID" 2>/dev/null || true
+subrl
+echo "remote rule-sets: ok"
 
 echo "== start agent: initial snapshot =="
 # W11: frequent heartbeats here (production default 15 s) when supported.
@@ -2893,7 +2964,7 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 
 echo "== W31: system status =="
 [ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \
-  && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
+  && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts','rule_sets'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
 # The mail queue's 全部 view: every status, newest first.
