@@ -121,6 +121,9 @@ pub struct Pending {
     /// that were not refunded (中-2 refunds most of them automatically).
     pub orders_unfulfilled: i64,
     pub alerts_firing: i64,
+    /// USDT on-chain transfers no order took (C2): the admin assigns or
+    /// ignores them (资金 → 链上收款).
+    pub chain_unmatched: i64,
 }
 
 /// Details of the pending queues for the dashboard's "需要你处理" rows (same
@@ -145,6 +148,8 @@ pub struct PendingDetail {
     pub ticket_oldest_at: Option<DateTime<Utc>>,
     /// The newest dead letter's last error (the server's raw answer).
     pub mail_last_error: Option<String>,
+    /// Sum of the unmatched on-chain transfers (USDT base units).
+    pub chain_unmatched_units: i64,
 }
 
 #[derive(Serialize, Debug, sqlx::FromRow)]
@@ -310,7 +315,8 @@ const PENDING_SQL: &str = "SELECT \
      (SELECT count(*) FROM mail_outbox WHERE status = 'dead') AS mail_failed, \
      (SELECT count(*) FROM orders WHERE status = 'paid' AND fulfilled_at IS NULL \
         AND fulfil_error IS NOT NULL AND refunded_at IS NULL) AS orders_unfulfilled, \
-     (SELECT count(*) FROM server_alerts WHERE status = 'firing') AS alerts_firing";
+     (SELECT count(*) FROM server_alerts WHERE status = 'firing') AS alerts_firing, \
+     (SELECT count(*) FROM chain_transfers WHERE status = 'unmatched') AS chain_unmatched";
 
 const PENDING_DETAIL_SQL: &str = "SELECT a.fired_at AS alert_oldest_at, \
      a.kind AS alert_oldest_kind, a.name AS alert_oldest_server, \
@@ -323,7 +329,9 @@ const PENDING_DETAIL_SQL: &str = "SELECT a.fired_at AS alert_oldest_at, \
      (SELECT min(coalesce(last_user_at, created_at)) FROM tickets WHERE status = 'open') \
        AS ticket_oldest_at, \
      (SELECT last_error FROM mail_outbox WHERE status = 'dead' \
-       ORDER BY settled_at DESC NULLS LAST LIMIT 1) AS mail_last_error \
+       ORDER BY settled_at DESC NULLS LAST LIMIT 1) AS mail_last_error, \
+     (SELECT coalesce(sum(amount_units), 0)::bigint FROM chain_transfers WHERE status = 'unmatched') \
+       AS chain_unmatched_units \
      FROM (SELECT 1) one \
      LEFT JOIN LATERAL (SELECT al.fired_at, al.kind, s.name FROM server_alerts al \
        JOIN servers s ON s.id = al.server_id WHERE al.status = 'firing' \

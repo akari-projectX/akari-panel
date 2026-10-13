@@ -42,7 +42,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 |---|---|---|
 | `/` | 仪表盘（续费范围：缩减版 + 续费横幅；封禁：封禁说明）。「近 7 日流量趋势」= `pages/dash/week-chart`：纯 HTML/CSS 的堆叠柱（下行实色、上行浅一档），纵轴按最大一天自动 GB/MB/KB 与整齐刻度（`lib/traffic` 的 `weekAxis`），柱顶写当天合计，横轴星期 + 月-日、最后一天写「今天」（全站时区的日），悬停 / 点按 / Tab 出提示（下行、上行、合计、计费）；不用图表库（recharts 只剩使用明细页） | 全部 |
 | `/shop` | 商店（服务端报价、优惠码（只在确认订单弹窗里填，列表不带码）、余额抵扣、折算与作废确认、拒绝原因、支付方式）。套餐列表 = `components/plan-grid`：顶上时长切换（`lib/shop` 的 `periodChoices` / `defaultPeriod`：默认当前套餐要续的那一档，否则最多套餐有的那一档），每张卡 = 名称 + 一行状态字（当前套餐 / 已售罄 / 仅限现有用户续费 / 仅剩 N 个名额，不用徽章）→ 该周期标价 + 折合每月 + 面板算出的本次应付（折算、余额）→ 三行规格（流量、重置、速率）→ 站长说明 → 操作；没有该周期的卡写「没有{时长}」+「看{它有的时长}」；列数随套餐数（1 个最宽 420px，2/3/4 栏，5–6 个三栏，平板两栏，手机一栏） | full、renewal |
-| `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台，轮询；手机上金额单在付款区上面）、退款去向 | full、renewal |
+| `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台 / USDT 链上转账（`components/chain-payment`：网络提醒、精确金额与高亮的识别尾数、共用收款地址 + 二维码（只含地址）、倒计时 + 保留期说明、确认进度 x/N；订单已结束但转账确认中时继续轮询，没看到转账时说明保留期内到账仍会开通、没转的重新下单），轮询；手机上金额单在付款区上面）、退款去向 | full、renewal |
 | `/wallet` | **邀请与钱包**（2026-10-13 合并，导航上叫「邀请」，续费范围叫「钱包」）：概览两栏 = 账户余额 / 可提现 / 审核中 + 申请提现 ｜ 邀请链接 + 返佣条款；下面分页 `?tab=invite`（收益数字、邀请码、返佣明细；full 的默认）/ `ledger`（收支流水；续费范围只有它）/ `withdrawals`（提现记录）。USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希）与邀请只对 full（`pages/dash/wallet.tsx` + `wallet-invite.tsx`）。站内去钱包的链接用 `R.walletTab('ledger')` | full、renewal（分页按范围） |
 | `/invite` | 旧地址：跳到 `/wallet?tab=invite`（仍在 `access::PORTAL_PAGES` 里，收藏夹与旧链接照样能用） | 全部 |
 | `/nodes` | 可用入口（每个入口一行；倍率 = 此刻生效的倍率，D9；状态 在线/离线/维护中（中转健康检查失败或服务器额度用完 = 维护中，置灰，订阅里没有它）、负载等级、延迟参考（面板 TCP 测速优先），图例 + 每 30 秒刷新（`hooks/use-auto-reload`，仪表盘「订阅内的线路」同样）） | full |
@@ -73,7 +73,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 
 ## 端到端（`../scripts/e2e-portal.sh`，CI job `e2e`）
 
-起一个真实面板（独立库 `akari_e2e`、Valkey 15、`/tmp/akari-e2e`、端口 8090）、Mailpit（11026/18026）、模拟支付宝（18489，含原路退款）、一个占着中转入口端口的 TCP 监听（否则健康检查 3 分钟后隐藏该入口），
+起一个真实面板（独立库 `akari_e2e`、Valkey 15、`/tmp/akari-e2e`、端口 8090，`AKARI_TEST_LIMITS=chain_rpc_loopback=1`）、Mailpit（11026/18026）、模拟支付宝（18489，含原路退款）、模拟 EVM JSON-RPC 节点（18491，`scripts/mock-chain-rpc.py`，与 smoke 共用；`e2e/usdt.spec.ts` 临时启用一个 USDT 链上收款方式、结束时停用）、一个占着中转入口端口的 TCP 监听（否则健康检查 3 分钟后隐藏该入口），
 以及 **TLS 前端** `e2e/tls-proxy.mjs`：浏览器访问 `https://portal.e2e.test:8493`（Chromium 用 `--host-resolver-rules` 指到本机、`--ignore-certificate-errors-spki-list` 只信任那把临时密钥）——主域名是 https 源，通行密钥（虚拟认证器）因此能端到端走通，邮件链接也指向它。
 种子数据与测试里的接口调用直连 `http://127.0.0.1:8090`（IP 字面量过得了主域名闸门）。代理给每个连接一个随机的 `X-Forwarded-For`，按地址的限速不会串到别的用例。
 桌面（Desktop Chrome）与手机（Pixel 7）各跑一遍；会改状态的用例每个视口用自己的账户（`mine(info, 'shop')` → `shop-desktop@e2e.test`）。

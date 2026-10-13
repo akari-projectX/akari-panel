@@ -61,6 +61,8 @@ pub struct TransferView {
     out_trade_no: Option<String>,
     /// The order's amount in CNY fen (to compare when assigning).
     order_amount_cents: Option<i64>,
+    /// The order's exact token amount (base units), when it has one.
+    order_expected_units: Option<i64>,
     note: Option<String>,
     seen_at: DateTime<Utc>,
     confirmed_at: Option<DateTime<Utc>>,
@@ -73,7 +75,8 @@ const TRANSFER_SQL: &str = "SELECT t.id, t.method_id, pm.display_name AS method_
      GREATEST(0, c.head - t.block_number + 1) AS confirmations, t.from_address, t.amount_units, \
      (t.amount_units / 1000000)::text || '.' || lpad((t.amount_units % 1000000)::text, 6, '0') \
        AS amount, t.status, t.reason, t.order_id, o.out_trade_no, \
-     o.amount_cents AS order_amount_cents, t.note, t.seen_at, t.confirmed_at, t.resolved_at, \
+     o.amount_cents AS order_amount_cents, \
+     (SELECT cp.amount_units FROM chain_payments cp WHERE cp.order_id = t.order_id) AS order_expected_units, t.note, t.seen_at, t.confirmed_at, t.resolved_at, \
      u.email AS resolved_by_email \
      FROM chain_transfers t \
      LEFT JOIN payment_methods pm ON pm.id = t.method_id \
@@ -135,11 +138,67 @@ pub async fn list(
     ))
 }
 
+/// An unpaid order of the transfer's method that the admin may assign it
+/// to (`GET …/chain-transfers/{id}/candidates`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CandidateView {
+    id: Uuid,
+    out_trade_no: String,
+    status: String,
+    user_email: Option<String>,
+    plan_name: String,
+    amount_cents: i64,
+    created_at: DateTime<Utc>,
+    /// The exact amount the payer was asked for (base units).
+    amount_units: i64,
+    reserved_until: DateTime<Utc>,
+}
+
+/// Unpaid orders of the transfer's method from the week before the
+/// transfer up to now, closest amount first (at most 20; `chain_payments_match`
+/// narrows by method).
+const CANDIDATES_SQL: &str = "SELECT o.id, o.out_trade_no, o.status, u.email AS user_email, \
+     o.plan_name, o.amount_cents, o.created_at, cp.amount_units, cp.reserved_until \
+     FROM chain_transfers t \
+     JOIN chain_payments cp ON cp.method_id = t.method_id \
+       AND cp.created_at >= coalesce(t.block_time, t.seen_at) - interval '7 days' \
+     JOIN orders o ON o.id = cp.order_id AND o.status <> 'paid' \
+     LEFT JOIN users u ON u.id = o.user_id \
+     WHERE t.id = $1 \
+     ORDER BY abs(cp.amount_units - t.amount_units), o.created_at DESC LIMIT 20";
+
+/// GET /payments/chain-transfers/{id}/candidates (admin): the unpaid
+/// orders of the same method an unmatched transfer could be assigned to.
+pub async fn candidates(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((_, id)): Path<(String, i64)>,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM chain_transfers WHERE id = $1")
+        .bind(id)
+        .fetch_optional(state.pg())
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::not_found());
+    }
+    let orders: Vec<CandidateView> = sqlx::query_as(CANDIDATES_SQL)
+        .bind(id)
+        .fetch_all(state.pg())
+        .await?;
+    Ok(Json(json!({ "orders": orders })))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssignReq {
     pub order_id: Uuid,
     pub reason: String,
+    /// The transfer is less than the order's exact amount: the admin has
+    /// seen both and pays the order anyway (else 409
+    /// `chain.assign_confirm_required` with both amounts).
+    #[serde(default)]
+    pub confirm_short: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +287,22 @@ pub async fn apply_assign(
     if status == "paid" {
         return Err(conflict!("chain.order_paid", "the order is already paid"));
     }
+    // What the payer was asked to send (every order of an on-chain method
+    // has one; 0 = none recorded, so anything is short).
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT COALESCE((SELECT amount_units FROM chain_payments WHERE order_id = $1), 0)",
+    )
+    .bind(req.order_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    if (t.amount_units < expected || expected == 0) && !req.confirm_short {
+        return Err(conflict!(
+            "chain.assign_confirm_required",
+            "the transfer ({transfer}) is less than the order's amount ({expected}); confirm to pay the order anyway",
+            transfer = super::format_units(t.amount_units),
+            expected = super::format_units(expected)
+        ));
+    }
     let r = orders::apply_mark_paid(
         conn,
         actor,
@@ -271,7 +346,8 @@ pub async fn apply_assign(
         Some(shown),
         Some(
             json!({ "status": "assigned", "order_id": req.order_id, "out_trade_no": otn,
-                     "order_amount_cents": cents, "reason": reason }),
+                     "order_amount_cents": cents, "expected_units": expected,
+                     "short": t.amount_units < expected, "reason": reason }),
         ),
     )
     .await?;
@@ -345,6 +421,10 @@ pub fn routes() -> axum::Router<AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
         .route("/{prefix}/api/v1/payments/chain-transfers", get(list))
+        .route(
+            "/{prefix}/api/v1/payments/chain-transfers/{id}/candidates",
+            get(candidates),
+        )
         .route(
             "/{prefix}/api/v1/payments/chain-transfers/{id}/assign",
             post(assign),

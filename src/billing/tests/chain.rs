@@ -680,6 +680,13 @@ async fn unmatched_transfers_and_admin_resolution() {
     assert_eq!(l["watchers"][0]["method_id"], method.to_string());
     assert_eq!(l["watchers"][0]["unmatched"], 2);
     assert!(l["watchers"][0]["last_error"].is_null());
+    // The dashboard's 需要你处理 row counts them.
+    let d = admin.get("/test/api/v1/dashboard").await.json();
+    assert_eq!(d["pending"]["chain_unmatched"], 2);
+    assert_eq!(
+        d["pending_detail"]["chain_unmatched_units"],
+        u as i64 + 4_170_000
+    );
     assert_eq!(
         admin.get(&format!("{TRANSFERS}?status=bogus")).await.status,
         StatusCode::BAD_REQUEST
@@ -704,6 +711,34 @@ async fn unmatched_transfers_and_admin_resolution() {
     let r2 = order_with(&c, plan, None).await;
     let order2 = order_id(&r2);
     let wid = transfer_id(&db, &wrong).await;
+    // The orders it could go to: unpaid ones of the same method only.
+    let cands = admin
+        .get(&format!("{TRANSFERS}/{wid}/candidates"))
+        .await
+        .json();
+    let ids: Vec<&str> = cands["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![order2.to_string().as_str()], "{cands:?}");
+    assert!(cands["orders"][0]["amount_units"].as_i64().unwrap() > 4_170_000);
+    assert_eq!(
+        admin
+            .get(&format!("{TRANSFERS}/9999999/candidates"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        user_client(&state, user)
+            .await
+            .get(&format!("{TRANSFERS}/{wid}/candidates"))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
     let assign = |id: i64, order: Uuid, reason: &str| {
         let admin = &admin;
         let body = json!({"order_id": order, "reason": reason});
@@ -730,7 +765,19 @@ async fn unmatched_transfers_and_admin_resolution() {
         assign(gid, order2, "x").await.json()["code"],
         "chain.transfer_not_open"
     );
+    // Less than the order's exact amount: the admin must confirm.
     let r = assign(wid, order2, "用户少付了尾数，工单 #12 核实").await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::CONFLICT, json!("chain.assign_confirm_required"))
+    );
+    assert_eq!(r.json()["params"]["transfer"], "4.170000");
+    let r = admin
+        .post(
+            &format!("{TRANSFERS}/{wid}/assign"),
+            json!({"order_id": order2, "reason": "用户少付了尾数，工单 #12 核实", "confirm_short": true}),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     assert_eq!(r.json()["fulfilled"], true);
     assert_eq!(order_status(&db, order2).await.0, "paid");

@@ -101,6 +101,7 @@ export const SUB_LABELS: Record<string, { zh: string; en: string }> = {
   "finance/withdrawals": { zh: "提现审核", en: "Withdrawals" },
   "finance/balances": { zh: "余额", en: "Balances" },
   "finance/commissions": { zh: "返利", en: "Commissions" },
+  "finance/chain": { zh: "链上收款", en: "On-chain" },
   "plans/groups": { zh: "节点组", en: "Node groups" },
   "coupons/batches": { zh: "批量码", en: "Code batches" },
   "alerts/outbox": { zh: "通知记录", en: "Deliveries" },

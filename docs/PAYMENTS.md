@@ -620,10 +620,28 @@ RPC 失败只会推迟：游标不动，错误（不含 URL）记在该方式的
 `GET /api/v1/payments/chain-transfers?status=&method_id=&before=&limit=`：转账列表（新的在前）与每个链上支付方式的监听状态
 （游标、最新区块、错误、待确认/未匹配数）。对 `unmatched` 的转账：
 
-- **指定订单** `POST …/chain-transfers/{id}/assign {order_id, reason}`：订单必须属于同一个支付方式且未付款（`chain.order_mismatch` /
-  `chain.order_paid`）；经 `apply_mark_paid` 付款（`paid_via = chain`、交易号 = 交易哈希、原因记入 `manual_reason`），转账变为 `assigned`，
-  审计 `chain_transfer.assign`。金额不必一致（例如付款人少付了尾数，管理员核实后决定）。
+- **指定订单** `POST …/chain-transfers/{id}/assign {order_id, reason, confirm_short?}`：订单必须属于同一个支付方式且未付款（`chain.order_mismatch` /
+  `chain.order_paid`）；转账**少于**订单应付的精确金额时必须带 `confirm_short: true`（否则 409 `chain.assign_confirm_required`，参数给出两个金额）；
+  经 `apply_mark_paid` 付款（`paid_via = chain`、交易号 = 交易哈希、原因记入 `manual_reason`），转账变为 `assigned`，
+  审计 `chain_transfer.assign`（含应付金额与是否少付）。例如付款人少付了尾数，管理员核实后决定。
 - **忽略** `POST …/chain-transfers/{id}/ignore {reason}`：已在面板外处理（如原路退回），转账变为 `ignored`，审计 `chain_transfer.ignore`。
+
+### 界面
+
+- **门户订单页**（`spa/src/components/chain-payment.tsx`）：网络提醒（只能用所选网络转 USDT）、精确金额（最后 4 位识别尾数高亮，可复制；
+  提示「金额的最后几位用来识别你的订单」与交易所提币扣手续费的注意事项）、收款地址（可复制、二维码只含地址；写明这是共用地址、按金额识别）、
+  USDT 合约、倒计时（到订单有效期，每秒走）并直说「超时后订单关闭，但保留截止前到账的这笔金额仍会开通」、转账进度（等待转账 / 已收到·确认中 x/N（进度条）/ 已确认，
+  付款成功沿用付款结果弹窗）；订单已超时或取消时：已看到转账则继续显示进度并轮询，没看到则说明「保留期内到账仍会自动开通，不用做任何事；
+  还没转的不要再转这个金额，重新下单拿新金额」，过了保留期则请提交工单附交易哈希。支付方式选择器里显示后台填的名称（新建时默认「USDT（Polygon）」/「USDT（Plasma）」）与 `usdt` 图标。
+- **后台 · 系统设置 → 支付方式 → 添加 → USDT 链上收款**（INVENTORY SET-29）：名称随网络；代币合约预填该网络的官方合约、随网络切换，
+  与官方相同时存为默认（null）；RPC 端点按密钥处理（只显示「已设置 N 个」，填写 = 全部替换）；汇率即时显示「1 USDT = ¥x.xx」；确认数占位为该网络默认；
+  网络 / 地址 / 代币保存后只读；「测试连接」在弹窗内显示链 ID（不符时写应为多少）、最新区块与代币小数位（`POST /settings/payments/{id}/test` 的 `details`）。
+- **后台 · 资金 → 链上收款**（`/finance/chain`，INVENTORY FIN-06）：放在「资金」而不是「订单」——它和提现审核一样是要人处理的资金队列，
+  订单页只看单笔；仪表盘「需要你处理」有一行「N 笔链上转账未匹配订单」（`GET /dashboard` 的 `pending.chain_unmatched` 与
+  `pending_detail.chain_unmatched_units`）直达。页面：每个方式的监听状态（最新区块、已读到的区块、落后块数、上次错误；持续失败时红色横幅）、
+  未匹配 / 确认中 / 全部与按方式筛选、交易哈希链到区块浏览器（Polygonscan、Plasmascan）；「指派」从同一方式最近 7 天的未付款订单里选
+  （`GET …/chain-transfers/{id}/candidates`，金额最接近的在前）或按订单号查找，并排显示订单应付与转账金额，**转账更少时提交后再确认一次**（带 `confirm_short`），
+  原因必填；别的支付方式的订单不能指派（后端 `chain.order_mismatch`）；「忽略」说明后果、原因必填。
 
 ### 退款
 

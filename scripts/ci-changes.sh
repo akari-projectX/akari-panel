@@ -32,7 +32,7 @@ groups_of() {
   esac
   case "$1" in
     src/* | migrations/* | proto/* | build.rs | Cargo.toml | Cargo.lock | rust-toolchain.toml | \
-      smoke.sh | scripts/smoke-* | Makefile | docker-compose.yml | deploy/systemd/* | \
+      smoke.sh | scripts/smoke-* | scripts/mock-chain-rpc.py | Makefile | docker-compose.yml | deploy/systemd/* | \
       deploy/panel.toml.example | scripts/install-test/* | scripts/install-test-alpine/*)
       echo smoke ;;
   esac
@@ -41,7 +41,7 @@ groups_of() {
       src/account.rs | src/billing/* | src/signup/* | src/passkey.rs | src/botguard.rs | src/erase.rs | \
       src/kb.rs | src/announcements.rs | src/tickets.rs | src/trafficlog.rs | src/nodestat.rs | \
       src/branding.rs | src/plans.rs | src/sub/* | src/rates.rs | src/settings.rs | src/error_codes.txt | \
-      migrations/* | scripts/e2e-portal.sh | scripts/e2e.sh | Makefile | docker-compose.yml)
+      migrations/* | scripts/e2e-portal.sh | scripts/e2e.sh | scripts/mock-chain-rpc.py | Makefile | docker-compose.yml)
       echo e2e ;;
   esac
   case "$1" in

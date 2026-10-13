@@ -111,6 +111,7 @@ branding.too_many_downloads
 branding.too_many_links
 branding.url_invalid
 branding.version_conflict
+chain.assign_confirm_required
 chain.order_mismatch
 chain.order_paid
 chain.order_unknown

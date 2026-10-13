@@ -111,6 +111,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "branding.too_many_links": ["页脚链接最多 {max} 个", "At most {max} footer links"],
   "branding.url_invalid": ["链接须以 https://、http:// 或 / 开头", "Links must start with https://, http:// or /"],
   "branding.version_conflict": ["设置已被修改（可能是其他管理员），请刷新后重试", "The settings were changed meanwhile (perhaps by another admin); reload and retry"],
+  "chain.assign_confirm_required": ["转账金额（{transfer} USDT）少于订单应付的 {expected} USDT，确认后才会为该订单付款", "The transfer ({transfer} USDT) is less than the order's {expected} USDT: confirm to pay the order anyway."],
   "chain.order_mismatch": ["该订单不是用这笔转账的支付方式下的", "The order does not use this transfer's payment method."],
   "chain.order_paid": ["该订单已付款", "The order is already paid."],
   "chain.order_unknown": ["找不到这个订单", "No such order."],

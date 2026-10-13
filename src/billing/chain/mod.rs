@@ -180,19 +180,28 @@ pub fn judge_test(
     head: Result<u64, rpc::RpcError>,
     decimals: Result<u64, rpc::RpcError>,
 ) -> TestOutcome {
-    let fail = |result: &'static str, message: String| TestOutcome {
-        ok: false,
+    // What was read, for the console (each null when unknown).
+    let details = json!({
+        "expected_chain_id": c.chain_id,
+        "chain_id": chain_id.as_ref().ok(),
+        "head": head.as_ref().ok(),
+        "decimals": decimals.as_ref().ok(),
+    });
+    let out = |ok: bool, result: &'static str, message: String| TestOutcome {
+        ok,
         result,
         message,
         code: None,
         sub_code: None,
+        details: Some(details.clone()),
     };
     let id = match chain_id {
         Ok(id) => id,
-        Err(e) => return fail("rpc_unreachable", format!("RPC 端点不可用：{e}")),
+        Err(e) => return out(false, "rpc_unreachable", format!("RPC 端点不可用：{e}")),
     };
     if id != c.chain_id {
-        return fail(
+        return out(
+            false,
             "chain_mismatch",
             format!(
                 "RPC 端点的链 ID 是 {id}，不是 {}（{}）：请填写该链的 RPC",
@@ -202,24 +211,24 @@ pub fn judge_test(
     }
     let head = match head {
         Ok(h) => h,
-        Err(e) => return fail("rpc_unreachable", format!("读取最新区块失败：{e}")),
+        Err(e) => return out(false, "rpc_unreachable", format!("读取最新区块失败：{e}")),
     };
     match decimals {
-        Ok(d) if d == u64::from(DECIMALS) => TestOutcome {
-            ok: true,
-            result: "rpc_ok",
-            message: format!(
+        Ok(d) if d == u64::from(DECIMALS) => out(
+            true,
+            "rpc_ok",
+            format!(
                 "连接正常：{}（链 ID {id}），最新区块 {head}，代币合约为 {DECIMALS} 位小数",
                 c.label
             ),
-            code: None,
-            sub_code: None,
-        },
-        Ok(d) => fail(
+        ),
+        Ok(d) => out(
+            false,
             "token_invalid",
             format!("代币合约的小数位是 {d}，不是 USDT 的 {DECIMALS} 位：请检查合约地址"),
         ),
-        Err(e) => fail(
+        Err(e) => out(
+            false,
             "token_invalid",
             format!("读取代币合约失败（地址不是该链上的代币合约？）：{e}"),
         ),
@@ -727,6 +736,14 @@ mod tests {
     fn connection_verdicts() {
         let p = chain("polygon").unwrap();
         assert_eq!(ok_test(p, 137, Ok(6)).result, "rpc_ok");
+        assert_eq!(
+            ok_test(p, 137, Ok(6)).details,
+            Some(json!({"expected_chain_id": 137, "chain_id": 137, "head": 100, "decimals": 6}))
+        );
+        assert_eq!(
+            ok_test(p, 9745, Ok(6)).details.unwrap()["chain_id"],
+            json!(9745)
+        );
         assert!(ok_test(p, 137, Ok(6)).ok);
         assert_eq!(ok_test(p, 9745, Ok(6)).result, "chain_mismatch");
         assert_eq!(ok_test(p, 137, Ok(18)).result, "token_invalid");

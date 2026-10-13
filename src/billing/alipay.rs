@@ -791,6 +791,7 @@ pub fn judge_test(r: Result<Value, CallError>) -> TestOutcome {
         message: message.to_string(),
         code,
         sub_code: sub,
+        details: None,
     };
     match r {
         Ok(_) => out(
