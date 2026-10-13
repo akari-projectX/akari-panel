@@ -228,7 +228,7 @@
 | SET-08 | 登录与人机验证 → 登录方式：密码登录后引导绑定、用户只用通行密钥；"管理员只用通行密钥"在危险操作区，保存时确认（你的通行密钥数、恢复办法 `akari admin reset-login`，输入"只用通行密钥"） | `GET/PUT /settings/auth` | D7 | 实现 |
 | SET-09 | 安全值分到各分区：Cloudflare 网段（域名与证书，弹窗编辑）、审计/流量明细保留天数（数据保留，范围即时校验，缩短时行内提示"保存后将删除更早的数据"、保存时确认并输入"删除旧数据"；另列"不受这里控制的数据"）、额外信任的发布公钥 + 内置官方公钥只读（更新源与验签，弹窗添加，增删在保存时确认） | `PUT /settings/security` | W25 | 实现 |
 | SET-10 | 订阅路径（订阅链接与格式 → 危险操作）：路径默认打码可显示；"轮换…"弹窗：随机或自定义、可选邮件通知所有用户（默认勾选）→ 确认"旧链接全部失效"（输入确认）→ 完成后显示新地址格式与通知任务进度（链接到用户 → 批量任务） | `PUT /settings/access/sub-path` | D11 + 裁决⑥ | 实现 |
-| SET-11 | 分流规则（过渡版，服务分流编辑器见路由 PR 3）：拦截与直连两段的规则表（内置分类/GeoSite/GeoIP/域名/后缀/关键字/IP 段/规则集链接 × 直连/拒绝）、增删、排序（保存时拒绝的排在直连前）、空值即时提示（附该类型示例）、IP 段格式校验、固定的兜底行（服务分流 → 默认代理）、"预览 Clash 片段"、地址模板缺 `{name}` 报错、规则集 URL 模板；服务、线路、DNS 保持已保存的值；恢复默认在危险操作区 | `PUT /settings/subscription`（`routing`） | W30 / sub-service-groups | 实现 |
+| SET-11 | 分流规则编辑器（路由 PR 3，交互按定稿样稿 `design/routing-mock`，懒加载分包）：模式（规则分流 / 全局代理，全局时分区变灰并提示）；按去向分区 拦截 → 直连 → 各服务 → 其余全部走默认代理（可选入口 / 地区组 / 标签组 / 全部节点）；每个分区一个自动识别的输入框（域名 → 后缀或精确、IP 段、分类按中英名与别名、`geosite:`/`geoip:`、https 规则集链接；↑↓ 选建议、回车添加、Esc 关闭），域名条目可切换 后缀 / 精确 / 关键词；规则集添加时由面板下载检查，行内显示条数、sing-box 不支持的条数与错误、面板副本的下载时间与刷新失败；同一条目出现在更早的分区时标出"这里不生效"；服务 = 首选入口 + 有序备用（入口、地区组、标签组，↑↓ 排序、最多 8 个），服务本身可上下移、删除（确认）、从常用目录或自定义（弹窗：名称、图标）添加；"这个网站会走哪？"（按草稿在浏览器里算：域名 / IP / 关键词与已检查规则集的样例按内容匹配，内置分类只按名字推测并写明以客户端列表为准）、效果一句话、"用户在 Clash 里看到的"分组预览（规则同 `sub::groups`，注明按用户套餐生成）；DNS 推荐 / 不下发 / 自定义（国内 / 国外列表即时校验、Fake-IP）；高级：标签组、规则库地址模板；整份一次保存，服务端错误码落到对应条目 / 服务 / DNS；删除了的入口标红并计入"需要修正"；恢复推荐设置在危险操作区（确认，进入保存栏）。未做：生成的 Clash 配置预览（没有按草稿渲染样例订阅的后台接口，不在前端重写渲染器） | `PUT /settings/subscription`（`routing`、规则库地址）、`GET …/subscription/catalog`、`POST …/subscription/rule-set/check` | 路由 PR 1–3 | 实现 |
 | SET-12 | 订阅格式开关（Clash/mihomo、sing-box、通用链接）与门户一键导入按钮（5 张小卡：Clash、Stash、Shadowrocket、sing-box、Hiddify；依赖的格式关闭时变灰写"格式已关闭"）；关闭格式与开启倍率合并为一次保存确认 | 同上 | PR② §5 | 实现 |
 | SET-13 | 注册与邀请：开放注册、需要验证邮箱、需要邀请码（独立开关）、单次邀请码、邮箱域名白名单（内联胶囊输入：回车添加、× 删除，说明随数量变化）、每人邀请码数量（0–100 即时校验）、试用套餐/天数、找回密码 | `GET/PUT /settings/signup` | D1/W15 | 实现 |
 | SET-14 | 登录与人机验证 → 人机验证：Turnstile 站点密钥 / 密钥（只写）、需要验证的表单是可勾选的块（登录（门户与后台）/注册/找回；勾了表单而站点密钥为空时报错）、蜜罐、最短提交时间（0–60 即时校验）；警告显示 | `GET/PUT /settings/auth` | W27 | 实现 |
@@ -323,6 +323,7 @@
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |
 | `GET/PUT /settings/auth` | SET-08、14 |
 | `PUT /settings/security`、`/settings/nodes`、`/settings/probe`、`/settings/subscription` | SET-09、20、21、11、12、26 |
+| `GET /settings/subscription/catalog`、`POST /settings/subscription/rule-set/check` | SET-11 |
 | `GET/PUT /settings/signup` | SET-13 |
 | `GET/PUT /settings/mail`、`POST …/test`、`/diagnose`、`GET /mail/outbox`、`POST …/retry`、`/settings/mail-templates*` | SET-15…18 |
 | `/settings/payments*` | SET-19 |
