@@ -252,7 +252,7 @@ test("FIN-06 DSH-04: on-chain USDT transfers — the dashboard row, watcher stat
     );
 
   // The dashboard's 需要你处理 row leads here.
-  await openConsole(page, "/");
+  await openConsole(page, "");
   const pend = page.getByRole("link", { name: /笔链上转账未匹配订单/ });
   await expect(pend).toBeVisible();
   await pend.click();
