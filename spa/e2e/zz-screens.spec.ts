@@ -1,5 +1,5 @@
 /*
- * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐、钱包与邀请，桌面 + 手机 × 浅色 + 深色，简体中文。
+ * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐、钱包与邀请，以及几张没改版的页面（仪表盘、订单、工单、设置），桌面 + 手机 × 浅色 + 深色，简体中文。
  * 写到 test-results/screens/<名字>-<desktop|mobile>-<light|dark>.png，CI 作为 portal-screens 工件上传，给设计走查对照。
  * 放在最后跑（文件名 zz-，只在 mobile 项目里跑一次——那时两个视口的其余用例都跑完了），用前面用例留下的数据；
  * 另外加两个只为截图的套餐（多周期、仅限续费），看 1–4 个套餐时的排版。拍不到的图记一条注解，不让整套失败。
@@ -95,6 +95,15 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
         await page.waitForLoadState('networkidle');
       },
     },
+    /* 没改版的页面：看全局的字重、颜色与动效变化 */
+    ...(['/', '/orders', '/tickets', '/account'] as const).map((path) => ({
+      name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
+      run: async (page: Page) => {
+        await page.goto(path);
+        await page.locator('main h1').first().waitFor();
+        await page.waitForLoadState('networkidle');
+      },
+    })),
     {
       name: 'wallet', account: inviter,
       run: async (page) => {
