@@ -25,8 +25,10 @@ function LegalPage({ slug, title }: { slug: 'terms' | 'privacy'; title: string }
   const missing = page.error instanceof ApiError && page.error.status === 404;
 
   return (
+    /* 阅读栏居中、最宽 760px（和设置页的内容栏同宽）：以前靠左 68ch，宽屏上右半边整片空着 */
     <div className="page-wrap pt-14 pb-24">
-      <header className="max-w-[68ch] border-b border-border pb-8">
+      <div className="mx-auto max-w-[760px]">
+      <header className="border-b border-border pb-8">
         <h1 className="page-title">{page.data ? pick(locale, page.data.title_zh, page.data.title_en) : tr(title)}</h1>
         {page.data && (
           <div className="mt-3 text-[12.5px] text-muted-foreground">
@@ -34,7 +36,7 @@ function LegalPage({ slug, title }: { slug: 'terms' | 'privacy'; title: string }
           </div>
         )}
       </header>
-      <div className="max-w-[68ch] pt-8">
+      <div className="pt-8">
         {page.loading && !page.data ? (
           <Loading rows={6} />
         ) : page.data ? (
@@ -46,6 +48,7 @@ function LegalPage({ slug, title }: { slug: 'terms' | 'privacy'; title: string }
         ) : (
           <LoadError error={page.error} onRetry={page.reload} />
         )}
+      </div>
       </div>
     </div>
   );
