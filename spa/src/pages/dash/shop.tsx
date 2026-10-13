@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Crown, Ticket, TicketPercent, TriangleAlert, Wallet } from 'lucide-react';
-import { DUR, NUDGE, enterProps, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,8 +11,8 @@ import { Progress } from '@/components/ui/progress';
 import { Switch } from '@/components/ui/switch';
 import { PageTitle, Row, Section } from '@/components/flat';
 import { LoadError, Loading, Empty } from '@/components/data-state';
-import PlanContent from '@/components/plan-content';
 import PlanSpecs from '@/components/plan-specs';
+import PlanGrid from '@/components/plan-grid';
 import OpenOrderNotice from '@/components/pending-order';
 import PaymentMethodPicker from '@/components/payment-method-picker';
 import { useOpenOrder } from '@/hooks/use-open-order';
@@ -23,10 +22,10 @@ import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
 import { useErrorText } from '@/lib/errors';
 import {
-  PERIOD_MONTHS, daysLeft, formatDate, formatMoney, formatSpeed, periodText, trafficUsage, yuan,
+  PERIOD_MONTHS, daysLeft, formatDate, formatMoney, formatSpeed, periodText, trafficUsage,
 } from '@/lib/format';
 import {
-  ACTION_TEXT, COUPON_REFUSAL_TEXT, REFUSAL_TEXT, needsMethod, needsSwitchConfirm, offerKey, planRefusal, preselect,
+  ACTION_TEXT, COUPON_REFUSAL_TEXT, REFUSAL_TEXT, needsMethod, needsSwitchConfirm, offerKey,
 } from '@/lib/shop';
 import { R } from '@/lib/routes';
 import { cn, safeUrl } from '@/lib/utils';
@@ -38,7 +37,6 @@ import { useT, useTp } from '@/i18n';
  * 下单一次调用（POST /me/orders），金额在面板的 SQL 里算；余额、优惠、折算全额抵扣时订单立即付清。
  */
 export default function Shop() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const errText = useErrorText();
@@ -161,7 +159,7 @@ export default function Shop() {
             <div>
               <div className="text-[13px] text-muted-foreground">{tr('套餐剩余')}</div>
               <div className="hero-line mt-1.5">
-                <span className="hero-num grad-text">{left === null ? tr('长期') : left}</span>
+                <span className="hero-num">{left === null ? tr('长期') : left}</span>
                 {left !== null && <span className="text-muted-foreground">{tr('天')}</span>}
               </div>
             </div>
@@ -203,67 +201,7 @@ export default function Shop() {
           : shop.error && !data ? <LoadError error={shop.error} onRetry={shop.reload} />
           : plans.length === 0 ? <Empty title="暂时没有可购买的套餐" desc="站点还没有上架套餐。" />
           : (
-            <div className="plan-cols">
-              {plans.map((pl, i) => {
-                const first = me ? preselect(pl, me) : undefined;
-                const refusal = planRefusal(pl);
-                const head = first ?? pl.offers.find((o) => o.period !== 'reset') ?? pl.offers[0];
-                const cycles = pl.offers.filter((o) => o.period !== 'reset');
-                const best = bestMonthly(cycles);
-                return (
-                  <div
-                    key={pl.plan_id}
-                    {...enter({ delay: stagger(i) })}
-                    className={cn('plan-col', pl.current && 'is-current', refusal && !pl.current && 'opacity-55')}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-[17px] font-medium">{pl.name}</span>
-                      {pl.current ? <Badge className="shrink-0 rounded-full bg-emerald-500/12 text-success">{tr('当前套餐')}</Badge>
-                        : pl.sold_out ? <Badge variant="secondary" className="shrink-0 rounded-full">{tr('已售罄')}</Badge>
-                        : pl.remaining != null && <Badge className="shrink-0 rounded-full bg-amber-500/12 text-warning">{tp('仅剩 {n} 个名额', { n: pl.remaining })}</Badge>}
-                    </div>
-
-                    {head && (
-                      <div className="hero-line my-4">
-                        <span className="text-[15px] text-muted-foreground">¥</span>
-                        <span key={`${offerKey(head)}-${head.amount_cents}`} {...enterProps(true, { y: NUDGE, duration: DUR.fast })} className="hero-num">
-                          {yuan(head.amount_cents ?? head.price_cents)}
-                        </span>
-                        <span className="text-sm text-muted-foreground">/ {periodText(head.period, head.days, tr, tp)}</span>
-                      </div>
-                    )}
-                    <div className="space-y-1 text-[12.5px] text-muted-foreground">
-                      {head && head.amount_cents != null && head.amount_cents !== head.price_cents && (
-                        <div>{tp('原价 {v}', { v: formatMoney(head.price_cents) })}</div>
-                      )}
-                      <div>
-                        {cycles.length > 1
-                          ? tp('可选 {list}', { list: cycles.map((o) => periodText(o.period, o.days, tr, tp)).join(' · ') })
-                          : tr('仅此一个周期')}
-                      </div>
-                      {best && head && offerKey(best.offer) !== offerKey(head) && (
-                        <div className="text-success">
-                          {tp('{p}折合每月 {v}', { p: periodText(best.offer.period, best.offer.days, tr, tp), v: formatMoney(best.monthly) })}
-                        </div>
-                      )}
-                    </div>
-
-                    <PlanSpecs plan={pl} className="my-5" />
-                    <PlanContent content={pl.description} className="mb-5.5 flex-1" />
-
-                    <Button
-                      variant={pl.current ? 'default' : first ? 'outline' : 'secondary'}
-                      /* 买不了的套餐整张卡已经淡了一层，按钮不再叠一层禁用透明度（以前「已售罄」几乎看不见） */
-                      className={cn('h-10 w-full', !first && 'disabled:opacity-100 text-muted-foreground')}
-                      disabled={!first}
-                      onClick={() => openBuy(pl, first, first?.action === 'reset')}
-                    >
-                      {first?.action ? tr(ACTION_TEXT[first.action]) : tr(REFUSAL_TEXT[refusal ?? 'not_for_sale'])}
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
+            <PlanGrid plans={plans} me={me ?? undefined} onBuy={openBuy} />
           )}
       </Section>
 
@@ -445,13 +383,3 @@ function Line({ k, v, tone }: { k: string; v: string; tone?: string }) {
     </div>
   );
 }
-
-/** 周期性报价里折合每月最便宜的一档（只是展示用的除法，价格本身来自面板）；少于两档时为 null */
-function bestMonthly(offers: Offer[]): { offer: Offer; monthly: number } | null {
-  const opts = offers
-    .filter((o) => o.action && o.amount_cents != null && PERIOD_MONTHS[o.period])
-    .map((o) => ({ offer: o, monthly: Math.round((o.amount_cents ?? 0) / (PERIOD_MONTHS[o.period] ?? 1)) }));
-  if (opts.length < 2) return null;
-  return opts.reduce((a, b) => (b.monthly < a.monthly ? b : a));
-}
-

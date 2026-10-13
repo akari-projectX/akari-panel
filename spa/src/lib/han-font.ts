@@ -1,5 +1,6 @@
 /* ?url：Vite 处理这张样式表（字体切片加哈希、改写地址），给出它的地址；声明本身不进应用样式表 */
 import FONT_CSS from '@/assets/fonts/akari.css?url';
+import INTER_CSS from '@/assets/fonts/inter.css?url';
 import { sourceOf } from '@/i18n';
 
 /*
@@ -52,9 +53,16 @@ function ensureCss(): Promise<boolean> {
   return cssLoading;
 }
 
-/** 确保字体声明在页面上 */
+/** 确保字体声明在页面上：Noto Sans SC（akari.css）与显示拉丁字母、数字的 Inter（inter.css，和后台同一种字形） */
 export function loadAkariFont() {
   void ensureCss();
+  if (!document.getElementById('inter-font')) {
+    const el = document.createElement('link');
+    el.rel = 'stylesheet';
+    el.id = 'inter-font';
+    el.href = INTER_CSS;
+    document.head.appendChild(el);
+  }
 }
 
 /**

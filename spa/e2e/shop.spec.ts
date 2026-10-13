@@ -12,8 +12,16 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await signIn(page, mine(info, 'shop'));
   await open(page, '/shop');
   await expect(page.locator('.plan-col').filter({ hasText: seed.premium })).toBeVisible();
-  /* 服务端报价：每个周期的价格都来自 /me/shop */
-  await expect(page.locator('.plan-col').filter({ hasText: seed.plan }).getByText(/可选 .*月.*年/)).toBeVisible();
+  /* 服务端报价：顶上的时长切换列出各套餐的周期，切到年付，卡片显示该周期的标价与折合每月（价格都来自 /me/shop） */
+  const std = page.locator('.plan-col').filter({ hasText: seed.plan });
+  await page.getByRole('tab', { name: '年付' }).click();
+  await expect(std.getByText('/ 年付')).toBeVisible();
+  await expect(std.getByText(/折合每月 ¥12\.5/)).toBeVisible();
+  /* 高级套餐没有年付：写明并给一个回到它有的时长的按钮 */
+  const prem = page.locator('.plan-col').filter({ hasText: seed.premium });
+  await expect(prem.getByText('没有年付')).toBeVisible();
+  await prem.getByRole('button', { name: '看月付' }).click();
+  await expect(page.getByRole('tab', { name: '月付' })).toHaveAttribute('aria-selected', 'true');
 
   /* 流量重置包，余额全额抵扣：面板当场付清 */
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
@@ -32,7 +40,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await page.reload();
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await open(page, '/wallet');
+  await open(page, '/wallet?tab=ledger');
   await expect(page.getByText('订单支付').locator('visible=true').first()).toBeVisible();
 
   /* 用余额续费一个月（换套餐的折算按实付的订单算） */

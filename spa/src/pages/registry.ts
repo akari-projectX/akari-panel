@@ -20,7 +20,6 @@ export const Shop = lazyRetry(() => import('@/pages/dash/shop'));
 export const Orders = lazyRetry(() => import('@/pages/dash/orders'));
 export const OrderDetail = lazyRetry(() => import('@/pages/dash/order-detail'));
 export const Wallet = lazyRetry(() => import('@/pages/dash/wallet'));
-export const Invite = lazyRetry(() => import('@/pages/dash/invite'));
 export const Tickets = lazyRetry(() => import('@/pages/dash/tickets'));
 export const Help = lazyRetry(() => import('@/pages/dash/help'));
 export const Announcements = lazyRetry(() => import('@/pages/dash/announcements'));
@@ -34,5 +33,5 @@ export const SITE_PAGES = [Terms, Privacy, Login];
 
 /** 进入用户中心后空闲时预载的那一批 */
 export const DASH_PAGES = [
-  Dashboard, Nodes, Traffic, Shop, Orders, OrderDetail, Wallet, Invite, Tickets, Help, Announcements, Account,
+  Dashboard, Nodes, Traffic, Shop, Orders, OrderDetail, Wallet, Tickets, Help, Announcements, Account,
 ];

@@ -7,7 +7,7 @@ import type { MyOrder } from '@/api';
 import { useAuth } from '@/lib/auth';
 import type { PayOutcome } from '@/lib/shop';
 import { formatDate, formatMoney } from '@/lib/format';
-import { useReducedMotion } from '@/lib/motion';
+import { DUR, useReducedMotion } from '@/lib/motion';
 import { R } from '@/lib/routes';
 import { useT } from '@/i18n';
 
@@ -16,7 +16,7 @@ import { useT } from '@/i18n';
  * 付款结果弹窗。订单页轮询到状态变化时打开；余额 / 优惠 / 折算全额抵扣的订单（当场付清、免费订单）
  * 由商店跳到订单页时带上 `state.paid`，订单页一进来就打开——两条路是同一个样子。
  *
- *   成功   对勾描画（圆环 → 对勾）+ 一次性撒花（lib/confetti，按需加载，约 1.3 秒）+ 金额 / 套餐 / 到期 + 「查看订阅」「返回仪表盘」
+ *   成功   对勾描画（圆环 → 对勾）+ 一次性小撒花（lib/confetti，按需加载，约 0.8 秒）+ 金额 / 套餐 / 到期 + 「查看订阅」「返回仪表盘」
  *   退回   付款时套餐开不了（售罄、下架…），款项已退回余额：琥珀色的退回图标弹出，按钮「查看钱包」
  *   超时   时钟轻轻摇两下，说明超过时限、已扣款请提交工单，按钮「重新选购」
  *
@@ -35,9 +35,9 @@ export default function PayResult({ order, outcome, onClose }: { order: MyOrder;
     /* 圆环画完、对勾开始落下的那一刻炸开 */
     const t = setTimeout(() => {
       void import('@/lib/confetti').then((m) => {
-        if (!cancelled && mark.current) m.default(mark.current);
+        if (!cancelled && mark.current) m.default(mark.current, DUR.celebrate * 1000);
       });
-    }, 320);
+    }, 200);
     return () => { cancelled = true; clearTimeout(t); };
   }, [outcome, still]);
 
@@ -71,7 +71,7 @@ export default function PayResult({ order, outcome, onClose }: { order: MyOrder;
       description: tr('付款时套餐已售罄、已下架，或你已经换了别的套餐。款项会退回账户余额，可以用来重新下单或申请提现；有疑问请提交工单。'),
       actions: (
         <>
-          <Button variant="outline" className="h-10" onClick={() => go(R.wallet)}>{tr('查看钱包')}</Button>
+          <Button variant="outline" className="h-10" onClick={() => go(R.walletTab('ledger'))}>{tr('查看钱包')}</Button>
           <Button className="h-10" onClick={() => go(R.dashboard)}>{tr('返回仪表盘')}</Button>
         </>
       ),

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Check, KeyRound, MailCheck, TriangleAlert } from 'lucide-react';
-import { useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/loading';
@@ -32,7 +31,6 @@ import { useLocale, useT, useTp } from '@/i18n';
  * 跟落地页共用 SiteLayout —— 这里只剩「把一栏内容居中」这一件事。
  */
 function Shell({ children }: { children: React.ReactNode }) {
-  const enter = useEnter();
   const tr = useT();
   /* /auth/options 没取到：注册、找回、通行密钥的入口都按「关」处理，表单提交也会被拒——得告诉用户，而不是只少几个按钮 */
   const { error, refresh } = useSiteOptions();
@@ -45,7 +43,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         className="pointer-events-none absolute inset-x-0 top-0 h-90"
         style={{ background: 'radial-gradient(ellipse 60% 100% at 50% 0%, color-mix(in srgb, var(--brand) 7%, transparent), transparent 70%)' }}
       />
-      <div {...enter()} className="relative w-full max-w-[360px]">
+      <div className="relative w-full max-w-[360px]">
         {error && (
           <div role="alert" className="mb-8 flex items-center gap-3 rounded-xl bg-amber-500/[.08] px-4 py-3 text-[13px] leading-[1.6] dark:bg-amber-500/[.12]">
             <TriangleAlert className="size-4 shrink-0 text-warning" />

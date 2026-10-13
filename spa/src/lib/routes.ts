@@ -14,7 +14,10 @@ export const R = {
   traffic: '/traffic',
   orders: '/orders',
   order: (id: string) => `/orders/${encodeURIComponent(id)}`,
+  /** 邀请与钱包（合并页）；section = 下面分页之一（pages/dash/wallet 的 WalletTab） */
   wallet: '/wallet',
+  walletTab: (section: 'invite' | 'ledger' | 'withdrawals') => `/wallet?tab=${section}`,
+  /** 旧地址：跳到合并页的「邀请返佣」分页（邮件、收藏夹里的链接照样能用） */
   invite: '/invite',
   tickets: '/tickets',
   ticket: (id: string) => `/tickets?id=${encodeURIComponent(id)}`,
@@ -49,7 +52,6 @@ export const PAGE_SCOPES: Record<string, Scope[]> = {
   [R.tickets]: TICKETS,
   [R.nodes]: FULL,
   [R.traffic]: FULL,
-  [R.invite]: FULL,
 };
 
 /** 某个范围能不能进这一页 */

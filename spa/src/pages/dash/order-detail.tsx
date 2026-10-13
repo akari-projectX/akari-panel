@@ -236,7 +236,7 @@ export default function OrderDetail() {
             )}
           </div>
           {(data.refund_balance_cents ?? 0) > 0 && (
-            <Button size="sm" variant="outline" onClick={() => nav(R.wallet)}>{tr('查看钱包')}</Button>
+            <Button size="sm" variant="outline" onClick={() => nav(R.walletTab('ledger'))}>{tr('查看钱包')}</Button>
           )}
         </div>
       )}

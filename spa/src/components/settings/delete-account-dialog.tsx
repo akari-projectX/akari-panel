@@ -108,7 +108,7 @@ export default function DeleteAccountDialog({ open, onOpenChange }: { open: bool
             {d.withdrawable_cents > 0 && !blocked && (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/[.07] px-4 py-3 text-[13px] leading-[1.7]">
                 <span>{tp('其中 {v} 可以先提现', { v: formatMoney(d.withdrawable_cents) })}</span>
-                <Button type="button" size="sm" variant="outline" onClick={() => go(R.wallet)}>{tr('去钱包')}<ArrowRight className="size-3.5" /></Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => go(R.walletTab('ledger'))}>{tr('去钱包')}<ArrowRight className="size-3.5" /></Button>
               </div>
             )}
             {blocked ? (
@@ -123,7 +123,7 @@ export default function DeleteAccountDialog({ open, onOpenChange }: { open: bool
                 {d.pending_withdrawals > 0 && (
                   <li className="flex flex-wrap items-center justify-between gap-2">
                     <span>{tp('还有 {n} 笔待审核的提现（{v}）：请先在钱包页撤回', { n: d.pending_withdrawals, v: formatMoney(d.pending_withdrawal_cents) })}</span>
-                    <Link to={R.wallet} onClick={() => close(false)} className="text-brand underline-offset-4 hover:underline">{tr('去钱包')}</Link>
+                    <Link to={R.walletTab('ledger')} onClick={() => close(false)} className="text-brand underline-offset-4 hover:underline">{tr('去钱包')}</Link>
                   </li>
                 )}
               </ul>

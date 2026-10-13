@@ -5,7 +5,6 @@ import { useApi } from '@/hooks/use-api';
 import { pick } from '@/lib/doc-categories';
 import { formatDate } from '@/lib/format';
 import { useSite } from '@/lib/site';
-import { useEnter } from '@/lib/motion';
 import { useLocale, useT, useTp } from '@/i18n';
 
 /**
@@ -22,13 +21,12 @@ function LegalPage({ slug, title }: { slug: 'terms' | 'privacy'; title: string }
   const tp = useTp();
   const { locale } = useLocale();
   const site = useSite();
-  const enter = useEnter();
   const page = useApi(() => pageApi.get(slug), [slug]);
   const missing = page.error instanceof ApiError && page.error.status === 404;
 
   return (
     <div className="page-wrap pt-14 pb-24">
-      <header {...enter()} className="max-w-[68ch] border-b border-border pb-8">
+      <header className="max-w-[68ch] border-b border-border pb-8">
         <h1 className="page-title">{page.data ? pick(locale, page.data.title_zh, page.data.title_en) : tr(title)}</h1>
         {page.data && (
           <div className="mt-3 text-[12.5px] text-muted-foreground">

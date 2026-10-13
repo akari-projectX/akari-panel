@@ -10,7 +10,6 @@ import { contentApi, type Announcement } from '@/api';
 import { useApi } from '@/hooks/use-api';
 import { K } from '@/lib/cache';
 import { fromNow, siteParts, siteTimeZone } from '@/lib/format';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useLocale, useT, useTp } from '@/i18n';
 
@@ -80,7 +79,7 @@ export default function Announcements() {
               {featured && (
                 <Featured n={featured} weekday={weekday.format(new Date(featured.created_at))} onOpen={() => open(featured)} />
               )}
-              {months.map((m, gi) => (
+              {months.map((m) => (
                 <div key={m.key}>
                   <div className="flex items-center gap-3.5 pt-7.5 pb-2.5">
                     <span className="tnum text-[13px] font-medium tracking-[.06em]">{m.key}</span>
@@ -88,7 +87,7 @@ export default function Announcements() {
                   </div>
                   {m.items.map((n, i) => (
                     <TimelineItem
-                      key={n.id} n={n} index={gi * 4 + i}
+                      key={n.id} n={n}
                       weekday={weekday.format(new Date(n.created_at))}
                       joins={i < m.items.length - 1}
                       onOpen={() => open(n)}
@@ -109,7 +108,6 @@ export default function Announcements() {
 function Featured({ n, weekday, onOpen }: { n: Announcement; weekday: string; onOpen: () => void }) {
   const tr = useT();
   const tp = useTp();
-  const enter = useEnter();
   const text = useAnnouncementText()(n);
   const d = siteParts(n.created_at);
   /* 挂载时取一次「现在」：渲染里直接调 Date.now()，每次重渲染结果都可能不同 */
@@ -117,7 +115,6 @@ function Featured({ n, weekday, onOpen }: { n: Announcement; weekday: string; on
   const fresh = now - new Date(n.created_at).getTime() < NEW_WITHIN;
   return (
     <div
-      {...enter({ y: NUDGE, duration: DUR.fast })}
       className="grid gap-3.5 border-b border-border pb-9 md:grid-cols-[140px_minmax(0,1fr)] md:gap-10 md:pb-11"
     >
       <div className="flex flex-wrap items-baseline gap-x-2.5 md:flex-col md:items-start">
@@ -151,17 +148,15 @@ function Featured({ n, weekday, onOpen }: { n: Announcement; weekday: string; on
  * 时间轴上的一条。竖线绝对定位：上端接在圆点下方，下端伸到下一条的圆点——同一个月里连成一根，
  * 月份之间断开（joins）。伸出去的距离 = 本条下内边距 + 下一条上内边距 + 圆点的上边距，两种屏宽各算一次。
  */
-function TimelineItem({ n, index, weekday, joins, onOpen }: {
-  n: Announcement; index: number; weekday: string; joins: boolean; onOpen: () => void;
+function TimelineItem({ n, weekday, joins, onOpen }: {
+  n: Announcement; weekday: string; joins: boolean; onOpen: () => void;
 }) {
-  const enter = useEnter();
   const text = useAnnouncementText()(n);
   const unread = !n.read;
   const d = siteParts(n.created_at);
   return (
     <button
       type="button" onClick={onOpen}
-      {...enter({ delay: stagger(index), y: NUDGE, duration: DUR.fast })}
       className="group -mx-3.5 grid w-[calc(100%+28px)] cursor-pointer grid-cols-[44px_14px_minmax(0,1fr)] gap-2.5 rounded-xl px-3.5 py-3.5 text-left transition-colors hover:bg-muted/60 md:grid-cols-[140px_20px_minmax(0,1fr)_24px] md:gap-5 md:py-4.5"
     >
       <div className="text-right md:flex md:items-baseline md:gap-2.5 md:text-left">

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Headphones, LifeBuoy, MessageCircle, Plus, Send, UserRound } from 'lucide-react';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -57,7 +56,6 @@ const STATE: Record<TicketStatus, { text: string; tone: StatusTone }> = {
  * 被封禁的账户也能用（这是他们唯一的申诉渠道）。限制：每小时 5 张、最多 5 张未关闭、标题 120 字、正文 5000 字。
  */
 export default function Tickets() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const errText = useErrorText();
@@ -378,13 +376,12 @@ export default function Tickets() {
               {detail.data?.order_no && (
                 <p className="text-[12.5px] text-muted-foreground">{tp('关联订单 {n}', { n: detail.data.order_no })}</p>
               )}
-              {(detail.data?.messages ?? []).map((m, i) => {
+              {(detail.data?.messages ?? []).map((m) => {
               /* 客服只显示为「客服」，面板不透露是哪一位 */
               const mine = !m.staff;
               return (
                 <div
                   key={m.id}
-                  {...enter({ delay: stagger(i), y: NUDGE, duration: DUR.fast })}
                   className={cn('flex gap-2.5', mine ? 'flex-row-reverse' : 'flex-row')}
                 >
                   <div className={cn(

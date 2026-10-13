@@ -4,7 +4,6 @@ import {
   ArrowLeft, ArrowRight, BookOpen, Calendar, Check, ChevronDown, ChevronRight, Clock,
   Copy, Download, Headphones, Search, X,
 } from 'lucide-react';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PageTitle } from '@/components/flat';
@@ -51,7 +50,6 @@ function useKnowledge(search = '') {
 /* ───────────────────────── 列表视图 ───────────────────────── */
 
 function ListView() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const [params, setParams] = useSearchParams();
@@ -161,7 +159,7 @@ function ListView() {
       />
 
       {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
-      <div {...enter({ delay: 0.05 })} className="mt-8 space-y-4">
+      <div className="mt-8 space-y-4">
         <form noValidate onSubmit={handleSearchSubmit} role="search" className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -256,12 +254,11 @@ function ListView() {
         <Empty title={tr('未找到相关文档')} desc={tr('请尝试使用其他关键词，或在上方选择不同的平台分类。')} />
       ) : (
         <div className="grid grid-cols-1 gap-4.5 md:grid-cols-2 lg:grid-cols-3">
-          {displayArticles.map(({ article, category }, idx) => (
+          {displayArticles.map(({ article, category }) => (
             <GuideCard
               key={article.id}
               article={article}
               category={category}
-              index={idx}
               unread={isUnread(article.id)}
               onClick={() => openArticle(article)}
             />
@@ -301,24 +298,20 @@ function CategoryChip({
 function GuideCard({
   article,
   category,
-  index,
   unread,
   onClick,
 }: {
   article: KbArticle;
   category: DocCategory;
-  index: number;
   unread: boolean;
   onClick: () => void;
 }) {
-  const enter = useEnter();
   const tr = useT();
 
   return (
     <button
       type="button"
       onClick={onClick}
-      {...enter({ delay: stagger(index, 0.04), y: NUDGE, duration: DUR.fast })}
       className="group relative flex hover:-translate-y-[3px] active:scale-[.99] flex-col justify-between rounded-2xl border border-border/80 bg-card p-4 sm:p-5 text-left transition-all duration-200 hover:border-brand/40 hover:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.08)] cursor-pointer"
     >
       <div>
@@ -358,7 +351,6 @@ function GuideCard({
 /* ───────────────────────── 文章阅读视图 ───────────────────────── */
 
 function ArticleView({ id }: { id: string }) {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const [params, setParams] = useSearchParams();
@@ -445,7 +437,7 @@ function ArticleView({ id }: { id: string }) {
   return (
     <div className="pb-20">
       {/* ── 页首：与其它页面同一套页首（同样的上边距与标题样式），上方一行面包屑，下方一行元信息 ── */}
-      <header {...enter()} className="pt-12 pb-2">
+      <header className="pt-12 pb-2">
         <nav aria-label={tr('使用手册')} className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-muted-foreground">
           <button
             type="button"
@@ -525,7 +517,7 @@ function ArticleView({ id }: { id: string }) {
       {/* ── 正文与目录两栏结构 ── */}
       <div className="grid gap-8 lg:gap-12 lg:grid-cols-[minmax(0,1fr)_260px] pt-1 sm:pt-2">
         {/* 正文区域 */}
-        <article {...enter({ delay: 0.1 })} className="min-w-0">
+        <article className="min-w-0">
           <div className="rounded-2xl border border-border/70 bg-card p-4.5 sm:p-7 lg:p-8 shadow-xs overflow-hidden">
             <ServerHtml html={a.body} headings className="rich-article break-words" />
           </div>

@@ -12,7 +12,7 @@ const TON = 'UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI';
 
 test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference amount; withdraw it again', async ({ page }, info) => {
   await signIn(page, mine(info, 'inviter'));
-  await open(page, '/wallet');
+  await open(page, '/wallet?tab=ledger');
   await expect(page.getByText('邀请佣金入账').locator('visible=true').first()).toBeVisible();
   await page.getByRole('button', { name: '申请提现' }).click();
   const dialog = page.getByRole('dialog');
@@ -32,6 +32,7 @@ test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference 
   await dialog.getByLabel('Memo（选填）').fill('12345');
   await dialog.getByRole('button', { name: '提交申请' }).click();
   await expect(page.getByText('提现申请已提交').first()).toBeVisible();
+  await page.getByRole('tab', { name: '提现记录' }).click();
   const row = page.getByText('TON', { exact: true }).locator('visible=true').first();
   await expect(row).toBeVisible();
   await expect(page.getByText('12345').locator('visible=true').first()).toBeVisible();
@@ -54,17 +55,22 @@ test('#52 an approved withdrawal shows the USDT sent and the transaction hash', 
   const id = psql(`SELECT w.id FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE u.email = '${email}' AND w.status = 'pending';`);
   const txid = 'a'.repeat(64);
   await (await admin()).call('POST', `/api/v1/withdrawals/${id}/approve`, { usdt_amount: '0.138888', txid });
-  await page.reload();
+  await open(page, '/wallet?tab=withdrawals');
   await expect(page.getByText('已打款').locator('visible=true').first()).toBeVisible();
   await expect(page.getByText(/实付 0\.138888 USDT/).locator('visible=true').first()).toBeVisible();
   await expect(page.getByText(/aaaaaaaa…aaaaaaaa/).locator('visible=true').first()).toBeVisible();
 });
 
-test('#54 #55 invite: terms, stats, commissions without the invitee\'s address; codes are created and deleted', async ({ page }, info) => {
+test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, stats, commissions without the invitee\'s address; codes are created and deleted', async ({ page }, info) => {
   await signIn(page, mine(info, 'inviter'));
   await open(page, '/invite');
-  await expect(page.getByText('返佣比例').first()).toBeVisible();
-  await expect(page.getByText('20%').first()).toBeVisible();
+  await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
+  await expect(page.getByRole('heading', { name: '邀请', exact: true })).toBeVisible();
+  await expect(page.getByRole('tab', { name: '邀请返佣' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText(/返佣 20%/).first()).toBeVisible();
+  /* 余额与提现在同一页 */
+  await expect(page.getByRole('button', { name: '申请提现' })).toBeVisible();
+  await expect(page.getByText('已入账').first()).toBeVisible();
   await expect(page.getByText(`invitee-${info.project.name}`)).toHaveCount(0);
   await page.getByRole('button', { name: /生成邀请码|再生成一个/ }).first().click();
   await expect(page.getByText('邀请码已生成').first()).toBeVisible();
@@ -81,7 +87,7 @@ test('#56 a refund after the commission was credited claws it back (the balance 
   const order = psql(`SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id WHERE u.email = '${mine(info, 'invitee')}' AND o.status = 'paid' LIMIT 1;`);
   await a.call('POST', `/api/v1/orders/${order}/refund`, { reason: 'e2e 追回', to_balance: true });
   await signIn(page, mine(info, 'inviter'));
-  await open(page, '/wallet');
+  await open(page, '/wallet?tab=ledger');
   await expect(page.getByText('佣金追回').locator('visible=true').first()).toBeVisible();
   await expect(page.getByText(/^[−-]¥[0-9.]+$/).locator('visible=true').first()).toBeVisible();
 });

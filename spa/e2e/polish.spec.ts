@@ -34,11 +34,22 @@ test('#60 phones: no page scrolls sideways (dashboard, usage, guest pages)', asy
   }
 });
 
-test('#60 dashboard: the stat row (largest content) renders in place, the other blocks keep their entrance', async ({ page }) => {
+test('#60 dashboard: content renders in place (no per-block entrances, numbers are final), the week chart has axes and a tooltip', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await expect(page.locator('.statrow')).toBeVisible();
-  await expect(page.locator('.statrow [data-enter]')).toHaveCount(0);
-  await expect(page.locator('main [data-enter]').first()).toBeAttached();
+  await expect(page.locator('main [data-enter]')).toHaveCount(0);
+  const chart = page.locator('.wk');
+  await expect(chart).toBeVisible();
+  await expect(chart.locator('.wk-y > span').first()).toBeAttached();
+  await expect(chart.getByText(/^单位 (GB|MB|KB)$/)).toBeVisible();
+  await expect(chart.locator('.wk-x .is-today')).toHaveText(/今天/);
+  /* 悬停（桌面）或点按（手机）今天那一列：提示里有下行、上行、合计、计费 */
+  const today = chart.locator('.wk-col').last();
+  if (test.info().project.name === 'mobile') await today.tap();
+  else await today.hover();
+  const tip = chart.locator('.wk-tip');
+  await expect(tip).toBeVisible();
+  for (const k of ['下行', '上行', '合计', '计费']) await expect(tip.getByText(k, { exact: true })).toBeVisible();
 });
 
 test('#52 withdrawal form: inline errors, the first bad field is focused, nothing is sent', async ({ page }, info) => {
