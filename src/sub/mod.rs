@@ -204,6 +204,7 @@ pub(crate) mod proxy;
 pub mod routing;
 #[cfg(test)]
 mod routing_db_tests;
+pub mod rulesets;
 mod singbox;
 
 use clash::render_clash;
@@ -241,15 +242,26 @@ pub fn render_for(
     render_as(format, rows, routing)
 }
 
-/// One format's body and content type, padded.
+/// One format's body and content type, padded (no panel-hosted rule-sets).
 pub fn render_as(
     format: Format,
     rows: &[NodeRow],
     routing: &routing::Routing,
 ) -> (&'static str, String) {
+    render_hosted(format, rows, routing, &rulesets::Hosted::default())
+}
+
+/// `render_as` with the panel-hosted copies of remote rule-sets sing-box
+/// profiles may reference (`rulesets::hosted`).
+pub fn render_hosted(
+    format: Format,
+    rows: &[NodeRow],
+    routing: &routing::Routing,
+    hosted: &rulesets::Hosted,
+) -> (&'static str, String) {
     let proxies = collect_proxies(rows);
     let body = match format {
-        Format::SingBox => render_sing_box(&proxies, routing).to_string(),
+        Format::SingBox => render_sing_box(&proxies, routing, hosted).to_string(),
         Format::Clash => render_clash(&proxies, routing),
         Format::Links => render_links(&proxies),
     };
@@ -368,7 +380,17 @@ pub async fn subscription(
     let Some(format) = choose_format(query.as_deref(), user_agent, &settings.sub_formats) else {
         return reject::not_found();
     };
-    let (content_type, body) = render_as(format, &rows, &settings.sub_routing);
+    // sing-box: the panel-hosted copies of remote rule-sets, on this
+    // user's subscription origin.
+    let hosted = if format == Format::SingBox {
+        let base = settings
+            .sub_origin(user.id)
+            .map(|o| format!("{}/{}", o.as_string(), state.settings().access().sub_path));
+        rulesets::hosted(&state, &settings.sub_routing, base.as_deref()).await
+    } else {
+        rulesets::Hosted::default()
+    };
+    let (content_type, body) = render_hosted(format, &rows, &settings.sub_routing, &hosted);
 
     // Quota header only after every failure path is cleared.
     let expire = user
@@ -669,7 +691,11 @@ mod tests {
                 render_clash(&p, &routing::Routing::default())
                     .contains(&format!("    client-fingerprint: {want}\n"))
             );
-            let sb = render_sing_box(&p, &routing::Routing::default());
+            let sb = render_sing_box(
+                &p,
+                &routing::Routing::default(),
+                &rulesets::Hosted::default(),
+            );
             let ob = outbound(&sb, "n");
             assert_eq!(ob["tls"]["utls"]["fingerprint"], want);
             assert_eq!(ob["tls"]["utls"]["enabled"], true);
@@ -695,7 +721,11 @@ mod tests {
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(!links.contains("fp="));
         assert!(!render_clash(&p, &routing::Routing::default()).contains("client-fingerprint"));
-        let sb = render_sing_box(&p, &routing::Routing::default());
+        let sb = render_sing_box(
+            &p,
+            &routing::Routing::default(),
+            &rulesets::Hosted::default(),
+        );
         assert!(outbound(&sb, "n").get("tls").is_none());
     }
 

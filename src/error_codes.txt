@@ -378,7 +378,13 @@ settings.sub_format_invalid
 settings.sub_import_client_invalid
 settings.sub_line_invalid
 settings.sub_rule_invalid
+settings.sub_rule_set_blocked
+settings.sub_rule_set_fetch_failed
+settings.sub_rule_set_invalid
+settings.sub_rule_set_link_invalid
+settings.sub_rule_set_too_large
 settings.sub_rule_set_url_invalid
+settings.sub_rule_sets_too_many
 settings.sub_rules_too_many
 settings.sub_service_duplicate
 settings.sub_service_invalid

@@ -165,3 +165,10 @@ name = "inbound_model"
 path = "fuzz_targets/inbound_model.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "rule_sets"
+path = "fuzz_targets/rule_sets.rs"
+test = false
+doc = false
+bench = false
