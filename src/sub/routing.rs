@@ -278,7 +278,7 @@ fn parse_items(section: &str, items: Vec<Item>) -> Result<Vec<Item>, ApiError> {
             section = section
         ));
     }
-    let mut out: Vec<Item> = Vec::with_capacity(items.len());
+    let mut out: Vec<Item> = Vec::new();
     for (i, mut r) in items.into_iter().enumerate() {
         r.value = r.value.trim().to_string();
         if r.kind != Match::RuleSet {
@@ -384,7 +384,7 @@ impl Config {
         }
         let mut keys = HashSet::new();
         let mut names = HashSet::new();
-        let mut services = Vec::with_capacity(self.services.len());
+        let mut services = Vec::new();
         for (i, s) in self.services.into_iter().enumerate() {
             let key = s.key.trim().to_string();
             if !(1..=32).contains(&key.len())
@@ -422,7 +422,7 @@ impl Config {
                 return Err(service_error(i, "at most 8 backups"));
             }
             let items = parse_items(&name, s.items)?;
-            let mut backups: Vec<Ref> = Vec::with_capacity(s.backups.len());
+            let mut backups: Vec<Ref> = Vec::new();
             for b in s.backups {
                 let b = parse_ref(b)?;
                 if Some(&b) != s.primary.map(Ref::Entrance).as_ref() && !backups.contains(&b) {
