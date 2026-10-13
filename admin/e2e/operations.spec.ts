@@ -1,4 +1,6 @@
 // INVENTORY §6 (coupons), §7 (finance); tickets and content are in content.spec.ts.
+import { randomBytes } from "node:crypto";
+
 import { expect, test } from "@playwright/test";
 
 import { ORIGIN, apiAs, apiJson, confirmDialog, dialog, openConsole, openRow, row, sql, toast, uniq } from "./helpers";
@@ -244,12 +246,19 @@ test("FIN-06 DSH-04: on-chain USDT transfers — the dashboard row, watcher stat
       `SELECT id, '${m.id}', 'polygon', '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', '${addr}', 4170123, 720, 32, now() + interval '1 day' ` +
       `FROM orders WHERE out_trade_no = '${no}'`,
   );
-  for (const units of [4170000, 1000000])
+  // Known hashes: the list shows every method's transfers (other runs and the screens may have
+  // the same amounts), so the rows are found by their own explorer links.
+  const hashes = [4170000, 1000000].map((units) => {
+    const tx = `0x${randomBytes(32).toString("hex")}`;
     sql(
       `INSERT INTO chain_transfers (method_id, chain, tx_hash, log_index, block_number, block_hash, from_address, amount_units, ` +
-        `status, reason, confirmed_at, block_time) VALUES ('${m.id}', 'polygon', '0x' || md5(random()::text) || md5(random()::text), 0, 100, ` +
+        `status, reason, confirmed_at, block_time) VALUES ('${m.id}', 'polygon', '${tx}', 0, 100, ` +
         `'0x' || md5(random()::text) || md5(random()::text), '0x${"3".repeat(40)}', ${units}, 'unmatched', 'no_order', now(), now())`,
     );
+    return tx;
+  });
+  const transfer = (tx: string) =>
+    page.locator("[data-transfer]").filter({ has: page.locator(`a[href$="/tx/${tx}"]`) });
 
   // The dashboard's 需要你处理 row leads here.
   await openConsole(page, "");
@@ -259,8 +268,10 @@ test("FIN-06 DSH-04: on-chain USDT transfers — the dashboard row, watcher stat
   await expect(page).toHaveURL(/\/finance\/chain/);
   await expect(page.locator(`[data-watcher="${m.id}"]`)).toContainText("尚未读到区块");
   await expect(page.locator(`[data-watcher="${m.id}"]`)).toContainText("2 笔未匹配");
-  const short = page.locator("[data-transfer]").filter({ hasText: "4.170000" });
-  const one = page.locator("[data-transfer]").filter({ hasText: "1.000000" });
+  const short = transfer(hashes[0]);
+  const one = transfer(hashes[1]);
+  await expect(short).toContainText("4.170000");
+  await expect(one).toContainText("1.000000");
   await expect(short).toContainText("未匹配");
   await expect(short).toContainText("没有金额相符的订单");
   await expect(one).toBeVisible();
@@ -305,6 +316,6 @@ test("FIN-06 DSH-04: on-chain USDT transfers — the dashboard row, watcher stat
   ).toBe("2");
   // Both are listed under 全部 with their outcome.
   await page.getByRole("group", { name: "状态" }).getByRole("button", { name: "全部" }).click();
-  await expect(page.locator("[data-transfer]").filter({ hasText: "4.170000" }).first()).toContainText("已指定订单");
-  await expect(page.locator("[data-transfer]").filter({ hasText: "1.000000" }).first()).toContainText("已忽略");
+  await expect(short).toContainText("已指定订单");
+  await expect(one).toContainText("已忽略");
 });
