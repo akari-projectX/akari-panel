@@ -623,6 +623,10 @@ pub struct UserView {
     /// Registered with a passkey and no address bound yet (`email` is the
     /// placeholder; the account is removed after 24 hours).
     email_pending: bool,
+    /// Console redesign: the inviter's current address (null = none or
+    /// gone) and the last site day with traffic (null = never).
+    inviter_email: Option<String>,
+    last_traffic_day: Option<chrono::NaiveDate>,
 }
 
 /// UserView columns (alias `users` table as itself).
@@ -639,7 +643,9 @@ pub const USER_VIEW_COLS: &str = "id, role, enabled, traffic_limit_bytes, traffi
      coalesce((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = users.id), 0) \
      AS balance_cents, \
      (SELECT count(*) FROM webauthn_credentials w WHERE w.user_id = users.id) AS passkeys, \
-     signup_method, email_pending";
+     signup_method, email_pending, \
+     (SELECT i.email FROM users i WHERE i.id = users.inviter_id) AS inviter_email, \
+     (SELECT max(td.day) FROM traffic_daily td WHERE td.user_id = users.id) AS last_traffic_day";
 
 /// `GET /users` query (W21, M3): page, search, filters and order.
 #[derive(Deserialize, Default)]
@@ -663,6 +669,12 @@ pub struct UserListQuery {
     pub registered_before: Option<String>,
     /// D10: last signed in before this day, or never.
     pub last_login_before: Option<String>,
+    /// Console views (segments the status filter cannot express):
+    /// expiring | usage80 | lapsed | unverified (`VIEW_*`).
+    pub view: Option<String>,
+    /// `true` = the answer also carries `counts` (every view's size, over
+    /// all accounts; the other filters do not apply).
+    pub counts: Option<bool>,
 }
 
 /// One page of users and the number matching the filters.
@@ -670,6 +682,25 @@ pub struct UserListQuery {
 pub struct UserPage {
     pub users: Vec<UserView>,
     pub total: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts: Option<UserCounts>,
+}
+
+/// The console's view rail: accounts per view (same snapshot as the page).
+#[derive(Serialize, sqlx::FromRow, Debug, PartialEq, Eq)]
+pub struct UserCounts {
+    pub all: i64,
+    pub active: i64,
+    pub expiring: i64,
+    pub usage80: i64,
+    pub lapsed: i64,
+    pub never: i64,
+    pub banned: i64,
+    pub admins: i64,
+    pub unverified: i64,
+    pub erased: i64,
+    /// Registered in the last 7 days.
+    pub week_new: i64,
 }
 
 /// The longest accepted search text.
@@ -687,6 +718,15 @@ pub const STATUS_EXPIRED: &str =
     "(u.enabled AND u.role = 'user' AND u.expires_at IS NOT NULL AND u.expires_at <= now())";
 pub const STATUS_ACTIVE: &str = "(u.enabled AND NOT (u.role = 'user' AND u.expires_at IS NOT NULL \
      AND u.expires_at <= now()))";
+/// Views (`?view=`): active users whose plan ends within 7 days; active
+/// users with ≥ 80% of the traffic limit used; expired or over quota;
+/// address not verified (erased accounts excluded).
+pub const VIEW_EXPIRING: &str = "(u.enabled AND u.role = 'user' AND u.expires_at > now() \
+     AND u.expires_at <= now() + interval '7 days')";
+pub const VIEW_USAGE80: &str = "(u.enabled AND u.role = 'user' AND u.traffic_limit_bytes > 0 \
+     AND u.traffic_used_bytes::numeric * 5 >= u.traffic_limit_bytes::numeric * 4 \
+     AND NOT (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
+pub const VIEW_UNVERIFIED: &str = "(u.email_verified_at IS NULL AND u.erased_at IS NULL)";
 
 /// `s` with LIKE metacharacters escaped (backslash is the default escape).
 fn like_prefix(s: &str) -> String {
@@ -788,6 +828,31 @@ pub(crate) fn push_user_filters(
             ));
         }
     }
+    match q.view.as_deref() {
+        None | Some("") => {}
+        Some("expiring") => {
+            qb.push(" AND ").push(VIEW_EXPIRING);
+        }
+        Some("usage80") => {
+            qb.push(" AND ").push(VIEW_USAGE80);
+        }
+        Some("lapsed") => {
+            qb.push(" AND (")
+                .push(STATUS_EXPIRED)
+                .push(" OR ")
+                .push(STATUS_QUOTA)
+                .push(")");
+        }
+        Some("unverified") => {
+            qb.push(" AND ").push(VIEW_UNVERIFIED);
+        }
+        Some(_) => {
+            return Err(bad_request!(
+                "user.view_invalid",
+                "view must be expiring, usage80, lapsed or unverified"
+            ));
+        }
+    }
     if q.never_used == Some(true) {
         qb.push(" AND ").push(crate::cleanup::NEVER_USED);
     }
@@ -825,10 +890,18 @@ pub(crate) fn user_order(sort: Option<&str>) -> Result<&'static str, ApiError> {
         "email" => "u.email, u.id",
         "-traffic" => "u.traffic_used_bytes DESC, u.id",
         "expires" => "u.expires_at NULLS LAST, u.id",
+        "-usage" => {
+            "(u.traffic_used_bytes::float8 / nullif(u.traffic_limit_bytes, 0)) DESC NULLS LAST, u.id"
+        }
+        "-login" => "u.last_login_at DESC NULLS LAST, u.id",
+        "-balance" => {
+            "coalesce((SELECT b.balance_cents FROM user_balances b WHERE b.user_id = u.id), 0) \
+             DESC, u.id"
+        }
         _ => {
             return Err(bad_request!(
                 "user.sort_invalid",
-                "sort must be created, -created, email, -traffic or expires"
+                "sort must be created, -created, email, -traffic, expires, -usage, -login or -balance"
             ));
         }
     })
@@ -868,8 +941,38 @@ pub async fn list_users(
     let mut count = sqlx::QueryBuilder::new("SELECT count(*) FROM users u");
     push_user_filters(&mut count, &q)?;
     let total: i64 = count.build_query_scalar().fetch_one(&mut *tx).await?;
+    let counts = if q.counts == Some(true) {
+        Some(user_counts(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
-    Ok(Json(UserPage { users, total }))
+    Ok(Json(UserPage {
+        users,
+        total,
+        counts,
+    }))
+}
+
+/// Every view's size in one pass over `users` (the console's view rail).
+pub(crate) async fn user_counts(conn: &mut sqlx::PgConnection) -> sqlx::Result<UserCounts> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) AS all, \
+         count(*) FILTER (WHERE {STATUS_ACTIVE}) AS active, \
+         count(*) FILTER (WHERE {VIEW_EXPIRING}) AS expiring, \
+         count(*) FILTER (WHERE {VIEW_USAGE80}) AS usage80, \
+         count(*) FILTER (WHERE {STATUS_EXPIRED} OR {STATUS_QUOTA}) AS lapsed, \
+         count(*) FILTER (WHERE {never}) AS never, \
+         count(*) FILTER (WHERE {STATUS_BANNED}) AS banned, \
+         count(*) FILTER (WHERE u.role = 'admin') AS admins, \
+         count(*) FILTER (WHERE {VIEW_UNVERIFIED}) AS unverified, \
+         count(*) FILTER (WHERE {STATUS_ERASED}) AS erased, \
+         count(*) FILTER (WHERE u.created_at > now() - interval '7 days') AS week_new \
+         FROM users u",
+        never = crate::cleanup::NEVER_USED
+    )))
+    .fetch_one(conn)
+    .await
 }
 
 #[derive(Deserialize)]
@@ -937,7 +1040,8 @@ pub async fn create_user(
          NULL::uuid AS plan_id, NULL::text AS plan_name, NULL::timestamptz AS next_reset_at, \
          email, email_verified_at IS NOT NULL AS email_verified, is_owner, false AS erased, \
          NULL::timestamptz AS last_login_at, 0::bigint AS balance_cents, 0::bigint AS passkeys, \
-         signup_method, email_pending",
+         signup_method, email_pending, NULL::text AS inviter_email, \
+         NULL::date AS last_traffic_day",
     )
     .bind(id)
     .bind(&email)

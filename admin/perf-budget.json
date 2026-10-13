@@ -1,0 +1,43 @@
+{
+  "blocking": true,
+  "desktop": {
+    "first_screen_ready_ms": 330,
+    "lcp_ms": 470,
+    "switch_users_ms": 220,
+    "switch_nodes_ms": 150,
+    "switch_orders_ms": 100,
+    "switch_settings_ms": 120,
+    "switch_dashboard_ms": 90,
+    "list_scroll_raf_p95_ms": 20
+  },
+  "phone": {
+    "first_screen_ready_ms": 1740,
+    "lcp_ms": 1270,
+    "switch_users_ms": 900,
+    "switch_nodes_ms": 380,
+    "switch_orders_ms": 590,
+    "switch_settings_ms": 430,
+    "switch_dashboard_ms": 400
+  },
+  "targets": {
+    "desktop": {
+      "first_screen_ready_ms": 1200,
+      "lcp_ms": 1500,
+      "switch_users_ms": 300,
+      "switch_nodes_ms": 300,
+      "switch_orders_ms": 300,
+      "switch_settings_ms": 300,
+      "switch_dashboard_ms": 300,
+      "list_scroll_raf_p95_ms": 20
+    },
+    "phone": {
+      "first_screen_ready_ms": 3000,
+      "lcp_ms": 3500,
+      "switch_users_ms": 900,
+      "switch_nodes_ms": 900,
+      "switch_orders_ms": 900,
+      "switch_settings_ms": 900,
+      "switch_dashboard_ms": 900
+    }
+  }
+}

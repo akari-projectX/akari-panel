@@ -84,7 +84,54 @@ export async function openConsole(page: Page, path = ""): Promise<void> {
   const state = await (await api()).storageState();
   await page.context().addCookies(state.cookies);
   await page.goto(`${CONSOLE}${path}`);
-  await expect(page.getByRole("button", { name: /账户菜单|Account menu/ })).toBeVisible();
+  // includeHidden: a path that opens a dialog (?open=, ?entrance=…) may have
+  // it up already, and a modal dialog hides the shell from the a11y tree
+  // (the visible filter drops the other layout's display:none copy).
+  await expect(
+    page.getByRole("button", { name: /账户菜单|Account menu/, includeHidden: true }).filter({ visible: true }),
+  ).toBeVisible();
+  await expectFits(page, path);
+}
+
+/**
+ * A phone page must not be wider than the screen: Chrome on Android then
+ * zooms the whole page out (the layout viewport grows to the content, e.g.
+ * 412 → 510 px), fixed bars and dialogs follow the wider viewport and taps
+ * land beside their targets. Checked once the page's data is in (and at the
+ * points a spec names); the screen width is the project's configured one,
+ * not `innerWidth` (that grows with the zoom-out). Desktop is not checked.
+ * Soft, so one run lists every page that overflows; names the innermost
+ * elements that stick out.
+ */
+export async function expectFits(page: Page, label: string): Promise<void> {
+  const vw = page.viewportSize()?.width ?? 0;
+  if (!vw || vw >= 640) return;
+  await page
+    .locator("main[data-ready]")
+    .waitFor({ timeout: 15_000 })
+    .catch(() => {});
+  const r = await page.evaluate((vw) => {
+    const sw = document.documentElement.scrollWidth;
+    if (sw <= vw + 1) return null;
+    const out = (el: Element) => {
+      const b = el.getBoundingClientRect();
+      return b.width > 0 && b.right + scrollX > vw + 1;
+    };
+    const worst: string[] = [];
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      if (!out(el) || Array.from(el.children).some(out)) continue;
+      const b = el.getBoundingClientRect();
+      worst.push(
+        `${el.tagName.toLowerCase()}.${String(el.getAttribute("class") ?? "").slice(0, 70)} ` +
+          `[${Math.round(b.left + scrollX)}–${Math.round(b.right + scrollX)}] "${(el.textContent ?? "").slice(0, 40)}"`,
+      );
+      if (worst.length >= 4) break;
+    }
+    return { sw, worst };
+  }, vw);
+  expect
+    .soft(r, `${label}: the page is wider than the ${vw}px screen${r ? ` (${r.sw}px): ${r.worst.join(" | ")}` : ""}`)
+    .toBeNull();
 }
 
 /** Forget the cached admin session (after something ended every admin session). */
@@ -138,14 +185,16 @@ export async function openRow(page: Page, text: string | RegExp): Promise<void> 
   else await r.click();
 }
 
-/** The open dialog / drawer. */
+/** The open dialog (or confirmation, which is an alertdialog); the top one without a name. */
 export function dialog(page: Page, name?: string | RegExp): Locator {
-  return name ? page.getByRole("dialog", { name }) : page.getByRole("dialog").last();
+  return name
+    ? page.getByRole("dialog", { name }).or(page.getByRole("alertdialog", { name }))
+    : page.getByRole("dialog").or(page.getByRole("alertdialog")).last();
 }
 
 /** Wait for a toast with `text`. */
 export async function toast(page: Page, text: string | RegExp): Promise<void> {
-  await expect(page.locator("[data-toast]", { hasText: text }).first()).toBeVisible();
+  await expect(page.locator("[data-sonner-toast]", { hasText: text }).first()).toBeVisible();
 }
 
 /** Confirm the open confirmation (typing the phrase when asked). */
@@ -154,15 +203,47 @@ export async function confirmDialog(
   typed?: string,
   button: string | RegExp = /确认|永久删除|开始|删除|确认退款/,
 ): Promise<void> {
-  const d = dialog(page);
+  const d = page.getByRole("alertdialog").last();
   if (typed !== undefined) await d.getByLabel("确认文字").fill(typed);
   await d.getByRole("button", { name: button }).last().click();
 }
 
-/** Open the mobile navigation drawer when on a phone, then click `name`. */
+const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A navigation link by its label (a pending-count badge may follow it). */
+function navLink(scope: Locator, name: string): Locator {
+  return scope.getByRole("link", { name: new RegExp(`^${esc(name)}(\\s|$)`) }).first();
+}
+
+/** Go to a page: the sidebar on a desktop; on a phone the tab bar, else 更多 → the page. */
 export async function nav(page: Page, info: TestInfo, name: string): Promise<void> {
-  if (isMobile(info)) await page.getByRole("button", { name: "菜单", exact: true }).click();
-  await page.getByRole("navigation", { name: "主导航" }).last().getByRole("link", { name, exact: true }).click();
+  if (!isMobile(info)) {
+    await navLink(page.getByRole("navigation", { name: "主导航" }), name).click();
+    return;
+  }
+  const tabs = page.getByRole("navigation", { name: "标签栏" });
+  const tab = navLink(tabs, name);
+  if (await tab.count()) {
+    await tab.click();
+    return;
+  }
+  await navLink(tabs, "更多").click();
+  await navLink(page.getByRole("navigation", { name: "全部页面" }), name).click();
+}
+
+/** Open the account menu (sidebar card on a desktop, avatar on a phone) and pick `item`. */
+export async function accountMenu(page: Page, item: string | RegExp): Promise<void> {
+  // Either language (the menu switches it); theme and language are radio items in it.
+  // A menu still fading out dismisses itself on the next press of its trigger,
+  // which would close the menu again at once: wait until the last one is gone.
+  await expect(page.locator("[data-slot=menu-content]")).toHaveCount(0);
+  await page.getByRole("button", { name: /^(账户菜单|Account menu)$/ }).click();
+  const menu = page.getByRole("menu");
+  await menu
+    .getByRole("menuitem", { name: item })
+    .or(menu.getByRole("menuitemradio", { name: item }))
+    .first()
+    .click();
 }
 
 /** The canonical rejection as a client sees it (status, headers minus Date, body). */

@@ -925,7 +925,13 @@ pub const MAX_TEMPLATE_HTML: usize = 100_000;
 /// The `{name}` tokens of a template text (lower-case letters, digits,
 /// underscores). Anything else in braces is literal text.
 pub fn placeholders_in(s: &str) -> Vec<&str> {
+    placeholder_spans(s).into_iter().map(|(_, n)| n).collect()
+}
+
+/// `placeholders_in` with the byte offset of each token's `{`.
+fn placeholder_spans(s: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
+    let mut base = 0;
     let mut rest = s;
     while let Some(open) = rest.find('{') {
         let after = &rest[open + 1..];
@@ -937,9 +943,11 @@ pub fn placeholders_in(s: &str) -> Vec<&str> {
                         .bytes()
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
                 {
-                    out.push(name);
+                    out.push((base + open, name));
+                    base += open + 1 + close + 1;
                     rest = &after[close + 1..];
                 } else {
+                    base += open + 1;
                     rest = after;
                 }
             }
@@ -949,8 +957,53 @@ pub fn placeholders_in(s: &str) -> Vec<&str> {
     out
 }
 
+/// The 1-based line and column (in characters) of byte offset `at` in `s`,
+/// as the admin's editor shows it: `\r\n`, `\r` and `\n` each end a line.
+pub fn line_col(s: &str, at: usize) -> (usize, usize) {
+    let (mut line, mut column) = (1, 1);
+    let mut after_cr = false;
+    for (i, c) in s.char_indices() {
+        if i >= at {
+            break;
+        }
+        match c {
+            '\n' if after_cr => {}
+            '\n' | '\r' => {
+                line += 1;
+                column = 1;
+            }
+            _ => column += 1,
+        }
+        after_cr = c == '\r';
+    }
+    (line, column)
+}
+
+/// A character not allowed in a body / HTML source: a control character
+/// other than line breaks and tabs. Its byte offset, if there is one.
+fn first_control(s: &str) -> Option<usize> {
+    s.char_indices()
+        .find(|&(_, c)| c.is_control() && c != '\n' && c != '\t' && c != '\r')
+        .map(|(i, _)| i)
+}
+
+/// An unknown placeholder of `field` (`text` is that field as submitted).
+fn unknown_placeholder(field: &'static str, text: &str, at: usize, name: &str) -> ApiError {
+    let (line, column) = line_col(text, at);
+    bad_request!(
+        "mail_template.placeholder_unknown",
+        "unknown placeholder {{{name}}} in the {field} at line {line}, column {column}",
+        name = name,
+        field = field,
+        line = line,
+        column = column
+    )
+}
+
 /// Check an admin's template for a kind: lengths, a one-line subject, only
-/// whitelisted placeholders, every required one present.
+/// whitelisted placeholders, every required one present. Errors name the
+/// `field` ("subject" / "body") and, where there is one, the `line` and
+/// `column` (1-based, characters) of the problem.
 pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
     let Some((allowed, required)) = spec(kind) else {
         return Err(bad_request!(
@@ -959,6 +1012,7 @@ pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
             kind = kind
         ));
     };
+    let raw_subject = subject;
     let subject = subject.trim();
     if subject.is_empty() || subject.chars().count() > MAX_SUBJECT {
         return Err(bad_request!(
@@ -967,10 +1021,15 @@ pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
             max = MAX_SUBJECT
         ));
     }
-    if subject.chars().any(char::is_control) {
+    if let Some(i) = subject.find(char::is_control) {
+        let lead = raw_subject.len() - raw_subject.trim_start().len();
+        let (line, column) = line_col(raw_subject, lead + i);
         return Err(bad_request!(
             "mail_template.subject_multiline",
-            "subject must be a single line"
+            "subject must be a single line (line break or control character at column {column})",
+            field = "subject",
+            line = line,
+            column = column
         ));
     }
     if body.trim().is_empty() || body.chars().count() > MAX_TEMPLATE_BODY {
@@ -980,26 +1039,20 @@ pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
             max = MAX_TEMPLATE_BODY
         ));
     }
-    if body
-        .chars()
-        .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
-    {
+    if let Some(at) = first_control(body) {
+        let (line, column) = line_col(body, at);
         return Err(bad_request!(
             "mail_template.body_control",
-            "body must not contain control characters"
+            "body must not contain control characters (line {line}, column {column})",
+            field = "body",
+            line = line,
+            column = column
         ));
     }
     let known = |name: &str| name == "site" || allowed.iter().any(|p| p.name == name);
-    for name in placeholders_in(subject)
-        .into_iter()
-        .chain(placeholders_in(body))
-    {
-        if !known(name) {
-            return Err(bad_request!(
-                "mail_template.placeholder_unknown",
-                "unknown placeholder {{{name}}}",
-                name = name
-            ));
+    for (field, text) in [("subject", raw_subject), ("body", body)] {
+        if let Some((at, name)) = placeholder_spans(text).into_iter().find(|(_, n)| !known(n)) {
+            return Err(unknown_placeholder(field, text, at, name));
         }
     }
     let present: Vec<&str> = placeholders_in(body)
@@ -1010,8 +1063,9 @@ pub fn validate(kind: &str, subject: &str, body: &str) -> Result<(), ApiError> {
         if !present.contains(r) {
             return Err(bad_request!(
                 "mail_template.placeholder_missing",
-                "the template must contain {{{name}}}",
-                name = *r
+                "the template must contain {{{name}}} (missing from the {field})",
+                name = *r,
+                field = "body"
             ));
         }
     }
@@ -1026,20 +1080,37 @@ const FORBIDDEN_TAGS: [&str; 10] = [
 ];
 
 /// Why an HTML source is refused, if it is: a forbidden tag, an inline
-/// event handler, a script-capable URL or a style import.
-fn forbidden_html(html: &str) -> Option<&'static str> {
+/// event handler, a script-capable URL or a style import — the earliest
+/// one, with its byte offset in `html`.
+fn forbidden_html(html: &str) -> Option<(usize, &'static str)> {
     let lower = html.to_ascii_lowercase();
     let bytes = lower.as_bytes();
-    // Tags: `<name` followed by whitespace, `/` or `>`.
+    let mut found: Option<(usize, &'static str)> = None;
+    let mut hit = |at: usize, what: &'static str| {
+        if found.is_none_or(|(f, _)| at < f) {
+            found = Some((at, what));
+        }
+    };
+    // Tags: `<name` followed by whitespace, `/` or `>`; `<script` followed
+    // by anything (no legitimate mail markup starts so, and the rendered
+    // mail must never contain the string — fuzz/content).
     for tag in FORBIDDEN_TAGS {
         let needle = format!("<{tag}");
         let mut from = 0;
         while let Some(i) = lower[from..].find(&needle) {
             let end = from + i + needle.len();
+            if tag == "script" {
+                hit(from + i, "<script>、<iframe>、<form> 等标签");
+                break;
+            }
             match bytes.get(end) {
-                None | Some(b'>' | b'/') => return Some("<script>、<iframe>、<form> 等标签"),
+                None | Some(b'>' | b'/') => {
+                    hit(from + i, "<script>、<iframe>、<form> 等标签");
+                    break;
+                }
                 Some(c) if c.is_ascii_whitespace() => {
-                    return Some("<script>、<iframe>、<form> 等标签");
+                    hit(from + i, "<script>、<iframe>、<form> 等标签");
+                    break;
                 }
                 _ => {}
             }
@@ -1063,38 +1134,44 @@ fn forbidden_html(html: &str) -> Option<&'static str> {
                     j += 1;
                 }
                 if bytes.get(j) == Some(&b'=') {
-                    return Some("onclick= 之类的事件属性");
+                    hit(i, "onclick= 之类的事件属性");
+                    break;
                 }
             }
         }
         i += 1;
     }
     // Script-capable URLs: browsers ignore whitespace and control
-    // characters inside a scheme, so look at a copy without them.
-    let squeezed: String = lower
-        .chars()
-        .filter(|c| !c.is_whitespace() && !c.is_control())
-        .collect();
-    for needle in [
-        "javascript:",
-        "vbscript:",
-        "data:text/html",
-        "@import",
-        "expression(",
-    ] {
-        if squeezed.contains(needle) {
-            return Some("javascript: 链接、@import 等");
+    // characters inside a scheme, so look at a copy without them
+    // (`origin[k]` = the offset in `html` of the squeezed copy's byte k).
+    let mut squeezed = String::with_capacity(lower.len());
+    let mut origin = Vec::with_capacity(lower.len());
+    for (k, c) in lower.char_indices() {
+        if !c.is_whitespace() && !c.is_control() {
+            squeezed.push(c);
+            origin.extend(std::iter::repeat_n(k, c.len_utf8()));
         }
     }
-    if squeezed.contains("http-equiv") {
-        return Some("<meta http-equiv>");
+    for (needle, what) in [
+        ("javascript:", "javascript: 链接、@import 等"),
+        ("vbscript:", "javascript: 链接、@import 等"),
+        ("data:text/html", "javascript: 链接、@import 等"),
+        ("@import", "javascript: 链接、@import 等"),
+        ("expression(", "javascript: 链接、@import 等"),
+        ("http-equiv", "<meta http-equiv>"),
+    ] {
+        if let Some(k) = squeezed.find(needle) {
+            hit(origin[k], what);
+        }
     }
-    None
+    found
 }
 
 /// Check an admin's HTML source for a kind: size, no control characters,
 /// nothing script-capable, only whitelisted placeholders, every required
-/// one present (the HTML part must carry the code or the link too).
+/// one present (the HTML part must carry the code or the link too). Errors
+/// name the `field` ("html_source") and, where there is one, the `line`
+/// and `column` (1-based, characters) of the problem.
 pub fn validate_html(kind: &str, html: &str) -> Result<(), ApiError> {
     let Some((allowed, required)) = spec(kind) else {
         return Err(bad_request!(
@@ -1110,39 +1187,39 @@ pub fn validate_html(kind: &str, html: &str) -> Result<(), ApiError> {
             max = MAX_TEMPLATE_HTML
         ));
     }
-    if html
-        .chars()
-        .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
-    {
+    if let Some(at) = first_control(html) {
+        let (line, column) = line_col(html, at);
         return Err(bad_request!(
             "mail_template.html_control",
-            "html source must not contain control characters"
+            "html source must not contain control characters (line {line}, column {column})",
+            field = "html_source",
+            line = line,
+            column = column
         ));
     }
-    if let Some(what) = forbidden_html(html) {
+    if let Some((at, what)) = forbidden_html(html) {
+        let (line, column) = line_col(html, at);
         return Err(bad_request!(
             "mail_template.html_forbidden",
-            "html source must not contain {what}",
-            what = what
+            "html source must not contain {what} (line {line}, column {column})",
+            what = what,
+            field = "html_source",
+            line = line,
+            column = column
         ));
     }
     let known = |name: &str| name == "site" || allowed.iter().any(|p| p.name == name);
-    let found = placeholders_in(html);
-    for name in &found {
-        if !known(name) {
-            return Err(bad_request!(
-                "mail_template.placeholder_unknown",
-                "unknown placeholder {{{name}}}",
-                name = *name
-            ));
-        }
+    let found = placeholder_spans(html);
+    if let Some(&(at, name)) = found.iter().find(|(_, n)| !known(n)) {
+        return Err(unknown_placeholder("html_source", html, at, name));
     }
     for r in required {
-        if !found.contains(r) {
+        if !found.iter().any(|(_, n)| n == r) {
             return Err(bad_request!(
                 "mail_template.placeholder_missing",
-                "the template must contain {{{name}}}",
-                name = *r
+                "the template must contain {{{name}}} (missing from the {field})",
+                name = *r,
+                field = "html_source"
             ));
         }
     }
@@ -1429,6 +1506,9 @@ mod tests {
             "<a href=\"data:text/html,<b>x</b>\">{code}</a>",
             "<style>@import url(https://x/a.css);</style>{code}",
             "<meta http-equiv=\"refresh\" content=\"0;url=https://x\">{code}",
+            // Any `<script…` (fuzz/content: the mail must never contain it).
+            "<p>{code} <scripted>z</scripted></p>",
+            "{code} {site<script}",
         ] {
             assert!(
                 html_err(REG, bad)
@@ -1440,7 +1520,7 @@ mod tests {
         // Look-alikes that are fine: a word that merely starts with a tag
         // name or contains "on", and text about scripts.
         for fine in [
-            "<p>{code} <formal>x</formal> <linked>y</linked> <scripted>z</scripted></p>",
+            "<p>{code} <formal>x</formal> <linked>y</linked></p>",
             "<p>{code} Please confirm: one, two, only this</p>",
             "<p style=\"font-weight:600\">{code} javascript is not mentioned as a scheme</p>",
         ] {
@@ -1868,5 +1948,87 @@ mod tests {
             r.html.contains("display:inline-block")
                 && r.text.contains("重置密码:\nhttps://x/y?a=1&b=2")
         );
+    }
+
+    /// The params of an error: field, line, column.
+    fn at(e: &ApiError) -> (String, Option<i64>, Option<i64>) {
+        let p = e.params();
+        (
+            p.get("field")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            p.get("line").and_then(serde_json::Value::as_i64),
+            p.get("column").and_then(serde_json::Value::as_i64),
+        )
+    }
+
+    #[test]
+    fn line_col_counts_lines_and_chars() {
+        assert_eq!(line_col("abc", 0), (1, 1));
+        assert_eq!(line_col("abc", 2), (1, 3));
+        assert_eq!(line_col("a\nbc", 3), (2, 2));
+        // CRLF is one break; a lone CR is one too (stored text becomes LF).
+        assert_eq!(line_col("a\r\nb\r\nc", 6), (3, 1));
+        assert_eq!(line_col("a\rb\r\rc", 5), (4, 1));
+        // Columns count characters, not bytes.
+        let s = "第一行\n你好{x}";
+        assert_eq!(line_col(s, s.find('{').unwrap()), (2, 3));
+        // Past the end: the position after the last character.
+        assert_eq!(line_col("ab\n", 99), (2, 1));
+    }
+
+    /// Validation errors say where: field, 1-based line and column.
+    #[test]
+    fn validation_errors_carry_positions() {
+        // Unknown placeholder on line 3 after CRLF breaks and non-ASCII text.
+        let e = validate(REG, "s", "你好\r\n{code}\r\n验证 {nope}").unwrap_err();
+        assert_eq!(e.code(), "mail_template.placeholder_unknown");
+        assert_eq!(e.params()["name"], "nope");
+        assert_eq!(at(&e), ("body".into(), Some(3), Some(4)));
+        assert!(e.message().contains("line 3, column 4"), "{}", e.message());
+        // In the subject (which wins over the body).
+        let e = validate(REG, "  é {bad}", "{nope}").unwrap_err();
+        assert_eq!(at(&e), ("subject".into(), Some(1), Some(5)));
+        assert_eq!(e.params()["name"], "bad");
+        // The subject's line break, counted on the text as submitted.
+        let e = validate(REG, " 维护\n通知", "{code}").unwrap_err();
+        assert_eq!(e.code(), "mail_template.subject_multiline");
+        assert_eq!(at(&e), ("subject".into(), Some(1), Some(4)));
+        // A control character in the body.
+        let e = validate(REG, "s", "{code}\n\nab\u{7}").unwrap_err();
+        assert_eq!(e.code(), "mail_template.body_control");
+        assert_eq!(at(&e), ("body".into(), Some(3), Some(3)));
+        // A missing required placeholder has only the field.
+        let e = validate(REG, "s", "no code").unwrap_err();
+        assert_eq!(e.code(), "mail_template.placeholder_missing");
+        assert_eq!(at(&e), ("body".into(), None, None));
+        assert_eq!(e.params()["name"], "code");
+
+        // HTML source.
+        let e = validate_html(REG, "<p>\n  <b>码</b> {code}\r\n  <i>{nope}</i></p>").unwrap_err();
+        assert_eq!(e.code(), "mail_template.placeholder_unknown");
+        assert_eq!(at(&e), ("html_source".into(), Some(3), Some(6)));
+        let e = validate_html(REG, "<p>{code}</p>\n<p>中文\u{0}</p>").unwrap_err();
+        assert_eq!(e.code(), "mail_template.html_control");
+        assert_eq!(at(&e), ("html_source".into(), Some(2), Some(6)));
+        let e = validate_html(REG, "<p>{site}</p>").unwrap_err();
+        assert_eq!(at(&e), ("html_source".into(), None, None));
+        // The earliest forbidden construct, wherever its check runs.
+        let e = validate_html(
+            REG,
+            "<p>{code}</p>\r\n<p>说明</p>\n  <a href=\"java\tscript:x\" onclick=\"y\">a</a><script>",
+        )
+        .unwrap_err();
+        assert_eq!(e.code(), "mail_template.html_forbidden");
+        assert_eq!(at(&e), ("html_source".into(), Some(3), Some(12)));
+        assert_eq!(e.params()["what"], "javascript: 链接、@import 等");
+        let e = validate_html(REG, "{code}\n<p>é</p><SCRIPT>").unwrap_err();
+        assert_eq!(at(&e), ("html_source".into(), Some(2), Some(9)));
+        let e = validate_html(REG, "{code}\n<img src=x\n  onerror=1>").unwrap_err();
+        assert_eq!(at(&e), ("html_source".into(), Some(3), Some(3)));
+        let e = validate_html(REG, "{code}<meta http-equiv=refresh>").unwrap_err();
+        assert_eq!(at(&e), ("html_source".into(), Some(1), Some(13)));
+        assert_eq!(e.params()["what"], "<meta http-equiv>");
     }
 }

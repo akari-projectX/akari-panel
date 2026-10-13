@@ -53,6 +53,7 @@ async fn edited_template_is_used_by_enqueue() {
         .unwrap();
     assert_eq!(row["custom"], false);
     assert_eq!(row["version"], 0);
+    assert!(row["updated_at"].is_null() && row["updated_by"].is_null());
     assert_eq!(row["label"], "注册验证码");
     assert!(row["subject"].as_str().unwrap().contains("{site}"));
     assert_eq!(row["placeholders"][0]["name"], "site");
@@ -201,6 +202,9 @@ async fn edited_template_is_used_by_enqueue() {
         .unwrap();
     assert_eq!(row["custom"], true);
     assert_eq!(row["version"], 2);
+    // v2's "已自定义 · 时间 · 人": when and by whom it was last saved.
+    assert!(row["updated_at"].as_str().is_some_and(|t| t.contains('T')));
+    assert!(row["updated_by"].as_str().is_some_and(|b| !b.is_empty()));
     assert_eq!(row["subject"], "s2 {site}");
     assert!(
         row["default_subject"]
@@ -515,5 +519,194 @@ async fn html_source_replaces_the_html_part() {
     .await
     .unwrap();
     assert_eq!(leaked, 0);
+    db.drop().await;
+}
+
+/// A one-connection SMTP sink on loopback (no TLS, no AUTH): accepts one
+/// message and hands back its raw DATA.
+async fn capture_smtp() -> (u16, tokio::sync::oneshot::Receiver<String>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let Ok((tcp, _)) = l.accept().await else {
+            return;
+        };
+        let mut io = BufReader::new(tcp);
+        let _ = io.get_mut().write_all(b"220 sink ESMTP\r\n").await;
+        let mut data = String::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if matches!(io.read_line(&mut line).await, Ok(0) | Err(_)) {
+                break;
+            }
+            let cmd = line.trim_end().to_ascii_uppercase();
+            let reply: &[u8] = if cmd.starts_with("EHLO") {
+                b"250-sink\r\n250 8BITMIME\r\n"
+            } else if cmd == "DATA" {
+                let _ = io.get_mut().write_all(b"354 go\r\n").await;
+                loop {
+                    line.clear();
+                    if matches!(io.read_line(&mut line).await, Ok(0) | Err(_))
+                        || line.trim_end() == "."
+                    {
+                        break;
+                    }
+                    data.push_str(&line);
+                }
+                b"250 queued\r\n"
+            } else if cmd == "QUIT" {
+                let _ = io.get_mut().write_all(b"221 bye\r\n").await;
+                break;
+            } else {
+                b"250 ok\r\n"
+            };
+            let _ = io.get_mut().write_all(reply).await;
+        }
+        let _ = tx.send(data);
+    });
+    (port, rx)
+}
+
+/// "Send current draft": the UNSAVED draft is validated like the preview
+/// (errors carry field/line/column), rendered with sample values and sent
+/// through the same path, answer and audit as the stored template's test.
+#[tokio::test]
+async fn test_draft_sends_the_unsaved_draft() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let admin = client_for(&state, db.admin().await).await;
+    let user = client_for(&state, db.user().await).await;
+    let anon = crate::testdb::http::Client::new(&state, crate::testdb::http::rand_ip());
+    const PATH: &str = "/test/api/v1/settings/mail-templates/test-draft";
+    let draft = |extra: serde_json::Value| {
+        let mut b = json!({ "kind": "register_code", "locale": "en", "subject": "Draft {site}",
+                             "body": "Your code:\n\n{code}", "to": "me@example.com" });
+        for (k, v) in extra.as_object().unwrap() {
+            b[k] = v.clone();
+        }
+        b
+    };
+
+    // Admins only.
+    assert_eq!(
+        user.post(PATH, draft(json!({}))).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        anon.post(PATH, draft(json!({}))).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // Unknown fields are refused.
+    assert_eq!(
+        admin
+            .post(PATH, draft(json!({ "version": 1 })))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Validated exactly like the preview, with the position of the problem.
+    let r = admin
+        .post(PATH, draft(json!({ "body": "Hi\r\nyour {nope}\n{code}" })))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let v = r.json();
+    assert_eq!(v["code"], "mail_template.placeholder_unknown");
+    assert_eq!(
+        v["params"],
+        json!({ "name": "nope", "field": "body", "line": 2, "column": 6 })
+    );
+    let r = admin
+        .post(
+            "/test/api/v1/settings/mail-templates/preview",
+            json!({ "kind": "register_code", "locale": "en", "subject": "s",
+                    "body": "Hi\r\nyour {nope}\n{code}" }),
+        )
+        .await;
+    assert_eq!(r.json()["params"], v["params"], "preview reports the same");
+    let r = admin
+        .post(
+            PATH,
+            draft(json!({ "html_source": "<p>{code}</p>\n<p><script></script></p>" })),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "mail_template.html_forbidden");
+    assert_eq!(r.json()["params"]["field"], "html_source");
+    assert_eq!(r.json()["params"]["line"], 2);
+    assert_eq!(r.json()["params"]["column"], 4);
+    let r = admin.post(PATH, draft(json!({ "kind": "nope" }))).await;
+    assert_eq!(r.json()["code"], "mail_template.kind_unknown");
+
+    // A valid draft before mail is set up: the same answer as the stored
+    // template's test endpoint.
+    let stored = admin
+        .post(
+            "/test/api/v1/settings/mail-templates/register_code/en/test",
+            json!({ "to": "me@example.com" }),
+        )
+        .await;
+    let r = admin.post(PATH, draft(json!({}))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.status, stored.status);
+    assert_eq!(r.json()["code"], "mail.test_needs_host");
+    assert_eq!(r.json()["code"], stored.json()["code"]);
+    assert_eq!(
+        admin
+            .post(PATH, draft(json!({ "to": "nope" })))
+            .await
+            .json()["code"],
+        "mail.to_invalid"
+    );
+
+    // Configured (a local sink): the draft itself is what goes out, not
+    // the stored template; nothing is saved; the send is audited.
+    let (port, data) = capture_smtp().await;
+    sqlx::query(
+        "UPDATE mail_settings SET host = '127.0.0.1', port = $1, security = 'none', \
+         from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .bind(i32::from(port))
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE panel_settings SET site_name = 'Akari Test' WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = admin
+        .post(
+            PATH,
+            draft(json!({ "html_source": "<p>DRAFTHTML {code} {site}</p>" })),
+        )
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert_eq!(r.json(), json!({ "ok": true }));
+    let raw = data.await.unwrap();
+    assert!(raw.contains("Subject: Draft Akari Test"), "{raw}");
+    assert!(raw.contains("<p>DRAFTHTML "), "{raw}");
+    assert!(raw.contains("Akari Test</p>"), "{raw}");
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_templates")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "a test send stores nothing");
+    let (after,): (serde_json::Value,) = sqlx::query_as(
+        "SELECT after FROM audit_log WHERE action = 'settings.mail.test' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after["template"], "register_code");
+    assert_eq!(after["outcome"], "sent");
     db.drop().await;
 }

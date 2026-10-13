@@ -548,6 +548,16 @@ BEFORE=$(date -u -d '-30 days' +%F)
   && last_json "[u['id'] for u in d['users']] == ['$IDLE']" | matches '^True$' \
   || { echo "FAIL: never-used filter: $(cat /tmp/akari-smoke/last)"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?registered_before=yesterday")" = "400" ] || { echo "FAIL: bad day filter"; exit 1; }
+# Console redesign: view rail counts, views, new sorts, row extras, finance summary.
+[ "$(code -b "$JAR" "$BASE/api/v1/users?counts=true&limit=1&sort=-usage")" = "200" ] \
+  && last_json "isinstance(d['counts']['all'], int) and d['counts']['never'] >= 1 and 'last_traffic_day' in d['users'][0] and 'inviter_email' in d['users'][0]" | matches '^True$' \
+  || { echo "FAIL: user counts: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?view=lapsed&sort=-balance")" = "200" ] || { echo "FAIL: users view=lapsed"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/users?view=bogus")" = "400" ] && last_json "d['code']" | matches -x 'user.view_invalid' \
+  || { echo "FAIL: bad user view"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/finance/summary")" = "200" ] \
+  && last_json "sorted(d) == ['balances', 'commissions', 'withdrawals'] and isinstance(d['withdrawals']['pending'], int)" | matches '^True$' \
+  || { echo "FAIL: finance summary: $(cat /tmp/akari-smoke/last)"; exit 1; }
 SEL="{\"filter\":{\"never_used\":true,\"registered_before\":\"$BEFORE\"}}"
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/delete/preview" -H 'Content-Type: application/json' -d "{\"selection\":$SEL}")" = "200" ] \
   && last_json "d['deletable'] == 1 and d['anonymized'] == 0" | matches '^True$' || { echo "FAIL: bulk delete preview: $(cat /tmp/akari-smoke/last)"; exit 1; }
@@ -1654,6 +1664,9 @@ if need_agent "protocol>=7" "Q1 two nodes on one server"; then
   [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
     && [ "$(last_json "sorted(n['name'] for n in d['nodes'])")" = "['test-node', 'test-node-b']" ] \
     || { echo "FAIL: the server does not list both nodes"; cat /tmp/akari-smoke/last; exit 1; }
+  # Admin redesign: each node carries its inbound's transport and security (null = xray defaults).
+  [ "$(last_json "all('transport' in n and 'security' in n for n in d['nodes'])")" = "True" ] \
+    || { echo "FAIL: server nodes lack transport/security"; cat /tmp/akari-smoke/last; exit 1; }
   [ "$(patch_code "$BASE/api/v1/entrances/$DIRECT_B" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] \
     || { echo "FAIL: node B joins the access group"; exit 1; }
   VLESS_DB=$(psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$USER_D' AND entrance_id='$DIRECT_B'")
@@ -2131,6 +2144,9 @@ mp_mail diag@akari.test 1 | sed -n 1p | matches '^Akari Smoke 测试邮件$' || 
 [ "$(code -b "$JAR" "$BASE/api/v1/settings/mail")" = "200" ] \
   && [ "$(last_json "d['provider'] == 'smtp' and d['providers'] == ['smtp', 'resend'] and d['api_key_set'] is False")" = "True" ] \
   || { echo "FAIL: mail settings provider view"; cat /tmp/akari-smoke/last; exit 1; }
+# Admin redesign (settings v2): the mail status strip's 24-hour counts, the newest dead letter, sent per kind.
+[ "$(last_json "isinstance(d['sent_24h'], int) and isinstance(d['dead_24h'], int) and d['dead_24h'] >= 0 and isinstance(d['sent_30d'], dict) and all(isinstance(n, int) for n in d['sent_30d'].values()) and 'last_dead_error' in d and 'last_dead_at' in d")" = "True" ] \
+  || { echo "FAIL: mail settings 24h / 30d counts"; cat /tmp/akari-smoke/last; exit 1; }
 # Reset links need the main domain (never the request's Host): set it for
 # this section only (IP literal; the host gate keeps accepting 127.0.0.1).
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
@@ -2271,6 +2287,10 @@ last_json "d['active'] and d['config']['app_private_key_set'] and d['notify_url'
   && last_json "d['ok'] and d['result']=='keys_ok'" | matches True || { echo "FAIL: 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'payment_method.create' AND after::text LIKE '%changed%' AND after::text NOT LIKE '%PRIVATE%'")" = "1" ] \
   || { echo "FAIL: payment method audit"; exit 1; }
+# The list's per-method usage (admin redesign): this month's paid money/orders, ever used.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] \
+  && last_json "[(m['month_cents'], m['month_count'], m['used']) for m in d['methods'] if m['id'] == '$METHOD'] == [(0, 0, False)]" | matches True \
+  || { echo "FAIL: payment method usage"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT get_byte(secrets_enc, 0) = 1 AND position(convert_to('MII', 'UTF8') IN secrets_enc) = 0 FROM payment_methods WHERE id = '$METHOD'")" = "t" ] \
   || { echo "FAIL: payment secrets not sealed"; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H 'Content-Type: application/json' \
@@ -2470,6 +2490,10 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
 [ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
   || { echo "FAIL: coupon not redeemed once"; exit 1; }
+# Admin redesign: the coupon views' read-only aggregates (近 7 天 / 共优惠, the redemption's plan).
+[ "$(code -b "$JAR" "$BASE/api/v1/coupons/$(psql_q "SELECT id FROM coupons WHERE code='SMOKE20'")")" = "200" ] \
+  && [ "$(last_json "'%s/%s/%s' % (d['coupon']['redeemed_7d'], d['coupon']['discount_cents_total'], d['redemptions'][0]['period'])")" = "1/200/month" ] \
+  || { echo "FAIL: coupon redeemed_7d / discount_cents_total"; cat /tmp/akari-smoke/last; exit 1; }
 # High-2: the switch credit is what was paid (800), never the list price (1000).
 [ "$(code -b "$WJAR" "$BASE/api/v1/me/shop")" = "200" ] && [ "$(last_json "d['credit_cents'] <= 800")" = "True" ] \
   || { echo "FAIL: the coupon's discount became switch credit"; cat /tmp/akari-smoke/last; exit 1; }
@@ -2725,6 +2749,9 @@ PY
 [ "$(api_json "$JAR" POST "$BASE/api/v1/coupon-batches" '{"name":"ops","prefix":"OPS-","count":20,"kind":"fixed","value":100}')" = "201" ] \
   && [ "$(last_json "d['count']")" = "20" ] || { echo "FAIL: coupon batch"; cat /tmp/akari-smoke/last; exit 1; }
 CB=$(last_json "d['id']")
+[ "$(code -b "$JAR" "$BASE/api/v1/coupon-batches")" = "200" ] \
+  && [ "$(last_json "[(b['codes'], b['codes_used']) for b in d if b['id'] == '$CB'] == [(20, 0)]")" = "True" ] \
+  || { echo "FAIL: coupon batch codes_used"; cat /tmp/akari-smoke/last; exit 1; }
 curl -s --noproxy '*' -b "$JAR" -o "$LOG/ops-coupons.csv" "$BASE/api/v1/coupon-batches/$CB/export.csv"
 OPS_CODE=$(python3 - "$LOG/ops-coupons.csv" <<'PY'
 import csv, io, re, sys
@@ -2815,6 +2842,14 @@ fi
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$ORDER")" = "200" ] || { echo "FAIL: admin order detail"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/orders")" = "403" ] || { echo "FAIL: user reached admin orders"; exit 1; }
+# Admin redesign: the ledger's one search box and its summary (per-status counts, per-day totals).
+[ "$(code -b "$JAR" "$BASE/api/v1/orders?q=%40$BUYER_MAIL")" = "200" ] && [ "$(last_json "len(d)")" = "3" ] \
+  || { echo "FAIL: admin orders search q=@email"; cat /tmp/akari-smoke/last; exit 1; }
+SMOKE_TODAY=$(psql_q "SELECT akari_site_day(now())"); SMOKE_YDAY=$(psql_q "SELECT akari_site_day(now()) - 1")
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/summary?q=%40$BUYER_MAIL&from=$SMOKE_YDAY&to=$SMOKE_TODAY")" = "200" ] \
+  && [ "$(last_json "d['counts']['all'] == 3 and sum(x['orders'] for x in d['days']) == 3")" = "True" ] \
+  || { echo "FAIL: admin orders summary"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/orders/summary")" = "403" ] || { echo "FAIL: user reached admin orders summary"; exit 1; }
 for a in order.create order.paid plan.price.set user.plan.set user.plan.renew; do
   [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='$a'")" -ge 1 ] || { echo "FAIL: audit lacks $a"; exit 1; }
 done
@@ -2823,13 +2858,30 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 [ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
   && [ "$(last_json "d['d30']['orders'] >= 1 and d['users_total'] >= 1 and d['servers']['total'] >= 1 and isinstance(d['latest_orders'], list)")" = "True" ] \
   || { echo "FAIL: dashboard"; cat /tmp/akari-smoke/last; exit 1; }
+# The daily series: 60 site days ending today, agreeing with the 30-day window; traffic by entrance kind.
+[ "$(last_json "len(d['series']) == 60 and d['series'][-1]['day'] == d['today_date'] and sum(x['gross_cents'] for x in d['series'][-30:]) == d['d30']['gross_cents'] and sum(x['revenue_cents'] for x in d['series'][-30:]) == d['d30']['revenue_cents'] and sum(x['orders'] for x in d['series'][-30:]) == d['d30']['orders'] and all(min(x['direct_bytes'], x['relay_bytes'], x['other_bytes']) >= 0 for x in d['series']) and 'signups' in d['prev_today']")" = "True" ] \
+  || { echo "FAIL: dashboard series"; cat /tmp/akari-smoke/last; exit 1; }
+# The pending queues' details and the new subscriptions (same snapshot).
+[ "$(last_json "d['pending_detail']['withdrawals_cents'] >= 0 and d['pending_detail']['alerts_unacked'] <= d['pending']['alerts_firing'] and (d['pending_detail']['order_sample_id'] is None) == (d['pending']['orders_unfulfilled'] == 0) and 0 <= d['subscribers_7d'] <= d['subscribers']")" = "True" ] \
+  || { echo "FAIL: dashboard pending detail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/dashboard")" = "403" ] || { echo "FAIL: user reached the dashboard"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/finance/summary")" = "403" ] || { echo "FAIL: user reached the finance summary"; exit 1; }
+[ "$(code "$BASE/api/v1/finance/summary")" = "401" ] || { echo "FAIL: finance summary without a session"; exit 1; }
+# Admin redesign: the settings overview in one request (each part = that section's GET).
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/overview")" = "200" ] \
+  && last_json "sorted(d) == sorted(['settings', 'signup', 'auth', 'cleanup', 'access', 'payments', 'commission', 'mail', 'mail_templates', 'alerts', 'block_rules', 'agent_updates', 'branding']) and isinstance(d['settings']['version'], int) and all(sorted(t) == ['custom', 'kind', 'locale'] for t in d['mail_templates'])" | matches '^True$' \
+  || { echo "FAIL: settings overview: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -b "$BJAR" "$BASE/api/v1/settings/overview")" = "403" ] || { echo "FAIL: user reached the settings overview"; exit 1; }
 
 echo "== W31: system status =="
 [ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \
   && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
+# The mail queue's 全部 view: every status, newest first.
+[ "$(code -b "$JAR" "$BASE/api/v1/mail/outbox?status=all&limit=200")" = "200" ] \
+  && [ "$(last_json "isinstance(d, list) and all(r['status'] in ('dead','pending','sent') for r in d) and [r['id'] for r in d] == sorted([r['id'] for r in d], reverse=True)")" = "True" ] \
+  || { echo "FAIL: mail outbox all"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users?q=SMOKE-BUY&role=user")" = "200" ] \
   && [ "$(last_json "d['total'] == 1 and d['users'][0]['email'] == '$BUYER_MAIL'")" = "True" ] \
   || { echo "FAIL: user search"; cat /tmp/akari-smoke/last; exit 1; }
@@ -3036,6 +3088,10 @@ done
 [ "$(code -b "$JAR" "$BASE/api/v1/tickets?unread=true&status=open")" = "200" ] \
   && [ "$(last_json "[t['id'] for t in d['tickets']]==['$TK'] and d['unread']==1")" = "True" ] \
   || { echo "FAIL: staff queue"; cat /tmp/akari-smoke/last; exit 1; }
+# Inbox (sort=waiting): the waiting ticket carries its waiting time and the newest message's preview; view counters + longest wait.
+[ "$(code -b "$JAR" "$BASE/api/v1/tickets?sort=waiting&status=active")" = "200" ] \
+  && [ "$(last_json "any(t['id']=='$TK' and t['waiting_since'] is not None and t['last_staff'] is False and t['last_preview'].startswith('smoke ticket body') for t in d['tickets']) and d['views']['active']>=1 and d['oldest'] is not None")" = "True" ] \
+  || { echo "FAIL: staff inbox fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/tickets/$TK")" = "200" ] && last_json "d['thread'][0]['author_email']" | matches '^smoke-tk-a@smoke.test$' \
   || { echo "FAIL: staff ticket view"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/tickets/$TK/replies" '{"message":"smoke staff reply"}')" = "201" ] || { echo "FAIL: staff reply"; exit 1; }
@@ -3072,6 +3128,10 @@ for probe in "-X POST $BASE/api/v1/me/announcements/$ANN_OFF/read" "-X POST $BAS
   [ "$(fp -b "$TJA" $probe)" = "$REJ" ] || { echo "FAIL: hidden announcement not the canonical rejection: $probe"; cat /tmp/akari-smoke/fphead; exit 1; }
 done
 [ "$(code -b "$TJA" "$BASE/api/v1/announcements")" = "403" ] || { echo "FAIL: customer reached the announcement admin"; exit 1; }
+# The admin list carries each row's current recipient count (an integer, the sender's predicate).
+[ "$(code -b "$JAR" "$BASE/api/v1/announcements")" = "200" ] \
+  && [ "$(last_json "all(isinstance(a['recipients'], int) and a['recipients'] >= 0 for a in d) and any(a['id'] == '$ANN' for a in d)")" = "True" ] \
+  || { echo "FAIL: announcement recipient counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/announcements/$ANN/mail" '{}')" = "409" ] && last_json "d['code']" | matches -x 'announcement.mail_unavailable' \
   || { echo "FAIL: mailing without SMTP"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/content/preview" '{"markdown":"[x](javascript:alert(1)) ![i](http://e/i.png)"}')" = "200" ] \
@@ -3143,12 +3203,33 @@ echo "branding: ok"
   && last_json "d['code']" | matches -x 'mail_template.placeholder_missing' || { echo "FAIL: template without {link} accepted"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/test/zh" '{"version":0,"subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   || { echo "FAIL: save template"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] \
+  && last_json "[(r['updated_at'] is not None, bool(r['updated_by'])) for r in d if r['kind'] == 'test' and r['locale'] == 'zh'] == [(True, True)]" | matches True \
+  || { echo "FAIL: template updated_at / updated_by"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"冒烟模板 {site}","body":"冒烟自定义正文"}')" = "200" ] \
   && last_json "d['text']" | matches -F '冒烟自定义正文' || { echo "FAIL: template preview"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/settings/mail-templates/test/zh")" = "200" ] && last_json "d['reset']" | matches True || { echo "FAIL: restore default"; exit 1; }
 [ "$(psql_q "SELECT string_agg(action, ',' ORDER BY id) FROM audit_log WHERE target_id='test/zh'")" = "settings.mail_template.update,settings.mail_template.reset" ] \
   || { echo "FAIL: template audit"; exit 1; }
 [ "$(code -b "$TJA" "$BASE/api/v1/settings/mail-templates")" = "403" ] || { echo "FAIL: customer reached the templates"; exit 1; }
+# Validation errors say where (field + 1-based line/column); "send current
+# draft" (test-draft) validates like the preview and answers like the stored
+# template's /test (Mailpit is gone here: both report the same failure).
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/preview" '{"kind":"test","locale":"zh","subject":"s","body":"第一行\n第二行 {nope}"}')" = "400" ] \
+  && [ "$(last_json "(d['code'], d['params']['field'], d['params']['line'], d['params']['column'])")" = "('mail_template.placeholder_unknown', 'body', 2, 5)" ] \
+  || { echo "FAIL: template error position"; cat /tmp/akari-smoke/last; exit 1; }
+DRAFT='{"kind":"test","locale":"zh","subject":"冒烟草稿 {site}","body":"冒烟草稿正文","to":"draft@akari.test"}'
+[ "$(code -X POST "$BASE/api/v1/settings/mail-templates/test-draft" -H 'Content-Type: application/json' -d "$DRAFT")" = "401" ] || { echo "FAIL: anonymous test-draft"; exit 1; }
+[ "$(api_json "$TJA" POST "$BASE/api/v1/settings/mail-templates/test-draft" "$DRAFT")" = "403" ] || { echo "FAIL: customer sent a test draft"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test-draft" '{"kind":"test","locale":"zh","subject":"s","body":"x\n{nope}","to":"draft@akari.test"}')" = "400" ] \
+  && [ "$(last_json "(d['code'], d['params']['line'])")" = "('mail_template.placeholder_unknown', 2)" ] \
+  || { echo "FAIL: invalid test draft"; cat /tmp/akari-smoke/last; exit 1; }
+STORED_TEST=$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test/zh/test" '{"to":"draft@akari.test"}')
+STORED_CODE=$(last_json "d.get('code')")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/settings/mail-templates/test-draft" "$DRAFT")" = "$STORED_TEST" ] \
+  && last_json "d.get('code')" | matches -xF "$STORED_CODE" \
+  || { echo "FAIL: test draft answers differently from /test ($STORED_TEST $STORED_CODE)"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM mail_templates WHERE kind='test'")" = "0" ] || { echo "FAIL: test draft stored the template"; exit 1; }
 echo "mail templates: ok"
 
 # Node summary view: the list's columns only, ETag + 304.
@@ -3229,6 +3310,8 @@ python3 "$LOG/hook-check.py" "$LOG/hook.jsonl" "$HOOK_SECRET" "$SERVER_ID" firin
   || { echo "FAIL: no signed firing webhook for the stopped agent"; cat "$LOG/hook.jsonl"; psql_q "SELECT * FROM server_alerts"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/alerts?status=firing&kind=offline&server=$SERVER_ID")" = "200" ] \
   && [ "$(last_json "len(d['alerts'])")" = "1" ] || { echo "FAIL: alert center lists the offline alert once"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(last_json "isinstance(d['resolved_7d_by_kind'], dict) and all(v >= 1 for v in d['resolved_7d_by_kind'].values())")" = "True" ] \
+  || { echo "FAIL: alert history counts"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/admin-badges")" = "200" ] && [ "$(last_json "d['alerts_firing'] >= 1")" = "True" ] || { echo "FAIL: alert badge"; exit 1; }
 curl -s --noproxy '*' http://127.0.0.1:9109/metrics | matches '^akari_node_alerts_firing{kind="offline"} [1-9]' \
   || { echo "FAIL: akari_node_alerts_firing"; exit 1; }
@@ -4514,7 +4597,13 @@ AJS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.js" /tmp/akari-smoke/last | sed -n 
 ACSS=$(grep -o "/$PREFIX/admin/assets/[^\"]*\.css" /tmp/akari-smoke/last | sed -n 1p)
 [ -n "$AJS" ] && [ -n "$ACSS" ] || { echo "FAIL: console index lacks prefixed /admin/assets/ script or stylesheet"; exit 1; }
 [ "$(cache_of -b "$AJAR" "$BASE/admin")" = "private, no-store" ] || { echo "FAIL: console index cacheable"; exit 1; }
-[ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, no-store" ] || { echo "FAIL: console asset cacheable"; exit 1; }
+# Content-hashed console files: the admin's own browser may keep them (private, never shared); still
+# session-gated; brotli by Accept-Encoding; without a session = the canonical rejection, no cache headers.
+[ "$(cache_of -b "$AJAR" "http://127.0.0.1:8080$AJS")" = "private, max-age=31536000, immutable" ] || { echo "FAIL: console asset cache header"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -b "$AJAR" -H 'Accept-Encoding: br' "http://127.0.0.1:8080$AJS" | tr -d '\r' | matches -i '^content-encoding: br$' \
+  || { echo "FAIL: console asset not served pre-compressed"; exit 1; }
+[ "$(cache_of -H 'Accept-Encoding: br' "http://127.0.0.1:8080$AJS")" = "" ] || { echo "FAIL: console asset rejection carries a cache header"; exit 1; }
+[ "$(fp "http://127.0.0.1:8080$AJS")" = "$REJ" ] || { echo "FAIL: console asset served without a session"; exit 1; }
 [ "$(cache_of "http://127.0.0.1:8080$JS")" = "public, max-age=31536000, immutable" ] || { echo "FAIL: portal asset not immutable"; exit 1; }
 CT=$(curl -s --noproxy '*' -b "$AJAR" -o /dev/null -w "%{content_type}" "http://127.0.0.1:8080$AJS")
 echo "$CT" | matches javascript || { echo "FAIL: console asset content-type '$CT'"; exit 1; }
@@ -4550,10 +4639,45 @@ for a in $(grep -o '"/assets/[^"]*\.\(js\|css\)' "$SERVED/app/index.html" | tr -
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/app/$(basename "$a")"
 done
 curl -s --noproxy '*' -b "$AJAR" "$BASE/admin" >"$SERVED/admin/console/index.html"
-for a in "$AJS" "$ACSS"; do curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/console/$(basename "$a")"; done
+# 2026-10 redesign: the console is one chunk per page, the chunks and fonts
+# referred to relatively ("./x.js", url(./x.woff2)). Fetch every file the
+# entry reaches, transitively, under the secret prefix with the admin
+# session: each must be served (200); check-bundles then checks them all.
+todo=""
+for a in "$AJS" "$ACSS"; do
+  curl -s --noproxy '*' -b "$AJAR" "http://127.0.0.1:8080$a" >"$SERVED/admin/console/$(basename "$a")"
+  todo="$todo $SERVED/admin/console/$(basename "$a")"
+done
+while [ -n "$todo" ]; do
+  next=""
+  # "./x.js" imports and url(./x.woff2); `new URL(\`fonts-x.css\`, import.meta.url)` (the deferred fonts).
+  # shellcheck disable=SC2086
+  for c in $(cat $todo | grep -aoE '(\./|URL\(`)[A-Za-z0-9_.-]+\.(js|css|woff2)' | sed 's#.*[/`]##' | sort -u); do
+    f="$SERVED/admin/console/$c"
+    [ -e "$f" ] && continue
+    [ "$(curl -s --noproxy '*' -b "$AJAR" -o "$f" -w '%{http_code}' "$BASE/admin/assets/$c")" = "200" ] \
+      || { echo "FAIL: console chunk $c not served under the prefix"; exit 1; }
+    case "$c" in *.woff2) ;; *) next="$next $f" ;; esac
+  done
+  todo="$next"
+done
+[ "$(ls "$SERVED"/admin/console/*.js | wc -l)" -gt 10 ] || { echo "FAIL: console page chunks not found"; exit 1; }
+# Chunks are admin-only like the entry: no session = the canonical rejection.
+ACHUNK=$(ls "$SERVED"/admin/console/*.js | sed -n 2p | sed 's#.*/##')
+[ "$(fp "$BASE/admin/assets/$ACHUNK")" = "$REJ" ] || { echo "FAIL: console chunk served without a session"; exit 1; }
 curl -s --noproxy '*' "$BASE/app" >"$SERVED/admin/login/login.html"
 for a in $(grep -o "/$PREFIX/app/assets/[^\"]*\.\(js\|css\)" "$SERVED/admin/login/login.html"); do
   curl -s --noproxy '*' "http://127.0.0.1:8080$a" >"$SERVED/admin/login/$(basename "$a")"
+done
+# The sign-in page's deferred fonts stylesheet (shared/fonts.ts), then its fonts (url(./x.woff2)), public like its other assets.
+for c in $(cat "$SERVED"/admin/login/*.js | grep -aoE 'URL\(`[A-Za-z0-9_.-]+\.css' | sed 's#.*`##' | sort -u); do
+  [ "$(curl -s --noproxy '*' -o "$SERVED/admin/login/$c" -w '%{http_code}' "$BASE/app/assets/$c")" = "200" ] \
+    || { echo "FAIL: sign-in fonts stylesheet $c not served under the prefix"; exit 1; }
+done
+ls "$SERVED"/admin/login/fonts-*.css >/dev/null 2>&1 || { echo "FAIL: sign-in fonts stylesheet not found"; exit 1; }
+for c in $(cat "$SERVED"/admin/login/*.css | grep -ao '\./[A-Za-z0-9_.-]*\.woff2' | sed 's#.*/##' | sort -u); do
+  [ "$(curl -s --noproxy '*' -o "$SERVED/admin/login/$c" -w '%{http_code}' "$BASE/app/assets/$c")" = "200" ] \
+    || { echo "FAIL: sign-in font $c not served under the prefix"; exit 1; }
 done
 node admin/scripts/check-bundles.mjs "$SERVED/admin" "$SERVED/app" || { echo "FAIL: served bundles mix portal and console code"; exit 1; }
 echo "admin bundle: ok"

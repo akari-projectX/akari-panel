@@ -6,10 +6,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { get, post } from "../../shared/api";
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { Button, Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/primitives";
 import { useErrText } from "../kit";
 import {
   fieldDefault,
+  fieldHelp,
+  fieldLabel,
   networkOptionLabel,
   protocolOptionLabel,
   templateRequiresTls,
@@ -17,7 +18,11 @@ import {
   transportLabel,
   transportTemplateNetworks,
   transportTemplateProtocols,
+  valueLabel,
 } from "../protocol-form";
+import { Button } from "../../shared/ui/button";
+import { Checkbox, Field, Input, Select, Textarea } from "../../shared/ui/form";
+import { PORT, num, shown } from "./node-common";
 
 export type TemplateKind =
   | "vless_reality"
@@ -207,16 +212,32 @@ export function TemplateFields({
   form,
   onChange,
   nodeDomain = "",
+  tried = false,
+  hideTemplate = false,
+  portClash,
+  portHint,
 }: {
   form: TemplateForm;
   onChange: (f: TemplateForm) => void;
   nodeDomain?: string;
+  /** A save was tried: show the errors of untouched fields too. */
+  tried?: boolean;
+  /** The template is chosen elsewhere (wizard / node dialog radio cards). */
+  hideTemplate?: boolean;
+  /** The port is taken on this server (shown at once). */
+  portClash?: string;
+  portHint?: string;
 }) {
   const tr = useTr();
   const lang = useLang();
   const errText = useErrText();
   const catalog = useCatalog();
   const [check, setCheck] = useState<string | null>(null);
+  const portError = num(form.port, PORT, tr)[1];
+  const destError =
+    form.dest === "custom" && !form.customDest.trim()
+      ? tr("请填写自定义目标站点", "Enter the custom target")
+      : undefined;
   const set = (p: Partial<TemplateForm>) => onChange({ ...form, ...p });
   const t = form.template;
   const reality = t === "vless_reality" || t === "vless_reality_xhttp";
@@ -233,11 +254,12 @@ export function TemplateFields({
       });
       setCheck(
         v.ok
-          ? tr(
-              `可用：TLS 1.3 + h2${v.trusted ? "" : "（证书非公共信任）"}`,
-              `Usable: TLS 1.3 + h2${v.trusted ? "" : " (certificate not publicly trusted)"}`,
-            )
-          : tr(`不可用：${v.error ?? "未知原因"}`, `Not usable: ${v.error ?? "unknown"}`),
+          ? v.trusted
+            ? tr("可用：TLS 1.3 + h2", "Usable: TLS 1.3 + h2")
+            : tr("可用：TLS 1.3 + h2（证书非公共信任）", "Usable: TLS 1.3 + h2 (certificate not publicly trusted)")
+          : v.error
+            ? tr(`不可用：${v.error}`, `Not usable: ${v.error}`)
+            : tr("不可用：未知原因", "Not usable: unknown reason"),
       );
     } catch (e) {
       setCheck(errText(e));
@@ -248,16 +270,23 @@ export function TemplateFields({
   const tlsRequired = t === "transport" && templateRequiresTls(form.protocol, network);
   return (
     <div className="grid gap-3 sm:grid-cols-4">
-      <Field label={tr("协议模板", "Template")} className="sm:col-span-3">
-        <Select value={t} onChange={(e) => set({ template: e.target.value as TemplateKind })}>
-          {TEMPLATES.map((k) => (
-            <option key={k} value={k}>
-              {templateLabel(k, tr)}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <Field label={tr("端口", "Port")}>
+      {!hideTemplate && (
+        <Field label={tr("协议模板", "Template")} className="sm:col-span-3">
+          <Select value={t} onChange={(e) => set({ template: e.target.value as TemplateKind })}>
+            {TEMPLATES.map((k) => (
+              <option key={k} value={k}>
+                {templateLabel(k, tr)}
+              </option>
+            ))}
+          </Select>
+        </Field>
+      )}
+      <Field
+        label={tr("端口", "Port")}
+        error={shown(form.port, portError, tried) ?? portClash}
+        hint={portHint}
+        className={hideTemplate ? "sm:col-span-2" : undefined}
+      >
         <Input inputMode="numeric" value={form.port} onChange={(e) => set({ port: e.target.value })} />
       </Field>
       {reality && (
@@ -274,7 +303,11 @@ export function TemplateFields({
             </Select>
           </Field>
           {form.dest === "custom" ? (
-            <Field label={tr("自定义目标（域名[:端口]）", "Custom target (host[:port])")} className="sm:col-span-2">
+            <Field
+              label={tr("自定义目标（域名[:端口]）", "Custom target (host[:port])")}
+              className="sm:col-span-2"
+              error={tried ? destError : undefined}
+            >
               <Input value={form.customDest} onChange={(e) => set({ customDest: e.target.value })} />
             </Field>
           ) : (
@@ -296,13 +329,13 @@ export function TemplateFields({
               {tr("检测目标站点", "Check target")}
             </Button>
             {check && (
-              <span role="status" className="pb-1.5 text-xs text-muted-foreground">
+              <span role="status" className="pb-1.5 text-footnote text-muted-foreground">
                 {check}
               </span>
             )}
           </div>
           {t === "vless_reality" && (
-            <label className="flex items-center gap-2 text-[13px] sm:col-span-4">
+            <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-4">
               <Checkbox checked={form.vision} onChange={(v) => set({ vision: v })} label="Vision" />
               {tr("启用 Vision 流控（推荐）", "Vision flow (recommended)")}
             </label>
@@ -326,7 +359,7 @@ export function TemplateFields({
         </Field>
       )}
       {t === "vmess_ws" && (
-        <label className="flex items-center gap-2 text-[13px] sm:col-span-2">
+        <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-2">
           <Checkbox checked={form.tls} onChange={(v) => set({ tls: v })} label="TLS" />
           {tr("启用 TLS", "Enable TLS")}
         </label>
@@ -352,7 +385,7 @@ export function TemplateFields({
             </Select>
           </Field>
           {!tlsRequired && (
-            <label className="flex items-center gap-2 text-[13px] sm:col-span-4">
+            <label className="flex min-h-9 items-center gap-2.5 text-body sm:col-span-4">
               <Checkbox checked={form.tls} onChange={(v) => set({ tls: v })} label="TLS" />
               {tr("启用 TLS", "Enable TLS")}
             </label>
@@ -360,7 +393,7 @@ export function TemplateFields({
           {transportFields(network).map((f) => {
             const key = FIELD_KEYS[f.name];
             if (!key) return null;
-            const label = `${transportLabel(network, lang)} ${lang === "en" ? f.name : f.label_zh}`;
+            const label = `${transportLabel(network, lang)} ${fieldLabel("transport", network, f, lang)}`;
             return (
               <Field
                 key={f.name}
@@ -372,14 +405,14 @@ export function TemplateFields({
                   <Select value={form[key] || (f.default ?? "")} onChange={(e) => set({ [key]: e.target.value })}>
                     {f.values.map((v) => (
                       <option key={v} value={v}>
-                        {v}
+                        {valueLabel("transport", network, f, v, lang)}
                       </option>
                     ))}
                   </Select>
                 ) : (
                   <Input
                     value={form[key]}
-                    placeholder={f.help_zh ?? ""}
+                    placeholder={fieldHelp("transport", network, f, lang)}
                     onChange={(e) => set({ [key]: e.target.value })}
                   />
                 )}
@@ -414,11 +447,25 @@ export function TemplateFields({
 }
 
 /** Raw xray inbound JSON (an object without tag). */
-export function JsonInbound({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function JsonInbound({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+}) {
   const tr = useTr();
   return (
-    <Field label={tr("Xray 入站 JSON（对象，不含 tag）", "Xray inbound JSON (an object, no tag)")}>
-      <Textarea rows={12} value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
+    <Field label={tr("Xray 入站 JSON（对象，不含 tag）", "Xray inbound JSON (an object, no tag)")} error={error}>
+      <Textarea
+        rows={12}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        className="font-mono text-footnote"
+      />
     </Field>
   );
 }

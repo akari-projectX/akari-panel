@@ -433,6 +433,7 @@ ticket_admin.assignee_filter
 ticket_admin.assignee_invalid
 ticket_admin.not_closed
 ticket_admin.search_long
+ticket_admin.sort_invalid
 ticket_admin.status_invalid
 user.admin_no_plan
 user.admin_no_subscription
@@ -460,6 +461,7 @@ user.query_too_long
 user.role_invalid
 user.sort_invalid
 user.status_filter_invalid
+user.view_invalid
 user_plan.confirm_required
 user_plan.extend_days_range
 user_plan.extend_onetime

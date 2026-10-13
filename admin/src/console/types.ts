@@ -42,6 +42,9 @@ export type ServerNode = {
   tags: string[];
   protocol: string | null;
   port: number | null;
+  /** The inbound's `streamSettings.network` / `.security` (null = xray's defaults: tcp, none). */
+  transport?: string | null;
+  security?: string | null;
   block_rules_enabled: boolean;
   entrances: EntranceView[];
 };
@@ -91,7 +94,7 @@ export type Heartbeat = {
   cert?: CertStatus | null;
   metrics?: HeartbeatMetrics;
   block?: unknown;
-  source_filter?: { state?: string; error?: string | null } | null;
+  source_filter?: { applied?: boolean; state?: string; error?: string | null } | null;
 };
 
 export type UpdateStatus = {

@@ -1,32 +1,79 @@
-// Node and server forms (NOD-03…07, 09…14, 20): add server / node,
-// install command and bootstrap file, server edit (TLS domain check),
-// D5 quota, per-server alert rules, and the node drawer (basics, the
-// inbound, block rules status, traffic).
+// Every dialog of the nodes area (v2, proposal-v2 §4; prototype
+// components/nodes-dialogs.tsx), mounted from the URL by `NodesDialogs`:
+// add server (name + TLS domain → the one-time install command), install
+// command / enrollment token of an existing server, the new-node wizard
+// (位置 → 协议 → 配置 → 展示与入口), the node dialog (基本 / 入站 / 审计与流量
+// on ?ntab=) and the entrance dialogs (entrance-dialog.tsx).
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
-import { get, patch, post, put } from "../../shared/api";
-import { bytes, dateTime, daysBefore, downloadText, siteToday } from "../../shared/format";
-import { useTr, type Tr } from "../../shared/i18n";
-import { LineChart } from "../../shared/ui/line-chart";
-import { Dialog, Drawer } from "../../shared/ui/overlays";
 import {
-  Badge,
-  Button,
-  Callout,
-  Checkbox,
-  Field,
-  Input,
-  KV,
-  Segmented,
-  Select,
-  Skeleton,
-  Switch,
-} from "../../shared/ui/primitives";
-import { CopyButton, FormError, Mono, SectionTitle, useConfirmFree, useErrText, useRun } from "../kit";
+  ChevronRight,
+  Braces,
+  CircleCheck,
+  Download,
+  KeyRound,
+  Layers,
+  Plus,
+  Server,
+  ShieldBan,
+  Sparkles,
+  Terminal,
+  Trash2,
+  TriangleAlert,
+  Zap,
+} from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router";
+import { get, patch, post, put } from "../../shared/api";
+import { cn } from "../../shared/cn";
+import { downloadText } from "../../shared/format";
+import { useTr, type Tr } from "../../shared/i18n";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { useConfirm } from "../../shared/ui/confirm";
+import { Dialog } from "../../shared/ui/dialog";
+import { Field, Input, Segmented, Switch } from "../../shared/ui/form";
+import { Banner, KV } from "../../shared/ui/layout";
+import { ErrorState, LoadingBlock } from "../../shared/ui/states";
+import { Tabs } from "../../shared/ui/tabs";
+import { CopyText, Steps, Stepper, type StepState } from "../components/kit";
+import { GroupChips, RadioCards } from "../components/inputs";
+import { ServerStatus, serverStateOf } from "../components/status";
+import { useAction } from "../data";
+import { FormError, useConfirmFree } from "../kit";
 import { parseRate } from "../rates";
-import { setQuery, useRoute } from "../router";
-import type { NodeGroup, ServerView } from "../types";
-import { JsonInbound, TemplateFields, newTemplateForm, parseInbound, toSpec, type TemplateForm } from "./inbound-form";
+import { navigate, useQS } from "../router";
+import { holdersOf, useGroups, usePlanList, useServers } from "../servers";
+import { useCrumb } from "../session";
+import type { EntranceView, NodeGroup, ServerNode, ServerView } from "../types";
+import { protocolName } from "../components/nodes-bits";
+import { EntranceDialog, RelayDialog } from "./entrance-dialog";
+import {
+  JsonInbound,
+  TemplateFields,
+  newTemplateForm,
+  parseInbound,
+  toSpec,
+  type TemplateForm,
+  type TemplateKind,
+} from "./inbound-form";
+import {
+  FixCount,
+  PORT,
+  TagsField,
+  WarningList,
+  chips,
+  num,
+  shown,
+  tagValues,
+  type Chips,
+  type NumRule,
+} from "./node-common";
+import { NodeTrafficBody, useDeleteNode, useDomainCheck, useToggleNode } from "./node-server";
+
+// The alerts page imports these from here (moved to node-common.tsx).
+export { ALERT_KINDS, alertKindName } from "./node-common";
+
+/* ================= Install command / enrollment ================= */
 
 type InstallView = {
   url: string;
@@ -46,813 +93,984 @@ type Enrollment = {
   install?: InstallView;
 };
 
-export type Shown =
-  { server: Pick<ServerView, "id" | "name">; mode: "install" | "bootstrap" } | { created: Enrollment };
+/** What the command dialog shows: material a create returned, or a fresh link for an existing server. */
+type Shown = { created: Enrollment & { id: string } } | { install: { id: string; name: string } };
 
-function Countdown({ until }: { until: string }) {
-  const tr = useTr();
+function useNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
-  const s = Math.max(0, Math.round((Date.parse(until) - now) / 1000));
-  return (
-    <Badge tone={s > 0 ? "info" : "danger"}>
-      {s > 0
-        ? tr(`${Math.floor(s / 60)} 分 ${s % 60} 秒后过期`, `expires in ${Math.floor(s / 60)}m ${s % 60}s`)
-        : tr("已过期", "expired")}
-    </Badge>
-  );
+  return now;
 }
 
-function InstallBody({ v }: { v: InstallView }) {
+function Remaining({ until }: { until: string }) {
+  const tr = useTr();
+  const s = Math.max(0, Math.round((Date.parse(until) - useNow()) / 1000));
+  if (s === 0) return <span className="font-semibold text-destructive">{tr("已失效", "expired")}</span>;
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return <span className="tnum font-semibold">{`${mm}:${ss}`}</span>;
+}
+
+/** The dark terminal block of the v2 design (tokens only: inverted in light, window grey in dark). */
+function Terminal_({ value, caption }: { value: string; caption: ReactNode }) {
   const tr = useTr();
   return (
-    <div className="space-y-3 text-[13px]">
-      <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">
-          {tr("在服务器上以 root 执行（一次性）", "Run on the server as root (single use)")}
-        </span>
-        <Countdown until={v.expires_at} />
+    <div className="overflow-hidden rounded-xl bg-foreground text-background ring-1 ring-border dark:bg-window dark:text-foreground">
+      <div className="flex items-center justify-between gap-2 border-b border-current/10 px-3 py-1.5 text-caption opacity-70">
+        <span className="min-w-0 truncate">{caption}</span>
+        <CopyText
+          value={value}
+          display={tr("复制", "Copy")}
+          label={tr("安装命令", "the install command")}
+          className="[&_button]:text-current [&>span]:font-sans"
+        />
       </div>
-      <div className="flex items-start gap-2">
-        <Mono>{v.command}</Mono>
-        <CopyButton text={v.command} />
-      </div>
-      {v.command_wget && (
-        <details>
-          <summary className="cursor-pointer text-muted-foreground">
-            {tr("没有 curl？用 wget", "No curl? Use wget")}
-          </summary>
-          <div className="mt-2 flex items-start gap-2">
-            <Mono>{v.command_wget}</Mono>
-            <CopyButton text={v.command_wget} />
-          </div>
-        </details>
-      )}
-      {v.pin && (
-        <p className="text-xs text-muted-foreground">
-          {tr(`命令钉住了面板证书公钥：${v.pin}`, `The command pins the panel's key: ${v.pin}`)}
-        </p>
-      )}
-      {v.warnings.length > 0 && (
-        <Callout tone="warning">
-          <ul className="list-disc pl-4">
-            {v.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </Callout>
-      )}
-      <details>
-        <summary className="cursor-pointer text-muted-foreground">{tr("卸载命令", "Uninstall command")}</summary>
-        <div className="mt-2 flex items-start gap-2">
-          <Mono>{v.uninstall_command}</Mono>
-          <CopyButton text={v.uninstall_command} />
-        </div>
-      </details>
+      <pre className="overflow-x-auto px-3 py-3 font-mono text-footnote leading-5 whitespace-pre-wrap break-all">
+        {value}
+      </pre>
     </div>
   );
 }
 
-function BootstrapBody({ e }: { e: Enrollment }) {
+function BootstrapFold({ e }: { e: Enrollment }) {
   const tr = useTr();
   return (
-    <div className="space-y-2 text-[13px]">
-      <div className="flex items-center justify-between">
-        <span>{tr("引导文件（含一次性注册令牌，不含私钥）", "Bootstrap file (a one-time token, no private key)")}</span>
-        <Countdown until={e.expires_at} />
-      </div>
-      <pre className="max-h-48 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px]">{e.bootstrap}</pre>
-      <div className="flex gap-2">
-        <CopyButton text={e.bootstrap} />
-        <Button size="sm" icon="download" onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}>
-          {tr("下载", "Download")}
+    <details className="rounded-xl ring-1 ring-border ring-inset">
+      <summary className="flex min-h-11 cursor-default items-center px-4 text-body font-medium">
+        {tr("服务器不能访问面板？改用手动引导文件", "The server cannot reach the panel? Use a bootstrap file")}
+      </summary>
+      <div className="grid gap-2 border-t border-separator px-4 py-3 text-footnote text-muted-foreground">
+        <p>
+          {tr(
+            "下载引导文件（含一次性注册令牌，不含私钥），上传到服务器后执行 akari-agent -config <文件>。同样只能用一次。",
+            "Download the bootstrap file (a one-time token, no private key), upload it to the server and run akari-agent -config <file>. Single use as well.",
+          )}
+        </p>
+        <Button
+          size="sm"
+          icon={Download}
+          className="justify-self-start"
+          onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}
+        >
+          {tr("下载引导文件", "Download the bootstrap file")}
         </Button>
       </div>
-      <p className="text-xs text-muted-foreground">
-        {tr("在服务器上执行：akari-agent -config <文件>", "On the server: akari-agent -config <file>")}
-      </p>
-    </div>
+    </details>
   );
 }
 
-/** Shows install material: a fresh install link / bootstrap token for an existing server, or what a create returned. */
-export function InstallDialog({ shown, onClose }: { shown: Shown; onClose: () => void }) {
+/**
+ * The one-time install command (step 2 of 添加服务器, 安装命令 of an existing
+ * server, or what the wizard's new server returned). Closing while the agent
+ * has not connected asks first ("确定已经复制安装命令？", focus on 返回复制).
+ */
+function CommandDialog({ shown, onClose }: { shown: Shown; onClose: () => void }) {
   const tr = useTr();
-  const errText = useErrText();
-  const [data, setData] = useState<{ install?: InstallView; enrollment?: Enrollment } | null>(
-    "created" in shown ? { install: shown.created.install, enrollment: shown.created } : null,
-  );
+  const servers = useServers();
+  const created = "created" in shown ? shown.created : null;
+  const id = created ? created.id : "install" in shown ? shown.install.id : "";
+  const name = created ? created.name : "install" in shown ? shown.install.name : "";
+  const [fresh, setFresh] = useState<InstallView | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const started = useRef(false);
+  const [attempt, setAttempt] = useState(0);
+  const [asking, setAsking] = useState(false);
+  // Each request issues a new link (the unused one is replaced): one per attempt.
+  const issued = useRef(-1);
   useEffect(() => {
-    if ("created" in shown || started.current) return;
-    started.current = true;
-    const req =
-      shown.mode === "install"
-        ? post<InstallView>(`/servers/${shown.server.id}/install`, { origin: location.origin }).then((install) => ({
-            install,
-          }))
-        : post<Enrollment>(`/servers/${shown.server.id}/enroll-token`).then((enrollment) => ({ enrollment }));
-    req.then(setData, setError);
-  }, [shown]);
-  const name = "created" in shown ? shown.created.name : shown.server.name;
-  const bootstrapOnly = !("created" in shown) && shown.mode === "bootstrap";
+    if (created || issued.current === attempt) return;
+    issued.current = attempt;
+    post<InstallView>(`/servers/${id}/install`, { origin: location.origin }).then(setFresh, setError);
+  }, [created, id, attempt]);
+  const install = created?.install ?? fresh;
+  const server = servers.data?.find((s) => s.id === id);
+  // A reinstall of a connected server cannot be told apart from the old
+  // agent, so only a first connection counts as "connected".
+  const wasEnrolled = useRef<boolean | null>(null);
+  if (wasEnrolled.current === null && server) wasEnrolled.current = server.enrolled && !created;
+  const enrolled = !!server?.enrolled;
+  const connected = enrolled && !wasEnrolled.current;
+  const reported = connected && !!server?.online && !!server.heartbeat;
+  const steps: { label: ReactNode; state: StepState; detail?: ReactNode }[] = [
+    { label: tr("生成安装命令", "Issue the install command"), state: install ? "done" : "active" },
+    {
+      label: connected
+        ? tr("agent 已连接", "The agent connected")
+        : wasEnrolled.current
+          ? tr("等待 agent 用新证书重新连接…", "Waiting for the agent to reconnect with a new certificate…")
+          : tr("等待 agent 首次连接…", "Waiting for the agent…"),
+      state: !install ? "todo" : connected ? "done" : "active",
+      detail:
+        install && !connected
+          ? tr(
+              "执行命令后通常 10–30 秒内连上，这里会自动更新",
+              "Usually connects 10–30 s after the command runs; this updates by itself",
+            )
+          : undefined,
+    },
+    {
+      label: tr("上报机器信息与证书", "Machine facts and certificate reported"),
+      state: reported ? "done" : connected ? "active" : "todo",
+    },
+  ];
+  const askClose = () => (install && !connected ? setAsking(true) : onClose());
+  const existing = "install" in shown;
   return (
-    <Dialog
-      open
-      wide
-      onClose={onClose}
-      title={
-        bootstrapOnly
-          ? tr(`手动引导文件 · ${name}`, `Bootstrap file · ${name}`)
-          : tr(`安装 agent · ${name}`, `Install the agent · ${name}`)
-      }
-      description={tr(
-        "只显示这一次；关闭后可重新生成（旧的未使用令牌作废）。",
-        "Shown once; you can issue a new one later (the unused one is replaced).",
-      )}
-      footer={<Button onClick={onClose}>{tr("完成", "Done")}</Button>}
-    >
-      {!data && !error && <Skeleton className="h-24" />}
-      {!!error && <p className="text-[13px] text-destructive">{errText(error)}</p>}
-      {data?.install && <InstallBody v={data.install} />}
-      {data?.enrollment &&
-        (data.install ? (
-          <details className="mt-3">
-            <summary className="cursor-pointer text-[13px] text-muted-foreground">
-              {tr("改用手动引导文件", "Use a bootstrap file instead")}
-            </summary>
-            <div className="mt-2">
-              <BootstrapBody e={data.enrollment} />
-            </div>
-          </details>
-        ) : (
-          <BootstrapBody e={data.enrollment} />
-        ))}
-    </Dialog>
+    <>
+      <Dialog
+        open={!asking}
+        size="md"
+        icon={Terminal}
+        onClose={askClose}
+        title={
+          existing
+            ? tr(`安装命令 · ${name}`, `Install command · ${name}`)
+            : tr(`安装 agent · ${name}`, `Install the agent · ${name}`)
+        }
+        description={
+          existing
+            ? tr("已生成新命令，之前的命令已失效。", "A new command was issued; the previous one no longer works.")
+            : tr("在服务器上以 root 执行下面的命令。", "Run the command below on the server as root.")
+        }
+        footer={
+          <>
+            <span className="flex-1 text-footnote text-muted-foreground max-sm:hidden">
+              {enrolled
+                ? tr("agent 已连接，可以创建节点", "The agent is connected; add a node")
+                : tr("连上后可直接创建节点", "Add a node once it connects")}
+            </span>
+            <Button onClick={askClose}>{tr("关闭", "Close")}</Button>
+            <Button
+              variant="primary"
+              icon={Plus}
+              disabled={!enrolled}
+              title={enrolled ? undefined : tr("agent 连上后可用", "Available once the agent connects")}
+              onClick={() => {
+                onClose();
+                navigate(`/nodes/${id}?new=node&server=${id}`);
+              }}
+            >
+              {tr("在此服务器添加节点", "Add a node here")}
+            </Button>
+          </>
+        }
+      >
+        {!install && !error && <LoadingBlock rows={4} />}
+        {!!error && (
+          <ErrorState
+            compact
+            title={tr("安装命令生成失败", "Could not issue the install command")}
+            error={error}
+            onRetry={() => {
+              setError(null);
+              setAttempt((a) => a + 1);
+            }}
+          />
+        )}
+        {install && (
+          <div className="grid gap-4">
+            <Banner tone="warning" icon={<TriangleAlert />} title={tr("只显示这一次。", "Shown only once.")}>
+              {tr(
+                "关闭后无法再查看，只能重新生成。命令 ",
+                "Once closed it cannot be shown again, only reissued. Expires in ",
+              )}
+              <Remaining until={install.expires_at} />
+              {tr(" 后失效，且只能用一次。", ", single use.")}
+            </Banner>
+            <Terminal_
+              value={install.command}
+              caption={tr("bash · 以 root 执行（一次性）", "bash · run as root (single use)")}
+            />
+            {install.command_wget && (
+              <details className="group rounded-lg ring-1 ring-border ring-inset">
+                <summary className="flex min-h-11 cursor-default list-none items-center gap-1.5 px-3 text-body font-medium [&::-webkit-details-marker]:hidden">
+                  <ChevronRight
+                    className="size-4 text-faint transition-transform group-open:rotate-90"
+                    aria-hidden="true"
+                  />
+                  {tr("没有 curl？用 wget", "No curl? Use wget")}
+                </summary>
+                <div className="px-3 pb-3">
+                  <CopyText block value={install.command_wget} label={tr("wget 命令", "the wget command")} />
+                </div>
+              </details>
+            )}
+            <Steps items={steps} />
+            {install.pin && (
+              <p className="text-footnote break-all text-muted-foreground">
+                {tr(`命令钉住了面板证书公钥：${install.pin}`, `The command pins the panel's key: ${install.pin}`)}
+              </p>
+            )}
+            <WarningList warnings={install.warnings} />
+            {created ? (
+              <BootstrapFold e={created} />
+            ) : (
+              <p className="text-footnote text-muted-foreground">
+                {tr(
+                  "服务器不能访问面板时，用服务器菜单里的「重新生成注册令牌」下载引导文件。",
+                  "If the server cannot reach the panel, use “New enrollment token” in the server menu for a bootstrap file.",
+                )}
+              </p>
+            )}
+            <details className="group rounded-lg ring-1 ring-border ring-inset">
+              <summary className="flex min-h-11 cursor-default list-none items-center gap-1.5 px-3 text-body font-medium [&::-webkit-details-marker]:hidden">
+                <ChevronRight
+                  className="size-4 text-faint transition-transform group-open:rotate-90"
+                  aria-hidden="true"
+                />
+                {tr("卸载命令", "Uninstall command")}
+              </summary>
+              <div className="px-3 pb-3">
+                <CopyText block value={install.uninstall_command} label={tr("卸载命令", "the uninstall command")} />
+              </div>
+            </details>
+          </div>
+        )}
+      </Dialog>
+      <Dialog
+        open={asking}
+        size="sm"
+        icon={TriangleAlert}
+        tone="warning"
+        onClose={() => setAsking(false)}
+        title={tr("确定已经复制安装命令？", "Copied the install command?")}
+        footer={
+          <>
+            <Button onClick={onClose}>{tr("仍然关闭", "Close anyway")}</Button>
+            <Button variant="primary" data-autofocus onClick={() => setAsking(false)}>
+              {tr("返回复制", "Back to copy")}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-body text-foreground/85">
+          {tr(
+            "关闭后这条命令不会再显示。如果还没执行，只能到服务器页「安装命令」重新生成，旧命令会随之失效。",
+            "Once closed the command is not shown again. If it has not run yet, issue a new one from the server page (“Install command”); this one then stops working.",
+          )}
+        </p>
+      </Dialog>
+    </>
   );
 }
 
-export function CreateServerDialog({ onClose, onShown }: { onClose: () => void; onShown: (s: Shown) => void }) {
+/** 添加服务器, step 1: name + TLS domain (DNS check); step 2 is the command dialog. */
+function AddServerDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (s: Shown) => void }) {
   const tr = useTr();
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
-  const [install, setInstall] = useState(true);
-  const [run, busy] = useRun();
+  const [tried, setTried] = useState(false);
+  const [run, busy] = useAction();
+  const dns = useDomainCheck();
+  const nameError = !name.trim() ? tr("请填写名称", "Enter a name") : undefined;
+  const domainError =
+    domain.trim() && !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(domain.trim())
+      ? tr("请输入域名（不含 https:// 和端口）", "Enter a domain (no https:// or port)")
+      : undefined;
   const submit = async () => {
+    setTried(true);
+    if (nameError || domainError) return;
     const r = await run(
       () =>
-        post<Enrollment>("/servers", {
+        post<Enrollment & { id: string }>("/servers", {
           name: name.trim(),
           tls_domain: domain.trim() || undefined,
-          install: install ? { origin: location.origin } : undefined,
+          install: { origin: location.origin },
         }),
-      { ok: tr("服务器已添加", "Server added"), invalidate: [["servers"]] },
+      { ok: tr("服务器已添加", "Server added") },
     );
-    if (r) {
-      onClose();
-      onShown({ created: r });
-    }
+    if (r) onCreated({ created: { ...r, name: r.name ?? name.trim() } });
   };
   return (
     <Dialog
       open
+      size="md"
+      icon={Server}
       onClose={onClose}
+      onSubmit={submit}
       title={tr("添加服务器", "Add server")}
       description={tr(
-        "一台机器一个 agent；之后在它上面添加节点。",
-        "One agent per machine; add nodes on it afterwards.",
+        "登记后生成一次性安装命令，在服务器上执行即可接入。",
+        "Registering it issues a one-time install command; run it on the server to connect.",
       )}
-      onSubmit={submit}
       footer={
         <>
+          <FixCount n={tried ? [nameError, domainError].filter(Boolean).length : 0} />
           <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
-            {tr("添加", "Add")}
+          <Button type="submit" variant="primary" loading={busy}>
+            {tr("生成安装命令", "Issue the install command")}
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        <Field label={tr("名称（内部，唯一）", "Name (internal, unique)")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+      <div className="grid gap-4">
+        <Field
+          label={tr("名称", "Name")}
+          required
+          error={tried ? nameError : undefined}
+          hint={tr("只在后台显示，建议「地区 + 线路 + 序号」", "Shown only here; e.g. region + carrier + number")}
+        >
+          <Input value={name} onChange={(e) => setName(e.target.value)} data-autofocus />
         </Field>
         <Field
-          label={tr("服务器域名（TLS，可选）", "Server domain (TLS, optional)")}
-          hint={tr(
-            "填写后 agent 自动申请证书；TLS 模板默认使用它。",
-            "With it the agent obtains its certificate; TLS templates default to it.",
-          )}
+          label={tr("TLS 域名", "TLS domain")}
+          error={domainError}
+          hint={
+            dns.res ? (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1",
+                  dns.res.tone === "success" ? "text-success" : dns.res.tone === "info" ? "" : "text-warning",
+                )}
+              >
+                {dns.res.tone === "success" && <CircleCheck className="size-3.5" aria-hidden="true" />}
+                {dns.res.text}
+              </span>
+            ) : (
+              tr(
+                "先把域名 A/AAAA 记录指向这台服务器；agent 证书与直连入口都用它（可留空，之后在服务器设置里填）",
+                "Point its A/AAAA record at the server first; the agent certificate and direct entrances use it (optional; set it later in the server settings)",
+              )
+            )
+          }
         >
-          <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="node1.example.com" />
+          <div className="flex gap-2">
+            <Input
+              value={domain}
+              onChange={(e) => {
+                setDomain(e.target.value);
+                dns.setRes(null);
+              }}
+              onBlur={() => domain.trim() && !domainError && void dns.check(domain)}
+              className="font-mono"
+              placeholder="node1.example.com"
+            />
+            <Button
+              className="shrink-0"
+              loading={dns.checking}
+              disabled={!domain.trim() || !!domainError}
+              onClick={() => void dns.check(domain)}
+            >
+              {tr("检查解析", "Check DNS")}
+            </Button>
+          </div>
         </Field>
-        <label className="flex items-center gap-2 text-[13px]">
-          <Checkbox
-            checked={install}
-            onChange={setInstall}
-            label={tr("生成一行安装命令", "One-line install command")}
-          />
-          {tr("生成一行安装命令（否则只给引导文件）", "One-line install command (else a bootstrap file only)")}
-        </label>
+        <p className="text-footnote text-muted-foreground">
+          {tr(
+            "流量额度、告警规则在接入后到服务器页设置。安装脚本来源与镜像见",
+            "Quota and alert rules are set on the server page once it connects. Install script sources and mirrors:",
+          )}{" "}
+          <Link to="/settings/install" className="text-primary hover:underline">
+            {tr("设置 → 安装", "Settings → Install")}
+          </Link>
+          {tr("。", ".")}
+        </p>
       </div>
     </Dialog>
   );
 }
 
-type DirectForm = { host: string; port: string; rate: string; tags: string; groups: string[] };
+/** 重新生成注册令牌: the consequences first, then the token (bootstrap file) once. */
+function EnrollDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
+  const tr = useTr();
+  const [run, busy] = useAction();
+  const [e, setE] = useState<Enrollment | null>(null);
+  const issue = async () => {
+    const r = await run(() => post<Enrollment>(`/servers/${server.id}/enroll-token`), {
+      ok: tr("已生成新的注册令牌", "A new enrollment token was issued"),
+    });
+    if (r) setE(r);
+  };
+  const entrances = server.nodes.reduce((a, n) => a + n.entrances.length, 0);
+  return (
+    <Dialog
+      open
+      size="md"
+      icon={KeyRound}
+      tone={e ? "default" : "warning"}
+      onClose={onClose}
+      title={tr(`重新生成注册令牌 · ${server.name}`, `New enrollment token · ${server.name}`)}
+      description={
+        e
+          ? tr("新令牌已生成，未使用的旧令牌已失效。", "A new token was issued; the unused one no longer works.")
+          : tr("agent 证书失效或重装系统后使用。", "For an expired agent certificate or a reinstalled machine.")
+      }
+      footer={
+        e ? (
+          <Button variant="primary" onClick={onClose}>
+            {tr("完成", "Done")}
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+            <Button variant="primary" loading={busy} onClick={() => void issue()}>
+              {tr("生成注册令牌", "Issue the token")}
+            </Button>
+          </>
+        )
+      }
+    >
+      {e ? (
+        <div className="grid gap-4">
+          <Banner tone="warning" icon={<TriangleAlert />} title={tr("只显示这一次。", "Shown only once.")}>
+            {tr("令牌 ", "The token expires in ")}
+            <Remaining until={e.expires_at} />
+            {tr(" 后失效，且只能用一次。", ", single use.")}
+          </Banner>
+          <Field
+            label={tr("引导文件（含一次性注册令牌，不含私钥）", "Bootstrap file (a one-time token, no private key)")}
+          >
+            <pre className="max-h-48 overflow-auto rounded-lg bg-window p-3 font-mono text-caption ring-1 ring-border ring-inset">
+              {e.bootstrap}
+            </pre>
+          </Field>
+          <div className="flex flex-wrap items-center gap-2">
+            <CopyText
+              value={e.bootstrap}
+              display={tr("复制引导文件", "Copy the file")}
+              label={tr("引导文件", "the bootstrap file")}
+            />
+            <Button size="sm" icon={Download} onClick={() => downloadText(`${e.name}-bootstrap.toml`, e.bootstrap)}>
+              {tr("下载引导文件", "Download the bootstrap file")}
+            </Button>
+          </div>
+          <Field label={tr("在服务器上执行", "On the server")}>
+            <CopyText
+              block
+              value="sudo akari-agent -config /etc/akari/bootstrap.toml"
+              label={tr("命令", "the command")}
+            />
+          </Field>
+        </div>
+      ) : (
+        <div className="grid gap-3 text-body">
+          <p className="text-foreground/85">
+            {tr(
+              `生成新的一次性注册令牌，未使用的旧令牌（含安装命令）随即失效。agent 用新令牌重新注册后，这台服务器之前的证书会被吊销；在那之前当前 agent 照常运行，其上 ${entrances} 个入口不受影响。`,
+              `Issues a new one-time token; any unused one (and its install command) stops working. Once the agent enrolls with it, the server's previous certificates are revoked; until then the running agent and its ${entrances} entrances keep working.`,
+            )}
+          </p>
+          <p className="text-footnote text-muted-foreground">
+            {tr(
+              "适用于：证书校验未通过、重装了系统、或怀疑证书泄露。节点、入口和用户凭据都不变。",
+              "For: certificate checks failing, a reinstalled system or a suspected leaked certificate. Nodes, entrances and user credentials stay.",
+            )}
+          </p>
+        </div>
+      )}
+    </Dialog>
+  );
+}
 
-export function CreateNodeDialog({
+/* ================= New node wizard ================= */
+
+type Proto = { kind: TemplateKind | "json"; title: string; desc: string; protocol: string };
+
+function protoCards(tr: Tr): Proto[] {
+  return [
+    {
+      kind: "vless_reality",
+      title: "VLESS + REALITY",
+      desc: tr("推荐。无需证书，伪装成目标网站", "Recommended. No certificate; looks like the target site"),
+      protocol: "vless",
+    },
+    {
+      kind: "vless_reality_xhttp",
+      title: "REALITY + XHTTP",
+      desc: tr("无需证书，XHTTP 传输", "No certificate, XHTTP transport"),
+      protocol: "vless",
+    },
+    {
+      kind: "vless_tls_vision",
+      title: "VLESS + Vision",
+      desc: tr("TLS 证书（自动签发）+ XTLS Vision", "TLS certificate (automatic) + XTLS Vision"),
+      protocol: "vless",
+    },
+    {
+      kind: "vless_ws_tls",
+      title: "VLESS + WS",
+      desc: tr("WebSocket + TLS，可过 CDN", "WebSocket + TLS, CDN friendly"),
+      protocol: "vless",
+    },
+    {
+      kind: "trojan_tls",
+      title: "Trojan",
+      desc: tr("TLS + 密码，老客户端兼容", "TLS + password, old clients"),
+      protocol: "trojan",
+    },
+    {
+      kind: "vmess_ws",
+      title: "VMess + WS",
+      desc: tr("WebSocket，可选 TLS", "WebSocket, optional TLS"),
+      protocol: "vmess",
+    },
+    {
+      kind: "vmess_tcp",
+      title: "VMess + TCP",
+      desc: tr("无 TLS，仅兼容旧客户端", "No TLS, legacy clients"),
+      protocol: "vmess",
+    },
+    {
+      kind: "transport",
+      title: tr("自选传输", "Pick a transport"),
+      desc: tr("VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC", "VLESS/VMess/Trojan × WS/HTTPUpgrade/XHTTP/gRPC"),
+      protocol: "",
+    },
+    {
+      kind: "shadowsocks_2022",
+      title: "Shadowsocks 2022",
+      desc: tr("简单、兼容性最好；无伪装", "Simple, most compatible; no camouflage"),
+      protocol: "shadowsocks",
+    },
+    {
+      kind: "hysteria2",
+      title: "Hysteria 2",
+      desc: tr("基于 QUIC，弱网表现好；需开放 UDP", "QUIC, good on bad networks; needs UDP"),
+      protocol: "hysteria",
+    },
+    {
+      kind: "json",
+      title: tr("高级 JSON", "Advanced JSON"),
+      desc: tr("直接写 xray 入站配置", "Write the xray inbound yourself"),
+      protocol: "",
+    },
+  ];
+}
+
+const l4 = (protocol: string | null | undefined): string[] =>
+  protocol === "hysteria" ? ["udp"] : protocol === "shadowsocks" ? ["tcp", "udp"] : ["tcp"];
+
+/** Ports already used on a server (node inbounds and relay listen ports), with who uses them. */
+function usedPorts(
+  s: ServerView | undefined,
+  except?: string,
+): { port: number; by: string; protocol: string | null }[] {
+  const out: { port: number; by: string; protocol: string | null }[] = [];
+  for (const n of s?.nodes ?? []) {
+    if (n.id === except) continue;
+    if (n.port) out.push({ port: n.port, by: n.name, protocol: n.protocol });
+    for (const e of n.entrances)
+      if (e.kind === "relay" && e.listen_port)
+        out.push({ port: e.listen_port, by: `${n.name} / ${e.name}`, protocol: n.protocol });
+  }
+  return out;
+}
+
+/** "本服务器已占用：443、8443" / "Used on this server: 443, 8443". */
+function usedPortsText(used: ReturnType<typeof usedPorts>, tr: Tr): string {
+  const ports = [...new Set(used.map((u) => u.port))].join(tr("、", ", "));
+  return ports
+    ? tr(`本服务器已占用：${ports}`, `Used on this server: ${ports}`)
+    : tr("本服务器已占用：无", "Used on this server: none");
+}
+
+function clashOf(
+  tr: Tr,
+  used: ReturnType<typeof usedPorts>,
+  port: number | null,
+  protocol: string,
+): string | undefined {
+  if (port === null) return undefined;
+  const mine = l4(protocol || null);
+  const hit = used.find((u) => u.port === port && l4(u.protocol).some((x) => mine.includes(x)));
+  return hit
+    ? tr(`端口 ${port} 已被本服务器的「${hit.by}」使用`, `Port ${port} is used by "${hit.by}" on this server`)
+    : undefined;
+}
+
+const SORT: NumRule = { min: -2_147_483_648, max: 2_147_483_647, int: true, optional: true };
+const SORT_REQ: NumRule = { ...SORT, optional: false };
+
+function NewNodeWizard({
   servers,
   groups,
+  preset,
   onClose,
   onShown,
 }: {
   servers: ServerView[];
   groups: NodeGroup[];
+  preset: string | null;
   onClose: () => void;
   onShown: (s: Shown) => void;
 }) {
   const tr = useTr();
-  const { query } = useRoute();
-  const [serverId, setServerId] = useState(query.get("server") ?? servers[0]?.id ?? "new");
-  const server = servers.find((s) => s.id === serverId);
-  const [name, setName] = useState("");
-  const [region, setRegion] = useState("");
-  const [display, setDisplay] = useState("");
-  const [visible, setVisible] = useState(true);
-  const [domain, setDomain] = useState("");
-  const [mode, setMode] = useState<"template" | "json">("template");
-  const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm());
-  const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
-  const [direct, setDirect] = useState<DirectForm>({ host: "", port: "", rate: "1", tags: "", groups: [] });
-  const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const plans = usePlanList();
   const confirmFree = useConfirmFree();
-  const submit = async () => {
-    const body: Record<string, unknown> = { name: name.trim(), region: region.trim() || undefined };
-    if (serverId === "new") {
-      body.tls_domain = domain.trim() || undefined;
+  const [run, busy] = useAction();
+  const choices = servers.filter((s) => !s.deleting_at);
+  const presetOk = !!preset && choices.some((s) => s.id === preset);
+  const [step, setStep] = useState(presetOk ? 1 : 0);
+  const [where, setWhere] = useState<string>(presetOk ? preset! : (choices[0]?.id ?? "new"));
+  const [newDomain, setNewDomain] = useState("");
+  const [proto, setProto] = useState<TemplateKind | "json">("vless_reality");
+  const [tpl, setTpl] = useState<TemplateForm>(() => newTemplateForm("443"));
+  const [json, setJson] = useState('{\n  "protocol": "vless",\n  "port": 443\n}');
+  const [f, setF] = useState({ name: "", display: "", region: "", sort: "", visible: true });
+  const [d, setD] = useState<{ name: string; host: string; port: string; rate: string; tags: Chips; groups: string[] }>(
+    {
+      name: "",
+      host: "",
+      port: "",
+      rate: "1",
+      tags: chips([]),
+      groups: [],
+    },
+  );
+  const [tried, setTried] = useState<boolean[]>([false, false, false, false]);
+  const srv = choices.find((s) => s.id === where);
+  const domain = where === "new" ? newDomain.trim() : (srv?.tls_domain ?? "");
+  const used = usedPorts(srv);
+  const form: TemplateForm = { ...tpl, template: proto === "json" ? tpl.template : proto };
+  const spec = proto === "json" ? parseInbound(json, tr) : toSpec(form, tr, domain);
+  const cards = protoCards(tr);
+  const protocol =
+    proto === "json"
+      ? typeof spec === "string"
+        ? ""
+        : String(spec.protocol ?? "")
+      : proto === "transport"
+        ? tpl.protocol
+        : (cards.find((c) => c.kind === proto)?.protocol ?? "");
+  const port =
+    proto === "json" ? (typeof spec === "string" ? null : Number(spec.port) || null) : num(tpl.port, PORT, tr)[0];
+  const clash = clashOf(tr, used, port, protocol);
+  const [sortV, sortErr] = num(f.sort, SORT, tr);
+  const [dPortV, dPortErr] = num(d.port, { ...PORT, optional: true }, tr);
+  const rate = parseRate(d.rate);
+  const errs = [
+    [] as (string | undefined)[],
+    [],
+    [typeof spec === "string" ? spec : undefined, clash],
+    [
+      !f.name.trim() ? tr("请填写名称", "Enter a name") : undefined,
+      sortErr,
+      dPortErr,
+      rate === null
+        ? tr(
+            "请填写倍率：0–100，最多 3 位小数（留空不会当作 0）",
+            "Enter a multiplier: 0–100, at most 3 decimals (empty is not 0)",
+          )
+        : undefined,
+      tagValues(d.tags).length > 8 ? "tags" : undefined,
+    ],
+  ];
+  const count = (i: number) => (tried[i] ? errs[i].filter(Boolean).length : 0);
+  const users =
+    plans.data && d.groups.length
+      ? plans.data.filter((p) => p.group_ids.some((g) => d.groups.includes(g))).reduce((n, p) => n + p.active_users, 0)
+      : 0;
+  const create = async () => {
+    if (typeof spec === "string" || rate === null) return;
+    const body: Record<string, unknown> = { name: f.name.trim(), region: f.region.trim() || undefined };
+    if (where === "new") {
+      body.tls_domain = newDomain.trim() || undefined;
       body.install = { origin: location.origin };
-    } else body.server_id = serverId;
-    if (mode === "template") {
-      const spec = toSpec(tpl, tr, serverId === "new" ? domain : (server?.tls_domain ?? ""));
-      if (typeof spec === "string") return setError(new Error(spec));
-      body.template = spec;
-    } else {
-      const ib = parseInbound(json, tr);
-      if (typeof ib === "string") return setError(new Error(ib));
-      body.inbound = ib;
-    }
-    if (display.trim()) body.display_name = display.trim();
-    if (!visible) body.visible = false;
-    const rate = parseRate(direct.rate);
-    if (rate === null)
-      return setError(
-        new Error(
-          tr(
-            "请填写直连入口的倍率：0–100，最多 3 位小数（留空不会当作 0）",
-            "Enter the direct entrance's multiplier: 0–100, at most 3 decimals (empty is not 0)",
-          ),
-        ),
-      );
+    } else body.server_id = where;
+    if (proto === "json") body.inbound = spec;
+    else body.template = spec;
+    if (f.display.trim()) body.display_name = f.display.trim();
+    if (sortV !== null) body.sort = sortV;
+    if (!f.visible) body.visible = false;
     if (rate === 0 && !(await confirmFree(tr("直连入口", "the direct entrance")))) return;
-    const d: Record<string, unknown> = {};
-    if (direct.host.trim()) d.connect_host = direct.host.trim();
-    if (direct.port.trim()) d.connect_port = Number(direct.port);
-    if (rate !== 1) d.rate = rate;
-    if (direct.groups.length) d.group_ids = direct.groups;
-    if (splitTags(direct.tags).length) d.tags = splitTags(direct.tags);
-    if (Object.keys(d).length) body.direct = d;
-    setError(null);
+    const direct: Record<string, unknown> = {};
+    if (d.name.trim()) direct.name = d.name.trim();
+    if (d.host.trim()) direct.connect_host = d.host.trim();
+    if (dPortV !== null) direct.connect_port = dPortV;
+    if (rate !== 1) direct.rate = rate;
+    if (d.groups.length) direct.group_ids = d.groups;
+    if (tagValues(d.tags).length) direct.tags = tagValues(d.tags);
+    if (Object.keys(direct).length) body.direct = direct;
     const r = await run(
       () => post<{ id: string; server_id: string; name: string } & Partial<Enrollment>>("/nodes", body),
-      {
-        ok: tr("节点已添加", "Node added"),
-        invalidate: [["servers"]],
-      },
+      { ok: tr(`已创建节点「${f.name.trim()}」`, `Node "${f.name.trim()}" created`) },
     );
-    if (r) {
-      onClose();
-      if (r.enrollment_token && r.bootstrap && r.expires_at)
-        onShown({
-          created: {
-            name: r.name,
-            enrollment_token: r.enrollment_token,
-            expires_at: r.expires_at,
-            bootstrap: r.bootstrap,
-            install: r.install,
-          },
-        });
-    }
+    if (!r) return;
+    onClose();
+    if (r.enrollment_token && r.bootstrap && r.expires_at)
+      onShown({
+        created: {
+          id: r.server_id,
+          name: r.name,
+          enrollment_token: r.enrollment_token,
+          expires_at: r.expires_at,
+          bootstrap: r.bootstrap,
+          install: r.install,
+        },
+      });
+    else navigate(`/nodes/${r.server_id}`);
   };
+  const next = () => {
+    setTried((t) => t.map((v, i) => (i === step ? true : v)));
+    if (errs[step].some(Boolean)) return;
+    if (step === 3) void create();
+    else setStep(step + 1);
+  };
+  const labels = [
+    tr("位置", "Where"),
+    tr("协议", "Protocol"),
+    tr("配置", "Configure"),
+    tr("展示与入口", "Display and entrance"),
+  ];
   return (
     <Dialog
       open
-      wide
+      size="lg"
+      icon={Layers}
       onClose={onClose}
-      title={tr("添加落地节点", "Add a landing node")}
-      description={tr(
-        "一个节点一种协议（D2）；同一台服务器跑多种协议就建多个节点。",
-        "One protocol per node (D2); several protocols on a machine = several nodes.",
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
-            {tr("添加", "Add")}
-          </Button>
-        </>
+      onSubmit={next}
+      title={tr("新建落地节点", "New landing node")}
+      description={
+        where !== "new" && srv
+          ? tr(
+              `在 ${srv.name} 上创建一个入站，并自动生成一个直连入口`,
+              `Creates an inbound on ${srv.name} and its direct entrance`,
+            )
+          : tr("选择一台服务器，或同时新建一台", "Pick a server, or add one with it")
       }
-    >
-      <div className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={tr("服务器", "Server")}>
-            <Select value={serverId} onChange={(e) => setServerId(e.target.value)}>
-              {servers.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-              <option value="new">
-                {tr("新服务器（同名，生成安装命令）", "A new server (same name, install command)")}
-              </option>
-            </Select>
-          </Field>
-          <Field label={tr("名称（内部，唯一）", "Name (internal, unique)")}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </Field>
-          {serverId === "new" && (
-            <Field label={tr("服务器域名（TLS，可选）", "Server domain (TLS, optional)")} className="sm:col-span-2">
-              <Input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="node1.example.com" />
-            </Field>
-          )}
-          <Field label={tr("地区（用户可见）", "Region (shown to users)")}>
-            <Input value={region} onChange={(e) => setRegion(e.target.value)} />
-          </Field>
-          <Field label={tr("显示名称（用户可见，可选）", "Display name (optional)")}>
-            <Input value={display} onChange={(e) => setDisplay(e.target.value)} />
-          </Field>
-          <div className="flex items-end gap-2 pb-2 text-[13px]">
-            <Switch checked={visible} onChange={setVisible} label={tr("对用户显示", "Shown to users")} />
-            {tr("对用户显示", "Shown to users")}
-          </div>
-        </div>
-        <SectionTitle
-          actions={
-            <Segmented
-              size="sm"
-              value={mode}
-              onChange={setMode}
-              options={[
-                { value: "template", label: tr("模板", "Template") },
-                { value: "json", label: tr("高级 JSON", "Advanced JSON") },
-              ]}
-            />
-          }
-        >
-          {tr("入站", "Inbound")}
-        </SectionTitle>
-        {mode === "template" ? (
-          <TemplateFields
-            form={tpl}
-            onChange={setTpl}
-            nodeDomain={serverId === "new" ? domain : (server?.tls_domain ?? "")}
-          />
-        ) : (
-          <JsonInbound value={json} onChange={setJson} />
-        )}
-        <SectionTitle>{tr("直连入口", "Direct entrance")}</SectionTitle>
-        <DirectFields value={direct} onChange={setDirect} groups={groups} />
-        <FormError error={error} />
-      </div>
-    </Dialog>
-  );
-}
-
-function DirectFields({
-  value,
-  onChange,
-  groups,
-}: {
-  value: DirectForm;
-  onChange: (v: DirectForm) => void;
-  groups: NodeGroup[];
-}) {
-  const tr = useTr();
-  return (
-    <div className="grid gap-3 sm:grid-cols-3">
-      <Field label={tr("连接地址（留空 = 服务器域名）", "Dial host (empty = server domain)")} className="sm:col-span-2">
-        <Input value={value.host} onChange={(e) => onChange({ ...value, host: e.target.value })} />
-      </Field>
-      <Field label={tr("连接端口（留空 = 入站端口）", "Dial port (empty = inbound's)")}>
-        <Input inputMode="numeric" value={value.port} onChange={(e) => onChange({ ...value, port: e.target.value })} />
-      </Field>
-      <Field label={tr("倍率", "Multiplier")}>
-        <Input inputMode="decimal" value={value.rate} onChange={(e) => onChange({ ...value, rate: e.target.value })} />
-      </Field>
-      <TagsField value={value.tags} onChange={(v) => onChange({ ...value, tags: v })} />
-      <div className="sm:col-span-2">
-        <GroupPicker groups={groups} value={value.groups} onChange={(g) => onChange({ ...value, groups: g })} />
-      </div>
-    </div>
-  );
-}
-
-/** "IPLC, 原生" → ["IPLC", "原生"] (the panel trims and deduplicates). */
-export function splitTags(v: string): string[] {
-  return v
-    .split(/[,，]/)
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-export function TagsField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const tr = useTr();
-  return (
-    <Field
-      label={tr("标签（逗号分隔，用户可见）", "Tags (comma separated, shown to users)")}
-      hint={tr(
-        "显示在订阅线路名里入口名称之后，也显示在门户线路列表里，只属于这个入口（最多 8 个）。",
-        "Shown after the entrance's name in subscription line names and in the portal's line list; this entrance only (at most 8).",
-      )}
-    >
-      <Input value={value} onChange={(e) => onChange(e.target.value)} placeholder="IPLC" />
-    </Field>
-  );
-}
-
-export function GroupPicker({
-  groups,
-  value,
-  onChange,
-}: {
-  groups: NodeGroup[];
-  value: string[];
-  onChange: (v: string[]) => void;
-}) {
-  const tr = useTr();
-  return (
-    <fieldset>
-      <legend className="mb-1.5 text-[13px] font-medium">{tr("节点组", "Node groups")}</legend>
-      {groups.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          {tr("还没有节点组（在「套餐 → 节点组」创建）。", "No node groups yet (Plans → Node groups).")}
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {groups.map((g) => (
-            <label
-              key={g.id}
-              className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[13px]"
-            >
-              <Checkbox
-                checked={value.includes(g.id)}
-                label={g.name}
-                onChange={(on) => onChange(on ? [...value, g.id] : value.filter((x) => x !== g.id))}
-              />
-              {g.name}
-            </label>
-          ))}
-        </div>
-      )}
-    </fieldset>
-  );
-}
-
-export function ServerEditDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
-  const tr = useTr();
-  const errText = useErrText();
-  const [name, setName] = useState(server.name);
-  const [domain, setDomain] = useState(server.tls_domain ?? "");
-  const [cap, setCap] = useState(
-    server.traffic_max_rate_bytes_per_sec ? String(Math.round(server.traffic_max_rate_bytes_per_sec / 125000)) : "",
-  );
-  const [check, setCheck] = useState<string | null>(null);
-  const [run, busy] = useRun();
-  const nodeId = server.nodes[0]?.id;
-  const checkDomain = async () => {
-    setCheck(tr("检查中…", "Checking…"));
-    try {
-      const v = await post<{
-        addresses: string[];
-        expected: string[];
-        matches: boolean | null;
-        cloudflare: boolean;
-        error: string | null;
-      }>("/inbound-templates/check-domain", { domain: domain.trim(), node_id: nodeId });
-      setCheck(
-        v.error
-          ? v.error
-          : v.cloudflare
-            ? tr(
-                "解析到 Cloudflare（橙云）：自动证书与直连都会失败",
-                "Resolves to Cloudflare (proxied): certificates and direct dialing fail",
-              )
-            : v.matches === false
-              ? tr(
-                  `域名未解析到本机 IP（${v.addresses.join(", ")} ≠ ${v.expected.join(", ")}）`,
-                  `Does not resolve to this server (${v.addresses.join(", ")} ≠ ${v.expected.join(", ")})`,
-                )
-              : tr(`解析正常：${v.addresses.join(", ")}`, `Resolves to ${v.addresses.join(", ")}`),
-      );
-    } catch (e) {
-      setCheck(errText(e));
-    }
-  };
-  const submit = async () => {
-    const body: Record<string, unknown> = {};
-    if (name.trim() !== server.name) body.name = name.trim();
-    if (domain.trim() !== (server.tls_domain ?? "")) body.tls_domain = domain.trim() || null;
-    const capV = cap.trim() ? Number(cap) * 125000 : null;
-    if (capV !== server.traffic_max_rate_bytes_per_sec) body.traffic_max_rate_bytes_per_sec = capV;
-    if (!Object.keys(body).length) return onClose();
-    const r = await run(() => patch(`/servers/${server.id}`, body), {
-      ok: tr("已保存", "Saved"),
-      invalidate: [["servers"]],
-    });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={tr(`编辑服务器 ${server.name}`, `Edit ${server.name}`)}
-      onSubmit={submit}
+      tabs={<Stepper steps={labels} current={step} onJump={setStep} />}
       footer={
         <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
+          {step > 0 && <Button onClick={() => setStep(step - 1)}>{tr("上一步", "Back")}</Button>}
+          <span className="flex-1 text-right text-footnote text-muted-foreground max-sm:hidden">
+            {count(step) ? null : tr(`第 ${step + 1} / 4 步`, `Step ${step + 1} of 4`)}
+          </span>
+          <FixCount n={count(step)} />
+          <Button className="max-sm:hidden" onClick={onClose}>
+            {tr("取消", "Cancel")}
+          </Button>
           <Button type="submit" variant="primary" loading={busy}>
-            {tr("保存", "Save")}
+            {step === 3 ? tr("创建节点", "Create node") : tr("下一步", "Next")}
           </Button>
         </>
       }
     >
-      <div className="space-y-3">
-        <Field label={tr("名称", "Name")}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field
-          label={tr("服务器域名（TLS）", "Server domain (TLS)")}
-          hint={tr(
-            "修改会重建 agent 配置（断开连接）；留空 = 手动放置证书。",
-            "A change rebuilds the agent's config (drops connections); empty = certificate files by hand.",
-          )}
-        >
-          <div className="flex gap-2">
-            <Input value={domain} onChange={(e) => setDomain(e.target.value)} />
-            <Button onClick={checkDomain} disabled={!domain.trim()}>
-              {tr("检查解析", "Check DNS")}
-            </Button>
-          </div>
-        </Field>
-        {check && (
-          <p role="status" className="text-xs text-muted-foreground">
-            {check}
-          </p>
-        )}
-        <Field
-          label={tr(
-            "计费速率上限（上下行合计 Mbps，留空 = 默认）",
-            "Billing rate cap (upload + download Mbps; empty = default)",
-          )}
-          hint={tr(
-            "这台服务器全部用户上行与下行之和的上限，超出部分不计费（防止 agent 被攻破后虚报）。按网卡带宽填写时请填带宽的 2 倍：1000 Mbps 全双工网卡填 2000，否则满载时会少计。默认 10000。",
-            "Cap on the sum of all users' upload and download on this server; bytes above it are not billed (guards against a compromised agent over-reporting). If you size it by the NIC, enter twice its speed: 2000 for a 1000 Mbps full-duplex NIC, or a busy server is under-billed. Default 10000.",
-          )}
-        >
-          <Input inputMode="numeric" value={cap} onChange={(e) => setCap(e.target.value)} />
-        </Field>
-      </div>
-    </Dialog>
-  );
-}
-
-export function QuotaDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
-  const tr = useTr();
-  const q = server.traffic_quota;
-  const GiB = 1024 ** 3;
-  const [mode, setMode] = useState<"both" | "up" | "down">(q.mode);
-  const [gib, setGib] = useState(q.bytes ? String(Math.round(q.bytes / GiB)) : "");
-  const [day, setDay] = useState(q.reset_day ? String(q.reset_day) : "1");
-  const [run, busy] = useRun();
-  const newBytes = gib.trim() ? Number(gib) * GiB : null;
-  const submit = async () => {
-    const r = await run(
-      () =>
-        patch(`/servers/${server.id}`, {
-          traffic_quota_bytes: newBytes,
-          traffic_quota_mode: mode,
-          traffic_quota_reset_day: day ? Number(day) : null,
-        }),
-      { ok: tr("流量额度已保存", "Quota saved"), invalidate: [["servers"]] },
-    );
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={tr(`流量额度 · ${server.name}`, `Traffic quota · ${server.name}`)}
-      description={tr(
-        "按网卡流量计（与服务商账单一致）。超额后该服务器上所有节点下发空配置。",
-        "Counted from the network interface (like the provider's bill). Over it every node on the server gets the empty state.",
-      )}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
-    >
-      <div className="space-y-3">
-        <Field group label={tr("计费方式", "What counts")}>
-          <Segmented
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: "both", label: tr("双向", "Both") },
-              { value: "up", label: tr("仅上行", "Up only") },
-              { value: "down", label: tr("仅下行", "Down only") },
+      {step === 0 && (
+        <div className="grid gap-4">
+          <RadioCards
+            cols={2}
+            label={tr("服务器", "Server")}
+            value={where}
+            onChange={setWhere}
+            items={[
+              ...choices.map((s) => ({
+                value: s.id,
+                icon: <Server />,
+                title: s.name,
+                desc: (
+                  <span className="inline-flex flex-wrap items-center gap-1.5">
+                    {serverStateOf(s) !== "online" && <ServerStatus server={s} />}
+                    {tr(`已有 ${s.nodes.length} 个节点`, `${s.nodes.length} nodes`)}
+                    {usedPorts(s).length > 0 &&
+                      tr(
+                        ` · 占用端口 ${[...new Set(usedPorts(s).map((u) => u.port))].join(tr("、", ", "))}`,
+                        ` · ports ${[...new Set(usedPorts(s).map((u) => u.port))].join(", ")}`,
+                      )}
+                  </span>
+                ),
+              })),
+              {
+                value: "new",
+                icon: <Plus />,
+                title: tr("新建服务器", "New server"),
+                desc: tr("同时登记一台新服务器（与节点同名）", "Register a new server too (named like the node)"),
+              },
             ]}
           />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={tr("每周期额度（GiB，留空 = 不限）", "Quota per period (GiB; empty = none)")}>
-            <Input inputMode="numeric" value={gib} onChange={(e) => setGib(e.target.value)} />
-          </Field>
-          <Field label={tr("每月重置日（1–31，留空 = 不重置）", "Monthly reset day (1–31; empty = never)")}>
-            <Input inputMode="numeric" value={day} onChange={(e) => setDay(e.target.value)} />
-          </Field>
-        </div>
-        <KV
-          items={[
-            [tr("本周期已用", "Used this period"), bytes(q.used_bytes)],
-            [tr("接收 / 发送", "Rx / tx"), `${bytes(q.rx_bytes)} / ${bytes(q.tx_bytes)}`],
-            [tr("下次重置", "Next reset"), dateTime(q.next_reset_at)],
-          ]}
-        />
-        {q.exceeded_at && newBytes !== null && newBytes > q.used_bytes && (
-          <Callout tone="success">
-            {tr(
-              "新额度高于已用：保存后立即恢复。",
-              "The new quota is above the usage: the server is restored on save.",
-            )}
-          </Callout>
-        )}
-      </div>
-    </Dialog>
-  );
-}
-
-const ALERT_KINDS = [
-  "offline",
-  "cpu",
-  "memory",
-  "disk",
-  "latency",
-  "cert",
-  "agent_cert",
-  "last_error",
-  "entrance_down",
-  "traffic_quota",
-] as const;
-
-export function alertKindName(k: string, tr: Tr): string {
-  return (
-    (
-      {
-        offline: tr("服务器离线", "Server offline"),
-        cpu: tr("CPU 过高", "High CPU"),
-        memory: tr("内存过高", "High memory"),
-        disk: tr("磁盘将满", "Disk filling up"),
-        latency: tr("测速全部失败", "Every probe fails"),
-        cert: tr("服务器证书即将到期", "Server certificate expiring"),
-        agent_cert: tr("Agent 证书即将到期", "Agent certificate expiring"),
-        last_error: tr("配置应用失败", "Apply failed"),
-        entrance_down: tr("中转入口不可用", "Relay entrance down"),
-        traffic_quota: tr("流量额度已用完", "Traffic quota used up"),
-      } as Record<string, string>
-    )[k] ?? k
-  );
-}
-
-type Rules = {
-  muted: boolean;
-  disabled: string[];
-  offline_secs: number | null;
-  cpu_percent: number | null;
-  cpu_minutes: number | null;
-  mem_percent: number | null;
-  mem_minutes: number | null;
-  disk_percent: number | null;
-  cert_days: number | null;
-};
-const NUM_KEYS = [
-  "offline_secs",
-  "cpu_percent",
-  "cpu_minutes",
-  "mem_percent",
-  "mem_minutes",
-  "disk_percent",
-  "cert_days",
-] as const;
-
-export function AlertRulesDialog({ server, onClose }: { server: ServerView; onClose: () => void }) {
-  const tr = useTr();
-  const q = useQuery({
-    queryKey: ["servers", server.id, "alert-rules"],
-    queryFn: () => get<Rules>(`/servers/${server.id}/alert-rules`),
-  });
-  const [form, setForm] = useState<Rules | null>(null);
-  useEffect(() => {
-    if (q.data && !form) setForm(q.data);
-  }, [q.data, form]);
-  const [run, busy] = useRun();
-  const label: Record<(typeof NUM_KEYS)[number], string> = {
-    offline_secs: tr("离线多少秒告警", "Offline seconds"),
-    cpu_percent: tr("CPU %", "CPU %"),
-    cpu_minutes: tr("CPU 持续分钟", "CPU minutes"),
-    mem_percent: tr("内存 %", "Memory %"),
-    mem_minutes: tr("内存持续分钟", "Memory minutes"),
-    disk_percent: tr("磁盘 %", "Disk %"),
-    cert_days: tr("证书剩余天数", "Certificate days"),
-  };
-  const submit = async () => {
-    if (!form) return;
-    const r = await run(() => put(`/servers/${server.id}/alert-rules`, form), {
-      ok: tr("告警规则已保存", "Alert rules saved"),
-      invalidate: [["servers"]],
-    });
-    if (r !== undefined) onClose();
-  };
-  return (
-    <Dialog
-      open
-      wide
-      onClose={onClose}
-      title={tr(`告警规则 · ${server.name}`, `Alert rules · ${server.name}`)}
-      description={tr("留空 = 使用全局设置（告警 → 告警设置）。", "Empty = the global value (Alerts → settings).")}
-      onSubmit={submit}
-      footer={
-        <>
-          <Button onClick={onClose}>{tr("取消", "Cancel")}</Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!form}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
-    >
-      {!form ? (
-        <Skeleton className="h-40" />
-      ) : (
-        <div className="space-y-3">
-          <label className="flex items-center gap-2 text-[13px]">
-            <Switch checked={form.muted} onChange={(v) => setForm({ ...form, muted: v })} label={tr("静音", "Mute")} />
-            {tr("静音此服务器的全部告警", "Mute every alert of this server")}
-          </label>
-          <fieldset>
-            <legend className="mb-1.5 text-[13px] font-medium">{tr("关闭的告警种类", "Kinds turned off")}</legend>
-            <div className="flex flex-wrap gap-2">
-              {ALERT_KINDS.map((k) => (
-                <label
-                  key={k}
-                  className="flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[13px]"
-                >
-                  <Checkbox
-                    checked={form.disabled.includes(k)}
-                    label={alertKindName(k, tr)}
-                    onChange={(on) =>
-                      setForm({ ...form, disabled: on ? [...form.disabled, k] : form.disabled.filter((x) => x !== k) })
-                    }
-                  />
-                  {alertKindName(k, tr)}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <div className="grid gap-3 sm:grid-cols-4">
-            {NUM_KEYS.map((k) => (
-              <Field key={k} label={label[k]}>
+          {where === "new" && (
+            <div className="grid gap-2 rounded-xl bg-window p-4 ring-1 ring-border ring-inset">
+              <Field
+                label={tr("TLS 域名", "TLS domain")}
+                hint={tr(
+                  "可留空；创建后会给出一次性安装命令，服务器名称之后可在设置里改",
+                  "Optional; you get a one-time install command after creating; rename the server in its settings later",
+                )}
+              >
                 <Input
-                  inputMode="numeric"
-                  value={form[k] ?? ""}
-                  onChange={(e) => setForm({ ...form, [k]: e.target.value.trim() ? Number(e.target.value) : null })}
+                  value={newDomain}
+                  onChange={(e) => setNewDomain(e.target.value)}
+                  className="font-mono"
+                  placeholder="node1.example.com"
                 />
               </Field>
-            ))}
+            </div>
+          )}
+        </div>
+      )}
+      {step === 1 && (
+        <div className="grid gap-3">
+          <RadioCards
+            cols={3}
+            label={tr("协议模板", "Template")}
+            value={proto}
+            onChange={setProto}
+            items={cards.map((c) => ({
+              value: c.kind,
+              title: c.title,
+              desc: c.desc,
+              icon: c.kind === "json" ? <Braces /> : c.kind === "vless_reality" ? <Sparkles /> : <Zap />,
+            }))}
+          />
+          <p className="text-footnote text-muted-foreground">
+            {tr(
+              "表单由协议模板生成；之后可在节点的「入站」里换模板或改成 JSON。一个节点就是一个入站。",
+              "The form comes from the template; change the template or switch to JSON later in the node's Inbound section. One node = one inbound.",
+            )}
+          </p>
+        </div>
+      )}
+      {step === 2 &&
+        (proto === "json" ? (
+          <div className="grid gap-2">
+            <JsonInbound
+              value={json}
+              onChange={setJson}
+              error={tried[2] ? (typeof spec === "string" ? spec : clash) : undefined}
+            />
+            <p className="text-footnote text-muted-foreground">{usedPortsText(used, tr)}</p>
           </div>
+        ) : (
+          <TemplateFields
+            form={form}
+            onChange={(v) => setTpl(v)}
+            nodeDomain={domain}
+            tried={tried[2]}
+            hideTemplate
+            portClash={clash}
+            portHint={usedPortsText(used, tr)}
+          />
+        ))}
+      {step === 3 && (
+        <div className="grid gap-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label={tr("节点名称", "Node name")}
+              required
+              hint={tr("后台用，唯一", "Internal, unique")}
+              error={tried[3] ? errs[3][0] : undefined}
+            >
+              <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} data-autofocus />
+            </Field>
+            <Field
+              label={tr("显示名", "Display name")}
+              hint={tr("用户在门户看到的名称", "What users see in the portal")}
+            >
+              <Input value={f.display} onChange={(e) => setF({ ...f, display: e.target.value })} />
+            </Field>
+            <Field label={tr("地区", "Region")}>
+              <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
+            </Field>
+            <Field
+              label={tr("排序", "Sort")}
+              hint={tr("越小越靠前", "Smaller first")}
+              error={shown(f.sort, sortErr, tried[3])}
+            >
+              <Input
+                inputMode="numeric"
+                value={f.sort}
+                onChange={(e) => setF({ ...f, sort: e.target.value })}
+                className="tnum"
+                placeholder="0"
+              />
+            </Field>
+          </div>
+          <div className="flex min-h-14 items-center justify-between gap-3 rounded-xl bg-window px-4 py-3 ring-1 ring-border ring-inset">
+            <span>
+              <span className="block text-body font-medium">{tr("对用户显示", "Shown to users")}</span>
+              <span className="text-footnote text-muted-foreground">
+                {tr("关闭时可以先自己测试，用户订阅里看不到", "Off: test it yourself first; users do not see it")}
+              </span>
+            </span>
+            <Switch
+              checked={f.visible}
+              onChange={(v) => setF({ ...f, visible: v })}
+              label={tr("对用户显示", "Shown to users")}
+            />
+          </div>
+          <section className="grid gap-4 rounded-xl p-4 ring-1 ring-border ring-inset">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="info">{tr("直连入口", "Direct entrance")}</Badge>
+              <span className="text-footnote text-muted-foreground">
+                {tr("随节点一起创建；中转入口之后在节点上添加", "Created with the node; add relays on the node later")}
+              </span>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={tr("入口名称", "Entrance name")} hint={tr("留空 = 直连", "Empty = direct")}>
+                <Input value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} />
+              </Field>
+              <TagsField value={d.tags} onChange={(v) => setD({ ...d, tags: v })} />
+              <Field
+                label={tr("连接地址", "Dial host")}
+                hint={
+                  domain
+                    ? tr(`默认：${domain}`, `Default: ${domain}`)
+                    : tr("默认是服务器 TLS 域名", "Defaults to the server's TLS domain")
+                }
+              >
+                <Input
+                  value={d.host}
+                  onChange={(e) => setD({ ...d, host: e.target.value })}
+                  className="font-mono"
+                  placeholder={domain || undefined}
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field
+                  label={tr("端口", "Port")}
+                  hint={tr("留空 = 入站端口", "Empty = inbound's")}
+                  error={shown(d.port, dPortErr, tried[3])}
+                >
+                  <Input
+                    inputMode="numeric"
+                    value={d.port}
+                    onChange={(e) => setD({ ...d, port: e.target.value })}
+                    className="tnum"
+                    placeholder={port ? String(port) : undefined}
+                  />
+                </Field>
+                <Field label={tr("倍率", "Multiplier")} required error={shown(d.rate, errs[3][3], tried[3])}>
+                  <Input
+                    inputMode="decimal"
+                    value={d.rate}
+                    onChange={(e) => setD({ ...d, rate: e.target.value })}
+                    className="tnum"
+                  />
+                </Field>
+              </div>
+            </div>
+            <Field
+              group
+              label={tr("节点组", "Node groups")}
+              hint={tr("谁能用：套餐 → 节点组 → 入口", "Who gets it: plan → node group → entrance")}
+            >
+              <GroupChips
+                groups={groups}
+                value={d.groups}
+                onChange={(g) => setD({ ...d, groups: g })}
+                manageTo="/plans/groups"
+              />
+            </Field>
+          </section>
+          <p className="text-footnote text-muted-foreground">
+            {d.groups.length
+              ? tr(
+                  `创建后：订阅里出现 1 条线路，按当前套餐约 ${users.toLocaleString()} 名用户可用。`,
+                  `Then: one more line in subscriptions, for about ${users.toLocaleString()} users (from current plans).`,
+                )
+              : tr(
+                  "还没选节点组：创建后没有用户能用这个入口，之后可在入口里加。",
+                  "No node group yet: nobody can use the entrance until you add one.",
+                )}
+          </p>
         </div>
       )}
     </Dialog>
   );
 }
+
+/* ================= Node dialog (基本 / 入站 / 审计与流量) ================= */
 
 type FullNode = {
   id: string;
@@ -867,6 +1085,7 @@ type FullNode = {
   server_name: string;
   tls_domain: string | null;
   inbound: Record<string, unknown> | null;
+  entrances: EntranceView[];
   warnings: string[];
 };
 type BlockStatus = {
@@ -876,279 +1095,611 @@ type BlockStatus = {
   error: string | null;
   days: { day: string; rule_id: number; name: string; hits: number }[];
 };
+type BlockRules = { rules: { id: number; name: string; enabled: boolean; entries: number; kind: string }[] };
 
-export function NodeDrawer({ id, onClose }: { id: string; onClose: () => void }) {
+/** A node: display fields, the inbound and the block switch in one form (?ntab=basic|inbound|audit). */
+export function NodeDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const q = useQuery({ queryKey: ["nodes", "full", id], queryFn: () => get<FullNode>(`/nodes/${id}`) });
-  const n = q.data;
-  return (
-    <Drawer
-      open
-      onClose={onClose}
-      width="sm:max-w-2xl"
-      title={n ? n.display_name || n.name : tr("节点", "Node")}
-      subtitle={n && `${n.server_name} · ${n.id}`}
-    >
-      {q.isPending && <Skeleton className="h-64" />}
-      <FormError error={q.error} />
-      {n && (
-        <>
-          {n.warnings.length > 0 && (
-            <Callout tone="warning">
-              <ul className="list-disc pl-4">
-                {n.warnings.map((w) => (
-                  <li key={w}>{w}</li>
-                ))}
-              </ul>
-            </Callout>
-          )}
-          <NodeBasics n={n} onSaved={() => void q.refetch()} />
-          <NodeInbound n={n} onSaved={() => void q.refetch()} />
-          <BlockRulesStatus id={id} />
-          <NodeTraffic id={id} />
-          <div className="mt-6">
-            <Button size="sm" onClick={() => setQuery({ open: `server:${n.server_id}` })}>
-              {tr("服务器状态", "Server status")}
-            </Button>
-          </div>
-        </>
-      )}
-    </Drawer>
-  );
+  const block = useQuery({
+    queryKey: ["nodes", id, "block-rules"],
+    queryFn: () => get<BlockStatus>(`/nodes/${id}/block-rules`),
+  });
+  useCrumb(q.data ? q.data.display_name || q.data.name : null);
+  if (!q.data || !block.data)
+    return (
+      <Dialog
+        open
+        size="lg"
+        icon={Layers}
+        onClose={onClose}
+        title={tr("节点", "Node")}
+        footer={<Button onClick={onClose}>{tr("关闭", "Close")}</Button>}
+      >
+        {q.isError || block.isError ? (
+          <ErrorState
+            compact
+            title={tr("节点加载失败", "Could not load the node")}
+            error={q.error ?? block.error}
+            onRetry={() => void (q.refetch(), block.refetch())}
+          />
+        ) : (
+          <LoadingBlock rows={6} />
+        )}
+      </Dialog>
+    );
+  return <NodeEditor key={q.data.id} n={q.data} block={block.data} onClose={onClose} />;
 }
 
-function NodeBasics({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
+type NodeTab = "basic" | "inbound" | "audit";
+
+const streamOf = (inbound: Record<string, unknown> | null) => {
+  const st = (inbound?.streamSettings ?? {}) as Record<string, unknown>;
+  return { network: String(st.network ?? "tcp"), security: String(st.security ?? "none") };
+};
+
+function NodeEditor({ n, block, onClose }: { n: FullNode; block: BlockStatus; onClose: () => void }) {
   const tr = useTr();
-  const [f, setF] = useState({
+  const confirm = useConfirm();
+  const groups = useGroups();
+  const plans = usePlanList();
+  const servers = useServers();
+  const toggle = useToggleNode();
+  const remove = useDeleteNode();
+  const [qs, patchQs] = useQS();
+  const tab: NodeTab = (["inbound", "audit"] as const).find((t) => t === qs.get("ntab")) ?? "basic";
+  const setTab = (t: NodeTab) => patchQs({ ntab: t === "basic" ? null : t }, true);
+  const start = {
     name: n.name,
     display_name: n.display_name ?? "",
     region: n.region ?? "",
     sort: String(n.sort),
     visible: n.visible,
-  });
-  const [run, busy] = useRun();
-  const save = async () => {
-    const r = await run(
-      () =>
-        patch(`/nodes/${n.id}`, {
-          name: f.name.trim(),
-          display_name: f.display_name.trim() || null,
-          region: f.region.trim() || null,
-          sort: Number(f.sort) || 0,
-          visible: f.visible,
-        }),
-      { ok: tr("已保存", "Saved"), invalidate: [["servers"]] },
-    );
-    if (r !== undefined) onSaved();
   };
-  return (
-    <>
-      <SectionTitle>{tr("展示", "Display")}</SectionTitle>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={tr("名称（内部）", "Name (internal)")}>
-          <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
-        </Field>
-        <Field label={tr("显示名称", "Display name")}>
-          <Input value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} />
-        </Field>
-        <Field label={tr("地区", "Region")}>
-          <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
-        </Field>
-        <Field label={tr("排序", "Sort")}>
-          <Input inputMode="numeric" value={f.sort} onChange={(e) => setF({ ...f, sort: e.target.value })} />
-        </Field>
-        <div className="flex items-end gap-2 pb-2 text-[13px]">
-          <Switch
-            checked={f.visible}
-            onChange={(v) => setF({ ...f, visible: v })}
-            label={tr("对用户显示", "Shown to users")}
-          />
-          {tr("对用户显示", "Shown to users")}
-        </div>
-      </div>
-      <div className="mt-3">
-        <Button size="sm" variant="primary" loading={busy} onClick={save}>
-          {tr("保存展示设置", "Save display")}
-        </Button>
-      </div>
-    </>
-  );
-}
-
-function NodeInbound({ n, onSaved }: { n: FullNode; onSaved: () => void }) {
-  const tr = useTr();
-  const errText = useErrText();
+  const [f, setF] = useState(start);
+  const initialJson = JSON.stringify(n.inbound ?? {}, null, 2);
+  const port0 = String((n.inbound?.port as number | undefined) ?? 443);
   const [mode, setMode] = useState<"view" | "template" | "json">("view");
-  const [tpl, setTpl] = useState<TemplateForm>(newTemplateForm(String((n.inbound?.port as number | undefined) ?? 443)));
-  const [json, setJson] = useState(JSON.stringify(n.inbound ?? {}, null, 2));
+  const [proto, setProto] = useState<TemplateKind>("vless_reality");
+  const [tpl, setTpl] = useState<TemplateForm>(() => newTemplateForm(port0));
+  const [json, setJson] = useState(initialJson);
+  const [blockOn, setBlockOn] = useState(block.enabled);
+  const [tried, setTried] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [run, busy] = useRun();
+  const [run, busy] = useAction();
+  const server = servers.data?.find((s) => s.id === n.server_id);
+  const cards = protoCards(tr).filter((c) => c.kind !== "json");
+  const before = String(n.inbound?.protocol ?? "");
+  const form: TemplateForm = { ...tpl, template: proto };
+  const spec =
+    mode === "template" ? toSpec(form, tr, n.tls_domain ?? "") : mode === "json" ? parseInbound(json, tr) : null;
+  const inboundEdited = mode === "template" || (mode === "json" && json !== initialJson);
+  const after =
+    mode === "template"
+      ? proto === "transport"
+        ? tpl.protocol
+        : (cards.find((c) => c.kind === proto)?.protocol ?? "")
+      : mode === "json" && spec && typeof spec !== "string"
+        ? String(spec.protocol ?? "")
+        : before;
+  const protoChanged = inboundEdited && !!n.inbound && !!after && after !== before;
+  const newPort =
+    mode === "template"
+      ? num(tpl.port, PORT, tr)[0]
+      : spec && typeof spec !== "string"
+        ? Number(spec.port) || null
+        : null;
+  const clash = inboundEdited ? clashOf(tr, usedPorts(server, n.id), newPort, after) : undefined;
+  const nameError = !f.name.trim() ? tr("请填写名称", "Enter a name") : undefined;
+  const [sortV, sortError] = num(f.sort, SORT_REQ, tr);
+  const inboundError = inboundEdited ? (typeof spec === "string" ? spec : clash) : undefined;
+  const basicErrors = [nameError, sortError].filter(Boolean).length;
+  const errCount = tried ? basicErrors + (inboundError ? 1 : 0) : 0;
+  const basicsChanged = JSON.stringify(f) !== JSON.stringify(start);
+  const changed = [
+    f.name !== start.name && tr("名称", "name"),
+    f.display_name !== start.display_name && tr("显示名", "display name"),
+    f.region !== start.region && tr("地区", "region"),
+    f.sort !== start.sort && tr("排序", "sort"),
+    f.visible !== start.visible && tr("对用户显示", "shown to users"),
+    inboundEdited && tr("入站", "inbound"),
+    blockOn !== block.enabled && tr("出站拦截", "blocking"),
+  ].filter(Boolean) as string[];
+  const users =
+    groups.data && plans.data
+      ? holdersOf(
+          n.entrances.map((e) => e.id),
+          groups.data,
+          plans.data,
+        )
+      : null;
+  const { network, security } = streamOf(n.inbound);
+
   const save = async () => {
+    setTried(true);
     setError(null);
-    let inbound: Record<string, unknown>;
-    if (mode === "template") {
-      const spec = toSpec(tpl, tr, n.tls_domain ?? "");
-      if (typeof spec === "string") return setError(new Error(spec));
-      try {
-        const r = await post<{ inbound: Record<string, unknown> }>("/inbound-templates/render", {
-          template: spec,
-          tls_domain: n.tls_domain ?? undefined,
-        });
-        inbound = r.inbound;
-      } catch (e) {
-        return setError(e);
-      }
-    } else {
-      const v = parseInbound(json, tr);
-      if (typeof v === "string") return setError(new Error(v));
-      inbound = v;
-    }
-    const r = await run(() => put(`/nodes/${n.id}/inbound`, { inbound }), {
-      ok: tr("入站已保存，agent 将重建配置", "Inbound saved; the agent rebuilds"),
-      invalidate: [["servers"]],
-    });
-    if (r !== undefined) {
-      setMode("view");
-      onSaved();
-    }
-  };
-  return (
-    <>
-      <SectionTitle
-        actions={
-          <Segmented
-            size="sm"
-            value={mode}
-            onChange={setMode}
-            options={[
-              { value: "view", label: tr("查看", "View") },
-              { value: "template", label: tr("从模板替换", "Replace from template") },
-              { value: "json", label: tr("编辑 JSON", "Edit JSON") },
-            ]}
-          />
+    if (basicErrors) return setTab("basic");
+    if (inboundError) return setTab("inbound");
+    if (!changed.length) return onClose();
+    let inbound: Record<string, unknown> | null = null;
+    if (inboundEdited && spec && typeof spec !== "string") {
+      if (mode === "template") {
+        try {
+          const r = await post<{ inbound: Record<string, unknown> }>("/inbound-templates/render", {
+            template: spec,
+            tls_domain: n.tls_domain ?? undefined,
+          });
+          inbound = r.inbound;
+        } catch (e) {
+          setTab("inbound");
+          return setError(e);
         }
-      >
-        {tr("入站", "Inbound")}
-      </SectionTitle>
-      {mode === "view" && (
-        <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 font-mono text-[11px]">
-          {n.inbound ? JSON.stringify(n.inbound, null, 2) : tr("（未配置）", "(none)")}
-        </pre>
-      )}
-      {mode === "template" && <TemplateFields form={tpl} onChange={setTpl} nodeDomain={n.tls_domain ?? ""} />}
-      {mode === "json" && <JsonInbound value={json} onChange={setJson} />}
-      {mode !== "view" && (
-        <div className="mt-3 space-y-2">
-          <Callout tone="warning">
-            {tr(
-              "协议不变时用户保留凭据；协议变化会重新发放凭据（客户端需更新订阅）。保存后 agent 重建入站。",
-              "Users keep their credentials when the protocol stays; a new protocol issues new ones (clients refresh the subscription). The agent rebuilds the inbound.",
-            )}
-          </Callout>
-          {!!error && <p className="text-[13px] text-destructive">{errText(error)}</p>}
-          <Button size="sm" variant="primary" loading={busy} onClick={save}>
-            {tr("保存入站", "Save inbound")}
+      } else inbound = spec;
+      const to = String(inbound.protocol ?? "");
+      if (n.inbound && to !== before) {
+        const ok = await confirm({
+          title: tr(
+            `协议从 ${protocolName(before, tr)} 改为 ${protocolName(to, tr)}，重新发放全部凭据？`,
+            `Switch from ${protocolName(before, tr)} to ${protocolName(to, tr)} and reissue every credential?`,
+          ),
+          description: tr(
+            "换协议后旧凭据全部失效。用户的客户端要重新拉取订阅才能恢复；没有自动更新订阅的用户会断线直到手动更新。",
+            "Old credentials stop working. Clients must refresh the subscription; users without automatic updates stay cut off until they refresh by hand.",
+          ),
+          impacts: [
+            {
+              label: tr("重新发放凭据的用户（按当前套餐估算）", "Users reissued (estimated from current plans)"),
+              value: users ?? tr("未知", "unknown"),
+            },
+            { label: tr("一起重建的入口", "Entrances rebuilt with it"), value: n.entrances.length },
+          ],
+          confirmLabel: tr("保存并重新发放", "Save and reissue"),
+          tone: "danger",
+        });
+        if (!ok) return;
+      }
+    }
+    if (blockOn !== block.enabled) {
+      const ok = await confirm({
+        title: blockOn ? tr("开启出站拦截？", "Turn on blocking?") : tr("关闭出站拦截？", "Turn off blocking?"),
+        description: tr(
+          "开关会重建这个节点的入站，在线连接断开后自动重连（规则内容变化热更新，不断线）。之后命中所选规则集的连接会被丢弃，命中次数按天统计。",
+          "Switching rebuilds the node's inbound; live connections drop and reconnect (rule edits apply live). Connections matching the enabled rule sets are then dropped, counted per day.",
+        ),
+        confirmLabel: blockOn ? tr("开启并重建", "Turn on and rebuild") : tr("关闭并重建", "Turn off and rebuild"),
+        tone: "warning",
+      });
+      if (!ok) return;
+    }
+    const done = await run(
+      async () => {
+        if (basicsChanged)
+          await patch(`/nodes/${n.id}`, {
+            name: f.name.trim(),
+            display_name: f.display_name.trim() || null,
+            region: f.region.trim() || null,
+            sort: sortV ?? 0,
+            visible: f.visible,
+          });
+        if (inbound) await put(`/nodes/${n.id}/inbound`, { inbound });
+        if (blockOn !== block.enabled) await put(`/nodes/${n.id}/block-rules`, { enabled: blockOn });
+        return true;
+      },
+      {
+        ok: inbound
+          ? tr("入站已保存，agent 将重建配置", "Inbound saved; the agent rebuilds")
+          : blockOn !== block.enabled
+            ? blockOn
+              ? tr("出站拦截已开启", "Blocking on")
+              : tr("出站拦截已关闭", "Blocking off")
+            : tr("已保存节点", "Node saved"),
+      },
+    );
+    if (done) onClose();
+  };
+
+  return (
+    <Dialog
+      open
+      size="lg"
+      icon={Layers}
+      onClose={onClose}
+      dirty={changed.length > 0}
+      onSubmit={save}
+      title={tr(`节点 · ${n.name}`, `Node · ${n.name}`)}
+      description={
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+          {n.server_name}
+          {n.inbound?.protocol ? ` · ${protocolName(before, tr)} · ${network} · :${String(n.inbound.port ?? "")}` : ""}
+          {users !== null && tr(` · 授权 ${users.toLocaleString()}`, ` · ${users.toLocaleString()} users`)}
+          {!n.enabled && <Badge>{tr("已停用", "Disabled")}</Badge>}
+        </span>
+      }
+      tabs={
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          label={tr("节点", "Node")}
+          tabs={[
+            { value: "basic", label: tr("基本", "Basics") },
+            {
+              value: "inbound",
+              label: (
+                <>
+                  {tr("入站", "Inbound")}
+                  {protoChanged && (
+                    <span className="text-warning" aria-label={tr("协议会变化", "protocol changes")}>
+                      ●
+                    </span>
+                  )}
+                </>
+              ),
+            },
+            { value: "audit", label: tr("审计与流量", "Blocking and traffic") },
+          ]}
+        />
+      }
+      footer={
+        <>
+          <Button
+            variant="destructive-soft"
+            icon={Trash2}
+            className="max-sm:px-2.5"
+            onClick={async () => {
+              if (await remove(n)) onClose();
+            }}
+          >
+            <span className="max-sm:sr-only">{tr("删除节点", "Delete node")}</span>
           </Button>
+          <div className="min-w-0 flex-1 truncate text-right text-footnote text-muted-foreground">
+            {errCount ? (
+              <FixCount n={errCount} />
+            ) : changed.length ? (
+              tr(`改动：${changed.join(tr("、", ", "))}`, `Changed: ${changed.join(", ")}`)
+            ) : null}
+          </div>
+          <Button className="max-sm:hidden" onClick={onClose}>
+            {tr("取消", "Cancel")}
+          </Button>
+          <Button type="submit" variant="primary" loading={busy} disabled={!changed.length}>
+            {protoChanged ? tr("保存…", "Save…") : tr("保存", "Save")}
+          </Button>
+        </>
+      }
+    >
+      <WarningList warnings={n.warnings} />
+      {tab === "basic" && (
+        <div className="grid gap-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label={tr("名称", "Name")}
+              required
+              hint={tr("后台用", "Internal")}
+              error={tried ? nameError : undefined}
+            >
+              <Input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />
+            </Field>
+            <Field
+              label={tr("显示名称", "Display name")}
+              hint={tr("门户线路列表显示", "Shown in the portal's line list")}
+            >
+              <Input value={f.display_name} onChange={(e) => setF({ ...f, display_name: e.target.value })} />
+            </Field>
+            <Field label={tr("地区", "Region")}>
+              <Input value={f.region} onChange={(e) => setF({ ...f, region: e.target.value })} />
+            </Field>
+            <Field
+              label={tr("排序", "Sort")}
+              hint={tr("越小越靠前", "Smaller first")}
+              error={shown(f.sort, sortError, tried)}
+            >
+              <Input
+                inputMode="numeric"
+                className="tnum"
+                value={f.sort}
+                onChange={(e) => setF({ ...f, sort: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="divide-y divide-separator overflow-hidden rounded-xl ring-1 ring-border ring-inset">
+            <div className="flex min-h-14 items-center gap-3 px-4 py-2.5">
+              <span className="min-w-0 flex-1">
+                <span className="block text-body font-medium">{tr("对用户显示", "Shown to users")}</span>
+                <span className="text-footnote text-muted-foreground">
+                  {tr(
+                    "关闭后订阅与门户都看不到，但节点照常运行（适合内测）",
+                    "Off: left out of subscriptions and the portal, still serving (for testing)",
+                  )}
+                </span>
+              </span>
+              <Switch
+                checked={f.visible}
+                onChange={(v) => setF({ ...f, visible: v })}
+                label={tr("对用户显示", "Shown to users")}
+              />
+            </div>
+            <div className="flex min-h-14 items-center gap-3 px-4 py-2.5">
+              <span className="min-w-0 flex-1">
+                <span className="block text-body font-medium">{tr("启用", "Enabled")}</span>
+                <span className="text-footnote text-muted-foreground">
+                  {tr(
+                    "停用 = 下发空配置，在线用户立即断开（立即生效，会先确认）",
+                    "Off = the empty configuration, online users are cut off (applies at once, asks first)",
+                  )}
+                </span>
+              </span>
+              <Switch
+                checked={n.enabled}
+                label={tr("启用节点", "Node enabled")}
+                onChange={() =>
+                  void toggle(
+                    { id: n.id, name: n.name, enabled: n.enabled, entrances: n.entrances },
+                    server?.heartbeat?.metrics?.online_users ?? null,
+                  )
+                }
+              />
+            </div>
+          </div>
         </div>
       )}
-    </>
-  );
-}
-
-function BlockRulesStatus({ id }: { id: string }) {
-  const tr = useTr();
-  const q = useQuery({
-    queryKey: ["nodes", id, "block-rules"],
-    queryFn: () => get<BlockStatus>(`/nodes/${id}/block-rules`),
-  });
-  const d = q.data;
-  if (!d) return null;
-  const byRule = new Map<string, number>();
-  for (const x of d.days) byRule.set(x.name, (byRule.get(x.name) ?? 0) + x.hits);
-  return (
-    <>
-      <SectionTitle>{tr("审计规则", "Block rules")}</SectionTitle>
-      <div className="flex flex-wrap items-center gap-2 text-[13px]">
-        <Badge tone={d.enabled ? "success" : "neutral"}>{d.enabled ? tr("已开启", "On") : tr("关闭", "Off")}</Badge>
-        {!d.agent_supported && <Badge tone="warning">{tr("agent 不支持", "agent lacks support")}</Badge>}
-        {d.enabled && (
-          <Badge tone={d.in_sync ? "success" : "warning"}>
-            {d.in_sync ? tr("已生效", "applied") : tr("等待 agent 应用", "waiting for the agent")}
-          </Badge>
-        )}
-        {d.error && <span className="text-destructive">{d.error}</span>}
-      </div>
-      {byRule.size > 0 && (
-        <ul className="mt-2 text-[13px]">
-          {[...byRule].map(([name, hits]) => (
-            <li key={name} className="flex justify-between">
-              <span>{name}</span>
-              <span className="tabular-nums text-muted-foreground">
-                {tr(`近 7 天拦截 ${hits} 次`, `${hits} blocked in 7 days`)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </>
-  );
-}
-
-function NodeTraffic({ id }: { id: string }) {
-  const tr = useTr();
-  const to = siteToday();
-  const from = daysBefore(to, 29);
-  const q = useQuery({
-    queryKey: ["traffic", "node", id],
-    queryFn: () =>
-      get<{
-        days: { day: string; up_bytes: number; down_bytes: number; billed_bytes: number }[];
-        top_users: { user_id: string; email: string | null; billed_bytes: number }[];
-      }>(`/nodes/${id}/traffic?from=${from}&to=${to}`),
-  });
-  const all: string[] = [];
-  for (let i = 29; i >= 0; i--) all.push(daysBefore(to, i));
-  const by = new Map((q.data?.days ?? []).map((r) => [r.day, r]));
-  return (
-    <>
-      <SectionTitle>{tr("节点流量（近 30 天）", "Node traffic (30 days)")}</SectionTitle>
-      <LineChart
-        title={tr("每日流量", "Daily traffic")}
-        times={all.map((d) => `${d}T12:00:00Z`)}
-        format={bytes}
-        series={[
-          {
-            label: tr("下载", "Down"),
-            values: all.map((d) => by.get(d)?.down_bytes ?? 0),
-            stroke: "stroke-sky-500",
-            swatch: "bg-sky-500",
-          },
-          {
-            label: tr("上传", "Up"),
-            values: all.map((d) => by.get(d)?.up_bytes ?? 0),
-            stroke: "stroke-emerald-500",
-            swatch: "bg-emerald-500",
-          },
-          {
-            label: tr("计费", "Billed"),
-            values: all.map((d) => by.get(d)?.billed_bytes ?? 0),
-            stroke: "stroke-amber-500",
-            swatch: "bg-amber-500",
-          },
-        ]}
-      />
-      {(q.data?.top_users.length ?? 0) > 0 && (
-        <>
-          <div className="mb-1 mt-3 text-xs font-medium text-muted-foreground">{tr("用量最高的用户", "Top users")}</div>
-          <ul className="divide-y divide-border rounded-md border border-border text-[13px]">
-            {q.data?.top_users.map((u) => (
-              <li key={u.user_id} className="flex justify-between px-3 py-1.5">
-                <span>{u.email ?? tr("已删除的用户", "Deleted user")}</span>
-                <span className="tabular-nums text-muted-foreground">{bytes(u.billed_bytes)}</span>
-              </li>
+      {tab === "inbound" && (
+        <div className="grid gap-5">
+          <div className="rounded-xl bg-window p-4 ring-1 ring-border ring-inset">
+            <div className="mb-2 text-footnote font-semibold text-muted-foreground">
+              {tr("当前入站", "Current inbound")}
+            </div>
+            {n.inbound ? (
+              <KV
+                cols={4}
+                items={[
+                  { k: tr("协议", "Protocol"), v: protocolName(before, tr) },
+                  { k: tr("传输", "Transport"), v: network },
+                  { k: tr("端口", "Port"), v: <span className="tnum">{String(n.inbound.port ?? "—")}</span> },
+                  { k: tr("安全", "Security"), v: security },
+                ]}
+              />
+            ) : (
+              <p className="text-body text-muted-foreground">{tr("还没有入站", "No inbound yet")}</p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Segmented
+              value={mode}
+              onChange={setMode}
+              label={tr("入站编辑方式", "How to edit")}
+              options={[
+                { value: "view", label: tr("查看", "View") },
+                { value: "template", label: tr("从模板替换", "Replace from template") },
+                { value: "json", label: tr("编辑 JSON", "Edit JSON") },
+              ]}
+            />
+            <span className="text-footnote text-muted-foreground">
+              {tr("保存前不会影响节点", "Nothing changes until you save")}
+            </span>
+          </div>
+          {mode === "view" && (
+            <pre className="max-h-72 overflow-auto rounded-lg bg-window p-3 font-mono text-caption ring-1 ring-border ring-inset">
+              {n.inbound ? initialJson : tr("（未配置）", "(none)")}
+            </pre>
+          )}
+          {mode === "template" && (
+            <>
+              <RadioCards
+                cols={3}
+                label={tr("协议模板", "Template")}
+                value={proto}
+                onChange={(v) => setProto(v as TemplateKind)}
+                items={cards.map((c) => ({ value: c.kind, title: c.title, desc: c.desc }))}
+              />
+              <TemplateFields
+                form={form}
+                onChange={setTpl}
+                nodeDomain={n.tls_domain ?? ""}
+                tried={tried}
+                hideTemplate
+                portClash={clash}
+              />
+            </>
+          )}
+          {mode === "json" && <JsonInbound value={json} onChange={setJson} error={tried ? inboundError : clash} />}
+          {mode !== "view" &&
+            (protoChanged ? (
+              <Banner tone="warning" icon={<TriangleAlert />} title={tr("协议会变化：", "The protocol changes:")}>
+                {tr(
+                  `${protocolName(before, tr)} → ${protocolName(after, tr)}。保存时会为全部 ${users ?? "?"} 名用户重新发放凭据（按当前套餐估算），保存前会再次确认。`,
+                  `${protocolName(before, tr)} → ${protocolName(after, tr)}. Saving reissues credentials for all ${users ?? "?"} users (estimated from current plans); you confirm before it is saved.`,
+                )}
+              </Banner>
+            ) : (
+              <p className="text-footnote text-muted-foreground">
+                {tr(
+                  "协议不变：用户凭据保留，保存后 agent 重建入站，在线用户约 2 秒内重连。",
+                  "Same protocol: credentials stay; the agent rebuilds the inbound and online users reconnect in about 2 s.",
+                )}
+              </p>
             ))}
-          </ul>
-        </>
+          <FormError error={error} />
+        </div>
+      )}
+      {tab === "audit" && (
+        <div className="grid gap-5">
+          <BlockSection status={block} on={blockOn} onChange={setBlockOn} />
+          <section>
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-body font-semibold">{tr("节点流量 · 30 天", "Node traffic · 30 days")}</h4>
+              <Link
+                to={`/nodes/${n.server_id}?tab=monitor`}
+                className="text-footnote font-medium text-primary hover:underline"
+              >
+                {tr("在监控中查看", "Open the monitor")}
+              </Link>
+            </div>
+            <NodeTrafficBody id={n.id} height={170} topN={3} />
+          </section>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/** The block switch (part of the form) and the global rule sets with this node's 7-day hits (read-only). */
+function BlockSection({ status, on, onChange }: { status: BlockStatus; on: boolean; onChange: (v: boolean) => void }) {
+  const tr = useTr();
+  const rules = useQuery({ queryKey: ["block-rules"], queryFn: () => get<BlockRules>("/block-rules") });
+  const hits = new Map<number, number>();
+  for (const x of status.days) hits.set(x.rule_id, (hits.get(x.rule_id) ?? 0) + x.hits);
+  const enabled = (rules.data?.rules ?? []).filter((r) => r.enabled);
+  return (
+    <section className="overflow-hidden rounded-xl ring-1 ring-border ring-inset">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-primary-soft text-primary"
+          aria-hidden="true"
+        >
+          <ShieldBan className="size-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-body font-semibold">{tr("出站拦截", "Outbound blocking")}</span>
+          <span className="text-footnote text-muted-foreground">
+            {!status.agent_supported ? (
+              <span className="text-warning">
+                {tr("这台服务器的 agent 不支持，升级后生效", "This server's agent lacks support; update it")}
+              </span>
+            ) : status.enabled && !status.in_sync ? (
+              <span className="text-warning">
+                {tr("规则已改，等待节点同步（约 30 秒）", "Changed; waiting for the node (about 30 s)")}
+              </span>
+            ) : (
+              tr(
+                "丢弃命中规则集的连接；开关会重建入站（保存时确认）",
+                "Drops connections matching the rule sets; switching rebuilds the inbound (confirmed on save)",
+              )
+            )}
+          </span>
+        </span>
+        <Switch checked={on} onChange={onChange} label={tr("出站拦截", "Outbound blocking")} />
+      </div>
+      {status.error && (
+        <details className="border-t border-separator px-4 py-2 text-body text-destructive">
+          <summary className="cursor-default">
+            {tr("agent 应用规则失败", "The agent failed to apply the rules")}
+          </summary>
+          <p className="font-mono text-caption break-all">{status.error}</p>
+        </details>
+      )}
+      {on && (
+        <div className="divide-y divide-separator border-t border-separator">
+          {rules.isError && <ErrorState compact error={rules.error} onRetry={() => void rules.refetch()} />}
+          {rules.isPending && <LoadingBlock rows={2} />}
+          {rules.data && enabled.length === 0 && (
+            <p className="px-4 py-3 text-footnote text-muted-foreground">
+              {tr("还没有开启任何规则集", "No rule set is on")}
+            </p>
+          )}
+          {enabled.map((r) => (
+            <div key={r.id} className="flex min-h-12 items-center gap-3 px-4 py-2">
+              <span className="min-w-0 flex-1">
+                <span className="block text-body font-medium">{r.name}</span>
+                <span className="text-footnote text-muted-foreground">
+                  {tr(`${r.entries} 条`, `${r.entries} entries`)}
+                </span>
+              </span>
+              <span className="tnum text-footnote text-muted-foreground">
+                {tr(
+                  `7 天命中 ${(hits.get(r.id) ?? 0).toLocaleString()}`,
+                  `${(hits.get(r.id) ?? 0).toLocaleString()} hits in 7 days`,
+                )}
+              </span>
+            </div>
+          ))}
+          <div className="px-4 py-2 text-footnote text-muted-foreground">
+            {tr(
+              "规则集对所有开启拦截的节点生效，内容与开关在",
+              "Rule sets apply to every node with blocking on; edit them in",
+            )}{" "}
+            <Link to="/settings/block" className="text-primary hover:underline">
+              {tr("设置 → 出站拦截", "Settings → Blocking")}
+            </Link>
+            {tr("。", ".")}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/* ================= Mount from the URL ================= */
+
+/**
+ * Every dialog of the nodes area, mounted from the URL: `?new=server|node|relay`
+ * (`&server=` preselects, `&for=<node>` the relay's node), `?node=<id>&ntab=`,
+ * `?entrance=<id>&etab=`, `?action=install|enroll` (on a server page).
+ */
+export function NodesDialogs({ serverId }: { serverId?: string }) {
+  const [query, patchQs] = useQS();
+  const servers = useServers();
+  const groups = useGroups();
+  const [shown, setShown] = useState<Shown | null>(null);
+  const list = servers.data ?? [];
+  const creating = query.get("new");
+  const action = query.get("action");
+  const server = serverId ? list.find((s) => s.id === serverId) : undefined;
+  const nodeId = query.get("node");
+  const entId = query.get("entrance");
+  const forId = query.get("for");
+  let ent: { e: EntranceView; n: ServerNode; s: ServerView } | null = null;
+  let forNode: { n: ServerNode; s: ServerView } | undefined;
+  for (const s of list)
+    for (const n of s.nodes) {
+      if (n.id === forId) forNode = { n, s };
+      for (const e of n.entrances) if (e.id === entId) ent = { e, n, s };
+    }
+  return (
+    <>
+      {creating === "server" && (
+        <AddServerDialog
+          onClose={() => patchQs({ new: null })}
+          onCreated={(s) => {
+            patchQs({ new: null });
+            setShown(s);
+          }}
+        />
+      )}
+      {creating === "node" && servers.isSuccess && (
+        <NewNodeWizard
+          servers={list}
+          groups={groups.data ?? []}
+          preset={query.get("server")}
+          onClose={() => patchQs({ new: null, server: null })}
+          onShown={setShown}
+        />
+      )}
+      {creating === "relay" && servers.isSuccess && (
+        <RelayDialog
+          target={forNode}
+          servers={list}
+          groups={groups.data ?? []}
+          onClose={() => patchQs({ new: null, for: null })}
+        />
+      )}
+      {server && action === "install" && (
+        <CommandDialog
+          shown={{ install: { id: server.id, name: server.name } }}
+          onClose={() => patchQs({ action: null })}
+        />
+      )}
+      {server && action === "enroll" && <EnrollDialog server={server} onClose={() => patchQs({ action: null })} />}
+      {shown && <CommandDialog shown={shown} onClose={() => setShown(null)} />}
+      {nodeId && <NodeDialog id={nodeId} onClose={() => patchQs({ node: null, ntab: null })} />}
+      {ent && (
+        <EntranceDialog
+          key={ent.e.id}
+          entrance={ent.e}
+          node={ent.n}
+          server={ent.s}
+          groups={groups.data ?? []}
+          onClose={() => patchQs({ entrance: null, etab: null })}
+        />
       )}
     </>
   );

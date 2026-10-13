@@ -70,17 +70,72 @@ export function unsupportedFormats(protocol: string, transport: string): string[
 
 /** The option label of a transport in the free template's select. */
 export function networkOptionLabel(protocol: string, transport: string, lang: Lang = "zh"): string {
-  const en = lang === "en";
-  const notes: string[] = unsupportedFormats(protocol, transport).map((f) => (en ? `no ${f}` : `${f} 不支持`));
+  const notes: string[] = unsupportedFormats(protocol, transport).map((f) =>
+    lang === "en" ? `no ${f}` : `${f} 不支持`,
+  );
   if (templateRequiresTls(protocol, transport) && !protocolSpec(protocol)?.template_requires_tls)
-    notes.push(en ? "needs TLS" : "需 TLS");
+    notes.push(lang === "en" ? "needs TLS" : "需 TLS");
   const label = transportLabel(transport, lang);
-  return notes.length ? (en ? `${label} (${notes.join("; ")})` : `${label}（${notes.join("；")}）`) : label;
+  if (!notes.length) return label;
+  const sep = lang === "en" ? "; " : "；";
+  return lang === "en" ? `${label} (${notes.join(sep)})` : `${label}（${notes.join(sep)}）`;
 }
 
 export function protocolOptionLabel(p: ManifestProtocol, lang: Lang = "zh"): string {
   const label = lang === "en" ? p.label : p.label_zh;
   return p.template_requires_tls ? (lang === "en" ? `${label} (needs TLS)` : `${label}（需 TLS）`) : label;
+}
+
+// English twins of the manifest's field labels, help texts and value
+// labels. proto/protocols.toml carries only the console's Chinese
+// (`label_zh`, `help_zh`, `value_labels_zh`): the agent vendors that file
+// and decodes it strictly (unknown keys are errors), so English fields there
+// would need a coordinated agent change. protocol-form.test.ts fails when a
+// manifest field has no twin here. Key: `<owner>.<id>.<field>`.
+type FieldEn = { label: string; help?: string; values?: string[] };
+const PATH_HELP = "Starts with /; empty = random";
+const HOST_HELP = "Host header the client sends (optional)";
+export const FIELD_EN: Record<string, FieldEn> = {
+  "security.tls.server_name": { label: "Certificate domain (SNI)", help: "Empty = the node domain" },
+  "security.reality.dest": {
+    label: "Target site",
+    help: "host or host:port (default 443); empty = first in the list",
+  },
+  "security.reality.server_name": { label: "SNI", help: "Empty = the target site's domain" },
+  "security.reality.fingerprint": { label: "uTLS fingerprint" },
+  "transport.ws.path": { label: "Path", help: PATH_HELP },
+  "transport.ws.host": { label: "Host", help: HOST_HELP },
+  "transport.httpupgrade.path": { label: "Path", help: PATH_HELP },
+  "transport.httpupgrade.host": { label: "Host", help: HOST_HELP },
+  "transport.xhttp.path": { label: "Path", help: PATH_HELP },
+  "transport.xhttp.host": { label: "Host", help: HOST_HELP },
+  "transport.xhttp.mode": { label: "Mode" },
+  "transport.grpc.service_name": { label: "serviceName", help: "Empty = random" },
+  "protocol.vless.flow": { label: "Flow", values: ["None", "Vision (xtls-rprx-vision)"] },
+  "protocol.vless.encryption": { label: "Encryption" },
+  "protocol.ss2022.method": { label: "Cipher" },
+  "protocol.ss2022.psk": { label: "Server key" },
+  "protocol.ss2022.network": { label: "Network" },
+};
+
+type Owner = "security" | "transport" | "protocol";
+
+/** A manifest field's label in the console language. */
+export function fieldLabel(owner: Owner, id: string, f: ManifestField, lang: Lang = "zh"): string {
+  return lang === "en" ? (FIELD_EN[`${owner}.${id}.${f.name}`]?.label ?? f.name) : f.label_zh;
+}
+
+/** A manifest field's help text (placeholder) in the console language. */
+export function fieldHelp(owner: Owner, id: string, f: ManifestField, lang: Lang = "zh"): string {
+  if (f.help_zh === null) return "";
+  return lang === "en" ? (FIELD_EN[`${owner}.${id}.${f.name}`]?.help ?? "") : f.help_zh;
+}
+
+/** The label of an enum value (the value itself when the manifest names none). */
+export function valueLabel(owner: Owner, id: string, f: ManifestField, value: string, lang: Lang = "zh"): string {
+  const i = f.values.indexOf(value);
+  const labels = lang === "en" ? FIELD_EN[`${owner}.${id}.${f.name}`]?.values : f.value_labels_zh;
+  return (i >= 0 ? labels?.[i] : undefined) || value;
 }
 
 /** Enum choices of a field of a security layer, transport or protocol. */

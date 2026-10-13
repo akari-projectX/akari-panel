@@ -188,6 +188,125 @@ async fn user_rows_carry_console_columns() {
     db.drop().await;
 }
 
+/// Console redesign: the views the status filter cannot express, their
+/// counts (`counts=true`), the new sorts, and the inviter / last traffic
+/// day on each row.
+#[tokio::test]
+async fn user_views_counts_sorts_and_row_extras() {
+    let Some((db, _state, c)) = setup().await else {
+        return;
+    };
+    let soon = user(
+        &db,
+        "soon",
+        "expires_at = now() + interval '3 days', email_verified_at = now()",
+    )
+    .await;
+    user(
+        &db,
+        "later",
+        "expires_at = now() + interval '30 days', email_verified_at = now()",
+    )
+    .await;
+    let heavy = user(
+        &db,
+        "heavy",
+        "traffic_limit_bytes = 100, traffic_used_bytes = 85, email_verified_at = now()",
+    )
+    .await;
+    user(
+        &db,
+        "light",
+        "traffic_limit_bytes = 100, traffic_used_bytes = 79, email_verified_at = now(), \
+         last_login_at = now() - interval '2 days'",
+    )
+    .await;
+    user(
+        &db,
+        "gone",
+        "expires_at = now() - interval '1 day', email_verified_at = now()",
+    )
+    .await;
+    user(
+        &db,
+        "full",
+        "enabled = false, disabled_reason = 'quota', email_verified_at = now()",
+    )
+    .await;
+    user(&db, "fresh", "last_login_at = now()").await;
+    sqlx::query("UPDATE users SET inviter_id = $1 WHERE id = $2")
+        .bind(soon)
+        .bind(heavy)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let node = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO traffic_daily \
+         (user_id, day, entrance_id, node_id, up_bytes, down_bytes, billed_bytes) \
+         VALUES ($1, '2026-09-30', $2, $2, 1, 1, 1), ($1, '2026-10-02', $2, $2, 1, 1, 1)",
+    )
+    .bind(heavy)
+    .bind(node)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL akari.ledger = 'on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO user_balances (user_id, balance_cents) VALUES ($1, 900)")
+        .bind(soon)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let get = |q: &'static str| {
+        let c = &c;
+        async move {
+            let r = c.get(&format!("/test/api/v1/users{q}")).await;
+            assert_eq!(r.status, StatusCode::OK, "{q}: {:?}", r.json());
+            r.json()
+        }
+    };
+    assert_eq!(ids(&get("?view=expiring").await), ["soon"]);
+    assert_eq!(ids(&get("?view=usage80").await), ["heavy"]);
+    assert_eq!(ids(&get("?view=lapsed&sort=email").await), ["full", "gone"]);
+    // The admin (setup) and fresh have no verified address.
+    assert_eq!(ids(&get("?view=unverified&role=user").await), ["fresh"]);
+    // Views combine with the other filters.
+    assert_eq!(get("?view=expiring&q=later").await["total"], 0);
+    // Sorts: usage (no limit last), last sign-in (never last), balance.
+    assert_eq!(ids(&get("?sort=-usage&limit=2").await), ["heavy", "light"]);
+    assert_eq!(ids(&get("?sort=-login&limit=2").await), ["fresh", "light"]);
+    assert_eq!(ids(&get("?sort=-balance&limit=1").await), ["soon"]);
+    // Counts only on request, over everyone.
+    assert!(get("").await.get("counts").is_none());
+    let v = get("?counts=true&limit=1&q=nobody").await;
+    assert_eq!(v["total"], 0);
+    assert_eq!(
+        v["counts"],
+        json!({
+            "all": 8, "active": 6, "expiring": 1, "usage80": 1, "lapsed": 2,
+            "never": 4, "banned": 0, "admins": 1, "unverified": 2, "erased": 0,
+            "week_new": 8,
+        })
+    );
+    // Row extras.
+    let row = &get("?q=heavy").await["users"][0];
+    assert_eq!(row["inviter_email"], "soon@example.com");
+    assert_eq!(row["last_traffic_day"], "2026-10-02");
+    let row = &get("?q=soon").await["users"][0];
+    assert_eq!(row["inviter_email"], Value::Null);
+    assert_eq!(row["last_traffic_day"], Value::Null);
+    let r = c.get("/test/api/v1/users?view=nope").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.json()["code"], "user.view_invalid");
+    db.drop().await;
+}
+
 #[tokio::test]
 async fn create_user_with_email() {
     let Some((db, _state, c)) = setup().await else {

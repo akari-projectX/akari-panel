@@ -1,5 +1,5 @@
 // INVENTORY SH-05 SET-14 follow-up (next-01, "人机验证未通过"): Turnstile with Cloudflare's always-pass test
-// keys and a 2 s minimum submit time. The console card saves without touching the stored secret;
+// keys and a 2 s minimum submit time. The console section saves (bottom save bar) without touching the stored secret;
 // the sign-in page then logs in on the first attempt; a single-use widget token is never sent
 // twice (after a refused non-admin account, a wrong password, a success).
 import { expect, test, type Page } from "@playwright/test";
@@ -71,11 +71,11 @@ function tokens(page: Page): string[] {
   return sent;
 }
 
-test("SET-14 SH-05: saving the bot-protection card (minimum time 2 s) keeps the stored secret; an admin then signs in at the first attempt", async ({
+test("SET-14 SH-05: saving the sign-in section (minimum time 2 s) keeps the stored secret; an admin then signs in at the first attempt", async ({
   page,
   browser,
 }) => {
-  await openConsole(page, "/settings/signup");
+  await openConsole(page, "/settings/login");
   const secretField = page.getByLabel("Turnstile 密钥（只写）");
   await expect(secretField).toHaveAttribute("autocomplete", "new-password");
   await expect(secretField).toHaveAttribute("data-1p-ignore", "true");
@@ -88,10 +88,10 @@ test("SET-14 SH-05: saving the bot-protection card (minimum time 2 s) keeps the 
   for (const v of ["0", "2"]) {
     await min.fill(v);
     const saved = page.waitForResponse((r) => r.url().endsWith("/settings/auth") && r.request().method() === "PUT");
-    await page.getByRole("button", { name: "保存", exact: true }).last().click();
+    await page.getByRole("region", { name: "保存栏" }).getByRole("button", { name: "保存", exact: true }).click();
     const res = await saved;
     expect(res.status(), await res.text()).toBe(200);
-    await toast(page, "人机验证设置已保存");
+    await toast(page, "登录与人机验证设置已保存");
   }
   expect(puts).toHaveLength(2);
   for (const b of puts) expect(b).not.toContain("turnstile_secret");
@@ -138,11 +138,12 @@ test("SH-05: a refused non-admin account and a wrong password each get a fresh t
   await page.locator("#email").fill(USER);
   await page.locator("#password").fill(USER_PW);
   await submit.click();
-  await expect(page.getByRole("alert")).toHaveText("这不是管理员账户。用户请在门户登录。");
+  await expect(page.getByRole("alert")).toContainText("不是管理员账户");
+  await page.getByRole("button", { name: "换个账户登录" }).click();
   await page.locator("#email").fill(ADMIN);
   await page.locator("#password").fill("not-the-password");
   await submit.click();
-  await expect(page.getByRole("alert")).toHaveText("邮箱或密码错误");
+  await expect(page.getByRole("alert")).toContainText("邮箱或密码不正确");
   await page.locator("#password").fill(ADMIN_PW);
   await submit.click();
   await page.waitForURL(new RegExp(`^${CONSOLE}`), { timeout: 20_000 });
@@ -199,8 +200,8 @@ test("SH-05: Turnstile follows the page (interaction-only, flexible, theme, lang
     r.fulfill({ contentType: "text/javascript", body: RECORDING }),
   );
   await page.goto(LOGIN);
-  await expect(page.getByText("正在进行人机验证…")).toBeVisible();
-  await expect(page.getByText("正在进行人机验证…")).toHaveCount(0);
+  await expect(page.getByText("正在确认你是真人…")).toBeVisible();
+  await expect(page.getByText("正在确认你是真人…")).toHaveCount(0);
   const seen = () => page.evaluate(() => (window as unknown as { __ts: Record<string, string>[] }).__ts);
   const first = (await seen())[0];
   expect(first).toMatchObject({ appearance: "interaction-only", size: "flexible", language: "zh-cn" });

@@ -9,7 +9,8 @@
 //! (`templates::validate`: unknown placeholders refused, required ones
 //! must stay), use `version` for optimistic concurrency and are audited
 //! (`settings.mail_template.update` / `.reset`; the text itself is in the
-//! row, the audit carries lengths only). The preview and the test mail
+//! row, the audit carries lengths only). The preview and the test mails
+//! (the stored template, or the editor's unsaved draft: `send_test_draft`)
 //! render the kind's sample values (`Template::sample`).
 //!
 //! An override may also carry an HTML source (`html_source`, migration
@@ -230,13 +231,28 @@ pub struct TemplateView {
     /// An override is stored (`version` > 0).
     pub custom: bool,
     pub version: i64,
+    /// When and by whom the override was last saved (admin redesign v2:
+    /// "已自定义 · 时间 · 人"); None for the default.
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub updated_by: Option<String>,
     pub placeholders: Vec<Placeholder>,
     pub required: &'static [&'static str],
 }
 
 async fn view_all(conn: &mut PgConnection) -> Result<Vec<TemplateView>, ApiError> {
-    let rows: Vec<(String, String, String, String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT kind, locale, subject, body, html_source, version FROM mail_templates",
+    type Stored = (
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        chrono::DateTime<chrono::Utc>,
+        Option<String>,
+    );
+    let rows: Vec<Stored> = sqlx::query_as(
+        "SELECT kind, locale, subject, body, html_source, version, updated_at, updated_by \
+         FROM mail_templates",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -260,6 +276,8 @@ async fn view_all(conn: &mut PgConnection) -> Result<Vec<TemplateView>, ApiError
                 default_body: db,
                 custom: stored.is_some(),
                 version: stored.map_or(0, |r| r.5),
+                updated_at: stored.map(|r| r.6),
+                updated_by: stored.and_then(|r| r.7.clone()),
                 placeholders: COMMON.iter().chain(allowed.iter()).copied().collect(),
                 required,
             });
@@ -342,6 +360,36 @@ pub struct PreviewReq {
     pub html_source: Option<String>,
 }
 
+/// A draft, validated exactly like a save: its kind, the kind's sample
+/// values, the locale and the saved mail settings.
+async fn checked_draft(
+    state: &AppState,
+    req: &PreviewReq,
+) -> Result<(&'static str, Template, Locale, super::MailSettings), ApiError> {
+    let kind = known_kind(&req.kind)?;
+    let loc = parse_locale(&req.locale)?;
+    templates::validate(kind, &req.subject, &req.body)?;
+    if let Some(h) = &req.html_source {
+        templates::validate_html(kind, h)?;
+    }
+    let sample = Template::sample(kind).ok_or_else(ApiError::internal)?;
+    let mut c = state.pg().acquire().await?;
+    let settings = super::load(&mut c).await?;
+    Ok((kind, sample, loc, settings))
+}
+
+/// The draft rendered with the kind's sample values.
+fn render_draft(req: &PreviewReq, sample: &Template, loc: Locale, site: &str) -> Rendered {
+    templates::render_custom_html(
+        &req.subject,
+        &req.body,
+        req.html_source.as_deref(),
+        &sample.values(loc),
+        loc,
+        site,
+    )
+}
+
 /// POST /api/v1/settings/mail-templates/preview (admin): render the
 /// submitted text with the kind's sample values (validated first, so the
 /// editor's errors show live).
@@ -351,25 +399,50 @@ pub async fn preview(
     ApiJson(req): ApiJson<PreviewReq>,
 ) -> Result<Json<Rendered>, ApiError> {
     user.require_admin()?;
-    let kind = known_kind(&req.kind)?;
-    let loc = parse_locale(&req.locale)?;
-    templates::validate(kind, &req.subject, &req.body)?;
-    if let Some(h) = &req.html_source {
-        templates::validate_html(kind, h)?;
-    }
-    let sample = Template::sample(kind).ok_or_else(ApiError::internal)?;
-    let site = {
-        let mut c = state.pg().acquire().await?;
-        super::load(&mut c).await?.site().to_string()
+    let (_, sample, loc, settings) = checked_draft(&state, &req).await?;
+    Ok(Json(render_draft(&req, &sample, loc, settings.site())))
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TestDraftReq {
+    pub kind: String,
+    pub locale: String,
+    pub subject: String,
+    pub body: String,
+    #[serde(default)]
+    pub html_source: Option<String>,
+    pub to: String,
+}
+
+/// POST /api/v1/settings/mail-templates/test-draft (admin): send the
+/// editor's UNSAVED draft (validated like the preview) with sample values
+/// to `to`, right now — the same path, answer and audit as the stored
+/// template's test mail.
+pub async fn send_test_draft(
+    State(state): State<AppState>,
+    user: AuthUser,
+    ApiJson(req): ApiJson<TestDraftReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    user.require_admin()?;
+    let TestDraftReq {
+        kind,
+        locale,
+        subject,
+        body,
+        html_source,
+        to,
+    } = req;
+    let draft = PreviewReq {
+        kind,
+        locale,
+        subject,
+        body,
+        html_source,
     };
-    Ok(Json(templates::render_custom_html(
-        &req.subject,
-        &req.body,
-        req.html_source.as_deref(),
-        &sample.values(loc),
-        loc,
-        &site,
-    )))
+    let (kind, sample, loc, settings) = checked_draft(&state, &draft).await?;
+    let rendered = render_draft(&draft, &sample, loc, settings.site());
+    super::send_now(&state, &user, &settings, &to, rendered, Some(kind)).await
 }
 
 /// POST /api/v1/settings/mail-templates/{kind}/{locale}/test (admin):

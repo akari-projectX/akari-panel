@@ -1,13 +1,54 @@
-// 审计日志 (AUD-*): keyset list filtered by actor label and action (prefix
-// with a trailing "."), action names in both languages, field-level diff.
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { useState } from "react";
+// 审计日志 (AUD-*; v2 audit-*, a readable timeline): entries grouped by
+// site day, each one sentence — who (avatar, or a robot for system / cli /
+// agent), what (the action's name), on which object (a chip linking to the
+// user / order / server…); below it the action chip (red for dangerous
+// ones), how many fields changed and the IP. Filters are compact pills,
+// all in the URL: 操作者 (?actor=, an email is resolved to the account's
+// label; the loaded actors are offered), 动作 (?action=, exact or a prefix
+// ending in "."), 日期 (?from=&to=, site days, applied to the loaded
+// entries; older pages load on demand). The detail (?open=) shows the
+// sentence, the field-level diff and the request facts. No CSV export and
+// no client (user agent) column: the API has neither.
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+  Bot,
+  CalendarDays,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  Globe,
+  History,
+  Layers,
+  LifeBuoy,
+  Receipt,
+  Rocket,
+  Server,
+  Settings,
+  Shapes,
+  Tag,
+  Ticket,
+  User,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link } from "react-router";
 import { get, qs } from "../../shared/api";
-import { dateTime } from "../../shared/format";
+import { cn } from "../../shared/cn";
+import { dateOnly, dateTime, daysBefore, siteTimeZone, siteToday } from "../../shared/format";
 import { useLang, useTr, type Lang, type Tr } from "../../shared/i18n";
-import { Button, Input, PageHeader } from "../../shared/ui/primitives";
-import { DataTable, type Column } from "../../shared/ui/table";
-import { useDebounced } from "../kit";
+import { Badge } from "../../shared/ui/badge";
+import { Button } from "../../shared/ui/button";
+import { Card } from "../../shared/ui/card";
+import { Dialog } from "../../shared/ui/dialog";
+import { Input } from "../../shared/ui/form";
+import { Callout, KV, PageHeader } from "../../shared/ui/layout";
+import { Popover } from "../../shared/ui/menu";
+import { EmptyState, ErrorState, SkeletonRows } from "../../shared/ui/states";
+import { Avatar } from "../components/kit";
+import { dayLabel } from "../components/ops-bits";
+import { useQS } from "../router";
+import { SECTIONS, type Section, type SectionId } from "./settings-ia";
 
 type Entry = {
   id: number;
@@ -19,6 +60,8 @@ type Entry = {
   action: string;
   target_type: string | null;
   target_id: string | null;
+  /** The object's current name (email, order number, plan name, …). */
+  target_label?: string | null;
   before: unknown;
   after: unknown;
 };
@@ -217,145 +260,809 @@ export function auditDiff(before: unknown, after: unknown, tr: Tr): { field: str
   return out;
 }
 
-function Changes({ e }: { e: Entry }) {
-  const tr = useTr();
-  const rows = auditDiff(e.before, e.after, tr);
-  if (!rows.length) return <span className="text-muted-foreground">—</span>;
-  const list = (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-      {rows.map((r) => (
-        <div key={r.field || "v"} className="contents">
-          <dt className="whitespace-nowrap font-mono text-muted-foreground">{r.field || tr("值", "value")}</dt>
-          <dd className="min-w-0 break-all">
-            {e.before != null && e.after != null ? (
-              <>
-                <span className="text-muted-foreground line-through">{r.before}</span> → <span>{r.after}</span>
-              </>
-            ) : e.after != null ? (
-              r.after
-            ) : (
-              r.before
-            )}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-  return rows.length <= 4 ? (
-    list
-  ) : (
-    <details>
-      <summary className="cursor-pointer text-xs">{tr(`${rows.length} 个字段`, `${rows.length} fields`)}</summary>
-      <div className="mt-1">{list}</div>
-    </details>
+/** Target types → names. */
+function targetName(t: string, tr: Tr): string {
+  const names: Record<string, [string, string]> = {
+    user: ["用户", "User"],
+    order: ["订单", "Order"],
+    server: ["服务器", "Server"],
+    node: ["节点", "Node"],
+    entrance: ["入口", "Entrance"],
+    plan: ["套餐", "Plan"],
+    group: ["节点组", "Node group"],
+    node_group: ["节点组", "Node group"],
+    coupon_batch: ["优惠码批次", "Coupon batch"],
+    batch: ["批量任务", "Bulk job"],
+    commission: ["返利", "Commission"],
+    mail_template: ["邮件模板", "Mail template"],
+    mail: ["邮件", "Mail"],
+    agent_update: ["agent 更新", "Agent updates"],
+    install: ["安装命令", "Install command"],
+    export: ["导出", "Export"],
+    alert_notification: ["告警通知", "Alert notification"],
+    coupon: ["优惠券", "Coupon"],
+    ticket: ["工单", "Ticket"],
+    announcement: ["公告", "Announcement"],
+    kb_article: ["帮助文章", "Article"],
+    kb_category: ["帮助分类", "Category"],
+    settings: ["系统设置", "Settings"],
+    payment_method: ["支付方式", "Payment method"],
+    rollout: ["灰度", "Rollout"],
+    agent_release: ["发布", "Release"],
+    block_rule: ["出站拦截规则", "Block rule"],
+    withdrawal: ["提现", "Withdrawal"],
+    invite: ["邀请码", "Invite code"],
+    alert: ["告警", "Alert"],
+  };
+  const n = names[t];
+  return n ? tr(n[0], n[1]) : t;
+}
+
+/** Audit target ids of settings rows → the section (when the action names none). */
+const SETTINGS_TARGET: Record<string, SectionId> = {
+  access: "access",
+  alerts: "alerts",
+  auth: "login",
+  branding: "brand",
+  cleanup: "cleanup",
+  commission: "commission",
+  mail: "mail",
+  signup: "signup",
+};
+
+/** The settings section an audited settings change belongs to. */
+function settingsSection(e: Pick<Entry, "action" | "target_id">): Section | undefined {
+  return (
+    SECTIONS.find((s) => s.audit === e.action || (!!s.audit?.endsWith(".") && e.action.startsWith(s.audit))) ??
+    SECTIONS.find((s) => s.id === SETTINGS_TARGET[e.target_id ?? ""])
   );
 }
+
+/** A name for the object from its stored snapshot (a deleted object keeps one there). */
+function snapshotName(e: Entry): string | null {
+  for (const v of [e.after, e.before])
+    if (v && typeof v === "object")
+      for (const k of ["email", "name", "code", "title_zh", "version", "out_trade_no", "display_name", "subject"]) {
+        const x = (v as Record<string, unknown>)[k];
+        if (typeof x === "string" && x.trim()) return x;
+      }
+  return null;
+}
+
+/** What the object chip says after the type: its name, else a short id. */
+function objectName(e: Entry, tr: Tr): { text: string; mono: boolean } | null {
+  if (e.target_type === "settings") {
+    const sec = settingsSection(e);
+    return sec ? { text: tr(sec.zh, sec.en), mono: false } : null;
+  }
+  const name = e.target_label ?? snapshotName(e);
+  if (name) return { text: name, mono: false };
+  return e.target_id ? { text: e.target_id.slice(0, 8), mono: true } : null;
+}
+
+/** Console link of an audited object (null: no page shows it by id). */
+function targetHref(t: string | null, id: string | null, e?: Pick<Entry, "action" | "target_id">): string | null {
+  if (t === "settings" && e) {
+    const sec = settingsSection(e);
+    return sec ? `/settings/${sec.id}` : null;
+  }
+  if (!t || !id) return null;
+  switch (t) {
+    case "user":
+      return `/users?open=${id}`;
+    case "order":
+      return `/orders?open=${id}`;
+    case "server":
+      return `/nodes?open=server:${id}`;
+    case "node":
+      return `/nodes?open=node:${id}`;
+    case "ticket":
+      return `/tickets/${id}`;
+    case "announcement":
+      return `/content/announcements?open=${id}`;
+    case "kb_article":
+      return `/content/kb?open=${id}`;
+    case "rollout":
+      return `/updates?open=${id}`;
+    default:
+      return null;
+  }
+}
+
+const TARGET_ICON: Record<string, LucideIcon> = {
+  user: User,
+  order: Receipt,
+  server: Server,
+  node: Globe,
+  entrance: Globe,
+  ticket: LifeBuoy,
+  plan: Layers,
+  group: Layers,
+  node_group: Layers,
+  settings: Settings,
+  agent_release: Rocket,
+  rollout: Rocket,
+  coupon: Ticket,
+};
+
+/** Labels of actors that are not people. */
+const AUTO = new Set(["system", "cli", "agent", "anonymous"]);
+const isAuto = (e: Entry) => AUTO.has(e.actor_label) || (!e.actor_id && !e.actor_email);
+function actorText(e: Entry, tr: Tr): string {
+  if (e.actor_email) return e.actor_email;
+  switch (e.actor_label) {
+    case "system":
+      return tr("系统", "System");
+    case "cli":
+      return tr("命令行", "Command line");
+    case "agent":
+      return "agent";
+    case "anonymous":
+      return tr("未登录的请求", "Anonymous request");
+    default:
+      return e.actor_label;
+  }
+}
+const DANGER =
+  /\.(delete|ban|erase|abort|revoke|rotate_prefix|rotate_jwt|refund)$|^users\.bulk_delete$|admin_prefix\.rotate/;
+
+function ActorMark({ e, size = 30 }: { e: Entry; size?: number }) {
+  const tr = useTr();
+  if (isAuto(e))
+    return (
+      <span
+        className="inline-flex shrink-0 items-center justify-center rounded-full bg-secondary text-muted-foreground"
+        style={{ width: size, height: size }}
+        aria-hidden="true"
+      >
+        <Bot className="size-[55%]" />
+      </span>
+    );
+  return <Avatar name={actorText(e, tr)} size={size} />;
+}
+
+function ObjChip({ e }: { e: Entry }) {
+  const tr = useTr();
+  if (!e.target_type) return null;
+  const Icon = TARGET_ICON[e.target_type] ?? FileText;
+  const href = targetHref(e.target_type, e.target_id, e);
+  const name = objectName(e, tr);
+  // Named objects read as the name alone (the icon says the kind); otherwise "type id".
+  const inner = (
+    <>
+      <Icon className="size-3 shrink-0 text-faint" aria-hidden="true" />
+      <span className="truncate" title={targetName(e.target_type, tr)}>
+        {name && !name.mono ? (
+          name.text
+        ) : (
+          <>
+            {targetName(e.target_type, tr)}
+            {name && <span className="ml-1 font-mono text-footnote">{name.text}</span>}
+          </>
+        )}
+      </span>
+    </>
+  );
+  const cls =
+    "inline-flex max-w-full items-center gap-1 rounded-md bg-secondary px-1.5 py-px align-baseline text-body font-medium";
+  return href ? (
+    <Link to={href} onClick={(ev) => ev.stopPropagation()} className={cn(cls, "text-primary hover:bg-primary-soft")}>
+      {inner}
+    </Link>
+  ) : (
+    <span className={cls}>{inner}</span>
+  );
+}
+
+function Sentence({ e }: { e: Entry }) {
+  const tr = useTr();
+  const lang = useLang();
+  return (
+    <span className="leading-6">
+      <b className="font-semibold break-all">{actorText(e, tr)}</b> {actionName(e.action, lang)} <ObjChip e={e} />
+    </span>
+  );
+}
+
+/** A filter pill: opens its popover; × clears it (a separate button). */
+function Pill({
+  label,
+  value,
+  icon: Icon,
+  onClear,
+  children,
+  open,
+  onOpenChange,
+}: {
+  label: string;
+  value: string | null;
+  icon: LucideIcon;
+  onClear: () => void;
+  children: ReactNode;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  const tr = useTr();
+  return (
+    <span
+      className={cn(
+        "inline-flex h-8 shrink-0 items-center rounded-full text-body font-medium transition-colors pointer-coarse:h-10",
+        value ? "bg-primary-soft text-primary" : "bg-card text-foreground/85 shadow-card hover:bg-accent",
+      )}
+    >
+      <Popover
+        open={open}
+        onOpenChange={onOpenChange}
+        align="start"
+        label={label}
+        className="w-72"
+        trigger={
+          <button
+            type="button"
+            aria-label={value ? `${label}${tr("：", ": ")}${value}` : label}
+            className={cn(
+              "inline-flex h-full items-center gap-1.5 rounded-full pl-3 outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+              value ? "pr-1" : "pr-2",
+            )}
+          >
+            <Icon className="size-3.5" aria-hidden="true" />
+            <span className={cn(value && "text-primary/75")}>{label}</span>
+            {value ? (
+              <span className="max-w-40 truncate">{value}</span>
+            ) : (
+              <ChevronDown className="size-3.5 text-faint" aria-hidden="true" />
+            )}
+          </button>
+        }
+      >
+        {children}
+      </Popover>
+      {value && (
+        <button
+          type="button"
+          aria-label={tr(`清除${label}筛选`, `Clear the ${label} filter`)}
+          onClick={onClear}
+          className="hit-44 mr-1.5 inline-flex size-5 items-center justify-center rounded-full hover:bg-primary/15"
+        >
+          <X className="size-3" aria-hidden="true" />
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** u-<first 8 hex of the id>: the label the audit log keeps for an account. */
+const labelOf = (id: string) => `u-${id.replace(/-/g, "").slice(0, 8)}`;
+
+/** An actor filter: an email → that account's label (null while resolving, "" = no such account). */
+function useActorLabel(actor: string): { label: string | null; missing: boolean } {
+  const email = actor.includes("@") ? actor.toLowerCase() : "";
+  const q = useQuery({
+    queryKey: ["users", "audit-actor", email],
+    queryFn: () => get<{ users: { id: string; email: string }[] }>(`/users${qs({ q: email, limit: 20 })}`),
+    enabled: !!email,
+    staleTime: 60_000,
+  });
+  if (!email) return { label: actor, missing: false };
+  if (!q.data) return { label: q.isError ? actor : null, missing: false };
+  const u = q.data.users.find((x) => x.email.toLowerCase() === email);
+  return u ? { label: labelOf(u.id), missing: false } : { label: "", missing: true };
+}
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Pages loaded on their own while a date range hides everything loaded so far. */
+const AUTO_PAGES = 20;
 
 export function AuditPage() {
   const tr = useTr();
   const lang = useLang();
-  const [actor, setActor] = useState("");
-  const [action, setAction] = useState("");
-  const da = useDebounced(actor.trim(), 400);
-  const dx = useDebounced(action.trim(), 400);
+  const [query, patch] = useQS();
+  const actor = query.get("actor") ?? "";
+  const action = query.get("action") ?? "";
+  const from = DAY_RE.test(query.get("from") ?? "") ? (query.get("from") as string) : "";
+  const to = DAY_RE.test(query.get("to") ?? "") ? (query.get("to") as string) : "";
+  const open = query.get("open") ?? query.get("entry");
+  const who = useActorLabel(actor);
   const q = useInfiniteQuery({
-    queryKey: ["audit", da, dx],
+    queryKey: ["audit", who.label, action],
     queryFn: ({ pageParam }) =>
       get<{ entries: Entry[]; next_before: number | null }>(
-        `/audit${qs({ limit: 50, before: pageParam, actor: da, action: dx })}`,
+        `/audit${qs({ limit: 50, before: pageParam, actor: who.label ?? "", action })}`,
       ),
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (last) => last.next_before ?? undefined,
+    enabled: who.label !== null && !who.missing,
   });
-  const rows = (q.data?.pages.flatMap((p) => p.entries) ?? []).map((e) => ({ ...e, id: String(e.id), raw: e }));
-  const columns: Column<(typeof rows)[number]>[] = [
-    { key: "at", header: tr("时间", "Time"), cell: (e) => <span className="whitespace-nowrap">{dateTime(e.at)}</span> },
-    {
-      key: "actor",
-      header: tr("操作者", "Actor"),
-      cell: (e) => (
-        <span className="flex flex-col">
-          <span>{e.actor_email ?? e.actor_label}</span>
-          {e.actor_email && <span className="font-mono text-[11px] text-muted-foreground">{e.actor_label}</span>}
-        </span>
-      ),
-    },
-    {
-      key: "action",
-      header: tr("操作", "Action"),
-      fixed: true,
-      mobile: "title",
-      cell: (e) => <span title={e.action}>{actionName(e.action, lang)}</span>,
-    },
-    {
-      key: "target",
-      header: tr("对象", "Target"),
-      cell: (e) =>
-        e.target_type ? (
-          <span className="font-mono text-xs">
-            {e.target_type}
-            {e.target_id ? ` ${e.target_id.slice(0, 8)}` : ""}
-          </span>
-        ) : (
-          "—"
-        ),
-    },
-    { key: "changes", header: tr("变更", "Changes"), cell: (e) => <Changes e={e.raw} /> },
-    { key: "ip", header: "IP", optional: true, cell: (e) => e.ip ?? "—" },
+  const loaded = useMemo(() => q.data?.pages.flatMap((p) => p.entries) ?? [], [q.data]);
+  const rows = loaded.filter((e) => {
+    const d = dateOnly(e.at);
+    return (!from || d >= from) && (!to || d <= to);
+  });
+  const oldest = loaded.length ? dateOnly(loaded[loaded.length - 1].at) : null;
+  // Older pages can still hold entries of the range until the oldest loaded day is before `from`.
+  const moreInRange = q.hasNextPage && (!from || (oldest !== null && oldest >= from));
+  const pages = q.data?.pages.length ?? 0;
+  useEffect(() => {
+    if ((from || to) && rows.length < 20 && moreInRange && !q.isFetching && pages < AUTO_PAGES) void q.fetchNextPage();
+  }, [from, to, rows.length, moreInRange, q, pages]);
+  const filtered = !!(actor || action || from || to);
+  const clear = () => patch({ actor: null, action: null, from: null, to: null });
+  const current = open ? loaded.find((e) => String(e.id) === open) : undefined;
+  const days = useMemo(() => {
+    const g = new Map<string, Entry[]>();
+    for (const e of rows) {
+      const d = dateOnly(e.at);
+      g.set(d, [...(g.get(d) ?? []), e]);
+    }
+    return [...g.entries()];
+  }, [rows]);
+  // Filter pickers.
+  const [pick, setPick] = useState<"" | "actor" | "action" | "date">("");
+  const [actorQ, setActorQ] = useState("");
+  const [actionQ, setActionQ] = useState("");
+  const seenActors = useMemo(() => {
+    const m = new Map<string, Entry>();
+    for (const e of loaded) m.set(e.actor_email ?? e.actor_label, e);
+    return [...m.entries()];
+  }, [loaded]);
+  const people = seenActors.filter(([, e]) => !isAuto(e));
+  const autos = seenActors.filter(([, e]) => isAuto(e));
+  const matchQ = (k: string) => !actorQ.trim() || k.toLowerCase().includes(actorQ.trim().toLowerCase());
+  const actionList = Object.keys(ACTIONS).filter((a) => {
+    const t = actionQ.trim().toLowerCase();
+    return !t || a.includes(t) || actionName(a, lang).toLowerCase().includes(t);
+  });
+  const today = siteToday();
+  const presets: [string, string, string][] = [
+    [tr("今天", "Today"), today, today],
+    [tr("近 7 天", "7 days"), daysBefore(today, 6), today],
+    [tr("近 30 天", "30 days"), daysBefore(today, 29), today],
   ];
+  const dateValue =
+    from || to ? (from === to ? from : `${from || tr("最早", "start")} – ${to || tr("今天", "today")}`) : null;
+  const setActor = (v: string | null) => {
+    patch({ actor: v || null });
+    setPick("");
+  };
+  const setAction = (v: string | null) => {
+    patch({ action: v || null });
+    setPick("");
+  };
+  const loadMore = (from || to ? moreInRange : q.hasNextPage) && (
+    <Button
+      variant="outline"
+      className="justify-self-center"
+      loading={q.isFetchingNextPage}
+      onClick={() => void q.fetchNextPage()}
+    >
+      {tr("加载更早的记录", "Load older entries")}
+    </Button>
+  );
   return (
     <>
       <PageHeader
         title={tr("审计日志", "Audit log")}
         description={tr(
-          "所有管理操作与系统动作；保留天数在系统设置 → 安全。",
-          "Every admin and system action; retention under Settings → Security.",
+          "谁在什么时候改了什么；记录只读，按 系统设置 → 数据保留 的天数自动清理",
+          "Who changed what, when; read-only, cleaned up after Settings → Data retention",
         )}
       />
-      <DataTable
-        label={tr("审计日志", "Audit log")}
-        storageKey="audit"
-        rows={rows}
-        columns={columns}
-        loading={q.isPending}
-        error={q.error}
-        onRetry={() => void q.refetch()}
-        toolbar={
-          <>
+      <div className="mb-4 flex flex-wrap items-center gap-2" role="group" aria-label={tr("筛选", "Filters")}>
+        <Pill
+          label={tr("操作者", "Actor")}
+          value={actor || null}
+          icon={User}
+          onClear={() => setActor(null)}
+          open={pick === "actor"}
+          onOpenChange={(o) => setPick(o ? "actor" : "")}
+        >
+          <form
+            className="p-1 pb-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (actorQ.trim()) setActor(actorQ.trim());
+            }}
+          >
             <Input
-              aria-label={tr("操作者标签", "Actor label")}
-              placeholder={tr("操作者标签（如 u-1a2b3c4d、cli、system）", "Actor label (u-1a2b3c4d, cli, system)")}
-              className="h-8 w-full sm:w-64"
-              value={actor}
-              onChange={(e) => setActor(e.target.value)}
+              value={actorQ}
+              onChange={(e) => setActorQ(e.target.value)}
+              aria-label={tr("操作者邮箱或标签", "Actor email or label")}
+              placeholder={tr("输入邮箱或标签，回车筛选", "Email or label, Enter to filter")}
+              className="h-8"
+              data-nodirty
             />
-            <Input
-              aria-label={tr("操作", "Action")}
-              placeholder={tr("操作（如 user. 或 user.ban）", "Action (user. or user.ban)")}
-              className="h-8 w-full sm:w-56"
-              value={action}
-              onChange={(e) => setAction(e.target.value)}
-              list="audit-actions"
-            />
-            <datalist id="audit-actions">
-              {Object.keys(ACTIONS).map((a) => (
-                <option key={a} value={a}>
-                  {actionName(a, lang)}
-                </option>
+          </form>
+          <div className="max-h-64 overflow-y-auto">
+            {people.filter(([k]) => matchQ(k)).length > 0 && (
+              <div className="px-2.5 pt-1.5 pb-1 text-caption font-semibold text-faint">{tr("管理员", "Admins")}</div>
+            )}
+            {people
+              .filter(([k]) => matchQ(k))
+              .map(([k, e]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setActor(e.actor_email ?? e.actor_label)}
+                  className="flex h-8 w-full items-center gap-2 rounded-[7px] px-2.5 text-left text-body hover:bg-accent pointer-coarse:h-11"
+                >
+                  <Avatar name={k} size={18} />
+                  <span className="truncate">{k}</span>
+                </button>
               ))}
-            </datalist>
-          </>
-        }
-        footer={
-          q.hasNextPage ? (
-            <Button size="sm" variant="ghost" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
-              {tr("加载更早", "Load older")}
-            </Button>
+            <div className="px-2.5 pt-1.5 pb-1 text-caption font-semibold text-faint">
+              {tr("自动执行", "Automatic")}
+            </div>
+            {(autos.length ? autos.map(([k]) => k) : ["system", "cli"]).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setActor(k)}
+                className="flex h-8 w-full items-center gap-2 rounded-[7px] px-2.5 text-left text-body hover:bg-accent pointer-coarse:h-11"
+              >
+                <Bot className="size-4 text-muted-foreground" aria-hidden="true" />
+                {k === "system"
+                  ? tr("系统（定时任务）", "System (periodic jobs)")
+                  : k === "cli"
+                    ? tr("命令行", "Command line")
+                    : k}
+              </button>
+            ))}
+          </div>
+        </Pill>
+        <Pill
+          label={tr("动作", "Action")}
+          value={action ? (ACTIONS[action] ? actionName(action, lang) : action) : null}
+          icon={Shapes}
+          onClear={() => setAction(null)}
+          open={pick === "action"}
+          onOpenChange={(o) => setPick(o ? "action" : "")}
+        >
+          <form
+            className="p-1 pb-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (actionQ.trim()) setAction(actionQ.trim());
+            }}
+          >
+            <Input
+              value={actionQ}
+              onChange={(e) => setActionQ(e.target.value)}
+              aria-label={tr("动作代码或前缀", "Action code or prefix")}
+              placeholder={tr("名称、代码或前缀（如 user.），回车筛选", "Name, code or prefix (user.), Enter")}
+              className="h-8"
+              data-nodirty
+            />
+          </form>
+          <div className="max-h-72 overflow-y-auto">
+            {actionList.map((a) => (
+              <button
+                key={a}
+                type="button"
+                onClick={() => setAction(a)}
+                className="flex min-h-8 w-full items-center gap-2 rounded-[7px] px-2.5 py-1 text-left text-body hover:bg-accent pointer-coarse:min-h-11"
+              >
+                <span className="min-w-0 flex-1 truncate">{actionName(a, lang)}</span>
+                <span className="shrink-0 font-mono text-caption text-faint">{a}</span>
+              </button>
+            ))}
+          </div>
+        </Pill>
+        <Pill
+          label={tr("日期", "Date")}
+          value={dateValue}
+          icon={CalendarDays}
+          onClear={() => patch({ from: null, to: null })}
+          open={pick === "date"}
+          onOpenChange={(o) => setPick(o ? "date" : "")}
+        >
+          <div className="p-1.5">
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {presets.map(([l, f, t]) => (
+                <Button
+                  key={l}
+                  size="sm"
+                  variant={from === f && to === t ? "soft" : "secondary"}
+                  onClick={() => {
+                    patch({ from: f, to: t });
+                    setPick("");
+                  }}
+                >
+                  {l}
+                </Button>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-footnote text-muted-foreground">
+                {tr("从", "From")}
+                <Input
+                  type="date"
+                  value={from}
+                  max={to || undefined}
+                  onChange={(e) => patch({ from: e.target.value || null }, true)}
+                  data-nodirty
+                />
+              </label>
+              <label className="grid gap-1 text-footnote text-muted-foreground">
+                {tr("到", "To")}
+                <Input
+                  type="date"
+                  value={to}
+                  min={from || undefined}
+                  onChange={(e) => patch({ to: e.target.value || null }, true)}
+                  data-nodirty
+                />
+              </label>
+            </div>
+            <p className="mt-2 text-caption text-faint">
+              {tr(`按站点时区 ${siteTimeZone()} 的自然日`, `Calendar days in the site time zone ${siteTimeZone()}`)}
+            </p>
+          </div>
+        </Pill>
+        {filtered && (
+          <Button variant="ghost" size="sm" onClick={clear}>
+            {tr("清除全部", "Clear all")}
+          </Button>
+        )}
+        <span className="ml-auto text-footnote text-faint max-sm:basis-full" role="status">
+          {from || to ? (
+            <>
+              {tr(`已加载的 ${loaded.length} 条里匹配 `, `${loaded.length} loaded, `)}
+              <b className="tnum text-foreground">{rows.length}</b>
+              {tr(" 条", " in the date range")}
+            </>
           ) : (
-            <span />
-          )
-        }
-      />
+            tr(`已加载最近 ${loaded.length} 条`, `${loaded.length} latest loaded`)
+          )}
+        </span>
+      </div>
+      {who.missing && (
+        <div className="mb-3">
+          <Callout tone="warning">{tr(`没有邮箱为 ${actor} 的账户。`, `No account has the address ${actor}.`)}</Callout>
+        </div>
+      )}
+      {!who.missing && (q.isPending || who.label === null) ? (
+        <Card>
+          <SkeletonRows rows={8} height={60} />
+        </Card>
+      ) : q.isError && loaded.length === 0 ? (
+        <Card>
+          <ErrorState
+            title={tr("审计日志加载失败", "The audit log did not load")}
+            error={q.error}
+            onRetry={() => void q.refetch()}
+          />
+        </Card>
+      ) : rows.length === 0 && !filtered ? (
+        <Card>
+          <EmptyState
+            icon={History}
+            title={tr("还没有审计记录", "No audit entries yet")}
+            description={tr(
+              "管理员的操作、系统的自动处理都会记在这里。",
+              "Admin actions and the system's own changes are recorded here.",
+            )}
+          />
+        </Card>
+      ) : rows.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={FileText}
+            title={tr("没有匹配的记录", "No matching entries")}
+            description={
+              from || to
+                ? tr(
+                    "日期筛选只作用在已加载的记录上。更早的记录可能有匹配。",
+                    "The date filter applies to the loaded entries; older ones may match.",
+                  )
+                : undefined
+            }
+            action={
+              <>
+                <Button variant="outline" onClick={clear}>
+                  {tr("清除筛选", "Clear filters")}
+                </Button>
+                {q.hasNextPage && (
+                  <Button variant="soft" loading={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
+                    {tr("加载更早再找", "Load older and look again")}
+                  </Button>
+                )}
+              </>
+            }
+          />
+        </Card>
+      ) : (
+        // grid-cols-1 (minmax(0, 1fr)): a long entry wraps or truncates
+        // instead of widening the day column (and zooming a phone out).
+        <div className="grid grid-cols-1 gap-5">
+          {days.map(([day, evs]) => (
+            <section key={day}>
+              <div className="mb-2 flex items-baseline gap-2 px-1">
+                <h2 className="text-headline font-semibold">{dayLabel(day, tr, lang)}</h2>
+                <span className="tnum text-footnote text-faint">
+                  {day} · {tr(`${evs.length} 条`, `${evs.length}`)}
+                </span>
+              </div>
+              <Card className="overflow-hidden">
+                <ol className="relative">
+                  {evs.map((e, i) => {
+                    const n = auditDiff(e.before, e.after, tr).length;
+                    const openIt = () => patch({ open: String(e.id), entry: null });
+                    return (
+                      <li key={e.id} className="relative" data-row data-entry={e.id}>
+                        {i < evs.length - 1 && (
+                          <span className="absolute top-11 bottom-0 left-[30px] w-px bg-separator" aria-hidden="true" />
+                        )}
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={openIt}
+                          onKeyDown={(k) => k.key === "Enter" && k.target === k.currentTarget && openIt()}
+                          className="flex cursor-default items-start gap-3 px-4 py-3 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                        >
+                          <span className="relative z-[1] pt-0.5">
+                            <ActorMark e={e} />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-body">
+                              <Sentence e={e} />
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-footnote text-muted-foreground">
+                              <Badge tone={DANGER.test(e.action) ? "danger" : isAuto(e) ? "neutral" : "outline"}>
+                                <Tag aria-hidden="true" />
+                                {actionName(e.action, lang)}
+                              </Badge>
+                              {n > 0 && <span>{tr(`${n} 个字段变更`, `${n} field(s) changed`)}</span>}
+                              {e.ip && <span className="font-mono text-caption text-faint max-sm:hidden">{e.ip}</span>}
+                            </div>
+                          </div>
+                          <span className="tnum shrink-0 pt-0.5 text-footnote text-muted-foreground">
+                            {dateTime(e.at).slice(11, 16)}
+                          </span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </Card>
+            </section>
+          ))}
+          {loadMore}
+        </div>
+      )}
+      {open && (
+        <EntryDialog e={current} loading={q.isPending} onClose={() => patch({ open: null, entry: null }, true)} />
+      )}
     </>
+  );
+}
+
+function EntryDialog({ e, loading, onClose }: { e: Entry | undefined; loading: boolean; onClose: () => void }) {
+  const tr = useTr();
+  const lang = useLang();
+  const rows = e ? auditDiff(e.before, e.after, tr) : [];
+  const href = e ? targetHref(e.target_type, e.target_id, e) : null;
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      size="lg"
+      icon={Tag}
+      title={e ? actionName(e.action, lang) : tr("审计记录", "Audit entry")}
+      description={e ? tr(`记录 #${e.id} · ${dateTime(e.at)}`, `Entry #${e.id} · ${dateTime(e.at)}`) : undefined}
+      footer={
+        <>
+          <span className="mr-auto text-footnote text-faint max-sm:hidden">
+            {tr("审计记录只读，不能修改或删除", "Audit entries are read-only")}
+          </span>
+          {href && (
+            <Button variant="secondary" icon={ExternalLink} asChild>
+              <Link to={href}>{tr("打开对象", "Open the object")}</Link>
+            </Button>
+          )}
+          <Button variant="primary" onClick={onClose}>
+            {tr("关闭", "Close")}
+          </Button>
+        </>
+      }
+    >
+      {!e ? (
+        loading ? (
+          <SkeletonRows rows={4} />
+        ) : (
+          <Callout tone="info">{tr("这条记录不在已加载的列表里。", "This entry is not in the loaded list.")}</Callout>
+        )
+      ) : (
+        <>
+          <div className="mb-4 flex items-start gap-3 rounded-lg bg-window px-3.5 py-3 text-callout ring-1 ring-border ring-inset">
+            <ActorMark e={e} size={28} />
+            <Sentence e={e} />
+          </div>
+          <h4 className="mb-2 text-footnote font-semibold text-muted-foreground">{tr("变更", "Changes")}</h4>
+          {rows.length ? (
+            <div className="overflow-hidden rounded-lg ring-1 ring-border ring-inset">
+              <div className="grid grid-cols-[minmax(80px,0.6fr)_1fr_1fr] border-b border-separator bg-window px-3 py-1.5 text-footnote text-muted-foreground max-sm:hidden">
+                <span>{tr("字段", "Field")}</span>
+                <span>{tr("之前", "Before")}</span>
+                <span>{tr("之后", "After")}</span>
+              </div>
+              {rows.map((d) => (
+                <div
+                  key={d.field || "v"}
+                  className="grid grid-cols-1 gap-1 border-b border-separator px-3 py-2 last:border-0 sm:grid-cols-[minmax(80px,0.6fr)_1fr_1fr] sm:gap-3"
+                >
+                  <span className="font-mono text-footnote font-medium break-all text-muted-foreground sm:pt-0.5">
+                    {d.field || tr("值", "value")}
+                  </span>
+                  <span className="flex flex-wrap items-center gap-1.5 sm:contents">
+                    <span className="min-w-0">
+                      {d.before !== "—" ? (
+                        <span className="inline-block rounded bg-destructive-soft px-1.5 py-0.5 text-body break-all text-destructive">
+                          <span className="mr-1 font-mono text-caption" aria-hidden="true">
+                            −
+                          </span>
+                          <span className="line-through decoration-destructive/40">{d.before}</span>
+                        </span>
+                      ) : (
+                        <span className="text-footnote text-faint">{tr("（无）", "(none)")}</span>
+                      )}
+                    </span>
+                    <span className="text-faint sm:hidden" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="min-w-0">
+                      {d.after !== "—" ? (
+                        <span className="inline-block rounded bg-success-soft px-1.5 py-0.5 text-body break-all text-success">
+                          <span className="mr-1 font-mono text-caption" aria-hidden="true">
+                            +
+                          </span>
+                          {d.after}
+                        </span>
+                      ) : (
+                        <span className="text-footnote text-faint">{tr("（已删除）", "(removed)")}</span>
+                      )}
+                    </span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg bg-window px-3 py-2.5 text-footnote text-muted-foreground ring-1 ring-border ring-inset">
+              {tr("这个动作没有字段级的变更记录。", "No field-level changes recorded for this action.")}
+            </p>
+          )}
+          <h4 className="mt-5 mb-2 text-footnote font-semibold text-muted-foreground">{tr("请求", "Request")}</h4>
+          <KV
+            cols={3}
+            items={[
+              {
+                k: tr("时间", "Time"),
+                v: tr(`${dateTime(e.at)}（${siteTimeZone()}）`, `${dateTime(e.at)} (${siteTimeZone()})`),
+                span: 2,
+              },
+              { k: tr("动作代码", "Action code"), v: e.action, mono: true },
+              {
+                k: tr("操作者", "Actor"),
+                v: isAuto(e)
+                  ? tr(`${actorText(e, tr)}（自动执行）`, `${actorText(e, tr)} (automatic)`)
+                  : `${actorText(e, tr)}${e.actor_email ? ` · ${e.actor_label}` : ""}`,
+              },
+              { k: "IP", v: e.ip ?? tr("—（内部任务）", "— (internal)"), mono: !!e.ip },
+              {
+                k: tr("对象", "Object"),
+                v: e.target_type ? (
+                  <span className="break-all">
+                    {targetName(e.target_type, tr)}
+                    {objectName(e, tr) && !objectName(e, tr)?.mono && ` ${objectName(e, tr)?.text}`}{" "}
+                    <span className="font-mono text-footnote">{e.target_id}</span>
+                  </span>
+                ) : (
+                  "—"
+                ),
+              },
+            ]}
+          />
+        </>
+      )}
+    </Dialog>
   );
 }

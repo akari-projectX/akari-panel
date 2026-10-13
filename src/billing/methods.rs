@@ -555,14 +555,49 @@ pub async fn list(State(state): State<AppState>, user: AuthUser) -> Result<Json<
                 .to_string(),
         );
     }
+    let usage: Vec<(Uuid, i64, i64, bool)> = sqlx::query_as(USAGE_SQL)
+        .bind(rows.iter().map(|r| r.id).collect::<Vec<_>>())
+        .fetch_all(&mut *c)
+        .await?;
+    let methods = rows
+        .iter()
+        .map(|r| {
+            let mut v = serde_json::to_value(method_view(&state, r)).unwrap_or(Value::Null);
+            let (cents, count, used) = usage
+                .iter()
+                .find(|u| u.0 == r.id)
+                .map(|u| (u.1, u.2, u.3))
+                .unwrap_or((0, 0, false));
+            if let Value::Object(m) = &mut v {
+                m.insert("month_cents".into(), json!(cents));
+                m.insert("month_count".into(), json!(count));
+                m.insert("used".into(), json!(used));
+            }
+            v
+        })
+        .collect::<Vec<_>>();
     Ok(Json(json!({
         "kinds": provider::KINDS.iter().map(|k| json!({
             "id": k.id(), "label": k.label(), "schema": k.schema(),
         })).collect::<Vec<_>>(),
-        "methods": rows.iter().map(|r| method_view(&state, r)).collect::<Vec<_>>(),
+        "methods": methods,
         "warnings": warnings,
     })))
 }
+
+/// Per method: channel money collected this site-calendar month (paid
+/// orders' `amount_cents` by `paid_at`, refunds not deducted; one range
+/// over `orders_paid_at` for the month, like the dashboard's windows), how
+/// many such orders, and whether any order ever used it (one index probe
+/// each on `orders_payment_method`; a used method cannot be deleted).
+const USAGE_SQL: &str = "WITH b AS (SELECT date_trunc('month', akari_site_day(now()))::timestamp \
+     AT TIME ZONE akari_site_tz() AS m), \
+     month AS (SELECT o.payment_method_id AS id, sum(o.amount_cents)::bigint AS cents, \
+       count(*) AS n FROM orders o, b WHERE o.status = 'paid' AND o.paid_at >= b.m \
+       AND o.payment_method_id IS NOT NULL GROUP BY 1) \
+     SELECT pm.id, coalesce(month.cents, 0)::bigint, coalesce(month.n, 0)::bigint, \
+     EXISTS (SELECT 1 FROM orders o WHERE o.payment_method_id = pm.id) \
+     FROM unnest($1::uuid[]) AS pm(id) LEFT JOIN month ON month.id = pm.id";
 
 async fn after_write(state: &AppState) {
     // This instance at once (the others on the notification).

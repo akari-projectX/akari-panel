@@ -220,6 +220,12 @@ jobs:
       - run: npm audit --audit-level=high
       - run: npm run check
       - run: npm run build
+      # Report-only gzip sizes (scripts/bundle-report.mjs; also in the step summary).
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-bundle-report
+          path: admin/dist/bundle-report.json
+          retention-days: 14
 
   deny:
     name: cargo-deny
@@ -330,7 +336,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the compiler (same as the Dockerfile).
@@ -352,6 +358,8 @@ jobs:
       # E2E_PERF_OUT: the portal performance report (report only, see
       # scripts/e2e-portal.sh); its summary goes to the job summary below.
       - run: make e2e
+        # Leave time for the uploads below when a run hangs.
+        timeout-minutes: 50
         env:
           E2E_PERF_OUT: ${{ runner.temp }}/perf
       - if: always()
@@ -365,6 +373,24 @@ jobs:
           path: spa/test-results/screens
           if-no-files-found: ignore
           retention-days: 7
+      # Admin screenshot set (admin/e2e/zz-screens.spec.ts) for design review.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-screens
+          path: admin/test-results/screens
+          if-no-files-found: warn
+          retention-days: 14
+      # Admin timing results (admin/e2e/zz-perf.spec.ts, report-only; also in the step summary).
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: admin-perf
+          path: |
+            admin/test-results/perf.json
+            admin/test-results/perf-timeline.json
+          if-no-files-found: warn
+          retention-days: 14
       - if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -372,6 +398,7 @@ jobs:
           path: |
             spa/test-results
             admin/playwright-report
+            admin/test-results/*/error-context.md
             /tmp/akari-e2e-portal/*.log
             /tmp/akari-e2e/*.log
           retention-days: 7

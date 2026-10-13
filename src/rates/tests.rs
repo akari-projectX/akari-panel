@@ -359,6 +359,20 @@ async fn sql_mean_rate_weights_rules_by_time() {
     );
 
     // A manual change (1x -> 5x) inside the interval: capped at the old rate.
+    // Without the time windows, so the check does not depend on the time of
+    // day it runs at (inside a 2x window the recorded old rate is 2x).
+    let mut tx = db.pool.begin().await.unwrap();
+    apply_set_rules(&mut tx, &Actor::system(), e, &parse(&[]).unwrap())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE entrances SET rate_prev_permille = NULL, rate_changed_at = NULL WHERE id = $1",
+    )
+    .bind(e)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE entrances SET rate_permille = 5000 WHERE id = $1")
         .bind(e)
         .execute(&db.pool)

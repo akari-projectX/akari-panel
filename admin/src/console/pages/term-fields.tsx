@@ -1,15 +1,25 @@
 // D12: plan + term (catalog period kind without the reset pack, days where
 // the kind takes them). Mirrors plans::Term / AssignPlanReq.
 import { useTr, type Tr } from "../../shared/i18n";
-import { Field, Input, Select } from "../../shared/ui/primitives";
 import { TERMS, periodLabel } from "../terms";
 import type { PlanView } from "../types";
+import { Field, Input, Select } from "../../shared/ui/form";
 
 export type TermForm = { planId: string; period: string; days: string };
 export const EMPTY_TERM: TermForm = { planId: "", period: "month", days: "" };
 
 export function termDaysRule(period: string): "required" | "optional" | "none" {
   return period === "days" ? "required" : period === "onetime" ? "optional" : "none";
+}
+
+/** The days box's error (empty is fine where days are optional), or undefined. */
+export function termDaysError(f: TermForm, tr: Tr): string | undefined {
+  const rule = termDaysRule(f.period);
+  const t = f.days.trim();
+  if (rule === "none" || (rule === "optional" && t === "")) return undefined;
+  const n = Number(t);
+  if (!/^\d{1,4}$/.test(t) || n < 1 || n > 3650) return tr("天数须为 1–3650 的整数", "Days must be 1–3650");
+  return undefined;
 }
 
 /** `{plan_id, period, days?}` or an error text. */
@@ -19,12 +29,11 @@ export function termBody(
   needPlan = true,
 ): { plan_id: string; period: string; days?: number } | string {
   if (needPlan && !f.planId) return tr("请选择套餐", "Choose a plan");
-  const rule = termDaysRule(f.period);
+  const err = termDaysError(f, tr);
+  if (err) return err;
   const t = f.days.trim();
-  if (rule === "none" || (rule === "optional" && t === "")) return { plan_id: f.planId, period: f.period };
-  const n = Number(t);
-  if (!/^\d{1,4}$/.test(t) || n < 1 || n > 3650) return tr("天数须为 1–3650 的整数", "Days must be 1–3650");
-  return { plan_id: f.planId, period: f.period, days: n };
+  if (termDaysRule(f.period) === "none" || t === "") return { plan_id: f.planId, period: f.period };
+  return { plan_id: f.planId, period: f.period, days: Number(t) };
 }
 
 export function TermFields({
@@ -43,6 +52,8 @@ export function TermFields({
 }) {
   const tr = useTr();
   const rule = termDaysRule(form.period);
+  // Typed text is checked as it is typed; an empty required box is left to the form's submit.
+  const daysError = form.days.trim() ? termDaysError(form, tr) : undefined;
   return (
     <div className="grid gap-3 sm:grid-cols-3">
       {withPlan && (
@@ -71,7 +82,7 @@ export function TermFields({
               ))}
             </Select>
           </Field>
-          <Field label={tr("天数", "Days")}>
+          <Field label={tr("天数", "Days")} error={daysError}>
             <Input
               inputMode="numeric"
               value={form.days}
