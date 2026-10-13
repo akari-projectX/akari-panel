@@ -884,11 +884,16 @@ async fn apply_one(
                 return Ok(Step::Skipped("无已验证邮箱".into()));
             };
             // D11: `{sub_url}` = the recipient's own subscription link (a
-            // link that cannot be shown — pre-0120 or unreadable — skips).
-            // The audit keeps the template (a link is a credential).
+            // link that cannot be shown — pre-0120 or unreadable — skips;
+            // so does every recipient in own-client-only mode, where links
+            // are never handed out). The audit keeps the template (a link
+            // is a credential).
             let (mut subject, mut body) = (subject.trim().to_string(), body.trim().to_string());
             let audit_subject = subject.clone();
             if subject.contains(SUB_URL) || body.contains(SUB_URL) {
+                if state.settings().get().sub_own_client_only {
+                    return Ok(Step::Skipped("仅自研客户端模式：不发送订阅链接".into()));
+                }
                 let Some(url) = sub_url_of(conn, state, actor, user).await? else {
                     return Ok(Step::Skipped("订阅链接无法显示（需重置）".into()));
                 };

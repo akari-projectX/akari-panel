@@ -85,6 +85,7 @@ const S = {
     formats: { value: null, effective: ["clash", "sing-box", "links"] },
     import_clients: { value: null, effective: ["clash", "hiddify"] },
     name_rate: false,
+    own_client_only: false,
   },
 };
 const FIX: Record<string, unknown> = {

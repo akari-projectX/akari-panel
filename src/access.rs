@@ -671,6 +671,12 @@ pub const NOTICE_SUBJECT: &str = "订阅链接已更新 / Your subscription link
 pub const NOTICE_BODY: &str = "你的订阅地址已更新，旧链接已失效。请在客户端中改用新链接：\n{sub_url}\n\n\
 Your subscription address has changed and the old link no longer works. \
 Please update your client to the new link:\n{sub_url}";
+/// The same notice in own-client-only mode: no link (links are never
+/// handed out); the user signs in again in the Akari client.
+pub const NOTICE_BODY_OWN_CLIENT: &str = "你的订阅地址已更新，旧地址已失效。\
+请在 Akari 客户端里重新登录账户，即可自动获取节点。\n\n\
+Your subscription address has changed and the old one no longer works. \
+Sign in to your account in the Akari client again to fetch your nodes.";
 
 /// Change the subscription path (audited). The old path stops working at
 /// once.
@@ -747,7 +753,12 @@ pub async fn put_sub_path(
                 },
                 action: crate::batch::Action::SendEmail {
                     subject: NOTICE_SUBJECT.into(),
-                    body: NOTICE_BODY.into(),
+                    body: if state.settings().get().sub_own_client_only {
+                        NOTICE_BODY_OWN_CLIENT
+                    } else {
+                        NOTICE_BODY
+                    }
+                    .into(),
                 },
             },
         )

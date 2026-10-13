@@ -515,6 +515,40 @@ test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), 
   await expect(page.getByText(/已开启：修改入口倍率会改变线路名/)).toHaveCount(0);
 });
 
+test("SET-27: own client only — the switch greys the third-party formats and import buttons, turning it on is confirmed with its effects, off restores them", async ({
+  page,
+}) => {
+  await openConsole(page, "/settings/subscription");
+  const own = page.getByRole("switch", { name: "仅自研客户端" });
+  const format = page.getByRole("switch", { name: "订阅格式 Clash / mihomo" });
+  const clash = page.getByRole("switch", { name: "一键导入 Clash Verge / mihomo" });
+  await expect(own).toHaveAttribute("aria-checked", "false");
+  await expect(format).toBeEnabled();
+  await own.click();
+  await expect(format).toBeDisabled();
+  await expect(clash).toBeDisabled();
+  await save(page);
+  const d = dialog(page);
+  await expect(d).toContainText("用户看不到订阅链接、二维码与导入按钮");
+  await expect(d).toContainText("下次更新订阅时失败（统一 404）");
+  await confirmDialog(page, undefined, "开启并保存");
+  await toast(page, "订阅设置已保存");
+  await expect(page.getByText(/已开启：第三方格式与导入按钮暂停/)).toBeVisible();
+  const view = await apiJson<{ subscription: { own_client_only: boolean; formats: { effective: string[] } } }>(
+    "GET",
+    "/settings",
+  );
+  expect(view.subscription.own_client_only).toBe(true);
+  expect(view.subscription.formats.effective).toContain("clash");
+  // Off again: no confirmation, the formats are back.
+  await setSwitch(own, false);
+  await save(page);
+  await toast(page, "订阅设置已保存");
+  await expect(format).toBeEnabled();
+  await expect(format).toHaveAttribute("aria-checked", "true");
+  await expect(page.getByText(/已开启：第三方格式与导入按钮暂停/)).toHaveCount(0);
+});
+
 test("SET-11: routing editor — sections by destination, one auto-detecting input (domain / IP / category / remote rule-set), services with a primary and ordered backups, conflicts, the test box, DNS, global mode, save → reload, restore the recommended routing", async ({
   page,
 }, info) => {

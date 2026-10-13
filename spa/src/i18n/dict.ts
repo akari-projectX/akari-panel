@@ -1124,4 +1124,9 @@ export const EN: Record<string, string> = {
   "可提现 {v}": "{v} available",
   "创建一个新账号": "Create a new account",
   "使用本站的约定": "The rules for using this site",
+  /* ── 仅自研客户端模式 ── */
+  '在客户端里登录账户即可自动获取节点': 'Sign in to your account in the client to get your nodes automatically',
+  '客户端下载地址还没有公布，请留意公告或联系客服。': 'The client download is not published yet; watch the announcements or contact support.',
+  '下载 Akari 客户端，登录账户即可使用': 'Download the Akari client and sign in to your account',
+  '仅限 Akari 客户端（登录账户获取）': 'Akari client only (sign in to get it)',
 };

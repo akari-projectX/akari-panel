@@ -9,6 +9,7 @@ import { Progress } from '@/components/ui/progress';
 import { PageTitle, PaneHead, Pager, Row, Section, Split, StatRow } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import Subscribe from '@/components/subscribe';
+import OwnClient from '@/components/own-client';
 import AnnouncementDialog, { PinBadge } from '@/components/announcement-dialog';
 import { useAnnouncementText } from '@/lib/announcement';
 import Flag from '@/components/flag';
@@ -274,10 +275,11 @@ function Overview({ full }: { full: boolean }) {
             <>
               <PaneHead
                 title={<><Wifi className="size-4 text-brand" />{tr('接入配置')}</>}
-                desc={tr('一个链接，导入任意客户端')}
+                desc={me?.sub_own_client ? tr('下载 Akari 客户端，登录账户即可使用') : tr('一个链接，导入任意客户端')}
                 extra={full && hasPlan && <ResetSubscription />}
               />
-              {subUrl ? <Subscribe />
+              {full && hasPlan && me?.sub_own_client ? <OwnClient />
+                : subUrl ? <Subscribe />
                 : !full ? (
                   <Empty
                     title="订阅已暂停"
