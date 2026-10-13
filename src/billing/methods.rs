@@ -305,7 +305,7 @@ async fn write_row(
     enabled: bool,
     config: &Value,
     enc: &[u8],
-) -> sqlx::Result<Row> {
+) -> Result<Row, ApiError> {
     let sql = if insert {
         format!(
             "INSERT INTO payment_methods (id, kind, display_name, icon, sort, enabled, config, \
@@ -318,7 +318,7 @@ async fn write_row(
              WHERE id = $1 AND kind = $2 RETURNING {COLS}"
         )
     };
-    sqlx::query_as(sqlx::AssertSqlSafe(sql))
+    let r = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .bind(kind)
         .bind(name)
@@ -328,7 +328,19 @@ async fn write_row(
         .bind(config)
         .bind(enc)
         .fetch_one(conn)
-        .await
+        .await;
+    match r {
+        // C2: one receiving address per chain across on-chain methods.
+        Err(sqlx::Error::Database(d))
+            if d.constraint() == Some("payment_methods_chain_receiver") =>
+        {
+            Err(conflict!(
+                "payments.chain_address_in_use",
+                "another payment method already receives on this address"
+            ))
+        }
+        r => Ok(r?),
+    }
 }
 
 /// Create a method (audited `payment_method.create`, or `action`).
@@ -448,11 +460,14 @@ pub async fn apply_delete(
 ) -> Result<(), ApiError> {
     crate::owner::require(conn, actor).await?;
     let cur = load_one(conn, id, true).await?.ok_or_else(not_found)?;
-    let used: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM orders WHERE payment_method_id = $1)")
-            .bind(id)
-            .fetch_one(&mut *conn)
-            .await?;
+    // C2: transfers received by a method are money records too.
+    let used: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM orders WHERE payment_method_id = $1) \
+         OR EXISTS (SELECT 1 FROM chain_transfers WHERE method_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&mut *conn)
+    .await?;
     if used {
         return Err(conflict!(
             "payments.method_in_use",

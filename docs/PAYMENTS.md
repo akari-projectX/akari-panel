@@ -1,14 +1,15 @@
-# Payments: payment methods (Alipay Face-to-Face, EPay)（支付：支付方式——支付宝当面付、易支付）
+# Payments: payment methods (Alipay Face-to-Face, EPay, USDT on-chain)（支付：支付方式——支付宝当面付、易支付、USDT 链上收款）
 
-R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
-一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前有两种类型：**支付宝当面付**
-（`alipay_f2f`：`alipay.trade.precreate` → 二维码）与**易支付**（`epay`，C1：通用易支付 MD5 接口，见下文「EPay（易支付）」）。
+R18-3 / W24 (R40) / C1 / C2。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
+一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前有三种类型：**支付宝当面付**
+（`alipay_f2f`：`alipay.trade.precreate` → 二维码）、**易支付**（`epay`，C1：通用易支付 MD5 接口，见下文「EPay（易支付）」）与
+**USDT 链上收款**（`usdt_chain`，C2：Polygon / Plasma，按唯一金额自动核账，见下文「USDT 链上收款」）。
 同一类型可以有多个支付方式（例如两个支付宝商户，或同一易支付商户的支付宝与微信两个渠道）。
 
 - 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载 / 旧配置导入，
   `alipay.rs` 为支付宝类型，`epay.rs` 为易支付类型；W7 套餐目录：`catalog.rs`）
 - 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`（均已并入 `1000_baseline.sql`）、
-  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）
+  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）、`1111_payment_kind_usdt_chain.sql`（C2）
 - SPA：`spa/src/pages/purchase.tsx`、`orders.tsx`、`admin-orders.tsx`、`admin-plans.tsx`（价格）、
   `admin-payments.tsx`（系统设置 → 支付）。
 
@@ -541,6 +542,99 @@ trade_status, sign, sign_type`（可能还有空的 `param`）。依次检查：
 不同易支付分支的应答细节（`code` 为数字或字符串、`money` 为字符串或数字、错误文案）都已按宽松方式解析；
 若某个站点的「订单不存在」文案不含「不存在」/「not exist」，查询会被当作错误（订单保持待付款，直到过期后强制结束）。
 
+## USDT 链上收款（Polygon、Plasma）（C2）
+
+付款人直接把 USDT 转到运营者的收款地址；面板**只观察地址**（不持有任何私钥），按金额把转账对上订单。
+**一个支付方式 = 一条链（Polygon PoS 或 Plasma）+ 一个收款地址 + 该链的 USDT 代币合约 + 运营者自己的 JSON-RPC 端点 + 汇率**。
+要同时收 Polygon 与 Plasma，就添加两个支付方式（门户的支付方式选择器里各一项，图标 `usdt`）。代码：`src/billing/chain/`
+（`mod.rs` 类型与金额预留、`rpc.rs` JSON-RPC 与解析、`watch.rs` 监听、`admin.rs` 未匹配转账），迁移 `1111_payment_kind_usdt_chain.sql`。
+
+### 配置（系统设置 → 支付 → 添加支付方式 → USDT 链上收款）
+
+| 字段 | 说明 |
+|---|---|
+| 网络 `chain` | `polygon`（Polygon PoS，链 ID 137）或 `plasma`（Plasma 主网，链 ID 9745） |
+| 收款地址 `address` | `0x` + 40 位十六进制；大小写混合时必须符合 EIP-55 校验（输错一个字母的大小写即拒绝），存为 EIP-55 形式。**保存后网络、地址、代币合约都不能再改**（`payments.chain_fixed`：该方式的订单与转账属于这个地址；换地址 = 新增支付方式、停用旧的）；同一条链上同一个地址只能属于一个支付方式（`payments.chain_address_in_use`，数据库唯一索引兜底） |
+| 代币合约 `token_contract` | 留空 = 该链的官方 USDT（见下表）；仅在官方合约迁移时才需要填写 |
+| RPC 端点 `rpc_urls` | 1–4 个 https 地址（空格或逗号分隔），按顺序使用、失败换下一个。**按密钥对待**：很多 RPC 服务把 API key 写在 URL 里，所以与支付宝私钥一样加密存放、绝不回显（页面只显示「已设置」与个数），日志和错误信息里也不出现 URL；编辑时留空 = 不变 |
+| 汇率 `rate_cents` | 1 USDT 折合多少**分**人民币（如 `720` = ¥7.20/USDT），1–100000；每个支付方式自己的汇率（与提现的参考汇率 `usdt_rate_cents` 同一单位，互不影响）。下单时拷进订单，之后改汇率不影响已下的单 |
+| 确认数 `confirmations` | 留空 = 默认：**Polygon 32**（约 1 分钟，出块约 2 秒；Heimdall v2 里程碑最终性约 2–5 秒，32 块留足余量）、**Plasma 10**（出块约 1 秒，PlasmaBFT 确定性最终性）。1–1000 |
+| 订单有效期 | 10–180 分钟，默认 30 |
+| 金额保留时长 `grace_hours` | 订单结束后该金额再保留多久（默认 24 小时，1–168）：期间到账的迟到付款照样开通，新订单也不会拿到这个金额 |
+| 每次查询的区块数 `log_range` | `eth_getLogs` 一次查询的区块范围，默认 500（1–10000）；节点拒绝时面板会自动对半缩小重试，免费 RPC 限制很严时可直接调小 |
+
+**官方代币合约（一手来源：USDT0 官方文档 docs.usdt0.to「Deployments」页，2026-10-13 核对）**
+
+| 网络 | 链 ID | 代币合约（Token） | 说明 |
+|---|---|---|---|
+| Polygon PoS | 137 | `0xc2132D05D31c914a87C6611C10748AEb04B58e8F` | Polygon 上的 USDT（已升级为 USDT0，地址不变；同页 OFT 合约 `0x6BA10300…` 不是代币合约） |
+| Plasma | 9745 | `0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb` | USDT0（同页 OFT 合约 `0x02ca3796…` 不是代币合约） |
+
+两者都是 6 位小数。**测试连接**依次检查：`eth_chainId` 与所选网络一致（否则 `chain_mismatch`）、`eth_blockNumber`、代币合约 `decimals()` = 6
+（否则 `token_invalid`）；连不上 = `rpc_unreachable`。
+
+**RPC 的安全规则**：RPC 端点是运营者填写的外部地址，面板的请求一律经与远程规则集相同的 SSRF 防护（`src/outbound.rs`）：
+只 https、自己解析域名且**全部**地址必须是公网地址（回环、内网、链路本地/云元数据、CGNAT、ULA 等一律拒绝）、直连检查过的地址、
+不跟随重定向、每次调用 10 秒超时、应答 ≤ 8 MiB、拒绝压缩应答。`AKARI_TEST_LIMITS` 的 `chain_rpc_loopback=1` 只给 smoke/测试放行 127.0.0.1 的 http。
+
+### 金额：共用一个地址，每单一个唯一金额
+
+1. 订单金额（人民币整数分，与其他渠道相同在 SQL 里算出）按汇率换成 USDT 并**向上取整到 0.01 USDT**：
+   `ceil(分 × 100 / rate_cents)` 个「0.01 USDT」；例：¥30.00、汇率 720 → 4.1666… → **4.17**。
+2. 再加一个随机尾数，落在剩下的 4 位小数里（1–9999 个最小单位，即 0.000001–0.009999 USDT）：例如 **4.17**`3815`。
+   付款人最多多付不到 0.01 USDT。
+3. 唯一性由数据库保证：`chain_payments` 的部分唯一索引 `(支付方式, 精确金额) WHERE active`；预留在**下单事务里**完成
+   （与订单行同一事务，没有空闲金额 = 不建订单，503 `order.chain_busy`，随机试 32 次）。
+4. 预留一直有效到「订单到期 + 保留时长」；之后新订单需要这个金额时才把旧预留置为不再占用（行保留作记录）。
+
+门户订单视图（`GET /me/orders/{id}` 的 `chain`）给出：网络、代币合约、收款地址、**精确金额**（`amount` 字符串，6 位小数，界面突出尾数）、
+汇率、所需确认数、保留截止时间，以及看到的转账（交易哈希、状态、当前确认数）；`qr_code` = 收款地址（不带金额：多数钱包与交易所提币不认带金额的
+链接，金额必须照抄）。门户须明确提示：只能用所选网络、只能转 USDT、金额一分不差（含尾数）、有效期。
+
+### 监听与入账
+
+每个实例每 5 秒尝试一轮，`pg_try_advisory_xact_lock('akari.chain_watch.<schema>')` 抢到的那个实例执行（锁事务只做互斥，写入各自短事务，
+不会让任何请求等 RPC）。监听的支付方式 = 启用的，以及仍有未到期预留或待确认转账的（停用后迟到的付款仍会被看到）。每个支付方式：
+
+1. `eth_blockNumber` → 最新区块；确认数 N 下，`≤ 最新 + 1 − N` 的区块为「安全」。
+2. 从游标（`chain_cursors.next_block`）到最新区块，按 `log_range` 分段 `eth_getLogs`（代币合约的 `Transfer(address,address,uint256)`，`to` = 收款地址），
+   每轮最多 20 段（断线很久后的追赶分摊到多轮）；节点拒绝某个范围就对半缩小重试。**游标只前进到安全高度**，未确认的尾部下一轮再读一遍（尾部重组能被看到）。
+   第一次监听从约一小时前开始（Polygon 1800 块、Plasma 3600 块）。
+3. 每笔 ≥ 0.01 USDT 的转账记一行 `chain_transfers`（`(链, 交易哈希, 日志序号)` 唯一：同一笔转账只记一次、只入账一次），状态 `pending`，
+   并按金额暂时关联订单（门户显示「已收到，确认中 x/N」）。更小的转账（灰尘、地址投毒）与别的代币一概不记。
+4. 达到确认数后**复核**：交易回执必须存在、`status = 1`、仍在记录的区块里且包含同一条日志；再取该区块，哈希必须一致，并得到**区块时间**。
+   回执指向别的区块（重组后重新打包）→ 跟随新区块、重新等待确认；交易执行失败 → `dropped`（`reverted`）；回执 15 分钟后仍不存在 → `dropped`（`missing`）。
+5. 入账（一个事务，先取 `entitle::lock`）：找本支付方式里精确金额相同、且 `下单时间 − 10 分钟 ≤ 区块时间 ≤ 保留截止` 的预留：
+   - 恰好一个、订单未付款 → **`apply_mark_paid`**（唯一付款路径，`paid_via = 'chain'`，交易号 = 交易哈希，操作者 `chain`）；
+     订单已过期/已取消也照样开通（迟到付款，与支付宝相同）；状态 `credited`。
+   - 订单已付款（重复付款）→ `unmatched`（`order_paid`）；没有匹配 → `unmatched`（`no_order`，如少付了尾数、付错金额、窗口外）；
+     两个窗口都对得上 → `unmatched`（`ambiguous`）。未匹配的钱**从不自动入账**：记审计 `chain_transfer.unmatched` 等管理员处理。
+   - 每次结果另记一行 `payment_events`（来源 `chain`）。
+
+RPC 失败只会推迟：游标不动，错误（不含 URL）记在该方式的 `chain_cursors.last_error/failing_since`；启用的方式连续失败 10 分钟，
+系统状态的「链上收款」任务变红。没有异步通知（`/pay/<id>/notify` 对这类方式一律规范拒绝），也没有关单（`not_closable`），
+轮询 `GET /me/orders/{id}` 不调用 RPC。
+
+### 未匹配的转账（管理员）
+
+`GET /api/v1/payments/chain-transfers?status=&method_id=&before=&limit=`：转账列表（新的在前）与每个链上支付方式的监听状态
+（游标、最新区块、错误、待确认/未匹配数）。对 `unmatched` 的转账：
+
+- **指定订单** `POST …/chain-transfers/{id}/assign {order_id, reason}`：订单必须属于同一个支付方式且未付款（`chain.order_mismatch` /
+  `chain.order_paid`）；经 `apply_mark_paid` 付款（`paid_via = chain`、交易号 = 交易哈希、原因记入 `manual_reason`），转账变为 `assigned`，
+  审计 `chain_transfer.assign`。金额不必一致（例如付款人少付了尾数，管理员核实后决定）。
+- **忽略** `POST …/chain-transfers/{id}/ignore {reason}`：已在面板外处理（如原路退回），转账变为 `ignored`，审计 `chain_transfer.ignore`。
+
+### 退款
+
+**没有链上原路退款**（`refunds() = false`）：退回余额，或在链外转回后在面板里登记外部退款金额（`external_cents`）。
+
+### 未实测
+
+尚未对真实链与真实 RPC 实测（需要主网小额转账）；行为由 mock JSON-RPC 节点的测试（匹配、重复/重放、错金额、重组、迟到付款、两个方式隔离、
+游标续传、RPC 故障与范围缩小）与 smoke 覆盖。部分 RPC 服务对 `eth_getLogs` 的范围限制很严（如免费档只允许 10 个区块），请相应调小
+`log_range`；Plasma 的 `eth_getLogs` 支持情况取决于所用的 RPC 服务。
+
 ## Notify endpoint rules（通知端点规则）
 
 `POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）以及旧的
@@ -576,7 +670,8 @@ Ops 新增：`order.create` + `order.paid`（人工订单，`after.manual`、`re
 W16：`order.refund`（P1：撤销订阅时另有 `user.plan.refund`）、`coupon.create` / `coupon.update` / `coupon.delete`、
 `commission.create` / `commission.reverse`、`commission.settings.update`、
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`，以及每行账本对应一行 `balance.<kind>`（kind 同账本表）。
-W24：`payment_method.create` / `.update` / `.delete` / `.import`。`payment_events.payment_method_id` 记录订单所用的支付方式。
+W24：`payment_method.create` / `.update` / `.delete` / `.import`。
+C2：`order.paid` 的操作者为 `chain`（监听入账）或管理员（指定订单）；`chain_transfer.unmatched`（操作者 `chain`）、`chain_transfer.assign`、`chain_transfer.ignore`。`payment_events.payment_method_id` 记录订单所用的支付方式。
 
 ## Reconciliation (operator)（对账，运维）
 

@@ -49,6 +49,7 @@ const COUPON_WINDOW_SECS: i64 = 600;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(super::coupon_batches::routes())
+        .merge(super::chain::admin::routes())
         .route("/{prefix}/pay/alipay/notify", post(legacy_notify))
         .route(
             "/{prefix}/pay/{method}/notify",
@@ -207,9 +208,14 @@ pub struct MyOrderView {
     /// P1: what the refund did to the subscription (none | cancel |
     /// rollback | restore); null until refunded.
     refund_effect: Option<String>,
+    /// C2: an on-chain order's payment (`chain::ORDER_CHAIN_SQL`: chain,
+    /// token, address, exact `amount`, confirmations, the transfer seen);
+    /// null for other orders.
+    chain: Option<Value>,
 }
 
-const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
+const MY_ORDER_SQL: &str = concat!(
+    "SELECT id, out_trade_no, plan_id, plan_name, amount_cents, \
      period, period_days, list_price_cents, credit_cents, discount_cents, coupon_code, \
      balance_cents, refunded_at, status, CASE WHEN status = 'pending' THEN qr_code END AS qr_code, \
      CASE WHEN status = 'pending' THEN pay_url END AS pay_url, payment_method_id, \
@@ -221,7 +227,10 @@ const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_
           WHEN refund_external_cents > 0 THEN 'manual' ELSE 'balance' END AS refund_route, \
      refund_balance_cents, refund_external_cents, \
      COALESCE(refund_request->>'state' = 'pending', false) AS refund_pending, \
-     refund_effect->>'kind' AS refund_effect FROM orders";
+     refund_effect->>'kind' AS refund_effect, ",
+    super::chain::order_chain_sql!(),
+    " AS chain FROM orders"
+);
 
 /// An order as an admin sees it.
 #[derive(Serialize, sqlx::FromRow, Debug)]
@@ -277,9 +286,12 @@ pub struct OrderView {
     /// What the order does to the buyer's subscription (new / renew /
     /// switch / reset; 中-2), shown as the ledger row's kind tag.
     action: String,
+    /// C2: the on-chain payment (see `MyOrderView::chain`).
+    chain: Option<Value>,
 }
 
-const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
+const ORDER_SQL: &str = concat!(
+    "SELECT id, out_trade_no, user_id, user_label, \
      (SELECT u.email FROM users u WHERE u.id = orders.user_id) AS user_email, plan_id, plan_name, \
      amount_cents, period, period_days, list_price_cents, credit_cents, credit_order_id, \
      discount_cents, coupon_id, coupon_code, balance_cents, balance_state, gift_cents, \
@@ -289,7 +301,10 @@ const ORDER_SQL: &str = "SELECT id, out_trade_no, user_id, user_label, \
      fulfilled_at, fulfil_result, fulfil_error, created_at, expires_at, paid_at, ended_at, \
      close_state, payment_method_id, \
      (SELECT m.display_name FROM payment_methods m WHERE m.id = payment_method_id) \
-         AS payment_method_name, action FROM orders";
+         AS payment_method_name, action, ",
+    super::chain::order_chain_sql!(),
+    " AS chain FROM orders"
+);
 
 #[derive(Serialize, sqlx::FromRow, Debug)]
 pub struct EventView {
@@ -848,6 +863,11 @@ pub async fn create_order(
             Json(my_order_view(&state, user.id, id).await?),
         ));
     }
+    // C2: an on-chain method gives the order its unique exact amount in
+    // this transaction (no amount free = no order).
+    if let Some(p) = provider.chain() {
+        super::chain::reserve(&mut tx, method_id, id, cents, p).await?;
+    }
     tx.commit().await?;
 
     // The row exists before the provider knows the trade: a payment can
@@ -1107,10 +1127,7 @@ fn push_order_filters(
         }
     }
     if let Some(v) = q.via.as_deref().filter(|v| !v.is_empty()) {
-        if !matches!(
-            v,
-            "notify" | "query" | "manual" | "credit" | "balance" | "coupon"
-        ) {
+        if !orders::VIAS.contains(&v) {
             return Err(bad_request!("export.via_invalid", "unknown paid_via"));
         }
         qb.push(" AND paid_via = ").push_bind(v.to_string());

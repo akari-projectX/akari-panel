@@ -104,7 +104,7 @@ fn tron_ok(a: &str) -> bool {
     sum[..4] == b[21..]
 }
 
-fn evm_ok(a: &str) -> bool {
+pub(crate) fn evm_ok(a: &str) -> bool {
     let Some(hex) = a.strip_prefix("0x") else {
         return false;
     };
@@ -191,8 +191,32 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
     reg
 }
 
+/// The EIP-55 checksummed form of an EVM address (`0x` + 40 hex, any
+/// case; None otherwise).
+pub(crate) fn eip55(a: &str) -> Option<String> {
+    let hex = a.strip_prefix("0x")?;
+    if hex.len() != 40 || !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let lower = hex.to_ascii_lowercase();
+    let h = keccak256(lower.as_bytes());
+    let body: String = lower
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let nibble = (h[i / 2] >> if i % 2 == 0 { 4 } else { 0 }) & 0x0f;
+            if c.is_ascii_alphabetic() && nibble >= 8 {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            }
+        })
+        .collect();
+    Some(format!("0x{body}"))
+}
+
 /// Keccak-256 (the original Keccak padding, as Ethereum uses it).
-fn keccak256(data: &[u8]) -> [u8; 32] {
+pub(crate) fn keccak256(data: &[u8]) -> [u8; 32] {
     sponge256(data, 0x01)
 }
 

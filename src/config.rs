@@ -424,6 +424,10 @@ pub struct Limits {
     /// (smoke's fixture server; `sub::rulesets::fetch`). Never in
     /// production: the SSRF guard refuses loopback otherwise.
     pub rule_set_fetch_loopback: bool,
+    /// C2: on-chain payment methods may call JSON-RPC endpoints over plain
+    /// http on 127.0.0.1 (smoke's mock node; `outbound::chain_rpc_policy`).
+    /// Never in production: the SSRF guard refuses loopback otherwise.
+    pub chain_rpc_loopback: bool,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
 }
@@ -456,6 +460,7 @@ impl Default for Limits {
             turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
             entrance_health_interval_secs: ENTRANCE_HEALTH_INTERVAL_SECS,
             rule_set_fetch_loopback: false,
+            chain_rpc_loopback: false,
             test_overrides: Vec::new(),
         }
     }
@@ -475,6 +480,7 @@ impl Limits {
             ENTRANCE_HEALTH_INTERVAL_SECS,
         ),
         ("rule_set_fetch_loopback", 0, 1),
+        ("chain_rpc_loopback", 0, 1),
     ];
 
     /// The fail-closed lease actually granted: [1h, 30d].
@@ -506,6 +512,7 @@ impl Limits {
                 "sub_rate_per_token" => self.sub_rate_per_token = v as i64,
                 "entrance_health_interval_secs" => self.entrance_health_interval_secs = v,
                 "rule_set_fetch_loopback" => self.rule_set_fetch_loopback = v == 1,
+                "chain_rpc_loopback" => self.chain_rpc_loopback = v == 1,
                 _ => anyhow::bail!("{TEST_LIMITS_ENV}: {name:?} cannot be overridden"),
             }
             self.test_overrides.push(format!("{name}={v}"));

@@ -50,6 +50,7 @@ pub mod nodes;
 pub mod nodestat;
 pub mod nodetpl;
 pub mod notify;
+pub mod outbound;
 pub mod owner;
 pub mod passkey;
 pub mod pb;

@@ -287,7 +287,8 @@ async fn status_endpoint_reports_the_fleet() {
             "reconciliation",
             "mail",
             "alerts",
-            "rule_sets"
+            "rule_sets",
+            "chain_payments"
         ]
     );
     let settle = &jobs[0];

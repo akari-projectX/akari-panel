@@ -509,10 +509,7 @@ pub async fn orders(
         return Err(bad_request!("request.status_invalid", "unknown status"));
     }
     if let Some(v) = &q.via
-        && !matches!(
-            v.as_str(),
-            "notify" | "query" | "manual" | "credit" | "balance" | "coupon"
-        )
+        && !crate::billing::orders::VIAS.contains(&v.as_str())
     {
         return Err(bad_request!("export.via_invalid", "unknown paid_via"));
     }
