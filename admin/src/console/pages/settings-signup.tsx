@@ -115,7 +115,7 @@ function SignupForm({ s }: { s: Signup }) {
         { ok: tr("注册设置已保存", "Sign-up settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -441,7 +441,7 @@ function LoginForm({ a }: { a: AuthSettings }) {
         { ok: tr("登录与人机验证设置已保存", "Sign-in settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -727,7 +727,7 @@ function CleanupForm({ c }: { c: Cleanup }) {
         { ok: tr("清理设置已保存", "Cleanup settings saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });

@@ -172,7 +172,7 @@ function AccessForm({ a }: { a: Access }) {
         },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -563,7 +563,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
         { ok: tr("保留设置已保存", "Retention saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });

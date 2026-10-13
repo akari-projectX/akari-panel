@@ -299,7 +299,7 @@ function Domains({ d }: { d: SettingsView }) {
       if (!(await putDomains(false, false, removal))) return false;
       await settled();
       toast({ tone: "success", title: tr("域名设置已保存", "Domains saved") });
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -858,7 +858,7 @@ function CloudflareGroup({
         { ok: tr("Cloudflare 网段已保存", "Cloudflare ranges saved") },
       );
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
@@ -1093,7 +1093,7 @@ function PasskeyCentre({ d }: { d: SettingsView }) {
         ok: tr("通行密钥中心域名已保存", "Passkey centre saved"),
       });
       if (r === undefined) return false;
-      f.reset();
+      f.saved();
       return true;
     },
   });
