@@ -9,13 +9,14 @@
 // (N 项未保存的修改 · 放弃 · 保存 ⌘S; "N 处需要修正" blocks saving); leaving
 // with unsaved changes asks "有未保存的修改" (放弃修改，去「X」/ 继续编辑).
 import { ChevronLeft, CornerDownRight, ExternalLink, History, Info, Lock } from "lucide-react";
-import { type ComponentType } from "react";
+import { Suspense, lazy, type ComponentType } from "react";
 import { Link, Navigate, useSearchParams } from "react-router";
 import { cn } from "../../shared/cn";
 import { dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Card, Tile } from "../../shared/ui/card";
+import { LoadingBlock } from "../../shared/ui/states";
 import { SearchField } from "../components/kit";
 import { SectionForm, useOwner, useWide } from "../components/settings-kit";
 import { useRoute } from "../router";
@@ -39,9 +40,25 @@ import { BlockSection, InstallSection, ProbeSection, UpdatesSection } from "./se
 import { Overview, PhoneGroups, flagged, hrefOf, useLastEdit, useOverview, type Attn } from "./settings-overview";
 import { CommissionSection, PaymentsSection } from "./settings-payments";
 import { CleanupSection, LoginSection, SignupSection } from "./settings-signup";
-import { RoutingSection, SubscriptionSection } from "./settings-sub";
+import { SubscriptionSection } from "./settings-sub";
 
-export { useSettings, type DomainEntry, type Rule, type SettingsView } from "./settings-data";
+export { useSettings, type DomainEntry, type SettingsView } from "./settings-data";
+
+// The routing editor (SET-11) is the biggest section: its own chunk, fetched when opened.
+const RoutingEditor = lazy(() => import("./settings-routing"));
+function RoutingSection() {
+  return (
+    <Suspense
+      fallback={
+        <div className="rounded-xl bg-card px-4 py-2 shadow-card">
+          <LoadingBlock rows={6} />
+        </div>
+      }
+    >
+      <RoutingEditor />
+    </Suspense>
+  );
+}
 
 const BODIES: Record<Exclude<SectionId, "templates">, ComponentType> = {
   site: SiteSection,

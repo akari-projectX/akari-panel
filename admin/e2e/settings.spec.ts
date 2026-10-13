@@ -21,7 +21,9 @@ import {
   dialog,
   expectFits,
   isMobile,
+  must,
   openConsole,
+  sql,
   toast,
   uniq,
 } from "./helpers";
@@ -513,34 +515,152 @@ test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), 
   await expect(page.getByText(/已开启：修改入口倍率会改变线路名/)).toHaveCount(0);
 });
 
-test("SET-11: routing rules (block / direct) — add (an empty value is flagged), move, save, restore defaults", async ({
+test("SET-11: routing editor — sections by destination, one auto-detecting input (domain / IP / category / remote rule-set), services with a primary and ordered backups, conflicts, the test box, DNS, global mode, save → reload, restore the recommended routing", async ({
   page,
-}) => {
-  await openConsole(page, "/settings/routing");
-  const rules = page.getByRole("combobox", { name: "类型" });
-  const count = await rules.count();
-  await page.getByRole("button", { name: "添加规则" }).click();
-  await expect(rules).toHaveCount(count + 1);
-  await expect(page.getByText("请填写值")).toBeVisible();
-  await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-  await rules.last().selectOption("domain_suffix");
-  await page.getByRole("textbox", { name: "值" }).last().fill("example.org");
-  await page.getByRole("group", { name: "动作" }).last().getByRole("button", { name: "拒绝" }).click();
-  await page.getByRole("button", { name: "上移" }).last().click();
-  await save(page);
-  await toast(page, "分流规则已保存");
-  await page.reload();
-  // Saved into the routing's block section (rejected rules come first).
-  await expect
-    .poll(() =>
-      page.getByRole("textbox", { name: "值" }).evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value)),
-    )
-    .toContain("example.org");
-  await page.getByRole("region", { name: "危险操作" }).getByRole("button", { name: "恢复默认" }).click();
-  await confirmDialog(page, undefined, "恢复默认");
-  await save(page);
-  await toast(page, "分流规则已保存");
-  await expect(rules).toHaveCount(count);
+}, info) => {
+  const view = () => apiJson<{ version: number; subscription: { routing: { value: unknown } } }>("GET", "/settings");
+  const before = (await view()).subscription.routing.value;
+  // Start from the recommended routing.
+  await apiJson("PUT", "/settings/subscription", { version: (await view()).version, routing: null });
+  // Two lines in two regions to pin.
+  const { id: serverId } = await apiJson<{ id: string }>("POST", "/servers", { name: uniq(info, "route-host") });
+  const nodes: { id: string; entrance: string; region: string }[] = [];
+  for (const region of ["E2E-JP", "E2E-HK"]) {
+    const { id } = await apiJson<{ id: string }>("POST", "/nodes", {
+      server_id: serverId,
+      name: uniq(info, `route-${region}`),
+      inbound: { protocol: "vmess", port: 21000 + Math.floor(Math.random() * 20000), settings: { clients: [] } },
+    });
+    sql(`UPDATE nodes SET region = '${region}' WHERE id = '${id}'`);
+    const n = await apiJson<{ entrances: { id: string }[] }>("GET", `/nodes/${id}`);
+    nodes.push({ id, entrance: n.entrances[0].id, region });
+  }
+  try {
+    await openConsole(page, "/settings/routing");
+    const blocked = page.getByRole("region", { name: "拦截", exact: true });
+    const direct = page.getByRole("region", { name: "直连", exact: true });
+    const netflix = page.getByRole("region", { name: "Netflix", exact: true });
+    const result = page.getByTestId("routing-test-result");
+    const test = page.getByRole("textbox", { name: "测试网址" });
+
+    // A domain (Enter takes the highlighted suggestion; ↓↑ move it), its kind toggles.
+    const addBlock = page.getByRole("combobox", { name: "添加到「拦截」" });
+    await addBlock.fill("ads.e2e.test");
+    await expect(page.getByRole("option", { name: /ads\.e2e\.test 及子域名/ })).toBeVisible();
+    await addBlock.press("ArrowDown");
+    await addBlock.press("ArrowUp");
+    await addBlock.press("Enter");
+    await expect(blocked.getByText("ads.e2e.test 及子域名")).toBeVisible();
+    await blocked.getByRole("button", { name: "切换类型（现在：域名后缀）" }).click();
+    await expect(blocked.getByText("仅 ads.e2e.test")).toBeVisible();
+    // An IP range and a category (by its Chinese alias) into 直连: the category is then a conflict in Netflix.
+    const addDirect = page.getByRole("combobox", { name: "添加到「直连」" });
+    await addDirect.fill("198.51.100.0/24");
+    await addDirect.press("Enter");
+    await expect(direct.getByText("198.51.100.0/24", { exact: true })).toBeVisible();
+    await addDirect.fill("奈飞");
+    await page.getByRole("option", { name: /^Netflix/ }).click();
+    await expect(netflix.getByText("已在「直连」里，这里不生效")).toBeVisible();
+    await direct.getByRole("button", { name: "删除 Netflix" }).click();
+    await expect(netflix.getByText("已在「直连」里，这里不生效")).toHaveCount(0);
+    // A remote rule-set: the panel downloads it and shows what it holds.
+    const ruleSet = must("E2E_RULE_SET");
+    await addBlock.fill(ruleSet);
+    await addBlock.press("Enter");
+    await expect(blocked.getByText("3 条规则")).toBeVisible();
+    await expect(blocked.getByText(/sing-box 不支持 1 条/)).toBeVisible();
+    await test.fill("api.e2e-rules.test");
+    await expect(result.locator("[data-verdict]")).toHaveAttribute("data-verdict", "block");
+    await expect(result).toContainText("规则集「E2E」");
+
+    // Netflix: a primary line and two backups, reordered; the service moves below Google.
+    await netflix.getByRole("button", { name: "Netflix 的线路" }).click();
+    await netflix.getByRole("combobox", { name: "Netflix 的首选线路" }).selectOption(`e:${nodes[0].entrance}`);
+    const backup = netflix.getByRole("combobox", { name: "Netflix 添加备用线路" });
+    await backup.selectOption("r:E2E-JP");
+    await backup.selectOption("r:E2E-HK");
+    const backups = netflix.getByRole("list", { name: "Netflix 的备用线路" }).getByRole("listitem");
+    await expect(backups).toHaveText([/E2E-JP/, /E2E-HK/]);
+    await netflix.getByRole("button", { name: "下移备用 1" }).click();
+    await expect(backups).toHaveText([/E2E-HK/, /E2E-JP/]);
+    await page.getByRole("button", { name: "下移 Netflix" }).click();
+    await expect(page.locator("[data-service]").first()).toHaveAttribute("data-service", "google");
+    // Services from the catalog and a custom one.
+    await page.getByRole("button", { name: "🎵 Spotify" }).click();
+    await expect(page.getByRole("region", { name: "Spotify", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "自定义服务…" }).click();
+    const d = dialog(page, "自定义服务");
+    await d.getByLabel("名称").fill("E2E 游戏");
+    await d.getByRole("button", { name: "添加" }).click();
+    const game = page.getByRole("region", { name: "E2E 游戏", exact: true });
+    await expect(game).toBeVisible();
+    await page.getByRole("combobox", { name: "添加到「E2E 游戏」" }).fill("game.e2e.test");
+    await page.getByRole("combobox", { name: "添加到「E2E 游戏」" }).press("Enter");
+
+    // The test box and the sentence follow the draft.
+    await test.fill("www.game.e2e.test");
+    await expect(result.locator("[data-verdict]")).toHaveText("⭐ E2E 游戏");
+    await test.fill("www.netflix.com");
+    await expect(result.locator("[data-verdict]")).toHaveAttribute("data-verdict", "service");
+    await expect(result).toContainText("按分类名匹配");
+    await expect(result).toContainText("E2E-HK");
+    await expect(page.getByTestId("routing-summary")).toContainText("Netflix 走");
+    // Global mode: everything but the LAN via the default proxy.
+    const mode = page.getByRole("group", { name: "模式" });
+    await mode.getByRole("button", { name: "全局代理" }).click();
+    await expect(page.getByText(/全局代理：除局域网外/)).toBeVisible();
+    await expect(result.locator("[data-verdict]")).toHaveAttribute("data-verdict", "default");
+    await test.fill("192.168.1.1");
+    await expect(result.locator("[data-verdict]")).toHaveAttribute("data-verdict", "direct");
+    await mode.getByRole("button", { name: "规则分流（推荐）" }).click();
+    await page.getByRole("combobox", { name: "默认代理" }).selectOption("r:E2E-JP");
+
+    // DNS: custom lists are checked as typed.
+    await page.getByRole("group", { name: "DNS 下发" }).getByRole("button", { name: "自定义" }).click();
+    const cn = page.getByLabel("国内 DNS", { exact: true });
+    await cn.fill("not a server");
+    await expect(page.getByText(/不是有效的 DNS 服务器：not a server/)).toBeVisible();
+    await expect(bar(page)).toContainText("1 处需要修正");
+    await cn.fill("223.5.5.5\nhttps://doh.pub/dns-query");
+    await setSwitch(page.getByRole("switch", { name: "使用 Fake-IP" }), false);
+    await expectFits(page, "the routing editor");
+
+    await save(page);
+    await toast(page, "分流规则已保存");
+    await page.reload();
+    await expect(page.getByRole("region", { name: "拦截", exact: true }).getByText("仅 ads.e2e.test")).toBeVisible();
+    await expect(direct.getByText("198.51.100.0/24", { exact: true })).toBeVisible();
+    await expect(blocked.getByText(/面板副本/)).toBeVisible();
+    await expect(page.locator("[data-service]").first()).toHaveAttribute("data-service", "google");
+    await expect(netflix.getByText(/E2E-HK/).first()).toBeVisible();
+    await expect(game).toBeVisible();
+    await expect(page.getByRole("group", { name: "DNS 下发" }).getByRole("button", { name: "自定义" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(page.getByRole("switch", { name: "使用 Fake-IP" })).toHaveAttribute("aria-checked", "false");
+    const saved = (await view()).subscription.routing.value as {
+      services: { key: string; primary: string | null; backups: unknown[] }[];
+      rest: unknown;
+    };
+    expect(saved.services.find((s) => s.key === "netflix")).toMatchObject({
+      primary: nodes[0].entrance,
+      backups: [{ region: "E2E-HK" }, { region: "E2E-JP" }],
+    });
+    expect(saved.rest).toEqual({ region: "E2E-JP" });
+
+    // Restore the recommended routing (confirmed, then saved).
+    await page.getByRole("region", { name: "危险操作" }).getByRole("button", { name: "恢复推荐设置" }).click();
+    await confirmDialog(page, undefined, "恢复推荐设置");
+    await save(page);
+    await toast(page, "分流规则已保存");
+    await expect(game).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Spotify", exact: true })).toHaveCount(0);
+    await expect(page.locator("[data-service]").first()).toHaveAttribute("data-service", "netflix");
+  } finally {
+    await apiJson("PUT", "/settings/subscription", { version: (await view()).version, routing: before });
+    for (const n of nodes) await apiJson("DELETE", `/nodes/${n.id}`);
+  }
 });
 
 test("SET-15 SET-16 SET-17 SET-18: mail via SMTP (port validated), step-by-step diagnosis, notices; the outbox moved to the status page; the template editor link", async ({

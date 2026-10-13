@@ -6,8 +6,6 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { get } from "../../shared/api";
 
 export type DomainEntry = { domain: string; display: string; preferred: boolean };
-/** One row of the block / direct editor (`action` = which section). */
-export type Rule = { type: string; value: string; action: string };
 /** A routing item (`sub::routing::Item`). */
 export type RoutingItem = { type: string; value: string };
 /** A line reference: an entrance id, a node region or an entrance tag. */

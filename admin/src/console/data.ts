@@ -104,6 +104,7 @@ const READ_ONLY_POSTS = [
   /^\/settings\/dns-check$/,
   /^\/settings\/domains\/impact$/,
   /^\/settings\/mail-templates\/preview$/,
+  /^\/settings\/subscription\/rule-set\/check$/,
   /^\/inbound-templates\/check-(dest|domain)$/,
   /^\/content\/preview$/,
   /^\/plans\/[^/]+\/impact$/,
