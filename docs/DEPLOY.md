@@ -803,9 +803,9 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 
 | 客户端 | 收到的格式 | 门户「一键导入」 |
 |---|---|---|
-| Clash Verge (Rev)、Clash Meta for Android、FlClash、Mihomo Party | Clash（mihomo）YAML + 分流规则 | `clash://install-config?url=…&name=…` |
-| Stash | Clash YAML + 分流规则 | `stash://install-config?url=…&name=…` |
-| sing-box 官方 App（SFA/SFI/SFM/SFT） | sing-box 1.12+ 完整配置（TUN、本地 mixed 127.0.0.1:2080、DNS、PROXY 选择器、规则集） | `sing-box://import-remote-profile?url=…#名称` |
+| Clash Verge (Rev)、Clash Meta for Android、FlClash、Mihomo Party | Clash（mihomo）YAML + DNS + 分流分组与规则 | `clash://install-config?url=…&name=…` |
+| Stash | Clash YAML + DNS + 分流分组与规则 | `stash://install-config?url=…&name=…` |
+| sing-box 官方 App（SFA/SFI/SFM/SFT） | sing-box 1.12+ 完整配置（TUN、本地 mixed 127.0.0.1:2080、DNS、分流分组、规则集） | `sing-box://import-remote-profile?url=…#名称` |
 | Shadowrocket | base64 分享链接 | `shadowrocket://add/sub://<URL 安全 base64，无填充>?remark=…` |
 | Hiddify | base64 分享链接（Hiddify 内核较旧，且对导入的链接套用自己的分流设置：在 Hiddify 里把「区域」设为中国） | `hiddify://import/<订阅链接>#名称` |
 | v2rayN / v2rayNG / 其他 | base64 分享链接 | — |
@@ -820,15 +820,72 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 {"name_rate": true}`，默认关）。开启后只显示入口的**基础倍率**（1x 不显示），**不显示时段倍率**；代价是每次改基础倍率
 都会改名，客户端刷新后可能切换线路（开启时后台会确认，入口抽屉的倍率框也会提示）。倍率请在门户的线路列表里看。
 
-**分流规则模板**（系统设置 → 订阅，`PUT /api/v1/settings/subscription`）：Clash 与 sing-box 订阅按顺序带上
-这些规则，最后「其余全部走 PROXY」。内置默认：广告拦截（`geosite:category-ads-all` → 拒绝）、国内直连
-（`geosite:private`、`geoip:private`、`geosite:cn`、`geoip:cn` → 直连）、国外代理（其余）。规则类型：
-geosite / geoip（规则列表名，如 `cn`、`geolocation-!cn`）、domain、domain_suffix、domain_keyword、ip_cidr；
-动作：direct / proxy / reject；最多 64 条；`rules: null` 恢复默认，`[]` = 不带规则。geosite/geoip 在 Clash 里是
-`rule-providers`（文本列表，Stash 也支持），在 sing-box 里是远程规则集（.srs），由**客户端自己下载**，默认来自
-jsDelivr 上的 MetaCubeX meta-rules-dat；国内访问 jsDelivr 不稳定时可改成镜像（`rule_set_clash_url` /
-`rule_set_singbox_url`，必须是 https 且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次
-启动时经代理进行（规则未加载前全部流量走 PROXY）。修改写审计 `settings.subscription.update`。
+**分流（服务分流 + 指定线路 + 容灾，2026-10-13，取代 W30 的单一 PROXY 模板）**（系统设置 → 订阅 → 分流规则，
+`PUT /api/v1/settings/subscription` 的 `routing`；编辑器所需目录 `GET /api/v1/settings/subscription/catalog`）。
+Clash 与 sing-box 订阅按下面的顺序分流，纯链接格式不受影响（客户端用自己的规则）：
+
+1. **拦截**（`block`，默认：广告与跟踪）→ 拒绝；
+2. **直连**（`direct`，默认：局域网 / 路由器、中国大陆网站、中国大陆 IP）→ 不走代理；
+3. **服务**（`services`，按顺序；默认：Netflix、Google、YouTube、Telegram、AI 服务）→ 各自的服务分组；
+4. 其余全部 → **「🚀 默认代理」**。
+
+每一段的条目可以是：内置分类（如「中国大陆网站」= `geosite:cn`，「AI 服务」= `geosite:category-ai-!cn`，完整清单
+见目录接口）、GeoSite / GeoIP 列表名、域名（精确 / 后缀 / 关键词）、IP 段、https 远程规则集链接（Clash 的
+`.yaml`（payload）/`.list`/`.txt`，Clash 订阅原样作 `behavior: classical` 的 rule-provider；**sing-box 订阅暂不带
+远程规则集**——下载、转换、托管在后续版本做，暂时只记 info 日志）。每段最多 64 条，服务最多 32 个。
+「全局代理」模式（`mode: global`）：只有局域网直连，其余全部走默认代理（分流设置保留但不生效）。
+
+**订阅里的分组**（按用户生成，只含该用户套餐可用的入口；组名固定，客户端按组名记住用户的选择）：
+
+| 组 | 类型 | 内容 |
+|---|---|---|
+| 🚀 默认代理 | 手动选择 | 默认选中 `rest`（地区组 / 标签组 / 某条线路；未设 = 全部节点），然后各地区组、标签组、全部节点、每条线路 |
+| 服务（如「🎬 Netflix」） | 手动选择 | 默认「♻️ Netflix 推荐（自动容灾）」，然后首选与备用、其余地区组、全部节点、直连 |
+| ♻️ <服务> 推荐 | 故障转移（`fallback`，隐藏） | 首选线路 → 备用（按顺序，线路或地区组 / 标签组）；首选恢复后切回 |
+| 🌐 <地区> | 自动选最快（`url-test`） | 节点「地区」相同的线路，按节点地区自动生成 |
+| 🏷 <标签> | 自动选最快 | 带该入口标签的线路（`tag_groups` 勾选，或被首选/备用引用） |
+| ♻️ 全部节点 | 自动选最快 | 全部线路 |
+
+- **首选 / 备用按入口 id 记录**：入口改名自动跟随；入口删除、停用、被健康检查隐藏或不在该用户套餐里时**跳过**；
+  一个服务的首选和备用对某个用户全都不可用时，这个服务对该用户**指向默认代理**（选择组第一项是「🚀 默认代理」，
+  不生成推荐组）。空的地区组 / 标签组不出现。未选线路的服务同样走默认代理——所以默认设置下五个服务都走默认代理，
+  直到运营者选好线路。
+- 健康检查地址固定为 `https://www.gstatic.com/generate_204`，间隔 300 秒。
+- **sing-box 没有 `fallback` 类型**：服务的「推荐」组在 sing-box 里是对同一组线路的 `urltest`（选最快的可用线路，
+  不保证「首选优先」）；其余分组一致。
+- 组名与线路名冲突时组名后加 ` #2`（入口名请不要用 emoji 开头）。服务名称里不能有逗号或引号。
+
+**DNS**（`routing.dns.mode`）：
+
+- **推荐（默认）**：国内 DNS `https://223.5.5.5/dns-query`、`https://doh.pub/dns-query`，国外 DNS
+  `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`，开启 Fake-IP；不可编辑（要改请切到自定义）。
+- **不下发**（`client`）：Clash 订阅不带 `dns:`，用客户端自己的 DNS 设置（如 Clash Verge 的「DNS 覆写」），
+  分流照常但国外网站可能被 DNS 污染；sing-box 只用系统解析（`local`）。
+- **自定义**（`custom`）：自己填国内 / 国外两个列表（各 1–8 个：IP 或 `udp://`、`tls://`、`https://` 地址）与
+  Fake-IP 开关。
+
+Clash 的 `dns:`：`enhanced-mode` fake-ip（`fake-ip-range 198.18.0.1/16` + `fake-ip-filter` 局域网、
+`rule-set:geosite-private`（有该规则集时）、连通性检测与 NTP 域名）或 redir-host；`default-nameserver` = 国内
+列表里的 IP 字面量（没有时用 223.5.5.5、119.29.29.29，用来解析 DoH 的主机名）；**`proxy-server-nameserver` =
+国内列表**（解析线路自身的域名，不经代理，否则连不上节点）；`nameserver-policy` 把直连段里的 GeoSite 列表
+（如 `geosite-private,geosite-cn`，只引用订阅里实际存在的 rule-provider）交给国内列表；**`nameserver` = 国外列表** +
+`respect-rules: true`（按分流规则经代理查询，防污染）。sing-box：`local` = 国内列表第一个（主机名地址另加
+`bootstrap` 解析）、`remote` = 国外列表第一个且 `detour` 到默认代理、`route.default_domain_resolver = local`（相当于
+proxy-server-nameserver）、`dns.rules` 直连段的 GeoSite 列表 → `local`、开启 Fake-IP 时加 `fakeip` 服务器
+（`store_fakeip`）。sing-box 每个角色只用列表的第一个服务器。
+
+**规则列表下载**：分类与 GeoSite / GeoIP 列表在 Clash 里是 `rule-providers`（文本列表，Stash 也支持），在
+sing-box 里是远程规则集（.srs），**由客户端自己下载**，只带订阅里实际用到的列表；默认来自 jsDelivr 上的 MetaCubeX
+meta-rules-dat，国内访问 jsDelivr 不稳定时可改成镜像（`rule_set_clash_url` / `rule_set_singbox_url`，必须是 https
+且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次启动时经默认代理进行（规则未加载前全部流量走
+默认代理）。修改写审计 `settings.subscription.update`，用户下次刷新订阅生效。
+
+**从 W30 规则升级（迁移 1107）**：已自定义的旧规则逐条保留（类型与值不变）：拒绝 → 拦截、直连 → 直连、代理 → 一个
+名为「代理」、未选线路（= 默认代理）的服务。新模型按段匹配（拦截 → 直连 → 服务），所以旧列表本来就是
+「拒绝 → 直连 → 代理」的顺序（内置默认与在它基础上增删的都是）时结果完全一致；交错排列的列表里，排在前面的
+「代理」或「直连」规则不再压过后面与之重叠的「拒绝」/「直连」规则，升级后请在后台检查。一直用内置默认的站点
+升级后直接得到新的推荐设置（含五个服务分组与推荐 DNS）。后台的服务分流编辑器在后续版本提供；在此之前后台
+「分流规则」页只编辑拦截与直连两段，服务、线路与 DNS 可经 API 设置。
 
 **订阅格式开关与一键导入开关**（PR ② §5，同一接口的 `formats` / `import_clients`，写审计）：可以分别关闭
 Clash、sing-box、base64 链接三种输出格式，以及门户里每个客户端的一键导入按钮（默认全部开启）。关闭的格式
@@ -838,8 +895,10 @@ Clash、sing-box、base64 链接三种输出格式，以及门户里每个客户
 列表的站点默认是关闭的——全部第三方格式都关掉后，就只剩自研客户端可用。
 
 **验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：mihomo v1.19（`mihomo -t` 校验配置，并实际运行加载
-rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；黄金文件
-（`testdata/w26/sub_*.golden`、`w30_*.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：
+rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；2026-10-13 的
+服务分流 / 容灾 / DNS 输出（含自定义 DNS、主机名 DoH、不下发 DNS、全局模式、远程规则集）用 mihomo v1.19.13
+（`-t` 与实际运行）与 sing-box 1.12.9（`check` 与去掉 TUN 后实际运行）验证通过；黄金文件
+（`testdata/w26/sub_*.golden`、`routing_*.golden`、`w30_client_formats.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：
 Clash Verge Rev、Clash Meta for Android、FlClash、Mihomo Party、Stash、Shadowrocket、SFA/SFI/SFM、Hiddify、
 v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前请在真机上各导入一次。
 

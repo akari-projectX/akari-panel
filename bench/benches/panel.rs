@@ -153,6 +153,8 @@ fn pure(c: &mut Criterion) {
 fn sub_rows(nodes: usize) -> Vec<akari_panel::sub::NodeRow> {
     let row = |i: usize, entrance: &str, inbound: serde_json::Value, protocol: &str, account| {
         akari_panel::sub::NodeRow {
+            entrance_id: Uuid::from_u128((i as u128) << 8 | entrance.len() as u128),
+            region: Some(["香港", "日本", "美国"][i % 3].into()),
             name: format!("bench-node-{i:03}"),
             display_name: None,
             tags: vec![],

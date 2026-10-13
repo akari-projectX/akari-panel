@@ -698,32 +698,50 @@ for pair in "clash-verge/v2.2.3=text/yaml" "Stash/2.7.5 Clash/1.11.0=text/yaml" 
   curl -s --noproxy '*' -A "$ua" -D - -o /dev/null "$SUB" | matches -i "^content-type: $want" \
     || { echo "FAIL: $ua does not get $want"; exit 1; }
 done
-# The built-in routing: rule-providers (Clash), rule sets + TUN profile (sing-box).
+# The built-in (recommended) routing: DNS, service groups, rule-providers
+# (Clash); rule sets, groups + TUN profile (sing-box).
 subrl
 W30_CODE=$(curl -s --noproxy '*' -o "$LOG/w30-clash.yaml" -w "%{http_code}" -A "clash-verge/v2" "$SUB")
-for want in "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
-            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - MATCH,PROXY"; do
+for want in "^dns:" "^  respect-rules: true" "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
+            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - RULE-SET,geosite-netflix,🎬 Netflix" "^  - name: \"🎬 Netflix\"" \
+            "^  - MATCH,🚀 默认代理"; do
   matches "$want" <"$LOG/w30-clash.yaml" \
     || { echo "FAIL: clash routing lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
 done
 subrl
 curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" \
-  | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['route']; assert r['final']=='PROXY' and {s['tag'] for s in r['rule_set']}>={'geosite-cn','geoip-cn','geosite-category-ads-all'} and d['inbounds'][0]['type']=='tun' and d['outbounds'][0]['type']=='selector', r" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['route']; assert r['final']=='🚀 默认代理' and {s['tag'] for s in r['rule_set']}>={'geosite-cn','geoip-cn','geosite-category-ads-all','geosite-netflix'} and d['inbounds'][0]['type']=='tun' and d['outbounds'][0]['type']=='selector' and d['outbounds'][0]['tag']=='🚀 默认代理' and r['default_domain_resolver']=='local' and d['dns']['final']=='remote', r" \
   || { echo "FAIL: sing-box profile"; exit 1; }
-# The template is editable (audited); null restores the default.
+# The routing editor's catalog: categories, common services, the entrances.
+W30_ENT=$(psql_q "SELECT id FROM entrances WHERE node_id = '$NODE_ID' AND kind = 'direct'")
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/subscription/catalog")" = "200" ] \
+  && last_json "len(d['categories']) >= 17 and d['services'][0]['key'] == 'netflix' and any(e['id'] == '$W30_ENT' for e in d['entrances'])" | matches -x 'True' \
+  || { echo "FAIL: subscription catalog"; cat /tmp/akari-smoke/last; exit 1; }
+# The routing is editable (audited); a pinned line becomes the service's
+# failover group; an unknown line is refused; null restores the default.
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (W30)"; exit 1; }
 W30_VER=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$W30_VER,\"rules\":[{\"type\":\"domain_suffix\",\"value\":\"corp.example\",\"action\":\"direct\"}]}")" = "200" ] \
+    -d "{\"version\":$W30_VER,\"routing\":{\"direct\":[{\"type\":\"domain_suffix\",\"value\":\"corp.example\"}]}}")" = "200" ] \
   || { echo "FAIL: PUT subscription settings"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" && break; sleep 0.25; done
 subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" || { echo "FAIL: edited routing not served"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 1)),\"rules\":null}")" = "200" ] || { echo "FAIL: reset routing"; exit 1; }
+    -d "{\"version\":$((W30_VER + 1)),\"routing\":{\"services\":[{\"key\":\"netflix\",\"name\":\"Netflix\",\"emoji\":\"🎬\",\"items\":[{\"type\":\"category\",\"value\":\"netflix\"}],\"primary\":\"$W30_ENT\"}]}}")" = "200" ] \
+  || { echo "FAIL: pin a line"; cat /tmp/akari-smoke/last; exit 1; }
+for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches '^  - name: "♻️ Netflix 推荐"' && break; sleep 0.25; done
+subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" >"$LOG/w30-pinned.yaml"
+python3 -c "import sys; t=open(sys.argv[1]).read(); assert '  - name: \"♻️ Netflix 推荐\"\n    type: fallback\n' in t" "$LOG/w30-pinned.yaml" \
+  || { echo "FAIL: pinned line not served as a failover group"; head -c 4000 "$LOG/w30-pinned.yaml"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 2)),\"routing\":{\"services\":[{\"key\":\"x\",\"name\":\"X\",\"primary\":\"00000000-0000-0000-0000-000000000000\"}]}}")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "settings.sub_entrance_unknown" ] || { echo "FAIL: unknown line accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 2)),\"routing\":null}")" = "200" ] || { echo "FAIL: reset routing"; exit 1; }
 # Section 5: a format that is off is the uniform rejection; the portal hides
 # its import buttons.
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 2)),\"formats\":[\"clash\"],\"import_clients\":[\"clash\",\"shadowrocket\"]}")" = "200" ] \
+    -d "{\"version\":$((W30_VER + 3)),\"formats\":[\"clash\"],\"import_clients\":[\"clash\",\"shadowrocket\"]}")" = "200" ] \
   && [ "$(last_json "d['subscription']['import_clients_shown']")" = "['clash']" ] \
   || { echo "FAIL: format switches"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] && break; sleep 0.25; done
@@ -731,12 +749,12 @@ subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] || { echo "FAIL: a disabled
 subrl; [ "$(fp "$SUB?format=sing-box")" = "$REJ" ] || { echo "FAIL: ?format of a disabled format answers"; exit 1; }
 subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: the enabled format stopped"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 3)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
+    -d "{\"version\":$((W30_VER + 4)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] && break; sleep 0.25; done
 subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] || { echo "FAIL: links not back"; exit 1; }
 # These fetches must not eat the user's subscription rate budget (M1-10 below).
 subrl
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "4" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "5" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
 echo "w30 client detection + routing + format switches: ok"
 
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="

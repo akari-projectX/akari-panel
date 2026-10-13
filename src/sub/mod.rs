@@ -168,6 +168,10 @@ struct SubUser {
 /// address and the user's credential on it (input of `render`).
 #[derive(FromRow)]
 pub struct NodeRow {
+    /// The entrance's id (routing pins lines by it) and its node's
+    /// user-facing region (region groups).
+    pub entrance_id: Uuid,
+    pub region: Option<String>,
     pub name: String,
     /// W11 (`nodemeta.rs`): user-facing name; `tags` are the entrance's (1104).
     pub display_name: Option<String>,
@@ -191,10 +195,15 @@ pub struct NodeRow {
     pub account: Value,
 }
 
+pub mod catalog;
 mod clash;
+pub(crate) mod dns;
+pub(crate) mod groups;
 mod links;
 pub(crate) mod proxy;
 pub mod routing;
+#[cfg(test)]
+mod routing_db_tests;
 mod singbox;
 
 use clash::render_clash;
@@ -325,7 +334,7 @@ pub async fn subscription(
         return reject::not_found();
     }
     let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT n.name, n.display_name, e.tags, e.name AS entrance, \
+        "SELECT e.id AS entrance_id, n.region, n.name, n.display_name, e.tags, e.name AS entrance, \
          CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
          coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
          eu.protocol, eu.account \
@@ -624,6 +633,9 @@ mod tests {
         });
         Proxy {
             name: "n".into(),
+            entrance: None,
+            region: None,
+            tags: vec![],
             protocol: "vless",
             id_or_password: "u".into(),
             flow: "xtls-rprx-vision".into(),
@@ -632,6 +644,14 @@ mod tests {
             server: "s.example".into(),
             net: net_from_inbound(&inbound).unwrap(),
         }
+    }
+
+    /// A sing-box outbound by tag (the routing groups come first).
+    fn outbound<'a>(profile: &'a Value, tag: &str) -> &'a Value {
+        profile["outbounds"]
+            .as_array()
+            .and_then(|o| o.iter().find(|o| o["tag"] == tag))
+            .unwrap_or_else(|| panic!("no outbound {tag}"))
     }
 
     #[test]
@@ -650,9 +670,9 @@ mod tests {
                     .contains(&format!("    client-fingerprint: {want}\n"))
             );
             let sb = render_sing_box(&p, &routing::Routing::default());
-            // [0] is the PROXY selector (W30).
-            assert_eq!(sb["outbounds"][1]["tls"]["utls"]["fingerprint"], want);
-            assert_eq!(sb["outbounds"][1]["tls"]["utls"]["enabled"], true);
+            let ob = outbound(&sb, "n");
+            assert_eq!(ob["tls"]["utls"]["fingerprint"], want);
+            assert_eq!(ob["tls"]["utls"]["enabled"], true);
         }
     }
 
@@ -661,6 +681,9 @@ mod tests {
         let inbound = json!({"port": 1, "streamSettings": {"network": "tcp"}});
         let p = [Proxy {
             name: "n".into(),
+            entrance: None,
+            region: None,
+            tags: vec![],
             protocol: "vless",
             id_or_password: "u".into(),
             flow: String::new(),
@@ -672,11 +695,8 @@ mod tests {
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(!links.contains("fp="));
         assert!(!render_clash(&p, &routing::Routing::default()).contains("client-fingerprint"));
-        assert!(
-            render_sing_box(&p, &routing::Routing::default())["outbounds"][1]
-                .get("tls")
-                .is_none()
-        );
+        let sb = render_sing_box(&p, &routing::Routing::default());
+        assert!(outbound(&sb, "n").get("tls").is_none());
     }
 
     /// One row per (inbound, credential) pair: a node `name` per inbound
@@ -699,6 +719,8 @@ mod tests {
                 continue;
             };
             rows.push(NodeRow {
+                entrance_id: Uuid::from_u128(rows.len() as u128 + 1),
+                region: None,
                 name: name.into(),
                 display_name: None,
                 tags: vec![],
@@ -826,8 +848,14 @@ mod tests {
 
         let (ct, body) = render("clash.meta", &rows);
         assert_eq!(ct, "text/yaml; charset=utf-8");
+        // The recommended DNS first, then the proxies (exact), then the
+        // groups and rules (golden files `w26_golden_tests`).
+        let body = body.trim_end();
+        assert!(body.starts_with("dns:\n  enable: true\n"), "{body}");
+        let proxies =
+            &body[body.find("proxies:\n").unwrap()..body.find("proxy-groups:\n").unwrap()];
         assert_eq!(
-            body.trim_end(),
+            proxies,
             r#"proxies:
   - name: "in-vless"
     type: vless
@@ -862,58 +890,27 @@ mod tests {
     network: tcp
     tls: true
     sni: t.example.com
-proxy-groups:
-  - name: PROXY
-    type: select
-    proxies:
-      - "in-vless"
-      - "in-vmess"
-      - "in-trojan"
-rule-providers:
-  geosite-category-ads-all:
-    type: http
-    behavior: domain
-    format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ads-all.list"
-    interval: 86400
-  geosite-private:
-    type: http
-    behavior: domain
-    format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.list"
-    interval: 86400
-  geoip-private:
-    type: http
-    behavior: ipcidr
-    format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/private.list"
-    interval: 86400
-  geosite-cn:
-    type: http
-    behavior: domain
-    format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list"
-    interval: 86400
-  geoip-cn:
-    type: http
-    behavior: ipcidr
-    format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.list"
-    interval: 86400
-rules:
-  - RULE-SET,geosite-category-ads-all,REJECT
-  - RULE-SET,geosite-private,DIRECT
-  - RULE-SET,geoip-private,DIRECT,no-resolve
-  - RULE-SET,geosite-cn,DIRECT
-  - RULE-SET,geoip-cn,DIRECT,no-resolve
-  - MATCH,PROXY"#
+"#
         );
+        assert!(body.contains(
+            "proxy-groups:\n  - name: \"🚀 默认代理\"\n    type: select\n    proxies:\n      - \"♻️ 全部节点\"\n      - \"in-vless\"\n      - \"in-vmess\"\n      - \"in-trojan\"\n"
+        ));
+        // No line pinned: every recommended service points at the default proxy.
+        assert!(body.contains(
+            "  - name: \"🎬 Netflix\"\n    type: select\n    proxies:\n      - \"🚀 默认代理\"\n      - \"♻️ 全部节点\"\n      - DIRECT\n"
+        ));
+        for want in [
+            "  - RULE-SET,geosite-category-ads-all,REJECT\n  - RULE-SET,geosite-private,DIRECT\n  - RULE-SET,geoip-private,DIRECT,no-resolve\n  - RULE-SET,geosite-cn,DIRECT\n  - RULE-SET,geoip-cn,DIRECT,no-resolve\n  - RULE-SET,geosite-netflix,🎬 Netflix\n",
+            "  geosite-cn:\n    type: http\n    behavior: domain\n    format: text\n    url: \"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list\"\n    interval: 86400\n",
+            "  nameserver-policy:\n    \"rule-set:geosite-private,geosite-cn\": [\"https://223.5.5.5/dns-query\",\"https://doh.pub/dns-query\"]\n",
+        ] {
+            assert!(body.contains(want), "missing:\n{want}\nin:\n{body}");
+        }
+        assert!(body.ends_with("\n  - MATCH,🚀 默认代理"));
 
         let (ct, body) = render("sing-box 1.12", &rows);
         assert_eq!(ct, "application/json; charset=utf-8");
         let want = json!([
-            {"type": "selector", "tag": "PROXY",
-             "outbounds": ["in-vless", "in-vmess", "in-trojan"]},
             {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
              "tag": "in-vless",
              "tls": {"enabled": true, "reality": {"enabled": true, "public_key": "PUBKEY", "short_id": "ab12"},
@@ -926,21 +923,30 @@ rules:
              "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
             {"tag": "direct", "type": "direct"}]);
         let v = serde_json::from_str::<Value>(body.trim_end()).unwrap();
-        assert_eq!(v["outbounds"], want);
+        // The routing groups come first (7: default, 5 services, all lines).
+        let all = v["outbounds"].as_array().unwrap();
+        assert_eq!(all[7..], want.as_array().unwrap()[..]);
+        assert_eq!(
+            all[0],
+            json!({"type": "selector", "tag": "🚀 默认代理",
+                   "outbounds": ["♻️ 全部节点", "in-vless", "in-vmess", "in-trojan"]})
+        );
         // W30: a complete client profile: TUN + local mixed inbound, DNS,
-        // the routing template, everything else through PROXY.
+        // the routing, everything else through the default proxy.
         assert_eq!(v["inbounds"][0]["type"], "tun");
         assert_eq!(v["inbounds"][1]["listen"], "127.0.0.1");
-        assert_eq!(v["route"]["final"], "PROXY");
-        assert_eq!(v["route"]["rule_set"].as_array().unwrap().len(), 5);
+        assert_eq!(v["route"]["final"], "🚀 默认代理");
+        assert_eq!(v["route"]["rule_set"].as_array().unwrap().len(), 11);
         assert_eq!(
             v["route"]["rules"][2],
             json!({"rule_set": ["geosite-category-ads-all"], "action": "reject"})
         );
         assert_eq!(
             v["dns"]["rules"],
-            json!([{"rule_set": ["geosite-private", "geosite-cn"], "server": "local"}])
+            json!([{"rule_set": ["geosite-private", "geosite-cn"], "server": "local"},
+                   {"query_type": ["A", "AAAA"], "server": "fakeip"}])
         );
+        assert_eq!(v["experimental"]["cache_file"]["store_fakeip"], true);
     }
 
     /// W8 matrix rows: every new protocol/transport the renderers branch on.
@@ -1052,23 +1058,36 @@ rules:
             assert!(y.contains(want), "missing:\n{want}\nin:\n{y}");
         }
         assert!(!y.contains("flow:"), "stale vision flow rendered: {y}");
-        // 7 proxies (+ the PROXY group's own "- name:"), all in the group.
-        assert_eq!(y.matches("  - name: ").count(), 8);
-        assert_eq!(y.matches("      - \"").count(), 7);
+        // 7 proxies (+ 7 groups: default, 5 services, all lines); every
+        // proxy in the default group and the all-lines group.
+        assert_eq!(y.matches("  - name: ").count(), 14);
+        let proxies = &y[..y.find("proxy-groups:").unwrap()];
+        for name in ["rx", "hu", "gr", "vg", "ss", "hy", "ws"] {
+            assert!(
+                proxies.contains(&format!("  - name: \"{name}\"\n")),
+                "{name}"
+            );
+            assert_eq!(
+                y.matches(&format!("      - \"{name}\"\n")).count(),
+                2,
+                "{name}"
+            );
+        }
     }
 
     #[test]
     fn w8_matrix_sing_box() {
         let (_, body) = render("sing-box/1.12", &matrix_rows());
         let v: Value = serde_json::from_str(body.trim_end()).unwrap();
-        // [0] is the PROXY selector (W30) over the proxies.
+        // [0] is the default proxy over the proxies; the 7 routing groups
+        // come first.
         let all = v["outbounds"].as_array().unwrap();
         assert_eq!(
             all[0],
-            json!({"type": "selector", "tag": "PROXY",
-                   "outbounds": ["hu", "gr", "vg", "ss", "hy", "ws"]})
+            json!({"type": "selector", "tag": "🚀 默认代理",
+                   "outbounds": ["♻️ 全部节点", "hu", "gr", "vg", "ss", "hy", "ws"]})
         );
-        let ob = &all[1..];
+        let ob = &all[7..];
         let tags: Vec<&str> = ob.iter().filter_map(|o| o["tag"].as_str()).collect();
         // Both xhttp proxies are left out (sing-box has no xhttp).
         assert_eq!(tags, ["hu", "gr", "vg", "ss", "hy", "ws", "direct"]);
@@ -1113,6 +1132,8 @@ rules:
         rows[2].port = Some(30443);
         rows[2].name_rate_permille = Some(2000);
         let single = |name: &str, server: Option<&str>| NodeRow {
+            entrance_id: Uuid::nil(),
+            region: None,
             name: name.into(),
             display_name: Some("东京".into()),
             tags: vec![],

@@ -109,7 +109,7 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + SPA 打
   - agent 原地做不了的（墓碑上换新密钥重加、墓碑超过 max(1024, live)）回 BASE_MISMATCH → 面板立即 Snapshot（重建即压缩），不算失败。
   - agent 侧 `WouldShrinkUnsafe` 为权威。
   - smoke 有对应断言（协议 ≥5 必须是 delta、否则必须是 Snapshot）。
-  - 订阅（W30）：格式按真实客户端 UA 选（`sub::detect_format`，黄金文件 `w30_client_formats.golden`），Clash/sing-box 带系统设置 → 订阅里的分流模板（`PUT /settings/subscription`，审计 `settings.subscription.update`，默认 广告拦截/国内直连/国外代理），sing-box 输出 1.12+ 完整配置；生成的配置用 mihomo `-t` 与 `sing-box check` 验证过。
+  - 订阅（W30）：格式按真实客户端 UA 选（`sub::detect_format`，黄金文件 `w30_client_formats.golden`），sing-box 输出 1.12+ 完整配置。**分流（2026-10-13 `sub-service-groups`，迁移 1107）**：Clash/sing-box 带系统设置 → 订阅 → 分流（`PUT /settings/subscription` 的 `routing`，审计 `settings.subscription.update`）：拦截 → 直连 → 服务分组（首选入口 + 有序备用，Clash `fallback` 容灾）→ 🚀 默认代理，地区组/标签组（url-test），DNS 推荐/不下发/自定义；**分组按用户生成**（`sub::groups`：只含该用户套餐可用、该格式能表达的入口；首选/备用不可用则跳过，全空的服务指向默认代理；入口按 id 引用，改名跟随；组名固定）；内置分类与服务目录只在 `sub::catalog`；生成的配置用 mihomo `-t` 与 `sing-box check` 验证过。
   - **格式开关（PR ② §5）**：系统设置可关闭任一订阅格式与门户导入按钮（`sub::choose_format`），关闭的格式 = `reject::not_found()`（与无效令牌字节同构，测试 + smoke）；存「开启列表」，新格式对自定义过的站点默认关闭（为只保留自研客户端通道留的设计）。
   - 订阅：格式表达不了的代理（sing-box 的 xhttp、mihomo 的非 VLESS xhttp）从该格式省略并记 info 日志，不输出坏配置。
 - **可观测性（M1-4）**：Prometheus 指标只在独立监听 `metrics.bind`（默认关闭；非回环须 `allow_non_loopback`；不得与 web/grpc 同端口），**永不**挂在公网 web 端口。标签只用路由模板（`/{prefix}/...`）与有限枚举，不得出现前缀或 id。`X-Request-Id` 只加在通过前缀闸门的响应上（`request_id.rs` 在闸门之内；带 `Rejected` 标记的响应不加），拒绝响应必须保持字节同构；URI 不进日志（可能含订阅 token）。

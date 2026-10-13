@@ -1,19 +1,40 @@
-//! W30: the routing rules every Clash and sing-box subscription carries
-//! (an admin-editable template, `PUT /settings/subscription`; built-in
-//! default: 广告拦截 (ads rejected), 国内直连 (private and mainland-China
-//! destinations direct), 国外代理 (everything else through the proxy
-//! group)). geosite/geoip rules become Clash `rule-providers` (text lists)
-//! and sing-box remote `rule_set`s (binary), downloaded by the client from
-//! the configured URLs; domain and IP rules are inline. The links format
-//! has no routing (the client's own rules apply).
+//! Subscription routing (2026-10-13 `sub-service-groups`, replaces the W30
+//! flat template): what every Clash and sing-box subscription routes where.
+//!
+//! The operator's model (`Config`, `panel_settings.sub_routing`, edited
+//! with `PUT /settings/subscription`): sections in priority order — block
+//! (rejected), direct, then the ordered **services** (each a client-side
+//! group: a pinned line `primary` plus ordered `backups`, lines or region /
+//! tag groups, which clients fail over along) — and the rest to the
+//! default proxy (`rest`). `mode: global` = only private destinations
+//! direct, everything else through the default proxy. Items are built-in
+//! categories (`catalog.rs`), raw geosite/geoip lists, domains, IP ranges or
+//! remote rule-set URLs. Lines are referenced by entrance id, so renames
+//! follow; what a user's subscription gets is decided per user from the
+//! entrances their plan grants (`groups.rs`). DNS (`dns.rs`): recommended /
+//! client / custom.
+//!
+//! Lists are downloaded by the client (Clash `rule-providers`, sing-box
+//! remote `rule_set`s) from the configured URL templates (MetaCubeX
+//! meta-rules-dat on jsDelivr by default). The links format has no routing.
+
+use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use uuid::Uuid;
 
+use super::catalog;
 use crate::auth::{ApiError, bad_request};
 
-/// At most this many rules (the `panel_settings_sub_rules` CHECK).
+/// At most this many items in one section (block, direct, a service; also
+/// the error a list too long gets).
 pub const MAX_RULES: usize = 64;
+pub const MAX_SERVICES: usize = 32;
+pub const MAX_BACKUPS: usize = 8;
+pub const MAX_TAG_GROUPS: usize = 16;
+pub const MAX_NAME_CHARS: usize = 32;
+pub const MAX_EMOJI_CHARS: usize = 8;
+pub const MAX_URL_CHARS: usize = 512;
 
 /// Built-in rule list URLs (`{kind}` = geosite|geoip, `{name}` = the
 /// list): MetaCubeX meta-rules-dat on jsDelivr (text for Clash/Stash,
@@ -23,70 +44,200 @@ pub const DEFAULT_CLASH_URL: &str =
 pub const DEFAULT_SINGBOX_URL: &str =
     "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/{kind}/{name}.srs";
 
-/// What a rule matches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What an item matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Match {
-    /// A geosite list (domains), e.g. `cn`, `category-ads-all`.
+    /// A built-in category id (`catalog::CATEGORIES`).
+    Category,
+    /// A raw geosite list (domains), e.g. `cn`, `geolocation-!cn`.
     Geosite,
-    /// A geoip list (addresses), e.g. `cn`, `private`.
+    /// A raw geoip list (addresses), e.g. `cn`, `private`.
     Geoip,
     Domain,
     DomainSuffix,
     DomainKeyword,
     IpCidr,
+    /// A remote rule-set URL (https; Clash: a classical rule-provider).
+    RuleSet,
 }
 
-/// Where matching traffic goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Item {
+    #[serde(rename = "type")]
+    pub kind: Match,
+    pub value: String,
+}
+
+/// A line in a service's failover chain or the default proxy's target.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Ref {
+    /// One entrance (a line), by id.
+    Entrance(Uuid),
+    /// The region group (url-test) of a node region (`nodes.region`).
+    Region(String),
+    /// The tag group (url-test) of an entrance tag.
+    Tag(String),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Action {
-    Direct,
-    Proxy,
-    Reject,
+pub enum Mode {
+    #[default]
+    Rules,
+    /// Private destinations direct, everything else the default proxy.
+    Global,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Rule {
-    #[serde(rename = "type")]
-    pub kind: Match,
-    pub value: String,
-    pub action: Action,
+pub struct Service {
+    /// Stable id (`[a-z0-9_-]`, 1-32; a catalog key for common services).
+    pub key: String,
+    /// The client group's name (with the emoji): stable, clients remember
+    /// the user's choice in a group by its name.
+    pub name: String,
+    #[serde(default)]
+    pub emoji: String,
+    #[serde(default)]
+    pub items: Vec<Item>,
+    /// The pinned line (None = no pinned line).
+    #[serde(default)]
+    pub primary: Option<Uuid>,
+    /// Ordered failover after the primary.
+    #[serde(default)]
+    pub backups: Vec<Ref>,
 }
 
-fn rule(kind: Match, value: &str, action: Action) -> Rule {
-    Rule {
-        kind,
-        value: value.into(),
-        action,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsMode {
+    /// The built-in servers (below), fake-ip on.
+    #[default]
+    Recommended,
+    /// No DNS in the subscription: the client's own settings.
+    Client,
+    /// The operator's `cn`/`intl` servers and fake-ip switch.
+    Custom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dns {
+    #[serde(default)]
+    pub mode: DnsMode,
+    #[serde(default = "yes")]
+    pub fakeip: bool,
+    /// Domestic resolvers: domestic destinations and the lines' own
+    /// addresses (never through the proxy).
+    #[serde(default)]
+    pub cn: Vec<String>,
+    /// Foreign resolvers, queried through the proxy by the routing rules.
+    #[serde(default)]
+    pub intl: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Dns {
+    fn default() -> Self {
+        Self {
+            mode: DnsMode::Recommended,
+            fakeip: true,
+            cn: super::dns::DEFAULT_CN
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            intl: super::dns::DEFAULT_INTL
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }
     }
 }
 
-/// The built-in template: 广告拦截, 国内直连, then 国外代理 (the final
-/// rule every format adds).
-pub fn default_rules() -> Vec<Rule> {
-    vec![
-        rule(Match::Geosite, "category-ads-all", Action::Reject),
-        rule(Match::Geosite, "private", Action::Direct),
-        rule(Match::Geoip, "private", Action::Direct),
-        rule(Match::Geosite, "cn", Action::Direct),
-        rule(Match::Geoip, "cn", Action::Direct),
-    ]
+impl Dns {
+    /// The values subscriptions use: the built-in ones in the recommended
+    /// mode.
+    pub fn effective(&self) -> Dns {
+        match self.mode {
+            DnsMode::Recommended => Dns::default(),
+            _ => self.clone(),
+        }
+    }
 }
 
-fn invalid(index: usize, detail: &str) -> ApiError {
-    bad_request!(
-        "settings.sub_rule_invalid",
-        "rule {index}: {detail}",
-        index = index + 1,
-        detail = detail
-    )
+/// The operator's routing (`panel_settings.sub_routing`; NULL = `recommended`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default)]
+    pub mode: Mode,
+    #[serde(default)]
+    pub block: Vec<Item>,
+    #[serde(default)]
+    pub direct: Vec<Item>,
+    #[serde(default)]
+    pub services: Vec<Service>,
+    /// The default proxy's preselected target (None = all lines, fastest).
+    #[serde(default)]
+    pub rest: Option<Ref>,
+    /// Entrance tags that get a group of their own.
+    #[serde(default)]
+    pub tag_groups: Vec<String>,
+    #[serde(default)]
+    pub dns: Dns,
+}
+
+fn item(kind: Match, value: &str) -> Item {
+    Item {
+        kind,
+        value: value.into(),
+    }
+}
+
+/// The built-in routing (the agreed mock's `recommended()` with no lines
+/// pinned: every service falls back to the default proxy until the
+/// operator picks lines).
+pub fn recommended() -> Config {
+    let services = ["netflix", "google", "youtube", "telegram", "ai"]
+        .into_iter()
+        .filter_map(catalog::service)
+        .map(|s| Service {
+            key: s.key.into(),
+            name: s.name.into(),
+            emoji: s.emoji.into(),
+            items: s
+                .categories
+                .iter()
+                .map(|c| item(Match::Category, c))
+                .collect(),
+            primary: None,
+            backups: vec![],
+        })
+        .collect();
+    Config {
+        mode: Mode::Rules,
+        block: vec![item(Match::Category, "ads")],
+        direct: vec![
+            item(Match::Category, "private"),
+            item(Match::Category, "cn"),
+            item(Match::Category, "cnip"),
+        ],
+        services,
+        rest: None,
+        tag_groups: vec![],
+        dns: Dns::default(),
+    }
 }
 
 /// A geosite/geoip list name: lowercase letters, digits and `-_.!@`
 /// (`geolocation-!cn`, `category-ads-all`), 1-64 characters.
-fn list_name(v: &str) -> bool {
+pub(crate) fn list_name(v: &str) -> bool {
     (1..=64).contains(&v.len())
         && v.bytes().all(|b| {
             b.is_ascii_lowercase()
@@ -95,50 +246,266 @@ fn list_name(v: &str) -> bool {
         })
 }
 
-/// Validate and normalize the rules (values trimmed and lowercased where
-/// case does not matter).
-pub fn parse(rules: Vec<Rule>) -> Result<Vec<Rule>, ApiError> {
-    if rules.len() > MAX_RULES {
+/// A remote rule-set URL: https, no whitespace, quotes or control
+/// characters, at most 512 characters.
+pub(crate) fn rule_set_url(v: &str) -> bool {
+    v.len() <= MAX_URL_CHARS
+        && v.len() > "https://".len() + 3
+        && v.starts_with("https://")
+        && !v
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\'' | '\\'))
+}
+
+fn item_error(section: &str, index: usize, detail: &str) -> ApiError {
+    bad_request!(
+        "settings.sub_rule_invalid",
+        "{section} item {index}: {detail}",
+        section = section,
+        index = index + 1,
+        detail = detail
+    )
+}
+
+/// Validate and normalize one section's items (values trimmed, lowercased
+/// where case does not matter, duplicates dropped).
+fn parse_items(section: &str, items: Vec<Item>) -> Result<Vec<Item>, ApiError> {
+    if items.len() > MAX_RULES {
         return Err(bad_request!(
             "settings.sub_rules_too_many",
-            "at most {max} routing rules",
-            max = MAX_RULES
+            "at most {max} items in {section}",
+            max = MAX_RULES,
+            section = section
         ));
     }
-    rules
-        .into_iter()
-        .enumerate()
-        .map(|(i, mut r)| {
-            r.value = r.value.trim().to_ascii_lowercase();
-            let ok = match r.kind {
-                Match::Geosite | Match::Geoip => list_name(&r.value),
-                Match::Domain | Match::DomainSuffix => {
-                    crate::entrances::valid_host(&r.value)
-                        && r.value.parse::<std::net::IpAddr>().is_err()
-                }
-                Match::DomainKeyword => {
-                    (1..=64).contains(&r.value.len())
-                        && r.value
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
-                }
-                Match::IpCidr => {
-                    match crate::entrances::clean_cidrs(std::slice::from_ref(&r.value)) {
-                        Ok(mut v) if v.len() == 1 => {
-                            r.value = v.remove(0);
-                            true
-                        }
-                        _ => false,
-                    }
-                }
-            };
-            if ok {
-                Ok(r)
-            } else {
-                Err(invalid(i, "invalid value for this rule type"))
+    let mut out: Vec<Item> = Vec::with_capacity(items.len());
+    for (i, mut r) in items.into_iter().enumerate() {
+        r.value = r.value.trim().to_string();
+        if r.kind != Match::RuleSet {
+            r.value = r.value.to_ascii_lowercase();
+        }
+        let ok = match r.kind {
+            Match::Category => catalog::category(&r.value).is_some(),
+            Match::Geosite | Match::Geoip => list_name(&r.value),
+            Match::Domain | Match::DomainSuffix => {
+                crate::entrances::valid_host(&r.value)
+                    && r.value.parse::<std::net::IpAddr>().is_err()
             }
+            Match::DomainKeyword => {
+                (1..=64).contains(&r.value.len())
+                    && r.value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+            }
+            Match::IpCidr => match crate::entrances::clean_cidrs(std::slice::from_ref(&r.value)) {
+                Ok(mut v) if v.len() == 1 => {
+                    r.value = v.remove(0);
+                    true
+                }
+                _ => false,
+            },
+            Match::RuleSet => rule_set_url(&r.value),
+        };
+        if !ok {
+            let detail = match r.kind {
+                Match::Category => "unknown category",
+                Match::RuleSet => "a rule-set link must be https",
+                _ => "invalid value for this item type",
+            };
+            return Err(item_error(section, i, detail));
+        }
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+fn printable_name(v: &str, max: usize) -> bool {
+    let n = v.chars().count();
+    (1..=max).contains(&n)
+        && !v.chars().any(|c| c.is_control())
+        && !v.contains([',', '"', '\\'])
+        && v.trim() == v
+}
+
+fn service_error(index: usize, detail: &str) -> ApiError {
+    bad_request!(
+        "settings.sub_service_invalid",
+        "service {index}: {detail}",
+        index = index + 1,
+        detail = detail
+    )
+}
+
+fn line_error(detail: &str) -> ApiError {
+    bad_request!(
+        "settings.sub_line_invalid",
+        "line reference: {detail}",
+        detail = detail
+    )
+}
+
+/// A region (`nodes.region`, at most 64 characters) or tag
+/// (`nodemeta::tags`) reference.
+fn parse_ref(r: Ref) -> Result<Ref, ApiError> {
+    Ok(match r {
+        Ref::Entrance(id) => Ref::Entrance(id),
+        Ref::Region(v) => {
+            let v = v.trim().to_string();
+            if v.is_empty() || v.chars().count() > 64 || v.chars().any(char::is_control) {
+                return Err(line_error("a region is 1-64 printable characters"));
+            }
+            Ref::Region(v)
+        }
+        Ref::Tag(v) => Ref::Tag(tag(&v)?),
+    })
+}
+
+fn tag(v: &str) -> Result<String, ApiError> {
+    match crate::nodemeta::tags(&[v.to_string()]) {
+        Ok(mut t) if t.len() == 1 => Ok(t.remove(0)),
+        _ => Err(line_error("a tag is 1-24 printable characters without '|'")),
+    }
+}
+
+impl Config {
+    /// Validate and normalize (before any lock). Entrance ids are checked
+    /// against the database by the caller (`unknown_entrances`).
+    pub fn parse(self) -> Result<Config, ApiError> {
+        let block = parse_items("block", self.block)?;
+        let direct = parse_items("direct", self.direct)?;
+        if self.services.len() > MAX_SERVICES {
+            return Err(bad_request!(
+                "settings.sub_services_too_many",
+                "at most {max} services",
+                max = MAX_SERVICES
+            ));
+        }
+        let mut keys = HashSet::new();
+        let mut names = HashSet::new();
+        let mut services = Vec::with_capacity(self.services.len());
+        for (i, s) in self.services.into_iter().enumerate() {
+            let key = s.key.trim().to_string();
+            if !(1..=32).contains(&key.len())
+                || !key
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+            {
+                return Err(service_error(i, "the key is 1-32 of a-z, 0-9, '-' and '_'"));
+            }
+            let name = s.name.trim().to_string();
+            if !printable_name(&name, MAX_NAME_CHARS) {
+                return Err(service_error(
+                    i,
+                    "the name is 1-32 printable characters without commas or quotes",
+                ));
+            }
+            let emoji = s.emoji.trim().to_string();
+            if !emoji.is_empty()
+                && (!printable_name(&emoji, MAX_EMOJI_CHARS)
+                    || emoji.chars().any(char::is_whitespace))
+            {
+                return Err(service_error(
+                    i,
+                    "the emoji is at most 8 characters without spaces",
+                ));
+            }
+            if !keys.insert(key.clone()) || !names.insert(name.clone()) {
+                return Err(bad_request!(
+                    "settings.sub_service_duplicate",
+                    "two services named {name}",
+                    name = name
+                ));
+            }
+            if s.backups.len() > MAX_BACKUPS {
+                return Err(service_error(i, "at most 8 backups"));
+            }
+            let items = parse_items(&name, s.items)?;
+            let mut backups: Vec<Ref> = Vec::with_capacity(s.backups.len());
+            for b in s.backups {
+                let b = parse_ref(b)?;
+                if Some(&b) != s.primary.map(Ref::Entrance).as_ref() && !backups.contains(&b) {
+                    backups.push(b);
+                }
+            }
+            services.push(Service {
+                key,
+                name,
+                emoji,
+                items,
+                primary: s.primary,
+                backups,
+            });
+        }
+        if self.tag_groups.len() > MAX_TAG_GROUPS {
+            return Err(line_error("at most 16 tag groups"));
+        }
+        let mut tag_groups: Vec<String> = Vec::new();
+        for t in &self.tag_groups {
+            let t = tag(t)?;
+            if !tag_groups.contains(&t) {
+                tag_groups.push(t);
+            }
+        }
+        Ok(Config {
+            mode: self.mode,
+            block,
+            direct,
+            services,
+            rest: self.rest.map(parse_ref).transpose()?,
+            tag_groups,
+            dns: super::dns::parse(self.dns)?,
         })
-        .collect()
+    }
+
+    /// Every entrance the configuration names (primaries, backups, rest).
+    pub fn entrances(&self) -> Vec<Uuid> {
+        let mut out: Vec<Uuid> = Vec::new();
+        let refs = self
+            .services
+            .iter()
+            .flat_map(|s| s.backups.iter())
+            .chain(self.rest.iter());
+        for id in self
+            .services
+            .iter()
+            .filter_map(|s| s.primary)
+            .chain(refs.filter_map(|r| match r {
+                Ref::Entrance(id) => Some(*id),
+                _ => None,
+            }))
+        {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+}
+
+/// The configured entrances that do not exist (any one = 400, so a typo
+/// never silently becomes "fall back to the default proxy").
+pub async fn check_entrances(
+    conn: &mut sqlx::PgConnection,
+    config: &Config,
+) -> Result<(), ApiError> {
+    let ids = config.entrances();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let found: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM entrances WHERE id = ANY($1)")
+        .bind(&ids)
+        .fetch_all(&mut *conn)
+        .await?;
+    match ids.iter().find(|id| !found.contains(id)) {
+        Some(id) => Err(bad_request!(
+            "settings.sub_entrance_unknown",
+            "no entrance {id}",
+            id = id.to_string()
+        )),
+        None => Ok(()),
+    }
 }
 
 /// A rule-list URL template: https (or http on loopback, for tests),
@@ -161,17 +528,85 @@ pub fn url_template(v: &str) -> Result<String, ApiError> {
     }
 }
 
-fn kind_str(m: Match) -> &'static str {
-    match m {
-        Match::Geosite => "geosite",
-        _ => "geoip",
+/// A geosite or geoip list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Kind {
+    Geosite,
+    Geoip,
+}
+
+impl Kind {
+    pub fn id(self) -> &'static str {
+        match self {
+            Kind::Geosite => "geosite",
+            Kind::Geoip => "geoip",
+        }
     }
 }
 
-/// The routing a subscription renders: rules and the list URL templates.
+/// One matcher of an item, as both renderers need it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Matcher<'a> {
+    List(Kind, &'a str),
+    Domain(&'a str),
+    Suffix(&'a str),
+    Keyword(&'a str),
+    Cidr(&'a str),
+    /// A remote rule-set (`provider` = its stable name).
+    Remote {
+        url: &'a str,
+        provider: String,
+    },
+}
+
+/// The stable provider name of a remote rule-set URL.
+pub(crate) fn remote_name(url: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("rs-{}", &hex::encode(Sha256::digest(url.as_bytes()))[..10])
+}
+
+impl Item {
+    /// The matchers this item stands for (a category may be two lists).
+    pub(crate) fn matchers(&self) -> Vec<Matcher<'_>> {
+        let v = self.value.as_str();
+        match self.kind {
+            Match::Category => catalog::category(v)
+                .map(|c| {
+                    c.geosite
+                        .iter()
+                        .map(|n| Matcher::List(Kind::Geosite, n))
+                        .chain(c.geoip.iter().map(|n| Matcher::List(Kind::Geoip, n)))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Match::Geosite => vec![Matcher::List(Kind::Geosite, v)],
+            Match::Geoip => vec![Matcher::List(Kind::Geoip, v)],
+            Match::Domain => vec![Matcher::Domain(v)],
+            Match::DomainSuffix => vec![Matcher::Suffix(v)],
+            Match::DomainKeyword => vec![Matcher::Keyword(v)],
+            Match::IpCidr => vec![Matcher::Cidr(v)],
+            Match::RuleSet => vec![Matcher::Remote {
+                url: v,
+                provider: remote_name(v),
+            }],
+        }
+    }
+}
+
+/// Where a routed section sends its traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Target {
+    Reject,
+    Direct,
+    /// A service (index into `Config::services`).
+    Service(usize),
+}
+
+/// The routing a subscription renders: the configuration and the list URL
+/// templates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Routing {
-    pub rules: Vec<Rule>,
+    pub config: Config,
     pub clash_url: String,
     pub singbox_url: String,
 }
@@ -179,7 +614,7 @@ pub struct Routing {
 impl Default for Routing {
     fn default() -> Self {
         Self {
-            rules: default_rules(),
+            config: recommended(),
             clash_url: DEFAULT_CLASH_URL.into(),
             singbox_url: DEFAULT_SINGBOX_URL.into(),
         }
@@ -187,25 +622,25 @@ impl Default for Routing {
 }
 
 impl Routing {
-    /// From the stored settings (NULL = default; a stored value the API
+    /// From the stored settings (NULL = recommended; a stored value the API
     /// would refuse is replaced by the default, logged).
     pub fn of(stored: &crate::settings::Stored) -> Self {
         let d = Self::default();
-        let rules = match &stored.sub_rules {
-            None => d.rules,
-            Some(v) => match serde_json::from_value::<Vec<Rule>>(v.clone())
+        let config = match &stored.sub_routing {
+            None => d.config,
+            Some(v) => match serde_json::from_value::<Config>(v.clone())
                 .map_err(|e| e.to_string())
-                .and_then(|r| parse(r).map_err(|e| e.message().to_string()))
+                .and_then(|c| c.parse().map_err(|e| e.message().to_string()))
             {
-                Ok(r) => r,
+                Ok(c) => c,
                 Err(e) => {
-                    tracing::error!(error = %e, "stored subscription rules unusable; using the default");
-                    default_rules()
+                    tracing::error!(error = %e, "stored subscription routing unusable; using the default");
+                    recommended()
                 }
             },
         };
         Self {
-            rules,
+            config,
             clash_url: stored.sub_rule_set_clash_url.clone().unwrap_or(d.clash_url),
             singbox_url: stored
                 .sub_rule_set_singbox_url
@@ -214,211 +649,71 @@ impl Routing {
         }
     }
 
-    /// The distinct geosite/geoip lists in rule order: (kind, name).
-    fn lists(&self) -> Vec<(Match, &str)> {
-        let mut out: Vec<(Match, &str)> = Vec::new();
-        for r in &self.rules {
-            if matches!(r.kind, Match::Geosite | Match::Geoip)
-                && !out.iter().any(|(k, n)| *k == r.kind && *n == r.value)
-            {
-                out.push((r.kind, &r.value));
+    /// The routed sections in priority order: (items, target). Global
+    /// mode: private destinations direct, nothing else.
+    pub(crate) fn sections(&self) -> Vec<(std::borrow::Cow<'_, [Item]>, Target)> {
+        use std::borrow::Cow;
+        let c = &self.config;
+        if c.mode == Mode::Global {
+            return vec![(
+                Cow::Owned(vec![item(Match::Category, "private")]),
+                Target::Direct,
+            )];
+        }
+        let mut out = vec![
+            (Cow::Borrowed(c.block.as_slice()), Target::Reject),
+            (Cow::Borrowed(c.direct.as_slice()), Target::Direct),
+        ];
+        for (i, s) in c.services.iter().enumerate() {
+            out.push((Cow::Borrowed(s.items.as_slice()), Target::Service(i)));
+        }
+        out
+    }
+
+    /// The geosite/geoip lists the rules use, in first-use order.
+    pub(crate) fn lists(&self) -> Vec<(Kind, String)> {
+        let mut out: Vec<(Kind, String)> = Vec::new();
+        for (items, _) in self.sections() {
+            for it in items.iter() {
+                for m in it.matchers() {
+                    if let Matcher::List(k, n) = m
+                        && !out.iter().any(|(k2, n2)| *k2 == k && n2 == n)
+                    {
+                        out.push((k, n.to_string()));
+                    }
+                }
             }
         }
         out
     }
 
-    fn url(template: &str, kind: Match, name: &str) -> String {
-        template
-            .replace("{kind}", kind_str(kind))
-            .replace("{name}", name)
-    }
-
-    /// Clash `rule-providers` (YAML, empty when no list is used) and
-    /// `rules` (YAML, ending with MATCH to `proxy_group`).
-    pub fn clash(&self, proxy_group: &str) -> (String, String) {
-        let mut providers = String::new();
-        let lists = self.lists();
-        if !lists.is_empty() {
-            providers.push_str("rule-providers:\n");
-            for (k, name) in &lists {
-                let behavior = if *k == Match::Geosite {
-                    "domain"
-                } else {
-                    "ipcidr"
-                };
-                providers.push_str(&format!(
-                    "  {kind}-{name}:\n    type: http\n    behavior: {behavior}\n    format: text\n    url: {url}\n    interval: 86400\n",
-                    kind = kind_str(*k),
-                    name = name,
-                    url = serde_json::to_string(&Self::url(&self.clash_url, *k, name)).unwrap_or_default(),
-                ));
+    /// The geosite lists routed direct (domestic DNS for them).
+    pub(crate) fn direct_geosites(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for (items, target) in self.sections() {
+            if target != Target::Direct {
+                continue;
             }
-        }
-        let mut rules = String::from("rules:\n");
-        for r in &self.rules {
-            let target = match r.action {
-                Action::Direct => "DIRECT",
-                Action::Proxy => proxy_group,
-                Action::Reject => "REJECT",
-            };
-            let line = match r.kind {
-                Match::Geosite => format!("RULE-SET,geosite-{},{target}", r.value),
-                Match::Geoip => format!("RULE-SET,geoip-{},{target},no-resolve", r.value),
-                Match::Domain => format!("DOMAIN,{},{target}", r.value),
-                Match::DomainSuffix => format!("DOMAIN-SUFFIX,{},{target}", r.value),
-                Match::DomainKeyword => format!("DOMAIN-KEYWORD,{},{target}", r.value),
-                Match::IpCidr if r.value.contains(':') => {
-                    format!("IP-CIDR6,{},{target},no-resolve", r.value)
+            for it in items.iter() {
+                for m in it.matchers() {
+                    if let Matcher::List(Kind::Geosite, n) = m {
+                        let n = format!("geosite-{n}");
+                        if !out.contains(&n) {
+                            out.push(n);
+                        }
+                    }
                 }
-                Match::IpCidr => format!("IP-CIDR,{},{target},no-resolve", r.value),
-            };
-            rules.push_str(&format!("  - {line}\n"));
-        }
-        rules.push_str(&format!("  - MATCH,{proxy_group}\n"));
-        (providers, rules)
-    }
-
-    /// sing-box `route` (rules + rule_set) sending the rest to
-    /// `proxy_tag`, `direct_tag` for direct.
-    pub fn sing_box(&self, proxy_tag: &str, direct_tag: &str) -> Value {
-        let mut rules = vec![
-            json!({"action": "sniff"}),
-            json!({"protocol": "dns", "action": "hijack-dns"}),
-        ];
-        for r in &self.rules {
-            let mut m = match r.kind {
-                Match::Geosite => json!({"rule_set": [format!("geosite-{}", r.value)]}),
-                Match::Geoip => json!({"rule_set": [format!("geoip-{}", r.value)]}),
-                Match::Domain => json!({"domain": [r.value]}),
-                Match::DomainSuffix => json!({"domain_suffix": [r.value]}),
-                Match::DomainKeyword => json!({"domain_keyword": [r.value]}),
-                Match::IpCidr => json!({"ip_cidr": [r.value]}),
-            };
-            match r.action {
-                Action::Direct => m["outbound"] = json!(direct_tag),
-                Action::Proxy => m["outbound"] = json!(proxy_tag),
-                Action::Reject => m["action"] = json!("reject"),
             }
-            rules.push(m);
         }
-        let rule_set: Vec<Value> = self
-            .lists()
-            .into_iter()
-            .map(|(k, name)| {
-                json!({"type": "remote", "tag": format!("{}-{name}", kind_str(k)), "format": "binary",
-                       "url": Self::url(&self.singbox_url, k, name), "update_interval": "1d"})
-            })
-            .collect();
-        let mut route = json!({
-            "rules": rules,
-            "final": proxy_tag,
-            "auto_detect_interface": true,
-            "default_domain_resolver": "local",
-        });
-        if !rule_set.is_empty() {
-            route["rule_set"] = json!(rule_set);
-        }
-        route
+        out
     }
 
-    /// The geosite lists routed direct (sing-box's DNS uses the local
-    /// resolver for them).
-    pub fn direct_geosites(&self) -> Vec<String> {
-        self.rules
-            .iter()
-            .filter(|r| r.kind == Match::Geosite && r.action == Action::Direct)
-            .map(|r| format!("geosite-{}", r.value))
-            .collect()
+    pub(crate) fn list_url(template: &str, kind: Kind, name: &str) -> String {
+        template
+            .replace("{kind}", kind.id())
+            .replace("{name}", name)
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn r(kind: Match, value: &str) -> Rule {
-        rule(kind, value, Action::Direct)
-    }
-
-    #[test]
-    fn parse_validates_and_normalizes() {
-        let ok = parse(vec![
-            r(Match::Geosite, " CN "),
-            r(Match::Geosite, "geolocation-!cn"),
-            r(Match::DomainSuffix, "Example.COM"),
-            r(Match::IpCidr, "10.1.2.3/8"),
-            r(Match::IpCidr, "2001:db8::1/32"),
-            r(Match::DomainKeyword, "ads"),
-        ])
-        .unwrap();
-        let values: Vec<&str> = ok.iter().map(|r| r.value.as_str()).collect();
-        assert_eq!(
-            values,
-            [
-                "cn",
-                "geolocation-!cn",
-                "example.com",
-                "10.0.0.0/8",
-                "2001:db8::/32",
-                "ads"
-            ]
-        );
-        for bad in [
-            r(Match::Geosite, ""),
-            r(Match::Geosite, "cn/../x"),
-            r(Match::Geoip, "c n"),
-            r(Match::Domain, "1.2.3.4"),
-            r(Match::DomainSuffix, "-bad-.com"),
-            r(Match::DomainKeyword, "a,b"),
-            r(Match::IpCidr, "10.0.0.0/33"),
-            r(Match::IpCidr, "example.com"),
-        ] {
-            let e = parse(vec![r(Match::Geosite, "cn"), bad.clone()]).unwrap_err();
-            assert_eq!(e.code(), "settings.sub_rule_invalid", "{bad:?}");
-            assert_eq!(e.params()["index"], 2);
-        }
-        let many = vec![r(Match::Geosite, "cn"); MAX_RULES + 1];
-        assert_eq!(
-            parse(many).unwrap_err().code(),
-            "settings.sub_rules_too_many"
-        );
-        // A rule value cannot break out of a YAML line or a rule.
-        assert!(parse(vec![r(Match::DomainSuffix, "a.com\n  - MATCH,DIRECT")]).is_err());
-    }
-
-    #[test]
-    fn url_templates() {
-        assert!(url_template("https://m.example/{kind}/{name}.list").is_ok());
-        assert!(url_template(" https://m.example/x/{name}.srs ").is_ok());
-        assert!(url_template("http://127.0.0.1:8080/{name}").is_ok());
-        for bad in [
-            "https://m.example/static.list",
-            "http://m.example/{name}",
-            "ftp://m.example/{name}",
-            "https://m.example/{name} x",
-            "https://m.example/\"{name}",
-        ] {
-            assert_eq!(
-                url_template(bad).unwrap_err().code(),
-                "settings.sub_rule_set_url_invalid",
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn stored_values_fall_back_to_the_default() {
-        let mut s = crate::settings::Stored::default();
-        assert_eq!(Routing::of(&s), Routing::default());
-        s.sub_rules = Some(serde_json::json!([]));
-        s.sub_rule_set_clash_url = Some("https://m.example/{name}".into());
-        let r = Routing::of(&s);
-        assert!(r.rules.is_empty());
-        assert_eq!(r.clash_url, "https://m.example/{name}");
-        assert_eq!(r.singbox_url, DEFAULT_SINGBOX_URL);
-        // Unusable stored rules (impossible through the API): the default.
-        s.sub_rules =
-            Some(serde_json::json!([{"type": "geosite", "value": "x y", "action": "direct"}]));
-        assert_eq!(Routing::of(&s).rules, default_rules());
-    }
-}
+mod tests;

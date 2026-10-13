@@ -6,7 +6,29 @@ import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { get } from "../../shared/api";
 
 export type DomainEntry = { domain: string; display: string; preferred: boolean };
+/** One row of the block / direct editor (`action` = which section). */
 export type Rule = { type: string; value: string; action: string };
+/** A routing item (`sub::routing::Item`). */
+export type RoutingItem = { type: string; value: string };
+/** A line reference: an entrance id, a node region or an entrance tag. */
+export type LineRef = { entrance: string } | { region: string } | { tag: string };
+/** The subscription routing (`sub::routing::Config`; edited as a whole). */
+export type Routing = {
+  mode: "rules" | "global";
+  block: RoutingItem[];
+  direct: RoutingItem[];
+  services: {
+    key: string;
+    name: string;
+    emoji: string;
+    items: RoutingItem[];
+    primary: string | null;
+    backups: LineRef[];
+  }[];
+  rest: LineRef | null;
+  tag_groups: string[];
+  dns: { mode: "recommended" | "client" | "custom"; fakeip: boolean; cn: string[]; intl: string[] };
+};
 
 export type SettingsView = {
   version: number;
@@ -61,7 +83,7 @@ export type SettingsView = {
     release_keys: { id: string; label: string; official: boolean }[];
   };
   subscription: {
-    rules: { value: Rule[] | null; effective: Rule[]; default: Rule[] };
+    routing: { value: Routing | null; effective: Routing; default: Routing };
     rule_set_clash_url: { value: string | null; effective: string; default: string };
     rule_set_singbox_url: { value: string | null; effective: string; default: string };
     formats: { value: string[] | null; effective: string[] };

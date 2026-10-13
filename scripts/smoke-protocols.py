@@ -295,12 +295,14 @@ def subscriptions(label, inb):
     global clash_all
     st, clash = api("GET", SUB, ua="clash.meta/1.19", raw=True)
     clash = clash.decode()
-    if clash.count("\n  - name: ") + clash.startswith("  - name: ") - 1 != 1:  # minus the group
+    # The proxies section only (the routing groups follow it).
+    proxies = clash[clash.find("proxies:\n"):].split("proxy-groups:")[0]
+    if proxies.count("\n  - name: ") != 1:
         fail(f"clash: not one proxy for {label}")
     clash_all += clash
     st, sb = api("GET", SUB, ua="sing-box/1.12.0")
-    # W30: the profile also carries the PROXY selector and direct.
-    outs = [o for o in sb["outbounds"] if o["type"] not in ("direct", "selector")]
+    # The profile also carries the routing groups (selector / urltest) and direct.
+    outs = [o for o in sb["outbounds"] if o["type"] not in ("direct", "selector", "urltest")]
     xhttp = inb.get("streamSettings", {}).get("network") == "xhttp"
     if len(outs) != (0 if xhttp else 1):
         fail(f"sing-box: {len(outs)} outbounds for {label} (xhttp left out)")
@@ -347,7 +349,9 @@ def mihomo_run(binary, clash, label):
         if not skipped and (line == "    tls: true" or line.startswith("    sni: ")):
             lines.append("    skip-cert-verify: true")
             skipped = True
-    cfg = "\n".join(lines).split("proxy-groups:")[0]
+    # Only the proxies (not the subscription's DNS block or routing groups).
+    cfg = "\n".join(lines)
+    cfg = cfg[cfg.find("proxies:\n"):].split("proxy-groups:")[0]
     names = [json.loads(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
     ports = {}
     cfg = "log-level: warning\nallow-lan: false\nipv6: false\n" + cfg + "listeners:\n"

@@ -222,6 +222,8 @@ fn subscription_formats_follow_the_manifest() {
         let tag = format!("c{i}");
         ib["port"] = json!(1000 + i);
         rows.push(crate::sub::NodeRow {
+            entrance_id: uuid::Uuid::from_u128(i as u128 + 1),
+            region: None,
             name: "N".into(),
             display_name: None,
             tags: vec![],

@@ -39,7 +39,7 @@ import { Meter } from "../../shared/ui/meter";
 import { useAction } from "../data";
 import { RadioCards } from "../components/inputs";
 import { CopyText } from "../components/kit";
-import { fresh, useAccess, useSettings, type Rule, type SettingsView } from "./settings-data";
+import { fresh, useAccess, useSettings, type Routing, type Rule, type SettingsView } from "./settings-data";
 import {
   DangerRow,
   DangerZone,
@@ -52,8 +52,10 @@ import {
   useSavePart,
 } from "../components/settings-kit";
 
-const RULE_TYPES = ["geosite", "geoip", "domain", "domain_suffix", "domain_keyword", "ip_cidr"];
-const ACTIONS = ["direct", "proxy", "reject"];
+const RULE_TYPES = ["category", "geosite", "geoip", "domain", "domain_suffix", "domain_keyword", "ip_cidr", "rule_set"];
+// The block and direct sections of the routing (services, lines and DNS
+// keep their saved values; their editor comes with the routing page).
+const ACTIONS = ["direct", "reject"];
 const FORMATS = ["clash", "sing-box", "links"];
 const CLIENTS = ["clash", "stash", "shadowrocket", "sing-box", "hiddify"];
 
@@ -61,12 +63,14 @@ function ruleTypeName(t: string, tr: Tr) {
   return (
     (
       {
+        category: tr("内置分类", "Built-in category"),
         geosite: tr("GeoSite 分类", "GeoSite category"),
         geoip: tr("GeoIP 国家/地区", "GeoIP country"),
         domain: tr("完整域名", "Full domain"),
         domain_suffix: tr("域名后缀", "Domain suffix"),
         domain_keyword: tr("域名关键字", "Domain keyword"),
         ip_cidr: tr("IP 段", "IP range"),
+        rule_set: tr("规则集链接", "Rule-set link"),
       } as Record<string, string>
     )[t] ?? t
   );
@@ -573,6 +577,8 @@ function SubPathDialog({ current, version, onClose }: { current: string; version
 // ---------------------------------------------------------------------------
 
 const RULE_HINT: Record<string, [string, string]> = {
+  category: ["如 ads、private、cn、cnip（内置分类）", "e.g. ads, private, cn, cnip (built-in categories)"],
+  rule_set: ["如 https://…/Claude.yaml", "e.g. https://…/Claude.yaml"],
   geosite: ["如 cn、google（GeoSite 分类）", "e.g. cn, google (a GeoSite category)"],
   geoip: ["如 cn、private（国家/地区代码）", "e.g. cn, private (a country code)"],
   domain: ["如 example.com（只匹配这个域名）", "e.g. example.com (this name only)"],
@@ -597,6 +603,8 @@ function ruleError(r: Rule, tr: Tr): string | undefined {
 }
 
 const CLASH_TYPE: Record<string, string> = {
+  category: "RULE-SET",
+  rule_set: "RULE-SET",
   geosite: "GEOSITE",
   geoip: "GEOIP",
   domain: "DOMAIN",
@@ -604,7 +612,18 @@ const CLASH_TYPE: Record<string, string> = {
   domain_keyword: "DOMAIN-KEYWORD",
   ip_cidr: "IP-CIDR",
 };
-const CLASH_ACTION: Record<string, string> = { direct: "DIRECT", proxy: "PROXY", reject: "REJECT" };
+const CLASH_ACTION: Record<string, string> = { direct: "DIRECT", reject: "REJECT" };
+// i18n-ok on the next line: the group name subscriptions carry, in every UI language.
+const DEFAULT_PROXY = "🚀 默认代理"; // i18n-ok: the name clients see
+
+/** The block and direct sections as one list (blocked first). */
+function rowsOf(r: Routing): Rule[] {
+  return [...r.block.map((x) => ({ ...x, action: "reject" })), ...r.direct.map((x) => ({ ...x, action: "direct" }))];
+}
+
+function itemsOf(rows: Rule[], action: string) {
+  return rows.filter((x) => x.action === action).map((x) => ({ type: x.type, value: x.value.trim() }));
+}
 
 export function RoutingSection() {
   const s = useSettings();
@@ -618,7 +637,7 @@ function RoutingForm({ d }: { d: SettingsView }) {
   const [run] = useAction();
   const [preview, setPreview] = useState(false);
   const f = useDraft({
-    rules: d.subscription.rules.effective,
+    rules: rowsOf(d.subscription.routing.effective),
     clash: d.subscription.rule_set_clash_url.value ?? "",
     singbox: d.subscription.rule_set_singbox_url.value ?? "",
   });
@@ -643,7 +662,7 @@ function RoutingForm({ d }: { d: SettingsView }) {
     [n[i], n[j]] = [n[j], n[i]];
     setRules(n);
   };
-  const saved = d.subscription.rules.effective;
+  const saved = rowsOf(d.subscription.routing.effective);
   const changedAt = (i: number) => JSON.stringify(saved[i]) !== JSON.stringify(rules[i]);
   useSavePart({
     count: f.edited.length,
@@ -655,7 +674,11 @@ function RoutingForm({ d }: { d: SettingsView }) {
         () =>
           put("/settings/subscription", {
             version: cur.version,
-            rules: rules.map((x) => ({ ...x, value: x.value.trim() })),
+            routing: {
+              ...cur.subscription.routing.effective,
+              block: itemsOf(rules, "reject"),
+              direct: itemsOf(rules, "direct"),
+            },
             rule_set_clash_url: v.clash.trim() || null,
             rule_set_singbox_url: v.singbox.trim() || null,
           }),
@@ -690,8 +713,8 @@ function RoutingForm({ d }: { d: SettingsView }) {
     <>
       <Panel
         title={tr(
-          `规则 ${rules.length} · 从上到下匹配，第一条命中即生效`,
-          `${rules.length} rules · matched top down, the first hit wins`,
+          `规则 ${rules.length} · 拒绝的先于直连生效，其后是服务分流`,
+          `${rules.length} rules · rejected first, then direct, then the services`,
         )}
         action={
           <Button size="sm" variant="ghost" icon={Code2} className="-mb-1" onClick={() => setPreview(!preview)}>
@@ -782,7 +805,7 @@ function RoutingForm({ d }: { d: SettingsView }) {
                 {tr("兜底（以上都不匹配）", "Fallback (nothing above matched)")}
               </span>
               <span className="flex-1" />
-              <Badge tone="primary">{tr("代理", "Proxy")}</Badge>
+              <Badge tone="primary">{tr("服务分流 → 默认代理", "Services → default proxy")}</Badge>
             </div>
           </div>
           <div className="border-t border-separator px-3 py-2">
@@ -792,7 +815,7 @@ function RoutingForm({ d }: { d: SettingsView }) {
               icon={Plus}
               className="text-primary"
               disabled={rules.length >= 64}
-              onClick={() => setRules([...rules, { type: "geosite", value: "", action: "proxy" }])}
+              onClick={() => setRules([...rules, { type: "geosite", value: "", action: "direct" }])}
             >
               {tr("添加规则", "Add rule")}
             </Button>
@@ -811,7 +834,7 @@ function RoutingForm({ d }: { d: SettingsView }) {
                   `  - ${CLASH_TYPE[r.type] ?? r.type},${r.value.trim() || "?"},${CLASH_ACTION[r.action] ?? r.action}`,
               )
               .join("\n") +
-            "\n  - MATCH,PROXY"}
+            `\n  - …\n  - MATCH,${DEFAULT_PROXY}`}
         </pre>
       )}
       <Group
@@ -864,8 +887,8 @@ function RoutingForm({ d }: { d: SettingsView }) {
         <DangerRow
           label={tr("恢复默认规则", "Restore the default rules")}
           description={tr(
-            `用内置的 ${d.subscription.rules.default.length} 条规则（广告拦截、国内直连、国外代理）替换当前全部规则。恢复后进入保存栏，保存前可以放弃。`,
-            `Replaces every rule with the ${d.subscription.rules.default.length} built-in ones (ads blocked, domestic direct, the rest proxied). It goes into the save bar; you can still discard.`,
+            `用内置的 ${rowsOf(d.subscription.routing.default).length} 条规则（广告拦截、国内直连）替换当前的拦截与直连规则。恢复后进入保存栏，保存前可以放弃。`,
+            `Replaces the blocked and direct rules with the ${rowsOf(d.subscription.routing.default).length} built-in ones (ads blocked, domestic direct). It goes into the save bar; you can still discard.`,
           )}
           action={
             <Button
@@ -883,12 +906,15 @@ function RoutingForm({ d }: { d: SettingsView }) {
                     { label: tr("当前规则", "Current rules"), value: tr(`${rules.length} 条`, `${rules.length}`) },
                     {
                       label: tr("默认规则", "Default rules"),
-                      value: tr(`${d.subscription.rules.default.length} 条`, `${d.subscription.rules.default.length}`),
+                      value: tr(
+                        `${rowsOf(d.subscription.routing.default).length} 条`,
+                        `${rowsOf(d.subscription.routing.default).length}`,
+                      ),
                     },
                   ],
                   tone: "warning",
                   confirmLabel: tr("恢复默认", "Restore"),
-                }).then((ok) => ok && setRules(d.subscription.rules.default))
+                }).then((ok) => ok && setRules(rowsOf(d.subscription.routing.default)))
               }
             >
               {tr("恢复默认", "Restore defaults")}

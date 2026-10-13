@@ -77,7 +77,7 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     use akari_panel::*;
-    match sel % 28 {
+    match sel % 29 {
         0 => strict::<api::LoginReq>(body),
         1 => strict::<api::CreateUserReq>(body),
         2 => strict::<api::UpdateUserReq>(body),
@@ -114,6 +114,21 @@ fuzz_target!(|data: &[u8]| {
                 && let Ok(rules) = rates::parse(&r.rules)
             {
                 rates::overlap_warnings(&rules);
+            }
+        }
+        27 => {
+            // Subscription routing: validation is idempotent (a stored
+            // value parses to itself).
+            strict::<settings::SubscriptionReq>(body);
+            if let Ok(r) = serde_json::from_slice::<settings::SubscriptionReq>(body)
+                && let Some(Some(c)) = r.routing
+                && let Ok(p) = c.parse()
+            {
+                assert_eq!(
+                    p.clone().parse().ok(),
+                    Some(p),
+                    "routing parse not idempotent"
+                );
             }
         }
         _ => path(&String::from_utf8_lossy(body)),

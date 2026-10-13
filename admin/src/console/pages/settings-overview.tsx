@@ -203,9 +203,13 @@ export function useOverview() {
     sum.routing = [
       {
         k: tr("模板", "Template"),
-        v: d.subscription.rules.value === null ? tr("默认", "Default") : tr("自定义", "Custom"),
+        v: d.subscription.routing.value === null ? tr("默认", "Default") : tr("自定义", "Custom"),
       },
-      { k: tr("规则", "Rules"), v: String(d.subscription.rules.effective.length) },
+      {
+        k: tr("规则", "Rules"),
+        v: String(d.subscription.routing.effective.block.length + d.subscription.routing.effective.direct.length),
+      },
+      { k: tr("服务", "Services"), v: String(d.subscription.routing.effective.services.length) },
     ];
     const o = d.node_ops;
     sum.install = [
