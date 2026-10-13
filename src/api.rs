@@ -428,7 +428,7 @@ pub struct MeView {
     /// `/<sub_path>/<token>` when no subscription/main domain is
     /// configured: the portal prefixes its own origin). Both null for
     /// admins, for the renewal scope (the subscription refuses those
-    /// accounts), and for `sub_legacy`.
+    /// accounts), for `sub_legacy`, and in own-client-only mode.
     sub_token: Option<String>,
     sub_url: Option<String>,
     /// W20: a link from before 0120 works but cannot be shown (hash only);
@@ -438,6 +438,10 @@ pub struct MeView {
     /// format selector) and the one-click import buttons to show.
     sub_formats: Vec<String>,
     sub_import_clients: Vec<String>,
+    /// Own-client-only mode (系统设置 → 订阅 → 仅自研客户端): no link
+    /// is shown; the portal offers only the Akari client download (the
+    /// client signs in with the account and fetches its nodes).
+    sub_own_client: bool,
     /// W20 (Minor 1): the effective latency-test interval (系统设置 >
     /// panel.toml), for the portal's node list.
     probe_interval_secs: u64,
@@ -481,12 +485,15 @@ pub async fn me(
         None
     };
     tx.commit().await?;
+    let settings = state.settings().get();
     let (sub_token, sub_legacy) = match stored {
+        // Own-client-only mode: the link is never shown (the Akari client
+        // fetches its profile itself).
+        Some(crate::sub::Stored::Ready(_)) if settings.sub_own_client_only => (None, false),
         Some(crate::sub::Stored::Ready(t)) => (Some(t), false),
         Some(crate::sub::Stored::Legacy) => (None, true),
         None => (None, false),
     };
-    let settings = state.settings().get();
     let sub_url = sub_token.as_deref().map(|t| state.sub_link(user.id, t));
     let view = MeView {
         id: user.id,
@@ -512,6 +519,7 @@ pub async fn me(
         sub_legacy,
         sub_formats: settings.sub_formats.clone(),
         sub_import_clients: settings.sub_import_clients.clone(),
+        sub_own_client: settings.sub_own_client_only,
         probe_interval_secs: settings.probe.interval_secs,
         is_owner: row.is_owner,
         timezone: settings.timezone().to_string(),

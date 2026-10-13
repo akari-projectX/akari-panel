@@ -89,11 +89,37 @@ pub fn import_clients(configured: Option<&[String]>, formats: &[String]) -> Vec<
         .collect()
 }
 
+/// The Akari client (`akari-client/<version> mihomo`, akari-client
+/// CLAUDE.md): it runs mihomo, so it gets the Clash profile.
+pub const OWN_CLIENT_UA: &str = "akari-client/";
+
+/// Is this the Akari client? A prefix match on the User-Agent: a soft
+/// check (any client can send it); the hard one is signing in inside the
+/// client (B3, later).
+pub fn own_client(user_agent: &str) -> bool {
+    user_agent
+        .get(..OWN_CLIENT_UA.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(OWN_CLIENT_UA))
+}
+
 /// Section 5: the format to answer with, among the enabled ones (`None`
-/// = the uniform rejection). An explicit `?format=` that is off, or a
-/// recognised client whose format is off, gets nothing; an unrecognised
-/// client falls through to the first enabled of links, Clash, sing-box.
-pub fn choose_format(query: Option<&str>, user_agent: &str, enabled: &[String]) -> Option<Format> {
+/// = the uniform rejection). The Akari client always gets Clash (the
+/// switches are about third-party clients); with `own_client_only` nothing
+/// else is answered. An explicit `?format=` that is off, or a recognised
+/// client whose format is off, gets nothing; an unrecognised client falls
+/// through to the first enabled of links, Clash, sing-box.
+pub fn choose_format(
+    query: Option<&str>,
+    user_agent: &str,
+    enabled: &[String],
+    own_client_only: bool,
+) -> Option<Format> {
+    if own_client(user_agent) {
+        return Some(Format::Clash);
+    }
+    if own_client_only {
+        return None;
+    }
     let on = |f: Format| enabled.iter().any(|x| x == f.id());
     if let Some(f) = requested_format(query) {
         return on(f).then_some(f);
@@ -104,6 +130,16 @@ pub fn choose_format(query: Option<&str>, user_agent: &str, enabled: &[String]) 
             .into_iter()
             .find(|f| on(*f)),
     }
+}
+
+/// The third-party formats on: the stored list (NULL = all), none in
+/// own-client-only mode (the Akari client is answered either way,
+/// `choose_format`).
+pub fn third_party_formats(stored: &crate::settings::Stored) -> Vec<String> {
+    if stored.sub_own_client_only.unwrap_or(false) {
+        return Vec::new();
+    }
+    stored.sub_formats.clone().unwrap_or_else(all_formats)
 }
 
 /// All formats on (the default).
@@ -238,7 +274,7 @@ pub fn render_for(
     rows: &[NodeRow],
     routing: &routing::Routing,
 ) -> (&'static str, String) {
-    let format = choose_format(query, user_agent, &all_formats()).unwrap_or(Format::Links);
+    let format = choose_format(query, user_agent, &all_formats(), false).unwrap_or(Format::Links);
     render_as(format, rows, routing)
 }
 
@@ -376,8 +412,14 @@ pub async fn subscription(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let settings = state.settings().get();
-    // Section 5: a format that is off is the uniform rejection.
-    let Some(format) = choose_format(query.as_deref(), user_agent, &settings.sub_formats) else {
+    // Section 5: a format that is off is the uniform rejection; so is any
+    // client but the Akari client in own-client-only mode.
+    let Some(format) = choose_format(
+        query.as_deref(),
+        user_agent,
+        &settings.sub_formats,
+        settings.sub_own_client_only,
+    ) else {
         return reject::not_found();
     };
     // sing-box: the panel-hosted copies of remote rule-sets, on this
@@ -797,35 +839,59 @@ mod tests {
         let on = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let all = all_formats();
         assert_eq!(
-            choose_format(None, "clash-verge/v2", &all),
+            choose_format(None, "clash-verge/v2", &all, false),
             Some(Format::Clash)
         );
-        assert_eq!(choose_format(None, "curl", &all), Some(Format::Links));
+        assert_eq!(
+            choose_format(None, "curl", &all, false),
+            Some(Format::Links)
+        );
         let clash = on(&["clash"]);
         assert_eq!(
-            choose_format(None, "clash-verge/v2", &clash),
+            choose_format(None, "clash-verge/v2", &clash, false),
             Some(Format::Clash)
         );
         assert_eq!(
-            choose_format(None, "curl", &clash),
+            choose_format(None, "curl", &clash, false),
             Some(Format::Clash),
             "falls through"
         );
         assert_eq!(
-            choose_format(None, "v2rayN/7", &clash),
+            choose_format(None, "v2rayN/7", &clash, false),
             None,
             "recognised: no fallback"
         );
-        assert_eq!(choose_format(None, "SFA/1.12", &clash), None);
+        assert_eq!(choose_format(None, "SFA/1.12", &clash, false), None);
         assert_eq!(
-            choose_format(Some("format=links"), "clash-verge/v2", &clash),
+            choose_format(Some("format=links"), "clash-verge/v2", &clash, false),
             None
         );
         assert_eq!(
-            choose_format(Some("x=1"), "curl", &on(&["sing-box"])),
+            choose_format(Some("x=1"), "curl", &on(&["sing-box"]), false),
             Some(Format::SingBox)
         );
-        assert_eq!(choose_format(None, "curl", &[]), None);
+        assert_eq!(choose_format(None, "curl", &[], false), None);
+        // The Akari client: always Clash, also with every format off; in
+        // own-client-only mode nothing else answers, whatever the query.
+        for ua in ["akari-client/0.1.0 mihomo", "Akari-Client/1"] {
+            assert_eq!(choose_format(None, ua, &[], false), Some(Format::Clash));
+            assert_eq!(choose_format(None, ua, &all, true), Some(Format::Clash));
+            assert_eq!(
+                choose_format(Some("format=links"), ua, &[], true),
+                Some(Format::Clash)
+            );
+        }
+        for ua in [
+            "clash-verge/v2",
+            "mihomo/1.19",
+            "curl",
+            "",
+            "x akari-client/1",
+            "akari-client",
+        ] {
+            assert_eq!(choose_format(None, ua, &all, true), None, "{ua}");
+            assert_eq!(choose_format(Some("format=clash"), ua, &all, true), None);
+        }
         assert_eq!(
             import_clients(None, &all),
             ["clash", "stash", "shadowrocket", "sing-box", "hiddify"]

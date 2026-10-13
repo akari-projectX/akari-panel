@@ -2,7 +2,7 @@
  * 订阅与节点（research/portal-gap.md §1.3 #27–#34，D5、D9、D11 随机订阅路径、W30 格式与导入开关）。
  */
 import type { Page } from '@playwright/test';
-import { psql } from './panel.ts';
+import { FIELDS, psql } from './panel.ts';
 import { admin, expect, mine, open, signIn, test } from './fixtures.ts';
 
 test.describe.configure({ mode: 'serial' });
@@ -66,6 +66,45 @@ test('#28 #29 W30: formats and import buttons follow the site switches', async (
   } finally {
     const now = await a.call<{ version: number }>('GET', '/api/v1/settings');
     await a.call('PUT', '/api/v1/settings/subscription', { version: now.version, formats: null, import_clients: null });
+  }
+});
+
+test('B1 own client only: no link, copy, QR or import buttons; only the client download; the subscription answers only the Akari client', async ({ page }) => {
+  const a = await admin();
+  const id = await a.userId('user@e2e.test');
+  const sub = await a.call<{ sub_url: string }>('GET', `/api/v1/users/${id}/subscription`);
+  const path = new URL(sub.sub_url, process.env.E2E_API).pathname;
+  const fetchAs = (ua: string) => fetch(`${process.env.E2E_API}${path}`, { headers: { 'user-agent': ua } });
+  const cur = await a.call<{ version: number }>('GET', '/api/v1/settings');
+  await a.call('PUT', '/api/v1/settings/subscription', { version: cur.version, own_client_only: true });
+  let branding: Record<string, unknown> | null = null;
+  try {
+    await signIn(page, 'user@e2e.test');
+    const area = page.getByTestId('own-client');
+    await expect(area).toContainText('在客户端里登录账户即可自动获取节点');
+    /* 站长没配下载地址：只有一句中性的说明 */
+    await expect(area).toContainText('客户端下载地址还没有公布');
+    await expect(page.getByRole('button', { name: '复制订阅链接' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '订阅格式' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Clash Verge / mihomo' })).toHaveCount(0);
+    await expect(page.locator('svg:has(> title)').filter({ hasText: '订阅二维码' })).toHaveCount(0);
+    /* 订阅只回答 Akari 客户端；其余（含显式格式）都是统一的 404 */
+    expect((await fetchAs('akari-client/0.1.0 mihomo')).status).toBe(200);
+    expect((await fetchAs('clash-verge/v2.4')).status).toBe(404);
+    expect((await fetch(`${process.env.E2E_API}${path}?format=clash`)).status).toBe(404);
+    /* 配了客户端下载：导入区就是下载按钮 */
+    branding = await a.patch('branding', FIELDS.branding, {
+      client_downloads: [{ platform: 'windows', label: 'E2E Akari 客户端', url: 'https://example.com/akari.exe' }],
+    });
+    await page.reload();
+    await expect(page.getByRole('link', { name: 'E2E Akari 客户端' })).toHaveAttribute('href', 'https://example.com/akari.exe');
+    await expect(page.getByTestId('own-client')).not.toContainText('客户端下载地址还没有公布');
+    await open(page, '/account#subscription');
+    await expect(page.locator('#subscription')).toContainText('仅限 Akari 客户端（登录账户获取）');
+  } finally {
+    if (branding) await a.patch('branding', FIELDS.branding, branding);
+    const now = await a.call<{ version: number }>('GET', '/api/v1/settings');
+    await a.call('PUT', '/api/v1/settings/subscription', { version: now.version, own_client_only: false });
   }
 });
 

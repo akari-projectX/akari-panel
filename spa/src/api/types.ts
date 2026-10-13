@@ -117,6 +117,11 @@ export type Me = {
   sub_formats: string[];
   /** 要显示的一键导入按钮（客户端 id，已按开着的格式筛过；顺序即显示顺序） */
   sub_import_clients: string[];
+  /**
+   * 仅自研客户端模式（后台 系统设置 → 订阅）：不给订阅链接（sub_token / sub_url 为 null、没有格式与导入按钮），
+   * 接入区只给 Akari 客户端下载；客户端里登录账户即可自动获取节点。
+   */
+  sub_own_client: boolean;
   probe_interval_secs: number;
   /** 全站时区（IANA 名）：日期一律按它显示 */
   timezone: string;

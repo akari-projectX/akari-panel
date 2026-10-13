@@ -755,10 +755,29 @@ subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: the ena
     -d "{\"version\":$((W30_VER + 4)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] && break; sleep 0.25; done
 subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] || { echo "FAIL: links not back"; exit 1; }
+# B1 仅自研客户端: only the Akari client's User-Agent is answered (Clash);
+# every other client and explicit format is the canonical rejection; the
+# stored format list is kept.
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 5)),\"own_client_only\":true}")" = "200" ] \
+  && [ "$(last_json "(d['subscription']['own_client_only'], d['subscription']['import_clients_shown'])")" = "(True, [])" ] \
+  || { echo "FAIL: own client only switch"; cat /tmp/akari-smoke/last; exit 1; }
+for _ in $(seq 1 20); do subrl; [ "$(fp -A "clash-verge/v2" "$SUB")" = "$REJ" ] && break; sleep 0.25; done
+for args in '-A clash-verge/v2' '-A v2rayN/7.4.2' '-A curl/8' '-A mihomo/1.19'; do
+  # shellcheck disable=SC2086
+  subrl; [ "$(fp $args "$SUB")" = "$REJ" ] || { echo "FAIL: own client only answered $args"; exit 1; }
+done
+subrl; [ "$(fp -A "clash-verge/v2" "$SUB?format=clash")" = "$REJ" ] || { echo "FAIL: own client only answered ?format=clash"; exit 1; }
+subrl; curl -s --noproxy '*' -A "akari-client/0.1.0 mihomo" -D - -o /dev/null "$SUB" | matches -i "^content-type: text/yaml" \
+  || { echo "FAIL: the Akari client is not answered with Clash"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
+    -d "{\"version\":$((W30_VER + 6)),\"own_client_only\":false}")" = "200" ] || { echo "FAIL: own client only off"; exit 1; }
+for _ in $(seq 1 20); do subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] && break; sleep 0.25; done
+subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: third-party clients not back"; exit 1; }
 # These fetches must not eat the user's subscription rate budget (M1-10 below).
 subrl
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "5" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
-echo "w30 client detection + routing + format switches: ok"
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "7" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
+echo "w30 client detection + routing + format switches + own client only: ok"
 
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
 # Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint

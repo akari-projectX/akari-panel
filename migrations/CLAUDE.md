@@ -42,6 +42,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1106（邮件模板 HTML 源码）**：`mail_templates.html_source` text NULL（CHECK `mail_templates_html_check`：非空时 1–100000 字符；内容规则由 API 的 `templates::validate_html` 保证）；NULL = 沿用面板的 HTML 外壳。
 - **1107（订阅分流重做，`sub-service-groups`）**：`panel_settings.sub_routing` jsonb（`sub::routing::Config`：mode/block/direct/services/rest/tag_groups/dns；NULL = 内置推荐；CHECK 对象且 ≤256 KiB，形状由 API `Config::parse` 校验）；W30 的 `sub_rules` 迁入（规则的 {type, value} 原样：reject → block、direct → direct、proxy → 一个未选线路的服务「代理」；NULL 仍为 NULL）后删除该列与 `panel_settings_sub_rules`；`sub_rule_set_*_url` 保留。下文 1066 的 `sub_rules` 为历史。
 - **1108（路由 PR 2，远程规则集）**：`sub_rule_sets`（`id` = 链接 SHA-256 前 32 位十六进制，PK，即托管文件名；`url` UNIQUE 12–512；`body`（托管的 sing-box source JSON，≤16 MiB）/`etag`/`counts` jsonb 对象/`kept`（sing-box 可用条数 ≥0）/`fetched_at` 同空同非空（CHECK `sub_rule_sets_copy`；无 body = 从未下载成功，只有每日刷新为迁移前已保存的链接写这种行）；`upstream_etag`/`upstream_last_modified`（≤128，条件刷新）；`checked_at`；`last_error`（≤500）与 `failing_since` 同空同非空（CHECK `sub_rule_sets_failing`；刷新失败保留旧 body））。行只由 `sub::rulesets` 写，且只为存储的分流（`panel_settings.sub_routing`）仍引用的链接存在。
+- **1109（v1-next B1，仅自研客户端）**：`panel_settings.sub_own_client_only` boolean（NULL = 关）。开启 = 第三方格式与导入按钮全部不生效（`sub_formats`/`sub_import_clients` 原值保留，关闭后恢复）、订阅只回答 `akari-client/` User-Agent、门户不给链接；只经 `settings::apply_update_subscription` 写（审计 `settings.subscription.update`）。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表

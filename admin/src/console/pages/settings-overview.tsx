@@ -196,8 +196,12 @@ export function useOverview() {
       ...(cert !== null ? [{ k: tr("证书", "Certificate"), v: tr(`${cert} 天`, `${cert} d`), tone: certTone }] : []),
     ];
     sum.subscription = [
-      { k: tr("格式", "Formats"), v: `${d.subscription.formats.effective.length} / 3` },
-      { k: tr("一键导入", "Import"), v: `${d.subscription.import_clients.effective.length} / 5` },
+      ...(d.subscription.own_client_only
+        ? [{ k: tr("客户端", "Clients"), v: tr("仅自研客户端", "Own client only") }]
+        : [
+            { k: tr("格式", "Formats"), v: `${d.subscription.formats.effective.length} / 3` },
+            { k: tr("一键导入", "Import"), v: `${d.subscription.import_clients.effective.length} / 5` },
+          ]),
       { k: tr("倍率", "Multiplier"), v: d.subscription.name_rate ? tr("显示", "Shown") : tr("不显示", "Hidden") },
     ];
     sum.routing = [

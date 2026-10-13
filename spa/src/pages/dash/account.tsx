@@ -157,7 +157,9 @@ function SubscriptionPart() {
   const tr = useT();
   const { me, scope } = useAuth();
   const url = me ? mySubUrl(me) : null;
-  const state = scope !== 'full' ? 'paused' : url ? 'ok' : me?.sub_legacy ? 'legacy' : 'none';
+  const state = scope !== 'full' ? 'paused'
+    : me?.sub_own_client ? 'own'
+    : url ? 'ok' : me?.sub_legacy ? 'legacy' : 'none';
   return (
     <Section id="subscription" title={tr('订阅链接')}>
       <SettingRow
@@ -166,13 +168,14 @@ function SubscriptionPart() {
       >
         <span className="text-[14px]">
           {state === 'ok' ? tr('正常')
+            : state === 'own' ? tr('仅限 Akari 客户端（登录账户获取）')
             : state === 'legacy' ? tr('旧格式链接，重置后可查看')
             : state === 'paused' ? <span className="text-muted-foreground">{tr('续费后可用')}</span>
             : <span className="text-muted-foreground">{tr('购买套餐后可用')}</span>}
         </span>
         <div className="flex gap-2">
-          {(state === 'ok' || state === 'legacy') && <ResetSubscription look="button" />}
-          {state === 'ok' && <Button variant="outline" className="h-9" asChild><Link to={`${R.dashboard}#subscribe`}>{tr('去导入')}</Link></Button>}
+          {(state === 'ok' || state === 'legacy' || state === 'own') && <ResetSubscription look="button" />}
+          {(state === 'ok' || state === 'own') && <Button variant="outline" className="h-9" asChild><Link to={`${R.dashboard}#subscribe`}>{state === 'own' ? tr('下载客户端') : tr('去导入')}</Link></Button>}
           {(state === 'paused' || state === 'none') && <Button className="h-9" asChild><Link to={R.shop}>{tr('去商店')}</Link></Button>}
         </div>
       </SettingRow>

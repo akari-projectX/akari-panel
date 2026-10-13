@@ -575,3 +575,107 @@ async fn format_switches_answer_the_uniform_rejection() {
     );
     db.drop().await;
 }
+
+/// Own-client-only mode (系统设置 → 订阅 → 仅自研客户端): the portal
+/// never sees the link (also not after a reset), only the Akari client's
+/// User-Agent is answered (Clash), every other client and explicit format
+/// is the canonical rejection, the admin can still read the link, and
+/// turning the mode off restores the operator's format choice.
+#[tokio::test]
+async fn own_client_only_mode() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let reject = Client::new(&state, rand_ip())
+        .get("/sub/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        .await
+        .fingerprint();
+    let id = db.user().await;
+    let c = crate::testdb::http::client_for(&state, id).await;
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_own_client"], false);
+    let token = me["sub_token"].as_str().unwrap().to_string();
+    let sub = |ua: &'static str, query: &'static str| {
+        let mut cl = Client::new(&state, rand_ip());
+        cl.headers.push(("user-agent".into(), ua.into()));
+        let path = format!("/sub/{token}{query}");
+        async move { cl.get(&path).await }
+    };
+    // Normal mode: the Akari client gets Clash even with every
+    // third-party format off.
+    db.settings(&state, "sub_formats = '{}'::text[]").await;
+    let r = sub("akari-client/0.1.0 mihomo", "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&r.body).contains("\nproxies:\n"));
+    assert_eq!(sub("clash-verge/v2", "").await.fingerprint(), reject);
+
+    // The admin switch (audited); the stored lists are kept.
+    db.settings(&state, "sub_formats = ARRAY['clash', 'links']::text[]")
+        .await;
+    let admin = crate::testdb::http::client_for(&state, db.admin().await).await;
+    let version = admin.get("/test/api/v1/settings").await.json()["version"].clone();
+    let r = admin
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({ "version": version, "own_client_only": true }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let view = &r.json()["subscription"];
+    assert_eq!(view["own_client_only"], true);
+    assert_eq!(view["formats"]["effective"], json!(["clash", "links"]));
+    assert_eq!(view["import_clients_shown"], json!([]));
+    let after: serde_json::Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'settings.subscription.update' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(after["own_client_only"], true);
+
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_own_client"], true);
+    assert_eq!(me["sub_token"], serde_json::Value::Null);
+    assert_eq!(me["sub_url"], serde_json::Value::Null);
+    assert_eq!(me["sub_legacy"], false);
+    assert_eq!(me["sub_formats"], json!([]));
+    assert_eq!(me["sub_import_clients"], json!([]));
+
+    let r = sub("akari-client/0.1.0 mihomo", "").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.headers.get("subscription-userinfo").is_some());
+    assert!(String::from_utf8_lossy(&r.body).contains("\nproxies:\n"));
+    for (ua, q) in [
+        ("clash-verge/v2", ""),
+        ("clash-verge/v2", "?format=clash"),
+        ("mihomo/1.19", ""),
+        ("curl/8", ""),
+        ("curl/8", "?format=links"),
+        ("", ""),
+        ("v2rayN/7.4.2", ""),
+    ] {
+        assert_eq!(sub(ua, q).await.fingerprint(), reject, "{ua} {q}");
+    }
+
+    // The admin still reads the link (audited).
+    let r = admin
+        .get(&format!("/test/api/v1/users/{id}/subscription"))
+        .await;
+    assert_eq!(r.json()["sub_token"], token);
+
+    // A self-service reset rotates, but shows nothing.
+    let r = c.post("/test/api/v1/me/sub-token", json!({})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["sub_token"], serde_json::Value::Null);
+    assert_eq!(r.json()["sub_url"], serde_json::Value::Null);
+    assert_eq!(sub("akari-client/1", "").await.fingerprint(), reject, "old");
+
+    // Off again: the operator's list is back.
+    db.settings(&state, "sub_own_client_only = NULL").await;
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_own_client"], false);
+    assert_eq!(me["sub_formats"], json!(["clash", "links"]));
+    assert!(me["sub_url"].is_string());
+    db.drop().await;
+}

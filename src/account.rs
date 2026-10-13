@@ -182,8 +182,9 @@ pub const SUB_TOKEN_PER_HOUR: i64 = 5;
 /// POST /api/v1/me/sub-token (full session, role=user): replace your own
 /// subscription token; the old URL stops working at once. Rate limited
 /// (SUB_TOKEN_PER_HOUR per account, Valkey, one key per account). Returns
-/// the new token (W20: it stays visible in `/me`, stored encrypted).
-/// Audited.
+/// the new token (W20: it stays visible in `/me`, stored encrypted) —
+/// null in own-client-only mode, where the link is never shown (the
+/// Akari client fetches it itself). Audited.
 pub async fn regenerate_own_sub_token(
     State(state): State<AppState>,
     user: AuthUser,
@@ -211,9 +212,10 @@ pub async fn regenerate_own_sub_token(
             .await?
             .ok_or_else(ApiError::unauthorized)?;
     tx.commit().await?;
-    let sub_url = state.sub_link(user.id, &token);
+    let shown = (!state.settings().get().sub_own_client_only).then_some(token);
+    let sub_url = shown.as_deref().map(|t| state.sub_link(user.id, t));
     Ok(Json(json!({
-        "sub_token": token,
+        "sub_token": shown,
         "sub_url": sub_url,
         "credentials_rotated": outcome.updated,
     })))

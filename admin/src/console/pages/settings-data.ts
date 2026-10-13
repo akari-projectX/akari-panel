@@ -88,6 +88,12 @@ export type SettingsView = {
     import_clients: { value: string[] | null; effective: string[] };
     /** Line names carry the entrance's base multiplier (default off). */
     name_rate: boolean;
+    /**
+     * 仅自研客户端 (default off): the subscription answers only the Akari
+     * client, the portal shows no link; `formats` / `import_clients` stay as
+     * stored (restored when the mode is turned off).
+     */
+    own_client_only: boolean;
   };
 };
 

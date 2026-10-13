@@ -29,6 +29,7 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `src/lib/routes.ts` | 路由表与每页的账户范围（`PAGE_SCOPES`）。**顶层路径必须与面板 `access::PORTAL_PAGES` 一致**：面板测试 `access::tests::routes_match_the_portal` 读这个文件比对 |
 | `src/lib/auth.ts`、`auth-provider.tsx` | 登录态：`GET /me` 为准（401 或统一拒绝 404 = 没登录；同一浏览器里的管理员会话在门户上就是 404；第一次取就遇到网络 / 服务器错误且没有缓存 = `failed`，门禁显示「重试」，不送去登录页）；范围 `scopeOf`：full（AuthUser）/ renewal（到期或流量用完，ShopUser）/ banned（PortalUser）。管理员不在门户里（D4） |
 | `src/lib/sub-links.ts` | 订阅地址只用 `me.sub_url`（D11 随机路径、D8 订阅域名；相对地址补本站 origin）；格式选择按 `me.sub_formats`，一键导入按 `me.sub_import_clients`（面板 `sub::IMPORT_CLIENTS`，已按开着的格式筛过）在前端按各客户端 scheme 拼链接 |
+| `src/components/own-client.tsx` | 仅自研客户端模式（`me.sub_own_client`，面板不给链接）下仪表盘的接入区：「在客户端里登录账户即可自动获取节点」+ 品牌设置里的客户端下载按钮，没配下载时只有中性说明；设置页订阅一行显示「仅限 Akari 客户端」 |
 | `src/pages/registry.ts` | 全部页面按需加载（`lazyRetry`）；`pages/auth.tsx`（登录/注册/找回/重置）、`pages/legal.tsx`（条款/隐私）、`pages/dash/*`（用户中心） |
 | `src/i18n/` | `tr('简体原文')` + 英文词典 `dict.ts`（键 = 简体原文，按需加载）；错误码文案 `errors.ts`（`CODE_KEYS`：码 → `errors.*`，`errorText` 填 params，`<p>_cents` 另给 `<p>_yuan`） |
 | `src/components/server-html.tsx` | 全站唯一的 `dangerouslySetInnerHTML`：只接面板服务端渲染并清洗过的公告 / 知识库 / 条款 HTML（`src/markdown.rs`） |

@@ -1056,6 +1056,44 @@ async fn send_email_through_outbox_with_rate_limit() {
     db.drop().await;
 }
 
+/// Own-client-only mode: a mail carrying `{sub_url}` is never sent (links
+/// are not handed out); every recipient is skipped with the reason.
+#[tokio::test]
+async fn sub_url_mail_skipped_in_own_client_mode() {
+    let Some((db, st)) = setup().await else {
+        return;
+    };
+    let us = users(&db, 2).await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = 'smtp.invalid', \
+         from_addr = 'ops@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET email_verified_at = now()")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.settings(&st, "sub_own_client_only = true").await;
+    let mail = Action::SendEmail {
+        subject: "新链接".into(),
+        body: format!("请使用 {SUB_URL}"),
+    };
+    let j = create(&db, ids(&us), mail).await.unwrap();
+    finish(&st).await;
+    let j = job(&db, j.id).await;
+    assert_eq!((j.status.as_str(), j.done, j.skipped), ("done", 0, 2));
+    assert_eq!(scalar(&db, "SELECT count(*) FROM mail_outbox").await, 0);
+    let token_issued = scalar(
+        &db,
+        "SELECT count(*) FROM users WHERE sub_token_hash IS NOT NULL",
+    )
+    .await;
+    assert_eq!(token_issued, 0, "no link is even minted");
+    db.drop().await;
+}
+
 /// Cancel: pending items skipped, a finished job cannot be cancelled.
 #[tokio::test]
 async fn cancel_job() {

@@ -1,4 +1,6 @@
-// 系统设置 → 订阅 (v2): 订阅链接与格式 (SET-12 formats, the portal import
+// 系统设置 → 订阅 (v2): 订阅链接与格式 (SET-27 仅自研客户端: one switch that
+// turns every third-party format and import button off — the stored lists
+// are kept and the rows below grey out — confirmed with its effects; SET-12 formats, the portal import
 // buttons as cards — greyed with "格式已关闭" when their format is off —
 // SET-26 multipliers in line names with a preview; turning a format off and
 // the multiplier change are confirmed together on save; SET-10 the path in
@@ -93,6 +95,7 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
     formats: d.subscription.formats.effective,
     clients: d.subscription.import_clients.effective,
     name_rate: d.subscription.name_rate,
+    own: d.subscription.own_client_only,
   });
   const v = f.value!;
   const toggle = (k: "formats" | "clients", id: string, on: boolean) =>
@@ -102,9 +105,38 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
     errors: 0,
     discard: f.reset,
     save: async () => {
-      const off = d.subscription.formats.effective.filter((x) => !v.formats.includes(x));
+      const off = v.own ? [] : d.subscription.formats.effective.filter((x) => !v.formats.includes(x));
       const rate = v.name_rate !== d.subscription.name_rate;
-      if (off.length || (rate && v.name_rate)) {
+      const ownOn = v.own && !d.subscription.own_client_only;
+      if (ownOn) {
+        const ok = await confirm({
+          title: tr("开启「仅自研客户端」？", 'Turn on "own client only"?'),
+          description: tr(
+            "订阅只回答 Akari 客户端（按 User-Agent 识别，可伪造，是软限制；硬限制是之后的客户端登录）。第三方格式与导入按钮的设置会保留，关闭本模式后恢复。",
+            "The subscription answers only the Akari client (recognised by its User-Agent, which can be forged: a soft limit; signing in inside the client will be the hard one). The third-party format and import settings are kept and come back when the mode is turned off.",
+          ),
+          impacts: [
+            {
+              label: tr("门户", "Portal"),
+              value: tr(
+                "用户看不到订阅链接、二维码与导入按钮，只看到客户端下载",
+                "Users no longer see the link, QR code or import buttons, only the client download",
+              ),
+            },
+            {
+              label: tr("第三方客户端", "Third-party clients"),
+              value: tr("下次更新订阅时失败（统一 404）", "Fail on their next refresh (the uniform 404)"),
+            },
+            {
+              label: tr("批量邮件", "Batch mail"),
+              value: tr("含 {sub_url} 的邮件不再发送（跳过）", "Mails with {sub_url} are skipped"),
+            },
+          ],
+          tone: "warning",
+          confirmLabel: tr("开启并保存", "Turn on and save"),
+        });
+        if (!ok) return false;
+      } else if (off.length || (rate && v.name_rate)) {
         const ok = await confirm({
           title: tr("保存订阅设置？", "Save the subscription settings?"),
           description: [
@@ -150,6 +182,7 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
             ...(f.isEdited("formats") ? { formats: FORMATS.filter((x) => v.formats.includes(x)) } : {}),
             ...(f.isEdited("clients") ? { import_clients: CLIENTS.filter((x) => v.clients.includes(x)) } : {}),
             ...(f.isEdited("name_rate") ? { name_rate: v.name_rate } : {}),
+            ...(f.isEdited("own") ? { own_client_only: v.own } : {}),
           }),
         { ok: tr("订阅设置已保存", "Subscription settings saved") },
       );
@@ -164,6 +197,33 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
   return (
     <>
       <Group
+        title={tr("客户端", "Clients")}
+        footer={tr(
+          "开启后订阅只回答 Akari 客户端（User-Agent 以 akari-client/ 开头），门户不显示订阅链接，导入区只给客户端下载（外观与品牌 → 客户端下载链接）。",
+          "When on, the subscription answers only the Akari client (User-Agent starting with akari-client/); the portal shows no link, only the client download (Appearance → client download links).",
+        )}
+      >
+        <SwitchRow
+          label={tr("仅自研客户端", "Own client only")}
+          description={tr(
+            "关闭全部第三方订阅格式与一键导入按钮",
+            "Turns every third-party format and import button off",
+          )}
+          checked={v.own}
+          onChange={(x) => f.set("own", x)}
+          changed={f.isEdited("own")}
+        >
+          {d.subscription.own_client_only && (
+            <Banner tone="info">
+              {tr(
+                "已开启：第三方格式与导入按钮暂停，下面的设置保留，关闭本模式后恢复。",
+                "On: third-party formats and import buttons are paused; the settings below are kept for when the mode is off.",
+              )}
+            </Banner>
+          )}
+        </SwitchRow>
+      </Group>
+      <Group
         title={tr("订阅格式", "Subscription formats")}
         footer={tr(
           "关闭的格式一律返回统一的 404；以后新增的格式在自定义过的站点上默认关闭。",
@@ -177,6 +237,7 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
             name={tr(`订阅格式 ${formatName(x, tr)}`, `Format ${formatName(x, tr)}`)}
             description={formatDesc(x, tr)}
             checked={v.formats.includes(x)}
+            disabled={v.own}
             onChange={(on) => toggle("formats", x, on)}
             changed={was("formats", x)}
           />
@@ -191,7 +252,7 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {CLIENTS.map((x) => {
-            const dep = v.formats.includes(NEEDS[x] ?? x);
+            const dep = !v.own && v.formats.includes(NEEDS[x] ?? x);
             const on = v.clients.includes(x);
             return (
               <div
@@ -209,9 +270,16 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
                 )}
                 <span className="text-body font-semibold">{clientName(x)}</span>
                 <span className="flex items-center justify-between gap-2 text-footnote text-muted-foreground">
-                  {dep ? (on ? tr("显示", "Shown") : tr("隐藏", "Hidden")) : tr("格式已关闭", "Format off")}
+                  {dep
+                    ? on
+                      ? tr("显示", "Shown")
+                      : tr("隐藏", "Hidden")
+                    : v.own
+                      ? tr("仅自研客户端", "Own client only")
+                      : tr("格式已关闭", "Format off")}
                   <Switch
                     label={tr(`一键导入 ${clientName(x)}`, `Import ${clientName(x)}`)}
+                    disabled={v.own}
                     checked={on}
                     onChange={(y) => toggle("clients", x, y)}
                   />
