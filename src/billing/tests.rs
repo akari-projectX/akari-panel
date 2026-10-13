@@ -260,6 +260,8 @@ async fn precreate(p: &dyn super::provider::PaymentProvider, otn: &str, cents: i
         amount_cents: cents,
         subject: "s",
         notify_url: NOTIFY,
+        return_url: "https://panel.example/orders/x",
+        client_ip: None,
     })
     .await
     .unwrap();
@@ -2914,6 +2916,7 @@ async fn period_months_mirror_sql() {
     );
     db.drop().await;
 }
+mod epay;
 mod lifecycle;
 mod money;
 mod ops;

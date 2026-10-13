@@ -2508,6 +2508,90 @@ sed -n 1p "$LOG/receipt.txt" | matches '支付成功' && matches -F "$OTN" "$LOG
   || { echo "FAIL: replay not logged as duplicate"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM payment_events WHERE params->>'sign' IS NOT NULL AND params->>'sign' <> '<redacted>'")" = "0" ] \
   || { echo "FAIL: a signature was stored"; exit 1; }
+# C1: 易支付 (EPay) through the admin API (page mode: no gateway call at
+# order creation; the interface address is never reached), its signed
+# submit.php link, then notifies by GET (EPay's usual) and POST: every
+# refusal byte-identical to the canonical rejection, the real one pays
+# exactly once. Disabled again at the end (later sections order without
+# method_id, which needs exactly one enabled method).
+echo "== C1 EPay: method (key sealed) -> order (signed submit.php link) -> GET/POST notifies; refusals canonical; paid once =="
+EPAY_KEY="smokeEpayKey0123456789abcdefABCD"
+cat >"$PAY/epay.py" <<'PY'
+import hashlib, sys, urllib.parse
+otn, money, status, pid, key = sys.argv[1:6]
+p = {"pid": pid, "trade_no": "E2026" + otn[-10:], "out_trade_no": otn, "type": "alipay",
+     "name": "Akari - epay-plan", "money": money, "trade_status": status, "param": ""}
+content = "&".join(f"{k}={v}" for k, v in sorted(p.items()) if v != "")
+p["sign"] = hashlib.md5((content + key).encode()).hexdigest(); p["sign_type"] = "MD5"
+if len(sys.argv) > 6: p["money"] = sys.argv[6]  # tamper after signing
+print(urllib.parse.urlencode(p), end="")
+PY
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
+    -d "{\"kind\":\"epay\",\"display_name\":\"支付宝（易支付）\",\"enabled\":true,\"config\":{\"api_url\":\"http://127.0.0.1:18090/epay\",\"pid\":\"1001\",\"key\":\"$EPAY_KEY\",\"channel\":\"alipay\",\"api_mode\":\"submit\"}}")" = "201" ] \
+  || { echo "FAIL: add EPay method"; cat /tmp/akari-smoke/last; exit 1; }
+EMETHOD=$(last_json "d['id']")
+matches -F "$EPAY_KEY" /tmp/akari-smoke/last && { echo "FAIL: EPay key in the method view"; exit 1; }
+last_json "d['config']['key_set'] and d['config']['api_url']=='http://127.0.0.1:18090/epay/' and d['notify_url'].endswith('/pay/$EMETHOD/notify')" | matches True \
+  || { echo "FAIL: EPay method view"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT position(convert_to('$EPAY_KEY', 'UTF8') IN secrets_enc) FROM payment_methods WHERE id = '$EMETHOD'")" = "0" ] \
+  || { echo "FAIL: EPay key not sealed"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H "$J" \
+    -d "{\"name\":\"epay-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] || { echo "FAIL: create EPay plan"; exit 1; }
+EPLAN=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$EPLAN/prices" -H "$J" \
+    -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":990}]}')" = "204" ] || { echo "FAIL: EPay plan price"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H "$J" \
+    -d '{"email":"smoke-epay@smoke.test","password":"epay-password-123"}')" = "201" ] || { echo "FAIL: create EPay buyer"; exit 1; }
+EBUYER=$(last_json "d['id']"); EJAR="$LOG/epay-cookies"
+[ "$(code -c "$EJAR" -X POST "$BASE/auth/login" -H "$J" \
+    -d '{"email":"smoke-epay@smoke.test","password":"epay-password-123"}')" = "200" ] || { echo "FAIL: EPay buyer login"; exit 1; }
+[ "$(code -b "$EJAR" -X POST "$BASE/api/v1/me/orders" -H "$J" \
+    -d "{\"plan_id\":\"$EPLAN\",\"period\":\"days\",\"method_id\":\"$EMETHOD\"}")" = "201" ] \
+  || { echo "FAIL: EPay order"; cat /tmp/akari-smoke/last; exit 1; }
+EORDER=$(last_json "d['id']"); EOTN=$(last_json "d['out_trade_no']")
+python3 - "$EPAY_KEY" "$EORDER" <<'PY' || { echo "FAIL: EPay payment link"; cat /tmp/akari-smoke/last; exit 1; }
+import hashlib, json, sys, urllib.parse
+key, order = sys.argv[1:3]
+d = json.load(open('/tmp/akari-smoke/last'))
+base, _, q = d['pay_url'].partition('?')
+assert base == 'http://127.0.0.1:18090/epay/submit.php', base
+p = dict(urllib.parse.parse_qsl(q, keep_blank_values=True))
+content = "&".join(f"{k}={v}" for k, v in sorted(p.items()) if k not in ("sign", "sign_type") and v != "")
+assert p['sign'] == hashlib.md5((content + key).encode()).hexdigest() and p['sign_type'] == 'MD5', p
+assert p['money'] == '9.90' and p['type'] == 'alipay' and p['pid'] == '1001', p
+assert p['return_url'].endswith('/orders/' + order) and p['notify_url'].endswith('/notify'), p
+PY
+ENOTIFY="$ROOT/pay/$EMETHOD/notify"
+[ "$(fp "$ENOTIFY?$(python3 "$PAY/epay.py" "$EOTN" 9.90 TRADE_SUCCESS 1001 "$EPAY_KEY" 0.01)")" = "$REJ" ] \
+  || { echo "FAIL: EPay bad-signature notify not the canonical rejection"; exit 1; }
+[ "$(fp "$ENOTIFY?$(python3 "$PAY/epay.py" "$EOTN" 0.01 TRADE_SUCCESS 1001 "$EPAY_KEY")")" = "$REJ" ] \
+  || { echo "FAIL: EPay wrong-amount notify not the canonical rejection"; exit 1; }
+[ "$(fp "$ENOTIFY?$(python3 "$PAY/epay.py" "$EOTN" 9.90 TRADE_SUCCESS 1002 "$EPAY_KEY")")" = "$REJ" ] \
+  || { echo "FAIL: EPay foreign-pid notify not the canonical rejection"; exit 1; }
+[ "$(fp "$ENOTIFY?$(python3 "$PAY/epay.py" "AKnope$EOTN" 9.90 TRADE_SUCCESS 1001 "$EPAY_KEY")")" = "$REJ" ] \
+  || { echo "FAIL: EPay unknown-order notify not the canonical rejection"; exit 1; }
+[ "$(fp "$ENOTIFY")" = "$REJ" ] || { echo "FAIL: empty EPay notify not the canonical rejection"; exit 1; }
+# A GET notify on the Alipay method's route (Alipay only POSTs).
+[ "$(fp "$ROOT/pay/$METHOD/notify?$(python3 "$PAY/epay.py" "$EOTN" 9.90 TRADE_SUCCESS 1001 "$EPAY_KEY")")" = "$REJ" ] \
+  || { echo "FAIL: GET notify on the Alipay method not the canonical rejection"; exit 1; }
+[ "$(psql_q "SELECT status FROM orders WHERE id='$EORDER'")" = "pending" ] || { echo "FAIL: rejected EPay notify changed the order"; exit 1; }
+[ "$(psql_q "SELECT string_agg(outcome, ',' ORDER BY id) FROM payment_events WHERE out_trade_no='$EOTN' AND source='notify'")" = "bad_signature,amount_mismatch,pid_mismatch" ] \
+  || { echo "FAIL: EPay refusal events"; psql_q "SELECT outcome FROM payment_events WHERE out_trade_no='$EOTN'"; exit 1; }
+EGOOD=$(python3 "$PAY/epay.py" "$EOTN" 9.90 TRADE_SUCCESS 1001 "$EPAY_KEY")
+[ "$(curl -s --noproxy '*' "$ENOTIFY?$EGOOD")" = "success" ] || { echo "FAIL: EPay GET notify not acknowledged"; tail -5 "$LOG/panel.log"; exit 1; }
+[ "$(curl -s --noproxy '*' "$ENOTIFY?$EGOOD")" = "success" ] || { echo "FAIL: EPay GET replay"; exit 1; }
+[ "$(curl -s --noproxy '*' -X POST "$ENOTIFY" --data-binary "$EGOOD")" = "success" ] || { echo "FAIL: EPay POST notify"; exit 1; }
+[ "$(psql_q "SELECT status || '/' || paid_via || '/' || (fulfilled_at IS NOT NULL) FROM orders WHERE id='$EORDER'")" = "paid/notify/true" ] \
+  || { echo "FAIL: EPay order not paid + fulfilled"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$EORDER'")" = "1" ] || { echo "FAIL: EPay order paid twice"; exit 1; }
+[ "$(psql_q "SELECT plan_id FROM user_plans WHERE user_id='$EBUYER' AND status='active'")" = "$EPLAN" ] || { echo "FAIL: EPay plan not active"; exit 1; }
+# Disabled: its notify route is the canonical rejection again.
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] || { echo "FAIL: payment methods"; exit 1; }
+EVER=$(last_json "[m['version'] for m in d['methods'] if m['id']=='$EMETHOD'][0]")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/payments/$EMETHOD" -H "$J" \
+    -d "{\"version\":$EVER,\"display_name\":\"支付宝（易支付）\",\"enabled\":false,\"config\":{\"api_url\":\"http://127.0.0.1:18090/epay/\",\"pid\":\"1001\",\"channel\":\"alipay\",\"api_mode\":\"submit\"}}")" = "200" ] \
+  || { echo "FAIL: disable EPay method"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(fp "$ENOTIFY?$EGOOD")" = "$REJ" ] || { echo "FAIL: disabled EPay method's notify not the canonical rejection"; exit 1; }
 # Renewal through the active query (no notify reaches the panel): +30 days.
 EXP1=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
@@ -4567,6 +4651,9 @@ grep -q 'configuration OK' "$LOG/config-check.out" || { echo "FAIL: config check
 grep -qE '^# payment method .* kind=alipay_f2f enabled=true .*secrets=<redacted, set>' "$LOG/config-check.out" \
   || { echo "FAIL: config check lacks the payment methods"; cat "$LOG/config-check.out"; exit 1; }
 grep -q 'PRIVATE' "$LOG/config-check.out" && { echo "FAIL: a key in config check"; exit 1; }
+grep -qE '^# payment method .* kind=epay enabled=false .*secrets=<redacted, set>' "$LOG/config-check.out" \
+  || { echo "FAIL: config check lacks the EPay method"; cat "$LOG/config-check.out"; exit 1; }
+grep -qF "$EPAY_KEY" "$LOG/config-check.out" && { echo "FAIL: the EPay key in config check"; exit 1; }
 # W25: obsolete keys are warnings (never errors) naming where they went; the
 # printed effective config holds none of them; the database side is listed.
 matches 'warning: grpc.advertise is obsolete: it is set in 系统设置 → 节点通信' <"$LOG/config-check.out" \

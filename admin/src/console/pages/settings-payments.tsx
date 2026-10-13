@@ -114,16 +114,41 @@ const FIELD_EN: Record<string, string> = {
   alipay_public_key: "Alipay public key",
   order_timeout_minutes: "Order lifetime (minutes, 5–120)",
   refund_original: "Allow refunds to the original payment (from the console straight back to Alipay)",
+  api_url: "Interface address (e.g. https://pay.example.com/)",
+  pid: "Merchant ID (pid)",
+  key: "Merchant key",
+  channel: "Channel",
+  api_mode: "Order mode",
+  product_name: "Product name (optional, default “Akari - plan name”)",
 };
-const OPTION_EN: Record<string, string> = { production: "Production", sandbox: "Sandbox", custom: "Custom gateway" };
-const KIND_EN: Record<string, string> = { alipay_f2f: "Alipay face-to-face" };
+const OPTION_EN: Record<string, string> = {
+  production: "Production",
+  sandbox: "Sandbox",
+  custom: "Custom gateway",
+  alipay: "Alipay",
+  wxpay: "WeChat Pay",
+  qqpay: "QQ Wallet",
+  mapi: "API (mapi.php; the payment page when refused)",
+  submit: "Payment page (submit.php)",
+};
+const KIND_EN: Record<string, string> = { alipay_f2f: "Alipay face-to-face", epay: "EPay" };
 const KIND_DESC = (id: string, tr: Tr) =>
   ({
     alipay_f2f: tr(
       "支付宝当面付（扫码）：公钥模式 RSA2，支持沙箱与原路退款",
       "Alipay face-to-face (QR): public-key RSA2, sandbox and refunds to the original payment",
     ),
+    epay: tr(
+      "易支付（MD5 接口）：一个支付方式对应一个商户的一个渠道；不支持原路退款",
+      "EPay (MD5 interface): one method = one merchant's channel; no refunds to the original payment",
+    ),
   })[id];
+/** The portal name an EPay method suggests for its channel (until the admin edits the name). */
+const EPAY_NAME: Record<string, [string, string]> = {
+  alipay: ["支付宝（易支付）", "Alipay (EPay)"],
+  wxpay: ["微信支付（易支付）", "WeChat Pay (EPay)"],
+  qqpay: ["QQ 钱包（易支付）", "QQ Wallet (EPay)"],
+};
 const fieldLabel = (f: FieldSpec, tr: Tr) => tr(f.label, FIELD_EN[f.name] ?? f.label);
 const kindLabel = (id: string, label: string, tr: Tr) => tr(label, KIND_EN[id] ?? label);
 
@@ -483,6 +508,7 @@ function PaymentCard({
     }
   };
   const app = typeof m.config.app_id === "string" && m.config.app_id ? m.config.app_id : null;
+  const pid = typeof m.config.pid === "string" && m.config.pid ? m.config.pid : null;
   const unusable = on && m.enabled && !m.active;
   return (
     <Card
@@ -557,6 +583,7 @@ function PaymentCard({
         <div className="mt-0.5 truncate text-footnote text-muted-foreground">
           {kindLabel(m.kind, m.kind_label, tr)}
           {app && tr(` · 应用 ${app}`, ` · app ${app}`)}
+          {pid && tr(` · 商户 ${pid}`, ` · merchant ${pid}`)}
         </div>
         {m.warnings.length > 0 && (
           <div className="mt-0.5 text-footnote text-warning">{m.warnings.join(tr("；", "; "))}</div>
@@ -685,7 +712,15 @@ function MethodDialog({
   const tr = useTr();
   const toast = useToast();
   const errText = useErrText();
-  const [name, setName] = useState(method?.display_name ?? kindLabel(kind.id, kind.label, tr));
+  const epayName = (channel: string) => {
+    const n = EPAY_NAME[channel];
+    return n ? tr(n[0], n[1]) : kindLabel(kind.id, kind.label, tr);
+  };
+  const [name, setName] = useState(
+    method?.display_name ?? (kind.id === "epay" ? epayName("alipay") : kindLabel(kind.id, kind.label, tr)),
+  );
+  // A new EPay method's name follows its channel until the admin types one.
+  const [nameEdited, setNameEdited] = useState(!!method);
   const [enabled, setEnabled] = useState(method?.enabled ?? false);
   const [shown, setShown] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -709,7 +744,10 @@ function MethodDialog({
   });
   const [run, busy] = useAction();
   const cfg = method?.config ?? {};
-  const set = (k: string, v: string) => setValues((s) => ({ ...s, [k]: v }));
+  const set = (k: string, v: string) => {
+    setValues((s) => ({ ...s, [k]: v }));
+    if (kind.id === "epay" && k === "channel" && !nameEdited) setName(epayName(v));
+  };
   // Number errors show while typing; missing required values once a save was tried.
   const errors: Record<string, string> = {};
   if (!name.trim()) errors.__name = tr("请填写名称", "Enter a name");
@@ -824,7 +862,14 @@ function MethodDialog({
         {!owner && <OwnerNotice what={tr("密钥与账号", "keys and the account")} />}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label={tr("名称（用户可见）", "Name (shown to users)")} error={errors.__name}>
-            <Input data-autofocus value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              data-autofocus
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameEdited(true);
+              }}
+            />
           </Field>
           <SwitchField label={tr("启用", "Enabled")} checked={enabled} onChange={setEnabled} />
         </div>

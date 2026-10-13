@@ -6,6 +6,8 @@
 //!   their per-instance clients, the legacy panel.toml import.
 //! - `alipay`: RSA2 signing/verification, the gateway calls, the
 //!   `alipay_f2f` provider kind.
+//! - `epay` (C1): 易支付 (EPay, the common MD5 interface: mapi/submit,
+//!   GET/POST notify, api.php query), the `epay` provider kind.
 //! - `http`: the minimal HTTPS client those calls use.
 //! - `orders`: order lifecycle; `apply_mark_paid` is THE paid transition
 //!   (entitle::lock → conditional UPDATE → fulfil via plans::apply_* →
@@ -38,6 +40,7 @@ pub mod catalog;
 pub mod commission;
 pub mod coupon_batches;
 pub mod coupons;
+pub mod epay;
 pub mod http;
 pub mod ledger;
 pub mod manual;

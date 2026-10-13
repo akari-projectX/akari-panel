@@ -60,7 +60,7 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.fuzz != 'false' }}
     runs-on: ubuntu-latest
     # Budget: targets x seconds + ~10 min (setup, cold `cargo fuzz build`,
-    # per-target start-up). Nightly 19 x 240 s = 76 min -> ~86 min. A
+    # per-target start-up). Nightly 21 x 240 s = 84 min -> ~94 min. A
     # cancelled job also skips the corpus cache save, so the step below caps
     # the per-target seconds to fit FUZZ_BUDGET_MIN instead of overrunning.
     timeout-minutes: 150

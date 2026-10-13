@@ -63,6 +63,8 @@ MODULES = {
     "src/erase.rs": 90.0,
     "src/cleanup.rs": 90.0,
     "src/billing/usdt.rs": 90.0,
+    # C1: 易支付 (EPay) provider (MD5 signing, notify, query, configuration).
+    "src/billing/epay.rs": 90.0,
 }
 
 TEST_MOD = re.compile(r"^(pub(\(crate\))? )?mod \w+ \{")

@@ -185,7 +185,11 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
             id: row.id,
             kind: kind.id(),
             display_name: row.display_name,
-            icon: row.icon,
+            // The portal icon: the operator's, else the kind's (EPay: its
+            // channel).
+            icon: row
+                .icon
+                .or_else(|| kind.default_icon(&row.config).map(str::to_string)),
             sort: row.sort,
             enabled: row.enabled,
             version: row.version,
@@ -482,6 +486,14 @@ pub async fn apply_delete(
 pub fn notify_url(state: &AppState, method: Uuid) -> Option<String> {
     let origin = state.settings().get().public_origin()?;
     Some(format!("{origin}/pay/{method}/notify"))
+}
+
+/// Where a provider sends the payer back (EPay `return_url`): the portal's
+/// page of the order (`spa/src/lib/routes.ts` `R.order`). It only shows
+/// the order, which polls its status; nothing is marked paid there.
+pub fn return_url(state: &AppState, order: Uuid) -> Option<String> {
+    let origin = state.settings().get().public_origin()?;
+    Some(format!("{origin}/orders/{order}"))
 }
 
 #[derive(Debug, Serialize)]

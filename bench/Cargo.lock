@@ -61,6 +61,7 @@ dependencies = [
  "idna",
  "jsonwebtoken",
  "lettre",
+ "md-5",
  "mimalloc",
  "mime_guess",
  "openssl",

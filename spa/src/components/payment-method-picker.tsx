@@ -4,8 +4,8 @@ import type { PayMethod } from '@/api';
 import { cn } from '@/lib/utils';
 import { useT } from '@/i18n';
 
-/** 面板的 icon 是后台填的短名字（a-z 0-9 - _），不是图片地址：认得的换成对应图标 */
-const ICONS: Record<string, LucideIcon> = { alipay: QrCode, wechat: QrCode, balance: Wallet };
+/** 面板的 icon 是后台填的短名字（a-z 0-9 - _），不是图片地址：认得的换成对应图标（易支付没填时面板按渠道给 alipay / wechat / qq） */
+const ICONS: Record<string, LucideIcon> = { alipay: QrCode, wechat: QrCode, qq: QrCode, balance: Wallet };
 
 /** 支付方式（面板 /me/shop 的 methods，后台排好的顺序）。多于一种时下单必须选（order.method_required） */
 export default function PaymentMethodPicker({
