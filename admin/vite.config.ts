@@ -63,10 +63,11 @@ export default defineConfig({
     cssCodeSplit: false,
     assetsInlineLimit: 0,
     chunkSizeWarningLimit: 2000,
-    // No manual chunk groups: grouping the lucide icons (or the small shared
-    // modules) into one chunk cut the cold first screen further but made
-    // every warm page switch slower (users 420 → 790 ms on the mid phone,
-    // CI A/B 2026-10-13); module preload alone already removes the waves.
+    // No manual chunk groups: putting the lucide icons (or the small shared
+    // modules) in one chunk made the cold first visit faster (mid phone ~2.4 s
+    // vs ~3.0 s) but warm page switches slower in 4 of 4 CI runs (users
+    // ~700–790 ms vs ~410–750 ms; CI runners vary up to 2×). Module preload
+    // alone removes the import waterfalls.
     rollupOptions: { input: entry === "login" ? "login.html" : "index.html" },
   },
   experimental: {
