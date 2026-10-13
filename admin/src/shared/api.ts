@@ -51,7 +51,9 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
-    if (res.status === 401 && onUnauthorized) onUnauthorized();
+    // While signing out, a query that was already on its way meets the ended
+    // session: the caller is moving to the signed-out page, not to sign-in.
+    if (res.status === 401 && onUnauthorized && !signingOut) onUnauthorized();
     throw new ApiError(res.status, body.error ?? res.statusText, body);
   }
   const method = (init?.method ?? "GET").toUpperCase();
@@ -95,7 +97,15 @@ export function qs(params: Record<string, string | number | boolean | null | und
 // Auth endpoints live at /{prefix}/auth/*, not under /api/v1.
 export const authPost = <T>(path: string, body: unknown = {}) => request<T>(`${authBase}${path}`, json("POST", body));
 export const authGet = <T>(path: string) => request<T>(`${authBase}${path}`);
-export const logout = () => request<void>(`${authBase}/logout`, { method: "POST" });
+/** Set by `logout`: 401s from then on are expected (the page is leaving). */
+let signingOut = false;
+export const logout = () => {
+  signingOut = true;
+  return request<void>(`${authBase}/logout`, { method: "POST" }).catch((e: unknown) => {
+    signingOut = false;
+    throw e;
+  });
+};
 
 /** The login answer (`POST /auth/login`, `/auth/passkey/login`). */
 export type LoginAnswer = {

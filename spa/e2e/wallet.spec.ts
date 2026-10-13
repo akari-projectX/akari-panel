@@ -28,6 +28,8 @@ test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference 
   await dialog.getByLabel('收款地址').fill(TRON);
   await dialog.getByRole('button', { name: '提交申请' }).click();
   await expect(page.getByText('这不是有效的 ton 地址，请核对网络与地址').first()).toBeVisible();
+  /* 服务端的错误把焦点放到出错的字段（下一帧）：等它落定，再填别的字段（否则后面的输入会跑进地址框） */
+  await expect(dialog.getByLabel('收款地址')).toBeFocused();
   await dialog.getByLabel('收款地址').fill(TON);
   await dialog.getByLabel('Memo（选填）').fill('12345');
   await dialog.getByRole('button', { name: '提交申请' }).click();
