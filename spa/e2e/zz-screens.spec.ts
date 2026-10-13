@@ -19,6 +19,9 @@ const VP = {
 /** run 返回一个元素时只截它，返回 'viewport' 时截可见区域，否则截整页 */
 type Shot = { name: string; account: string; run: (page: Page, device: Device) => Promise<Locator | 'viewport' | void> };
 
+/** 每一步最多等这么久：拍不到就记一条注解，接着拍下一张 */
+const WAIT = 10_000;
+
 const section = (page: Page, title: string) => page.locator('section.sec').filter({ has: page.getByText(title, { exact: true }) }).first();
 
 async function shotsFor(device: Device, theme: Theme, browser: Browser, shots: Shot[], note: (s: string) => void) {
@@ -26,6 +29,7 @@ async function shotsFor(device: Device, theme: Theme, browser: Browser, shots: S
     ...VP[device], baseURL: process.env.E2E_BASE, locale: 'zh-CN', colorScheme: theme, reducedMotion: 'reduce',
   });
   const page = await ctx.newPage();
+  page.setDefaultTimeout(WAIT);
   let who = '';
   try {
     for (const s of shots) {
@@ -76,19 +80,20 @@ async function extraPlans() {
 
 test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile × light + dark)', async ({ browser }, info) => {
   test.skip(info.project.name !== 'mobile', 'one run after both viewports finished');
-  test.setTimeout(10 * 60_000);
+  test.setTimeout(18 * 60_000);
   await extraPlans().catch((e) => console.log(`[screens] extra plans: ${(e as Error).message}`));
   const inviter = mine(info, 'inviter');
   const ready = async (page: Page, path: string, text?: string) => {
     await page.goto(path);
-    await page.locator('main h1').first().waitFor();
-    if (text) await page.getByText(text).first().waitFor();
-    await page.waitForLoadState('networkidle');
+    await page.locator('main h1').first().waitFor({ timeout: WAIT });
+    /* attached，不要 visible：桌面上同一段文字的手机版行是隐藏的，first() 可能正是它 */
+    if (text) await page.getByText(text).first().waitFor({ state: 'attached', timeout: WAIT });
+    await page.waitForLoadState('networkidle', { timeout: WAIT }).catch(() => undefined);
   };
   const chart = async (page: Page) => {
     await ready(page, '/', '近 7 日流量趋势');
     const s = section(page, '近 7 日流量趋势');
-    await s.scrollIntoViewIfNeeded();
+    await s.scrollIntoViewIfNeeded({ timeout: WAIT });
     return s;
   };
   const shots: Shot[] = [
@@ -118,11 +123,13 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
         await ready(page, '/');
         if (device === 'desktop') return page.locator('header').first();
         await page.locator('header button[aria-haspopup="menu"]:visible').last().click();
-        await page.getByRole('menu').or(page.getByRole('dialog')).first().waitFor();
+        await page.getByRole('menu').first().waitFor({ timeout: WAIT });
         return 'viewport';
       },
     },
     /* 没改版的页面：看全局的字重、颜色与动效变化 */
+    /* 条款 / 隐私：阅读栏居中（用户 2026-10-13：以前只在左半边） */
+    { name: 'page-privacy', account: 'user@e2e.test', run: (page) => ready(page, '/privacy') },
     ...(['/', '/orders', '/tickets', '/account'] as const).map((path) => ({
       name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
       run: (page: Page) => ready(page, path),
