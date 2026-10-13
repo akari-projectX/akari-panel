@@ -636,6 +636,7 @@ export const SETTINGS_IA: SectionGroup[] = [
 /** Tiles of the payment kinds (brand colour and glyph); unknown kinds get a card icon. */
 export const PAY_TILES: Record<string, { tint: string; glyph: string }> = {
   alipay_f2f: { tint: "#1677ff", glyph: "支" },
+  epay: { tint: "#f97316", glyph: "易" },
 };
 export const PAY_TILE_DEFAULT = "#2563eb";
 

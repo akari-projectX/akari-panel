@@ -111,7 +111,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - `subscription-userinfo` 等配额头仅在成功时发送；错误令牌与其他所有拒绝一样得到同样的空 404。
   - 响应体按 8 KiB 分桶填充，大小不会泄露节点数量。
   - 按客户端地址和按用户限速（内置限额）；超限同样返回空 404。
-- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；支付宝当面付是第一种，允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
+- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；类型：支付宝当面付、易支付（C1，MD5 接口，一个方式 = 一个商户的一个渠道），同类型允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
   自助注册可选择是否做邮箱验证（系统设置 → 注册）。
 
 ## Layout
@@ -289,7 +289,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/users/{id}/revoke-sessions | admin | 让该账号在所有地方登出（204） |
 | POST | /api/v1/users/{id}/owner | owner | R47 `{confirm: true}`：把 owner 身份移交给一个已启用的管理员（204；400 `user.owner_confirm_required`，409 `user.owner_target` / `user.owner_already`，403 `user.owner_only`）；审计 `user.owner.transfer` |
 | GET | /api/v1/me/shop | user (renewal scope*) | 在售套餐及其每个标价周期按调用者此刻购买的价格（`action` new/renew/switch/reset、`discount_cents`、`credit_cents`、`balance_cents`、`amount_cents`，或 `refusal`）、描述、库存；调用者的订阅、切换抵扣和余额。W16：`?coupon=CODE`（限速）按优惠券计价（`coupon.refusal` / 各报价的 `coupon_refusal`），`?use_balance=true` 计入余额 |
-| GET/POST | /api/v1/me/orders | user (renewal scope*) | 自己的订单（最近 50 条）/ 创建 `{plan_id, period, coupon?, use_balance?}` → 订单 + 支付宝二维码（金额 = 服务端价格减去优惠券、切换抵扣和余额，在 SQL 中计算；被完全抵扣的订单立即标记为已支付） |
+| GET/POST | /api/v1/me/orders | user (renewal scope*) | 自己的订单（最近 50 条）/ 创建 `{plan_id, period, coupon?, use_balance?}` → 订单 + 二维码（`qr_code`）或付款跳转链接（`pay_url`，如易支付）（金额 = 服务端价格减去优惠券、切换抵扣和余额，在 SQL 中计算；被完全抵扣的订单立即标记为已支付）；多于一个启用方式时须带 `method_id` |
 | GET | /api/v1/me/balance | user (renewal scope*) | W16：余额、可提现金额、流水（`?before&limit`） |
 | GET | /api/v1/me/invite | user | W16：邀请计划条款、已邀请人数、佣金合计与历史（邀请码：W15；R46：`usdt_chains` `[{id, name}]`、`usdt_rate_cents`） |
 | GET/POST | /api/v1/me/withdrawals | user | W16：自己的提现 / 申请 `{amount_cents, chain, address, memo?}`（R46：仅 USDT；chain 取自已启用的链，地址按链校验，memo 仅 TON；立即扣款；≤ 可提现金额） |
@@ -339,6 +339,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/alerts/test | admin | W17：`{channel}` 通过已保存的配置发送测试消息，`{ok, error?}` |
 | GET | /api/v1/alerts/notifications | admin | W17：最近 100 条投递记录；`POST …/{id}/retry` 把死信重新入队 |
 | POST | /pay/alipay/notify | Alipay signature | 支付宝异步通知（RSA2）；所有拒绝 = 标准拒绝；见 docs/PAYMENTS.md |
+| POST/GET | /pay/{method_id}/notify | provider signature | 按支付方式的异步通知（R40）：POST 表单（支付宝 RSA2、易支付 MD5）；GET（查询串）只对声明 GET 通知的类型（C1 易支付）开放，支付宝方式的 GET = 标准拒绝；未知/停用/格式错的 id 与一切拒绝 = 标准拒绝；只有已验证的本方式订单回 `success`；见 docs/PAYMENTS.md |
 | GET | /sub/{token} | token | 订阅（按 UA 选格式；W20：`?format=clash\|sing-box\|links` 可显式指定）。W30：Clash（Clash Verge、Clash Meta for Android、FlClash、Mihomo Party、Stash、NekoBox）= 带 PROXY 组和路由模板（rule-providers）的 YAML；sing-box（`SFA/`、`SFI/`、`SFM/`、`SFT/`、内核）= 完整的 1.12+ 客户端配置（TUN + 本地 mixed inbound、DNS、PROXY selector、规则集）；其他（v2rayN/v2rayNG、Shadowrocket、Hiddify、未知）= base64 分享链接。每个入口是各自独立的代理，倍率 ≠ 1x 时名称中带当前倍率 |
 | GET | /{sub_path}/rules/{id}.json | 公开 | 路由 PR 2：面板托管的远程规则集（sing-box `source` 格式 version 3：一条域名规则 `domain`/`domain_suffix`/`domain_keyword` + 一条 `ip_cidr`），`id` = 链接 SHA-256 的前 32 位十六进制；只在订阅路径下（主域名与订阅域名都可，后台前缀下没有）；`Content-Type: application/json`、`Cache-Control: public, max-age=3600`、强 ETag（`If-None-Match` → 304）；按客户端地址限速（同订阅的 /64 桶上限，另一组键）；未知/格式错的 id、超限 = 规范拒绝（字节同构）。不含任何秘密（链接与规则都来自运营者配置的公开列表） |
 | GET | /install/{token}[/agent/{arch}] | install link | 链接有效期内提供节点安装脚本 / agent 二进制（docs/DEPLOY.md §3） |

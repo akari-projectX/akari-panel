@@ -50,7 +50,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(super::coupon_batches::routes())
         .route("/{prefix}/pay/alipay/notify", post(legacy_notify))
-        .route("/{prefix}/pay/{method}/notify", post(method_notify))
+        .route(
+            "/{prefix}/pay/{method}/notify",
+            post(method_notify).get(method_notify_get),
+        )
         .route("/{prefix}/api/v1/me/shop", get(shop))
         .route(
             "/{prefix}/api/v1/me/orders",
@@ -592,6 +595,7 @@ pub(crate) fn new_out_trade_no() -> String {
 pub async fn create_order(
     State(state): State<AppState>,
     ShopUser { user, .. }: ShopUser,
+    MaybeClientIp(client_ip): MaybeClientIp,
     ApiJson(req): ApiJson<CreateOrderReq>,
 ) -> Result<(StatusCode, Json<MyOrderView>), ApiError> {
     let live = state.payments();
@@ -848,12 +852,15 @@ pub async fn create_order(
 
     // The row exists before the provider knows the trade: a payment can
     // never arrive for an order we do not have.
+    let return_url = super::methods::return_url(&state, id);
     match provider
         .create(provider::CreateReq {
             out_trade_no: &out_trade_no,
             amount_cents: cents,
             subject: &subject,
             notify_url: notify_url.as_deref().unwrap_or_default(),
+            return_url: return_url.as_deref().unwrap_or_default(),
+            client_ip,
         })
         .await
     {
@@ -1495,6 +1502,37 @@ pub async fn method_notify(
         return crate::reject::not_found();
     };
     match handle_notify(&state, &*p, id, ip, &body).await {
+        Ok(true) => ack(p.notify_ack()),
+        Ok(false) => crate::reject::not_found(),
+        Err(e) => {
+            tracing::warn!(error = e.message(), "payment notify failed");
+            crate::reject::not_found()
+        }
+    }
+}
+
+/// GET /{prefix}/pay/{method}/notify (C1): a provider that notifies with a
+/// GET (EPay: the parameters in the query string) — the same verification
+/// as the POST route, the raw query string as the body. A GET for a
+/// method whose provider never notifies that way is the canonical
+/// rejection (like any refusal), and leaves no event: it is not a notify.
+pub async fn method_notify_get(
+    State(state): State<AppState>,
+    MaybeClientIp(ip): MaybeClientIp,
+    Path((_, method)): Path<(String, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if !notify_rate_ok(&state, ip).await {
+        return crate::reject::not_found();
+    }
+    let Some(id) = Uuid::try_parse(&method).ok() else {
+        return crate::reject::not_found();
+    };
+    let Some(p) = state.payments().provider(id).filter(|p| p.notify_get()) else {
+        return crate::reject::not_found();
+    };
+    let body = query.unwrap_or_default();
+    match handle_notify(&state, &*p, id, ip, body.as_bytes()).await {
         Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),
         Err(e) => {

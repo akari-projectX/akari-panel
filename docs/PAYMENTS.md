@@ -1,12 +1,14 @@
-# Payments: payment methods (Alipay Face-to-Face first)（支付：支付方式，首个为支付宝当面付）
+# Payments: payment methods (Alipay Face-to-Face, EPay)（支付：支付方式——支付宝当面付、易支付）
 
-R18-3 / W24 (R40)。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
-一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前唯一的类型是**支付宝当面付**
-（`alipay_f2f`：`alipay.trade.precreate` → 二维码）。同一类型可以有多个支付方式（例如两个支付宝商户）。
+R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
+一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前有两种类型：**支付宝当面付**
+（`alipay_f2f`：`alipay.trade.precreate` → 二维码）与**易支付**（`epay`，C1：通用易支付 MD5 接口，见下文「EPay（易支付）」）。
+同一类型可以有多个支付方式（例如两个支付宝商户，或同一易支付商户的支付宝与微信两个渠道）。
 
 - 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载 / 旧配置导入，
-  `alipay.rs` 为支付宝类型；W7 套餐目录：`catalog.rs`）
-- 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`
+  `alipay.rs` 为支付宝类型，`epay.rs` 为易支付类型；W7 套餐目录：`catalog.rs`）
+- 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`（均已并入 `1000_baseline.sql`）、
+  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）
 - SPA：`spa/src/pages/purchase.tsx`、`orders.tsx`、`admin-orders.tsx`、`admin-plans.tsx`（价格）、
   `admin-payments.tsx`（系统设置 → 支付）。
 
@@ -451,6 +453,94 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 peek_out_trade_no），把它加入 `provider::KINDS`，在新的迁移中放宽 `payment_methods.kind` 的 CHECK，
 并在该类型新增错误码时扩展 SPA 的错误映射。金额规则留在 `orders.rs`/`api.rs` 中，不随类型而变。
 
+## EPay（易支付）（C1）
+
+对接市面上常见的「彩虹易支付」式商户接口（v1，MD5 签名）。**一个支付方式 = 一个商户（pid + 密钥）+ 一个渠道**：
+渠道（`type`）固定为 支付宝 `alipay` / 微信支付 `wxpay` / QQ 钱包 `qqpay` 之一；要同时提供支付宝与微信，就添加两个
+易支付支付方式（可以是同一个商户），付款人在门户的支付方式选择器里选（例如「支付宝（易支付）」「微信支付（易支付）」，
+门户图标按渠道显示：支付宝 / 微信 / QQ，后台填了图标则以后台为准）。这样选择器是付款人唯一的选择，每张订单只由一个渠道结算，
+对账也按支付方式进行。可以配置多个易支付商户（各自一个或多个支付方式）。
+
+### 配置（系统设置 → 支付 → 添加支付方式 → 易支付）
+
+| 字段 | 说明 |
+|---|---|
+| 接口地址 `api_url` | 易支付站点的接口根地址，如 `https://pay.example.com/`（必须 https；仅回环地址可用 http——测试 mock）。不要填 `submit.php` 之类的页面地址（`payments.epay_url_invalid`）；保存时自动补结尾的 `/` |
+| 商户 ID `pid` | 1–32 位字母或数字 |
+| 商户密钥 `key` | 1–128 个可见 ASCII 字符；与支付宝私钥一样加密存放（`akari/payment-secrets-aead/v1`，AAD = 支付方式 id），**绝不回显**：页面只显示「已设置」与指纹（`SHA-256("akari/epay-key-fingerprint/v1\0" ‖ 密钥)` 的前 16 位十六进制）；审计只记 `"changed"`；编辑时留空 = 不变 |
+| 支付渠道 `channel` | `alipay` / `wxpay` / `qqpay`（请求里的 `type`） |
+| 下单方式 `api_mode` | `mapi`（默认，接口下单）或 `submit`（页面跳转），见下 |
+| 商品名称 `product_name` | 可选，≤ 64 字符；发给易支付的 `name`，默认「Akari - 套餐名」（部分易支付对商品名有风控，可在此改成中性的名称） |
+| 订单有效期 | 5–120 分钟，默认 15 |
+
+保存后点**测试连接**：用一个不可能存在的随机订单号调用查询接口。易支付先核对商户与密钥再查订单，所以「订单不存在」= 商户 ID 与密钥都对、
+查询接口可用（`keys_ok`）；「KEY 校验失败」之类 → `key_rejected`；商户不存在 → `pid_invalid`；连不上 / HTTP 错误 / 应答无法解析各有中文提示。
+异步通知地址与支付宝相同：`<主域名>/pay/<支付方式 id>/notify`（随每笔订单发给易支付，无需在易支付后台填写）。
+
+### 签名（MD5）
+
+所有请求与通知用同一规则（`epay::sign_content` / `sign` / `verify`）：
+
+1. 取全部参数，**去掉 `sign`、`sign_type` 和值为空的参数**；
+2. 按参数名的 ASCII（字节）顺序排序；
+3. 拼成 `k1=v1&k2=v2&…`，**值用原文，不做 URL 编码**；
+4. 在末尾**直接拼接商户密钥**（没有 `&`，也没有 `key=`）；
+5. MD5，小写十六进制即 `sign`；另带 `sign_type=MD5`。
+
+规范串示例（测试向量 `billing::epay::tests::signature_vectors`，密钥 `89unJUB8HZ54Hj7x4nUj56HN4nUzUJ8i`）：
+
+```
+money=1.00&name=VIP会员&notify_url=http://www.pay.com/notify_url.php&out_trade_no=20160806151343349&pid=1001&return_url=http://www.pay.com/return_url.php&type=alipay
+sign = md5(上面这串 + 密钥) = 427724b6656aa612cfdbe7a2262036a3
+```
+
+验签时 `sign_type` 必须是 `MD5`，`sign` 不分大小写、常数时间比较。
+
+### 下单
+
+参数：`pid`、`type`（渠道）、`out_trade_no`（= 我们订单的 `out_trade_no`）、`notify_url`、`return_url`、`name`、
+`money`（由订单的整数分格式化为「元.角分」两位小数，如 `990` → `9.90`，**不经浮点**）、`sign`、`sign_type`。
+
+- **接口下单（`mapi`，默认）**：`POST <接口地址>mapi.php`（表单，另带付款人地址 `clientip`）。应答 `code = 1` 时：有 `payurl` → 门户把付款人
+  跳转过去；否则有 `qrcode` → 门户显示二维码（`https://qr.alipay.com/…` 在手机上照旧提供「打开支付宝」）。
+  易支付**拒绝**（`code ≠ 1`，例如该商户没开 API 下单）或应答里没有可用的链接时，这笔订单**自动改用页面跳转**（记一条 WARN）；
+  连接失败 / 非 200 / 应答不是 JSON 则不改用，订单以 `precreate_failed` 取消、付款人看到「支付网关暂不可用」（与支付宝相同）。
+  接口下单不重试（同一订单号重复下单可能被拒）。
+- **页面跳转（`submit`）**：不调用易支付；订单的付款链接就是签好名的 `<接口地址>submit.php?<参数>`，门户把付款人跳转过去。
+- **同步返回 `return_url`** = `<主域名>/orders/<订单 id>`（门户的订单页）。它**只是把付款人带回订单页**：页面照常轮询订单状态
+  （会主动向易支付查询），**绝不**凭返回参数标记付款。
+
+### 异步通知
+
+易支付一般用 **GET**（参数在查询串里）通知，也有用 POST 表单的实现：同一路由 `/pay/{method_id}/notify` 两种都接受
+（GET 只对声明了 GET 通知的类型开放——支付宝方式的 GET 一律规范拒绝）。参数：`pid, trade_no, out_trade_no, type, name, money,
+trade_status, sign, sign_type`（可能还有空的 `param`）。依次检查：解码（≤ 16 KiB、≤ 64 个参数、无重复键）→ MD5 签名 →
+`pid` = 本支付方式的商户（否则 `pid_mismatch`）→ `out_trade_no` 属于**本支付方式**的订单（否则 `unknown_order`）→
+`money` 严格解析后 = 订单 `amount_cents`（否则 `amount_mismatch`）。`trade_status = TRADE_SUCCESS` → 经 `apply_mark_paid`
+付款（唯一付款路径，重放/并发恰好一次）；其他状态只确认（`ignored`）。只有对我们订单的已验证通知回 `success`；
+其余一切与支付宝相同：规范拒绝 + `payment_events` 一行（`sign` 存为 `<redacted>`），已知订单的有误通知另记审计
+`order.payment.rejected`。`type`（实际渠道）只记录，不作为拒绝条件（钱已经到了）。
+
+### 查询、关闭与退款
+
+- **查询**（轮询、对账、新订单结束旧订单前）：`GET <接口地址>api.php?act=order&pid=…&key=…&out_trade_no=…`。
+  这是易支付的标准查询接口，**密钥在查询串里**——所以只走 https（回环 http 仅测试），URL 绝不写日志。
+  `code = 1` 时 `status = 1` = 已付款（金额 `money` 必须等于订单金额，否则 `amount_mismatch` 不付款），`0` = 未付款；
+  应答里的 `out_trade_no` / `pid` 若与请求不符视为错误；「订单…不存在」= 尚无交易。传输错误 / 非 200 最多重试 3 次。
+  查询应答没有签名（v1 接口如此），依赖 TLS 与密钥。
+- **关闭**：易支付没有关单接口。订单到期或被取消时先查询（已付款则照常开通），再以 `close_state = not_closable` 结束；
+  付款人仍可能在易支付的页面上付完款——**迟到的通知照样开通**（与支付宝的迟到付款规则相同，测试
+  `epay_late_notify_after_expiry_fulfils`）。
+- **退款**：**不支持原路退款**（`refunds() = false`）。部分易支付有 `act=refund`，但它没有退款请求号、也没有退款查询：
+  应答丢失后重试可能退两次，不满足原路退款流程（`begin_original` → 网关 → `settle_original`，按请求号幂等）的要求。
+  易支付订单的退款请用「退回余额」，或在易支付后台退款后在面板里登记外部退款金额（`external_cents`）。
+
+### 未实测
+
+尚未对真实的易支付站点实测（没有测试商户）；行为按通用文档实现，并由 mock 网关测试与 smoke 覆盖。
+不同易支付分支的应答细节（`code` 为数字或字符串、`money` 为字符串或数字、错误文案）都已按宽松方式解析；
+若某个站点的「订单不存在」文案不含「不存在」/「not exist」，查询会被当作错误（订单保持待付款，直到过期后强制结束）。
+
 ## Notify endpoint rules（通知端点规则）
 
 `POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）以及旧的
@@ -537,6 +627,14 @@ cargo test --lib live_sandbox -- --ignored --nocapture
   密钥错误（过短、把私钥当公钥、把应用公钥当支付宝公钥）、上一把支付宝公钥的宽限期、测试连接的各种结果、
   通知与应答验证（原始字节、`\/` 转义、篡改、未签名的成功、已签名的业务错误）。
   `billing::provider::mock`：用 mock provider 测试 trait 对象。
+- `billing::epay::tests`：签名向量（规范串 + `md5sum` 独立算出的值、RFC 1321 向量）、验签（大小写、篡改每个字段、空值、`sign_type`）、
+  通知检查（`pid_mismatch`、`unknown_order`、畸形）、下单参数与链接（金额格式、`clientip`、商品名、过长链接）、`mapi`/查询应答解析、
+  测试连接的各种结果、配置校验（每个错误码）。
+- `billing::tests::epay`（真实数据库 + 校验面板 MD5 签名的 mock 易支付）：管理 API（密钥加密存放、绝不回显或审计、门户图标、测试连接）；
+  HTTP 购买流程（`mapi` → 付款链接、`clientip`/`return_url`/`notify_url`、每种错误通知 = 规范拒绝 + 事件、GET 通知付款开通、GET/POST 重放）；
+  并发重复通知 + 查询恰好一次；被拒时改用页面跳转、二维码应答、轮询按金额付款、网关故障、`submit` 不调用接口、查询重试；
+  到期 `not_closable` 后迟到通知照样开通；与支付宝方式并存时的隔离。
+- fuzz 目标 `epay_notify`（docs/FUZZING.md）。
 - `billing::tests::w24`（真实数据库 + mock 网关）：支付方式 API（带错误码的校验错误、AAD = id 的加密存放密钥、
   绝不回显或审计、乐观并发、测试连接、轮换宽限期、停用 = 规范拒绝、仅未使用时才能删除）；两个支付方式
   （选择器错误、跨方式通知隔离、旧通知路径、按方式对账）；不可读的密钥；在另一实例上重载

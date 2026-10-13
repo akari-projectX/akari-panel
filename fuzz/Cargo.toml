@@ -43,6 +43,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "epay_notify"
+path = "fuzz_targets/epay_notify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "alipay_response"
 path = "fuzz_targets/alipay_response.rs"
 test = false

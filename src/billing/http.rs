@@ -1,5 +1,5 @@
-//! Minimal HTTPS client for the Alipay gateway (and, W17, alert
-//! notifications): one POST per
+//! Minimal HTTPS client for the payment gateways (and, W17, alert
+//! notifications): one POST (or, for the EPay query API, one GET) per
 //! connection over rustls (ring provider, webpki roots) and hyper http1.
 //! `http://` is accepted only for loopback hosts (tests, local mock
 //! gateways; config_check enforces it). No proxy support: the panel
@@ -65,14 +65,30 @@ pub async fn post(
     body: Vec<u8>,
     timeout: Duration,
 ) -> Result<(u16, Bytes), String> {
-    tokio::time::timeout(timeout, post_inner(url, content_type, headers, body))
-        .await
-        .map_err(|_| "timed out".to_string())?
+    tokio::time::timeout(
+        timeout,
+        request(hyper::Method::POST, url, Some(content_type), headers, body),
+    )
+    .await
+    .map_err(|_| "timed out".to_string())?
 }
 
-async fn post_inner(
+/// GET `url` (C1: the EPay query API). Same rules as `post`; the URL can
+/// carry a credential (EPay's query takes the merchant key as a query
+/// parameter), so errors never include it.
+pub async fn get(url: &str, timeout: Duration) -> Result<(u16, Bytes), String> {
+    tokio::time::timeout(
+        timeout,
+        request(hyper::Method::GET, url, None, &[], Vec::new()),
+    )
+    .await
+    .map_err(|_| "timed out".to_string())?
+}
+
+async fn request(
+    method: hyper::Method,
     url: &str,
-    content_type: &str,
+    content_type: Option<&str>,
     headers: &[(&str, String)],
     body: Vec<u8>,
 ) -> Result<(u16, Bytes), String> {
@@ -100,12 +116,17 @@ async fn post_inner(
         Some(p) => format!("{host}:{p}"),
         None => host.clone(),
     };
-    let mut req = hyper::Request::post(path)
+    let mut req = hyper::Request::builder()
+        .method(method)
+        .uri(path)
         .header(header::HOST, authority)
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_LENGTH, body.len())
         .header(header::ACCEPT, "application/json")
         .header(header::USER_AGENT, "akari-panel");
+    if let Some(ct) = content_type {
+        req = req
+            .header(header::CONTENT_TYPE, ct)
+            .header(header::CONTENT_LENGTH, body.len());
+    }
     for (k, v) in headers {
         req = req.header(*k, v.as_str());
     }

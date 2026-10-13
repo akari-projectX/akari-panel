@@ -261,6 +261,12 @@ payments.app_id_invalid
 payments.config_invalid
 payments.config_unknown_field
 payments.environment_invalid
+payments.epay_channel_invalid
+payments.epay_key_invalid
+payments.epay_mode_invalid
+payments.epay_pid_invalid
+payments.epay_product_name_invalid
+payments.epay_url_invalid
 payments.gateway_invalid
 payments.gateway_unexpected
 payments.icon_invalid

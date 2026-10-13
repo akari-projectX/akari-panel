@@ -13,8 +13,8 @@
 //! `api::handle_notify`). A provider only talks to its gateway: create a
 //! trade, query it, close it, verify a notify, test the configuration.
 //!
-//! Alipay Face-to-Face (`alipay.rs`, kind `alipay_f2f`) is the first kind.
-//! Adding a kind = implement both traits, add it to `KINDS`, extend the
+//! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`) and EPay / 易支付
+//! (`epay.rs`, `epay`, C1). Adding a kind = implement both traits, add it to `KINDS`, extend the
 //! `payment_methods.kind` CHECK (new migration) and the SPA's form.
 
 use std::future::Future;
@@ -95,6 +95,10 @@ pub enum Close {
     Closed,
     /// Nothing to close (never started).
     NotExist,
+    /// The provider has no close call (EPay): the trade stays payable at
+    /// the gateway until it expires there; a late payment still fulfils
+    /// (`apply_mark_paid` accepts expired/cancelled orders).
+    NotClosable,
 }
 
 /// How the payer pays a created trade.
@@ -112,8 +116,13 @@ pub struct CreateReq<'a> {
     pub out_trade_no: &'a str,
     pub amount_cents: i64,
     pub subject: &'a str,
-    /// This method's notify URL (contains the route prefix: never log it).
+    /// This method's notify URL (never log it).
     pub notify_url: &'a str,
+    /// Where the provider sends the payer back afterwards (the portal's
+    /// order page; it never marks anything paid).
+    pub return_url: &'a str,
+    /// The payer's address, when known (EPay's API mode asks for it).
+    pub client_ip: Option<std::net::IpAddr>,
 }
 
 /// A verified asynchronous notification.
@@ -171,6 +180,11 @@ pub trait PaymentProvider: Send + Sync + std::fmt::Debug {
     fn verify_notify(&self, body: &[u8]) -> NotifyCheck;
     /// The body the provider expects when a notify was accepted.
     fn notify_ack(&self) -> &'static str;
+    /// The provider may notify with a GET (parameters in the query
+    /// string, EPay). Otherwise a GET notify is the canonical rejection.
+    fn notify_get(&self) -> bool {
+        false
+    }
     /// The method allows refunds through the provider (the channel's
     /// "allow original-route refunds" switch).
     fn refunds(&self) -> bool {
@@ -230,10 +244,14 @@ pub trait ProviderKind: Sync {
     /// The out_trade_no a notify body claims (legacy route: find the
     /// order before verifying with its method). Unverified.
     fn peek_out_trade_no(&self, body: &[u8]) -> Option<String>;
+    /// The portal icon of a method without one set (EPay: its channel).
+    fn default_icon(&self, _config: &Value) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Every provider kind.
-pub static KINDS: &[&dyn ProviderKind] = &[&super::alipay::AlipayKind];
+pub static KINDS: &[&dyn ProviderKind] = &[&super::alipay::AlipayKind, &super::epay::EpayKind];
 
 pub fn kind(id: &str) -> Option<&'static dyn ProviderKind> {
     KINDS.iter().copied().find(|k| k.id() == id)
@@ -340,6 +358,8 @@ pub mod mock {
                 amount_cents: 100,
                 subject: "s",
                 notify_url: "https://x/n",
+                return_url: "https://x/orders/1",
+                client_ip: None,
             })
             .await
             .unwrap();
@@ -371,8 +391,14 @@ pub mod mock {
         ));
         assert!(m.test_connection().await.ok);
         assert_eq!(m.notify_ack(), "ok");
-        // The registry knows Alipay F2F and nothing unknown.
+        assert!(!m.notify_get());
+        // The registry knows Alipay F2F and EPay, and nothing unknown.
         assert_eq!(kind("alipay_f2f").map(|k| k.id()), Some("alipay_f2f"));
+        assert_eq!(kind("epay").map(|k| k.id()), Some("epay"));
+        assert_eq!(
+            super::super::alipay::AlipayKind.default_icon(&Value::Null),
+            None
+        );
         assert!(kind("paypal").is_none());
         for k in KINDS {
             assert!(k.schema().as_array().is_some_and(|a| !a.is_empty()));

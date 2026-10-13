@@ -822,6 +822,8 @@ pub async fn end_order(
             match p.close(&order.out_trade_no).await {
                 Ok(Close::Closed) => "closed".to_string(),
                 Ok(Close::NotExist) => "not_exist".to_string(),
+                // EPay: nothing to close; a late payment still fulfils.
+                Ok(Close::NotClosable) => "not_closable".to_string(),
                 Err(e) => {
                     tracing::warn!(order = %order.id, error = %e, "payment close failed");
                     if !force {

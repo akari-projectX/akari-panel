@@ -929,6 +929,8 @@ async fn live_sandbox_db_configured() {
             amount_cents: 1,
             subject: "Akari W24 sandbox",
             notify_url: &notify,
+            return_url: &format!("{ORIGIN}/orders/x"),
+            client_ip: None,
         })
         .await;
     println!("precreate: ok={}", r.is_ok());
