@@ -209,7 +209,7 @@ pub(crate) fn plan(lines: &[Line<'_>], routing: &Routing) -> Plan {
     });
 
     // Services.
-    let mut services = Vec::with_capacity(c.services.len());
+    let mut services = Vec::new();
     for s in &c.services {
         if c.mode == Mode::Global {
             services.push(None);

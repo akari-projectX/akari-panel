@@ -131,7 +131,7 @@ fn list(v: Vec<String>, required: bool) -> Result<Vec<String>, ApiError> {
             max = MAX_SERVERS
         ));
     }
-    let mut out: Vec<String> = Vec::with_capacity(v.len());
+    let mut out: Vec<String> = Vec::new();
     for s in v {
         let t = s.trim().to_string();
         if server(&t).is_none() {
