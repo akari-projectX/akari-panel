@@ -1,7 +1,7 @@
 // INVENTORY §15 SET-18: the mail template editor (/settings/mail-templates).
 // Leaves the template it edits at its default (the mobile project runs the
 // same file after the desktop one).
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 import { MAILPIT, SMTP_PORT, apiJson, confirmDialog, dialog, isMobile, openConsole, toast, uniq } from "./helpers";
 
@@ -52,6 +52,19 @@ async function pane(page: Page, info: TestInfo, name: "编辑" | "预览" | "变
   if (isMobile(info)) await page.getByRole("button", { name, exact: true }).click();
 }
 
+/**
+ * Replace a code editor's (CodeMirror) whole document. Not `fill()`: that
+ * selects through the DOM and inserts at once, and CodeMirror only reads a DOM
+ * selection on the next `selectionchange`, so on a slow runner the text went in
+ * at the old cursor instead of replacing the document. ⌘/Ctrl+A is the
+ * editor's own select-all (its keymap updates its state before the insert).
+ */
+async function setDoc(editor: Locator, text: string) {
+  await editor.focus();
+  await editor.press("ControlOrMeta+a");
+  await editor.page().keyboard.insertText(text);
+}
+
 /** The editor's language switch (the shell toolbar has its own "English" button). */
 const langs = (page: Page) => page.getByRole("group", { name: "语言" });
 const errors = (page: Page) => page.getByRole("alert", { name: "模板错误" });
@@ -69,16 +82,16 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
 
   // Unknown placeholder: marked before any round trip, save is off.
   const body = page.getByRole("textbox", { name: "邮件正文" });
-  await body.fill(`${needed}\n\n{nope}`);
+  await setDoc(body, `${needed}\n\n{nope}`);
   await expect(errors(page)).toContainText("第 3 行：未知变量 {nope}");
   await expect(saveButton(page)).toBeDisabled();
   // A required placeholder removed: reported too.
   if (tpl.required.length) {
-    await body.fill("E2E 无必需变量");
+    await setDoc(body, "E2E 无必需变量");
     await expect(body).toHaveText("E2E 无必需变量");
     await expect(errors(page)).toContainText(`缺少必需变量 {${tpl.required[0]}}`);
   }
-  await body.fill(`${needed}\n\nE2E 自定义`);
+  await setDoc(body, `${needed}\n\nE2E 自定义`);
   await expect(errors(page)).toHaveCount(0);
 
   // Placeholder chips insert at the cursor (here: the subject).
@@ -116,7 +129,7 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   expect((await template()).custom).toBe(true);
 
   // 发送测试 offers the current (unsaved) draft, chosen by default when there is one.
-  await body.fill(`${needed}\n\nE2E 草稿`);
+  await setDoc(body, `${needed}\n\nE2E 草稿`);
   await expect(page.getByText("未保存的修改").first()).toBeVisible();
   const to = `${uniq(info, "draft")}@e2e.test`;
   await page.getByRole("button", { name: "发送测试", exact: true }).click();
@@ -155,10 +168,10 @@ test("SET-18: mail templates — placeholders checked while typing, preview, sav
   const source = page.getByRole("textbox", { name: "HTML 源码" });
   await expect(source).toContainText(/<!doctype html>/i);
   const generated = (await template()).starter_html;
-  await source.fill(`${generated}\n<p>E2E 源码</p>\n<script>alert(1)</script>`);
+  await setDoc(source, `${generated}\n<p>E2E 源码</p>\n<script>alert(1)</script>`);
   await expect(errors(page)).toContainText(/HTML 源码第 \d+ 行第 \d+ 列：不能包含/);
   await expect(saveButton(page)).toBeDisabled();
-  await source.fill(`${generated}\n<p>E2E 源码</p>`);
+  await setDoc(source, `${generated}\n<p>E2E 源码</p>`);
   await expect(errors(page)).toHaveCount(0);
   await pane(page, info, "预览");
   await expect(preview(page).getByText("E2E 源码")).toBeVisible();
