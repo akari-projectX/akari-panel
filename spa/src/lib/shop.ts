@@ -1,4 +1,4 @@
-import type { CouponRefusal, Me, MyOrder, Offer, OfferAction, OfferRefusal, Shop, ShopPlan } from '@/api';
+import { PERIOD_KINDS, type CouponRefusal, type Me, type MyOrder, type Offer, type OfferAction, type OfferRefusal, type Shop, type ShopPlan } from '@/api';
 
 /**
  * 商店的纯逻辑（有单测）。价格一律由面板算好（/me/shop 的 offers），前端只负责挑选和展示，不做任何价格计算。
@@ -26,6 +26,29 @@ export function preselect(p: ShopPlan, me: Pick<Me, 'expired' | 'quota_exhausted
 
 /** 一档报价在弹窗里的唯一键（同一个 days 周期可以有多档） */
 export const offerKey = (o: Pick<Offer, 'period' | 'days'>) => `${o.period}:${o.days ?? ''}`;
+
+/**
+ * 商店顶上的时长切换：所有套餐出现过的周期（重置包除外），按 月 → 季 → … → N 天 → 一次性 排，同种按天数。
+ * 每项带一个代表报价（第一个有它的套餐的），只用来取名字。
+ */
+export function periodChoices(plans: ShopPlan[]): Offer[] {
+  const seen = new Map<string, Offer>();
+  for (const p of plans) for (const o of p.offers) if (o.period !== 'reset' && !seen.has(offerKey(o))) seen.set(offerKey(o), o);
+  const rank = (o: Offer) => PERIOD_KINDS.indexOf(o.period);
+  return [...seen.values()].sort((a, b) => rank(a) - rank(b) || (a.days ?? 0) - (b.days ?? 0));
+}
+
+/**
+ * 默认选中的时长：当前套餐默认要续的那一档（preselect，非重置包）；否则最多套餐都有的那一档（同样多取排在前面的）。
+ */
+export function defaultPeriod(plans: ShopPlan[], me: Pick<Me, 'expired' | 'quota_exhausted'> | undefined): string | undefined {
+  const cur = plans.find((p) => p.current);
+  const pre = cur && me ? preselect(cur, me) : undefined;
+  if (pre && pre.period !== 'reset') return offerKey(pre);
+  const choices = periodChoices(plans);
+  const count = (k: string) => plans.filter((p) => p.offers.some((o) => offerKey(o) === k)).length;
+  return choices.map((o) => offerKey(o)).reduce<string | undefined>((best, k) => (best === undefined || count(k) > count(best) ? k : best), undefined);
+}
 
 /** 套餐整体为什么买不了（第一个报价的拒绝原因）；能买时为 null */
 export function planRefusal(p: ShopPlan): OfferRefusal | null {

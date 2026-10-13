@@ -2,8 +2,6 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { Check, ChevronDown, Copy, Download } from 'lucide-react';
-import { useBootOut } from '@/lib/boot';
-import { enterProps, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -34,12 +32,11 @@ const FORMAT_LABEL: Record<SubFormat, string> = {
   links: '通用链接',
 };
 
-/** 复制 / 对勾两个图标叠放交叉过渡；带一点回弹，和其它「操作成功」的弹出同一个手感 */
-const ICON_SWAP = 'absolute inset-0 grid place-items-center transition-[opacity,scale] duration-300 ease-[cubic-bezier(.34,1.56,.64,1)]';
+/** 复制 / 对勾两个图标叠放交叉淡化（不回弹） */
+const ICON_SWAP = 'absolute inset-0 grid place-items-center transition-[opacity,scale] duration-(--dur-base) ease-(--ease-out)';
 
 /** 取景框四角 */
 function Brackets() {
-  const ready = useBootOut();
   const corners = [
     'top-0 left-0 border-t-2 border-l-2 rounded-tl-[10px]',
     'top-0 right-0 border-t-2 border-r-2 rounded-tr-[10px]',
@@ -48,11 +45,10 @@ function Brackets() {
   ];
   return (
     <>
-      {corners.map((c, i) => (
+      {corners.map((c) => (
         <span
           key={c}
           aria-hidden
-          {...enterProps(ready, { delay: stagger(i, 0.2), y: 0, scale: 0.55 })}
           className={`pointer-events-none absolute size-4 border-brand/45 transition-[width,height,border-color] duration-(--dur-base) group-hover:size-5 group-hover:border-brand ${c}`}
         />
       ))}
@@ -61,7 +57,6 @@ function Brackets() {
 }
 
 export default function Subscribe() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const nav = useNavigate();
@@ -251,7 +246,6 @@ export default function Subscribe() {
 
       {/* ── 右：二维码 ── */}
       <div
-        {...enter()}
         className="flex shrink-0 flex-col items-center justify-center gap-2 self-center"
       >
         <div className="group relative p-2.5">

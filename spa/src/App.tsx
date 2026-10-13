@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from 'react';
-import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import ErrorBoundary from '@/components/error-boundary';
 import ErrorScreen from '@/components/error-screen';
@@ -16,7 +16,7 @@ import { warmHanFont } from '@/lib/han-font';
 import { fastNetwork, whenIdle } from '@/lib/prefetch';
 import { R } from '@/lib/routes';
 import {
-  Account, AccountDeleted, Announcements, Dashboard, Forgot, Help, Invite, Login, Nodes, OrderDetail, Orders, Privacy, Register,
+  Account, AccountDeleted, Announcements, Dashboard, Forgot, Help, Login, Nodes, OrderDetail, Orders, Privacy, Register,
   Reset, Shop, Terms, Tickets, Traffic, Wallet,
 } from '@/pages/registry';
 
@@ -145,7 +145,8 @@ export default function App() {
                 <Route path={R.tickets} element={scoped(['full', 'renewal', 'banned'], <Tickets />)} />
                 <Route path={R.nodes} element={scoped(['full'], <Nodes />)} />
                 <Route path={R.traffic} element={scoped(['full'], <Traffic />)} />
-                <Route path={R.invite} element={scoped(['full'], <Invite />)} />
+                {/* 邀请并进了钱包页（2026-10-13）：旧地址跳到「邀请返佣」分页 */}
+                <Route path={R.invite} element={<Navigate to={R.walletTab('invite')} replace />} />
               </Route>
               <Route element={<SiteLayout />}>
                 {/* 走错地址的人应该知道自己走错了，而不是被悄悄送回首页 */}

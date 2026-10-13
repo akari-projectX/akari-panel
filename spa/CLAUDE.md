@@ -40,11 +40,11 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 
 | 路径 | 页面 | 账户范围 |
 |---|---|---|
-| `/` | 仪表盘（续费范围：缩减版 + 续费横幅；封禁：封禁说明） | 全部 |
-| `/shop` | 商店（服务端报价、优惠码（只在确认订单弹窗里填，列表不带码）、余额抵扣、折算与作废确认、拒绝原因、支付方式） | full、renewal |
+| `/` | 仪表盘（续费范围：缩减版 + 续费横幅；封禁：封禁说明）。「近 7 日流量趋势」= `pages/dash/week-chart`：纯 HTML/CSS 的堆叠柱（下行实色、上行浅一档），纵轴按最大一天自动 GB/MB/KB 与整齐刻度（`lib/traffic` 的 `weekAxis`），柱顶写当天合计，横轴星期 + 月-日、最后一天写「今天」（全站时区的日），悬停 / 点按 / Tab 出提示（下行、上行、合计、计费）；不用图表库（recharts 只剩使用明细页） | 全部 |
+| `/shop` | 商店（服务端报价、优惠码（只在确认订单弹窗里填，列表不带码）、余额抵扣、折算与作废确认、拒绝原因、支付方式）。套餐列表 = `components/plan-grid`：顶上时长切换（`lib/shop` 的 `periodChoices` / `defaultPeriod`：默认当前套餐要续的那一档，否则最多套餐有的那一档），每张卡 = 名称 + 一行状态字（当前套餐 / 已售罄 / 仅限现有用户续费 / 仅剩 N 个名额，不用徽章）→ 该周期标价 + 折合每月 + 面板算出的本次应付（折算、余额）→ 三行规格（流量、重置、速率）→ 站长说明 → 操作；没有该周期的卡写「没有{时长}」+「看{它有的时长}」；列数随套餐数（1 个最宽 420px，2/3/4 栏，5–6 个三栏，平板两栏，手机一栏） | full、renewal |
 | `/orders`、`/orders/:id` | 订单列表（类型列 `action`）、详情与付款（二维码 / 收银台，轮询；手机上金额单在付款区上面）、退款去向 | full、renewal |
-| `/wallet` | 余额、流水、USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希；提现仅 full） | full、renewal |
-| `/invite` | 邀请链接（面板给的 `link_base`）、邀请码、返佣 | full |
+| `/wallet` | **邀请与钱包**（2026-10-13 合并，导航上叫「邀请」，续费范围叫「钱包」）：概览两栏 = 账户余额 / 可提现 / 审核中 + 申请提现 ｜ 邀请链接 + 返佣条款；下面分页 `?tab=invite`（收益数字、邀请码、返佣明细；full 的默认）/ `ledger`（收支流水；续费范围只有它）/ `withdrawals`（提现记录）。USDT 提现（R46：网络、地址提示、TON Memo、参考汇率、实付与交易哈希）与邀请只对 full（`pages/dash/wallet.tsx` + `wallet-invite.tsx`）。站内去钱包的链接用 `R.walletTab('ledger')` | full、renewal（分页按范围） |
+| `/invite` | 旧地址：跳到 `/wallet?tab=invite`（仍在 `access::PORTAL_PAGES` 里，收藏夹与旧链接照样能用） | 全部 |
 | `/nodes` | 可用入口（每个入口一行；倍率 = 此刻生效的倍率，D9；状态 在线/离线/维护中（中转健康检查失败或服务器额度用完 = 维护中，置灰，订阅里没有它）、负载等级、延迟参考（面板 TCP 测速优先），图例 + 每 30 秒刷新（`hooks/use-auto-reload`，仪表盘「订阅内的线路」同样）） | full |
 | `/traffic` | 流量明细（站点时区的日界；按线路 = 每个入口一行，显示此刻倍率与时段规则，不显示计费 ÷ 原始的混合比值） | full |
 | `/tickets` | 工单（新工单内联校验；对话打开 / 发出回复后滚到最新一条；关闭前确认） | full、renewal、banned |
@@ -53,6 +53,8 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 | `/login`、`/register`、`/forgot`、`/reset` | 登录（密码 / 通行密钥）、注册（PoW 或邮箱验证码，`?invite=` 预填）、申请重置链接、按 `#token=` 设新密码 | 未登录 |
 | `/deleted` | 注销之后的结果页（会话已清掉；路由 state 带是否匿名化保留） | 公开 |
 | `/terms`、`/privacy` | 条款、隐私：知识库里 slug 为 `terms` / `privacy` 的已发布文章（公开接口 `GET /api/v1/pages/{slug}`）；没写时显示中性缺省文案（门户不内置任何法律文本）；品牌设置里配了外链时页脚直接指向外链 | 公开 |
+
+导航（`layouts/dash-layout`，2026-10-13）：顶部 **仪表盘 · 商店 · 文档 · 邀请 · 工单 · 更多**（「邀请」= `/wallet`；工单的新回复在顶层项上一个小圆点，手机菜单里同一项带提醒），「更多」= 节点状态、使用明细、公告与动态、我的订单、设置；每项按账户范围过滤（封禁只剩仪表盘 + 工单）。
 
 面板邮件里的链接（到期提醒 `/shop`、重置 `/reset#token=…`、邀请 `/register?invite=…`）都在这张表里。不在表里的顶层路径由面板直接回答统一的拒绝。
 
@@ -90,32 +92,32 @@ CI（`.github/workflows/ci.yml` 的 `spa` job）：npm ci → audit → typechec
 
 | 令牌 | 值 | 用在 |
 |---|---|---|
-| `--ease-out` | `cubic-bezier(.22,1,.36,1)` | 一切进场与位移（快起慢收） |
+| `--ease-out` | `cubic-bezier(.22,1,.36,1)` | 一切进场（快起慢收） |
 | `--ease-in` | `cubic-bezier(.4,0,1,1)` | 退场 |
-| `--ease-spring` | `cubic-bezier(.34,1.56,.64,1)` | 带回弹：成功图标弹出、按钮松手 |
-| `--dur-press` | 120 ms | 按下（按钮、开关、`.press` 缩到 0.97） |
-| `--dur-hover` | 200 ms | 悬停变色；弹出层打开 |
-| `--dur-exit` / `DUR.exit` | 140 ms | 离开：旧页面、关闭的弹层 |
-| `--dur-fast` / `DUR.fast` | 260 ms | 小件：列表行、切页外壳 |
-| `--dur-base` / `DUR.base` | 420 ms | 块级：标题、统计条、卡片、区块 |
-| `--dur-slow` / `DUR.slow` | 700 ms | 首屏大件、对勾描画 |
-| `DUR.roll` | 600 ms | 数字从旧值滚到新值（`components/count-up`） |
-| `DUR.celebrate` | 1.3 s | 付款成功撒花（`lib/confetti`，按需加载） |
+| `--ease-spring` | `cubic-bezier(.34,1.56,.64,1)` | 只给付款成功的结果图标（别处不回弹） |
+| `--dur-press` | 100 ms | 按下（按钮、开关、`.press` 缩到 0.985，不回弹） |
+| `--dur-hover` | 160 ms | 悬停变色；弹出层与弹窗打开 |
+| `--dur-exit` / `DUR.exit` | 100 ms | 离开：旧页面、关闭的弹层 |
+| `--dur-fast` / `DUR.fast` | 160 ms | 切页淡入、小件出现（离线提示条） |
+| `--dur-base` / `DUR.base` | 200 ms | 块级的状态变化、复制成功的对勾 |
+| `--dur-slow` / `DUR.slow` | 320 ms | 付款成功的对勾描画、账户条进度线 |
+| `DUR.celebrate` | 0.8 s | 付款成功的小撒花（`lib/confetti`，18 片、飞得近，按需加载） |
 
-- **入场**：`lib/motion` 的 `useEnter()` / `enterProps()` 打 `data-enter`，错峰 `stagger(i)`（每项 45 ms，最多 8 项）；块级上浮 12px，行与小件 `NUDGE` 6px，一律向上不左右滑。关键帧叫 `akari-rise`——**不能叫 `enter` / `exit`**（tw-animate-css 的同名关键帧会把它顶掉，全站入场曾因此全部失效）。切页进来时没有 `data-enter` 的区块（`.sec`）由 CSS 错峰浮起。
-- **切页**：`PageTransition` 旧页淡出下沉 4px（EXIT）→ 新页上浮 8px 淡入（FAST）。
-- **按下**：按钮、开关、`.press` 缩到 0.97，松手回弹；带下拉的按钮不缩。
-- **数字**：统计条的数字用 `CountUp`（直接写 DOM、不重渲染）；金额给 `fmt: formatMoney`（值是分，逐分滚动）。
-- **最大内容块原地渲染（LCP）**：页面的最大内容块不做入场、数字第一次直接是终值（`StatRow still` → `CountUp instant`，之后值变了照常滚动）。仪表盘的统计条就是它（#117 的入场让仪表盘 LCP 晚了 100–450 ms）；其余区块照常错峰。e2e `polish.spec.ts` 断言统计条里没有 `data-enter`。
+2026-10-13 用户：「动效太多、太花、太慢」→ 安静、利落。后台 `admin/src/shared/index.css` 用同一组数值（`admin/scripts/check-tokens.mjs` 比对）。
+
+- **内容直接出现**：没有逐项错峰、区块上浮、卡片 / 列表入场，也没有数字滚动（`CountUp` 已删除；`StatRow` 直接写终值）。`lib/motion` 只剩只有不透明度的 `enterProps()`（离线提示条用），关键帧仍叫 `akari-rise`——**不能叫 `enter` / `exit`**（tw-animate-css 的同名关键帧会把它顶掉）。e2e `polish.spec.ts` 断言仪表盘 `main` 里没有 `data-enter`。
+- **切页**：`PageTransition` 旧页淡出（EXIT）→ 新页整页淡入（FAST），没有位移。
+- **按下**：按钮、开关、`.press` 缩到 0.985，松手回到原样；带下拉的按钮不缩。
+- **图表**：使用明细页的 recharts 图关掉动画（`isAnimationActive={false}`），仪表盘的周图本来就没有动画。
 - **复制成功**：对勾加 `pop-in`。骨架屏延迟 120 ms 淡入（`load-in`），内容到后按入场替换。
-- **弹窗**（`components/ui/panels`：阅读 / 确认 / 流程 / 结果）：任何宽度都居中（2026-10-12 用户要求，不再贴底），四边 12px；`.panel` 跟随可见视口（`lib/visual-viewport` 写 `--vv-h`/`--vv-top`，软键盘弹出时挪到键盘上方）、限高 = 可见视口 − 上下 max(12px, 安全区)，超出在弹窗内部滚动、头尾不动；进场淡入 + 0.96 放大 + 上浮 8px，退场更快。流程弹窗的底栏（`FlowFooter`）在手机上按钮另起一行等宽铺满，左边的小结独占上一行（以前和小结抢宽度，「提交申请」被挤出弹窗）。
-- **付款结果**（`components/pay-result`）：订单页轮询到已付款 / 超时，或商店当场付清（余额、优惠、折算全额抵扣、免费订单）带 `state.paid` 跳到订单页时弹出：成功 = 圆环 + 对勾描画、一次性撒花、金额 / 套餐 / 到期、「查看订阅」「返回仪表盘」；付了但没能开通 = 退回余额；超时 = 时钟轻摇 +「重新选购」。只弹一次（刷新不再出现）。
+- **弹窗**（`components/ui/panels`：阅读 / 确认 / 流程 / 结果）：任何宽度都居中（2026-10-12 用户要求，不再贴底），四边 12px；进场淡入 + 0.98 放大（--dur-hover），退场更快（--dur-exit）；`.panel` 跟随可见视口（`lib/visual-viewport` 写 `--vv-h`/`--vv-top`，软键盘弹出时挪到键盘上方）、限高 = 可见视口 − 上下 max(12px, 安全区)，超出在弹窗内部滚动、头尾不动。流程弹窗的底栏（`FlowFooter`）在手机上按钮另起一行等宽铺满，左边的小结独占上一行（以前和小结抢宽度，「提交申请」被挤出弹窗）。
+- **付款结果**（`components/pay-result`）：订单页轮询到已付款 / 超时，或商店当场付清（余额、优惠、折算全额抵扣、免费订单）带 `state.paid` 跳到订单页时弹出：成功 = 圆环 + 对勾描画、一次性小撒花、金额 / 套餐 / 到期、「查看订阅」「返回仪表盘」；付了但没能开通 = 退回余额；超时 = 时钟轻摇 +「重新选购」。只弹一次（刷新不再出现）。
 - **减少动效**（`prefers-reduced-motion`）：位移、缩放、描线、撒花全部关闭，内容直接到位；弹出层进退场缩成 1 ms（Radix 要等 animationend）；加载指示器只放慢。**e2e 一律在 reduced motion 下跑**（`playwright.config.ts`），性能报告则照常播放动效。
 - 只动 `transform` / `opacity`（独立属性 `translate` / `scale` 优先，不覆盖元素自己的 transform）；唯一例外是结果图标的描线（56px SVG 的 `stroke-dashoffset`，只重绘不布局）。不引入动效库；特效代码按需加载。
 
 ## 字体
 
-全平台用 **Noto Sans SC**（SIL OFL 1.1；原文 `fonts-src/noto/OFL.txt`，随产物发布于 `assets/licenses/NotoSansSC-OFL.txt`，并进 `make third-party` 清单）。只收需要的字：`scripts/subset-akari-font.py`（需 fonttools + brotli；`collect-text.mjs` 从源码字符串统计界面用字 + 常用 3500 字 + `fonts-src/akari/extra-chars.txt`，按字频切约 110 片，`unicode-range` 按实际字形写）。**改了界面中文文案就重跑**，否则新字会落到系统字体。
+全平台：拉丁字母与数字用 **Inter**（2026-10-13：字形、字重与后台一致；`src/assets/fonts/inter.css` + `inter/latin.woff2`，与后台的 Inter 子集逐字节相同、约 58 KiB，`lib/han-font` 挂载后与 akari.css 一起插入，`font-display: swap`；SIL OFL 1.1，原文 `fonts-src/inter/OFL.txt`、`assets/licenses/Inter-OFL.txt`），汉字用 **Noto Sans SC**（SIL OFL 1.1；原文 `fonts-src/noto/OFL.txt`，随产物发布于 `assets/licenses/NotoSansSC-OFL.txt`）；两者都进 `make third-party` 清单。颜色与字重的数值取自后台令牌（`index.css` 顶部注释：主文字 #12151c、辅助 #5c6473、底色 #f7f8fa、深色底 #0b0c10；页面标题 700、区块标题与强调 600）。只收需要的字：`scripts/subset-akari-font.py`（需 fonttools + brotli；`collect-text.mjs` 从源码字符串统计界面用字 + 常用 3500 字 + `fonts-src/akari/extra-chars.txt`，按字频切约 110 片，`unicode-range` 按实际字形写）。**改了界面中文文案就重跑**，否则新字会落到系统字体。
 
 ## 这几处别拆
 

@@ -159,55 +159,51 @@ html { -webkit-tap-highlight-color: transparent; }
   /*
    * 动效令牌（全站唯一口径；和 src/lib/motion.ts 的 DUR 同一套值，两边改要一起改；说明见 spa/CLAUDE.md「动效」）：
    *   --ease-out    进场与位移（快起慢收）        --ease-in  退场（慢起快走）
-   *   --ease-spring 带一点回弹：成功图标弹出、按钮松手、对勾
-   *   --dur-press   按下（按钮、开关缩到 .97）     --dur-hover 悬停变色、底色；弹出层打开
-   *   --dur-fast    小件：行、数字跳变、切页外壳  --dur-base  块级：标题、统计条、卡片
-   *   --dur-slow    首屏大件、付款成功的对勾      --dur-exit  离开：旧页面、关闭的弹层
+   *   --ease-spring 带一点回弹：只给付款成功的结果图标
+   *   --dur-press   按下（按钮、开关缩到 .985）    --dur-hover 悬停变色、底色；弹出层打开
+   *   --dur-fast    切页淡入、小件出现            --dur-base  弹窗、块级的状态变化
+   *   --dur-slow    付款成功的对勾描画            --dur-exit  离开：旧页面、关闭的弹层
+   *   2026-10-13 用户：动效太多、太花、太慢 → 全部缩短，内容直接出现，切页只淡入淡出。
    */
   --ease-out: cubic-bezier(.22, 1, .36, 1);
   --ease-in: cubic-bezier(.4, 0, 1, 1);
   --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
-  --dur-press: .12s;
-  --dur-hover: .2s;
-  --dur-fast: .26s;
-  --dur-base: .42s;
-  --dur-slow: .7s;
-  --dur-exit: .14s;
+  --dur-press: .1s;
+  --dur-hover: .16s;
+  --dur-fast: .16s;
+  --dur-base: .2s;
+  --dur-slow: .32s;
+  --dur-exit: .1s;
 
   /*
-   * 浅色模式的文字色：一套带蓝调的冷灰（Slate），和品牌蓝、暗色主题同一色温。四级，全部是实色：
-   *   --foreground       #1e293b  标题、主要文字。不用纯黑：白底上明度差太大，边缘发眩，久看累眼；
-   *                              Noto Sans SC 笔画又粗，配纯黑整页发乌
-   *   --text-body        #475569  长篇正文（公告、文档、条款），7.6:1
-   *   --muted-foreground #5f6b7e  辅助说明、标签、元信息。白底 5.4:1，浅灰底（--muted）上 4.9:1，都过 WCAG AA
-   *                              （Tailwind 的 slate-500 在浅灰底上只有 4.35:1，所以取得再深一点）
-   *   --faint-foreground #8390a2  只给装饰：大号编号、分隔点、图标、「—」占位。3.2:1，够大字（≥24px）的 3:1，
-   *                              不许用在要读的小字上
-   * 半透明写法（text-foreground/70 这类）一律不用：叠在浅灰底、渐变上时实际灰度不可控，对比度也算不准。
-   *
-   * 可点的蓝：#1677ff 当文字只有 4.1:1，白字放在它上面也只有 4.1:1，都不到 AA。
-   * 浅色模式的品牌色取同色系深一档的 #1668dc（白底 5.2:1、白字 5.2:1）；图表、进度条这些非文字的蓝不受影响（--chart-*）。
-   * 状态色同理，取 700 那一档：成功 #047857、警示 #b45309、危险 #b91c1c，白底都在 5:1 以上。
+   * 颜色（2026-10-13 用户：字重与颜色和后台一致）：数值取自后台 admin/src/shared/index.css 的令牌（只对齐数值，不共享源码，R23）。
+   *   --foreground       #12151c  标题、主要文字（后台 --foreground）
+   *   --text-body        #3a404c  长篇正文（公告、文档、条款），介于主文字与辅助灰之间
+   *   --muted-foreground #5c6473  辅助说明、标签、元信息（后台同值，白底 5.9:1）
+   *   --faint-foreground #737b8a  装饰与次要元信息（后台 --faint，白底 4.6:1）
+   *   底色 #f7f8fa（后台窗口底）+ 白色内容面；分隔线、输入框边框用后台的半透明黑；状态色取后台那一档（成功 #15803d、警示 #b45309、危险 #dc2626）。
+   *   品牌蓝 #2563eb（浅）/ #4a9dff（深），两边本来就相同。
    */
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  --background: #f7f8fa;
+  --foreground: #12151c;
   --card: #ffffff;
-  --card-foreground: #0f172a;
+  --card-foreground: #12151c;
   --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --accent: #f1f5f9;
-  --accent-foreground: #0f172a;
-  --text-body: #334155;
-  --muted-foreground: #64748b;
-  --faint-foreground: #94a3b8;
-  --muted: #f1f5f9;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --success: #059669;
-  --warning: #d97706;
+  --popover-foreground: #12151c;
+  --secondary: #e9ebf0;
+  --secondary-foreground: #12151c;
+  --accent: #eef0f4;
+  --accent-foreground: #12151c;
+  --text-body: #3a404c;
+  --muted-foreground: #5c6473;
+  --faint-foreground: #737b8a;
+  --muted: #eef0f4;
+  --border: rgb(18 21 28 / 0.09);
+  --input: rgb(18 21 28 / 0.16);
+  --success: #15803d;
+  --warning: #b45309;
   --danger: #dc2626;
+  --destructive: #dc2626;
 
   --primary: #2563eb;
   --primary-foreground: #ffffff;
@@ -253,7 +249,7 @@ html { -webkit-tap-highlight-color: transparent; }
 /* 明暗、语言切换时整页交叉淡化（lib/motion 的 crossfade）。浏览器默认 .25s ease，改成站内口径 */
 ::view-transition-old(root),
 ::view-transition-new(root) {
-  animation-duration: var(--dur-fast, .26s);
+  animation-duration: var(--dur-fast, .16s);
   animation-timing-function: var(--ease-out, ease);
 }
 
@@ -271,23 +267,21 @@ html { -webkit-tap-highlight-color: transparent; }
  * 同名时构建只留一份——以前留下的是 tw-animate 的那份（不透明度、位移都读 --tw-enter-*，默认 1 和 0），
  * 全站的 data-enter 入场因此什么都没播：卡片、列表、标题都是直接蹦出来的。
  */
-@keyframes akari-rise {
-  from { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
-}
-[data-enter='wait'] { opacity: 0; translate: 0 var(--enter-y, 12px); scale: var(--enter-scale, 1); }
-[data-enter='in'] { animation: akari-rise var(--enter-dur, .42s) var(--ease-out) var(--enter-delay, 0s) backwards; }
+@keyframes akari-rise { from { opacity: 0; } }
+[data-enter='wait'] { opacity: 0; }
+[data-enter='in'] { animation: akari-rise var(--enter-dur, .16s) var(--ease-out) var(--enter-delay, 0s) backwards; }
 [data-leave='true'] {
-  opacity: 0; translate: 0 var(--enter-y, 12px); pointer-events: none;
-  transition: opacity var(--dur-exit) var(--ease-in), translate var(--dur-exit) var(--ease-in);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-exit) var(--ease-in);
 }
 
 @keyframes grow-x { from { scale: 0 1; } }
 [data-grow='wait'] { scale: 0 1; }
-[data-grow='in'] { animation: grow-x var(--grow-dur, 1.1s) var(--grow-ease, var(--ease-out)) var(--grow-delay, 0s) backwards; }
+[data-grow='in'] { animation: grow-x var(--grow-dur, var(--dur-slow)) var(--grow-ease, var(--ease-out)) var(--grow-delay, 0s) backwards; }
 
-/* 操作成功的图标「弹出」：带一点回弹，和原来的弹簧手感接近；复制成功的对勾也用它 */
-@keyframes pop-in { from { opacity: 0; scale: .6; } }
-.pop-in { animation: pop-in var(--dur-base) var(--ease-spring) backwards; }
+/* 操作成功的图标（复制成功的对勾）：短促淡入 + 轻微放大，不回弹 */
+@keyframes pop-in { from { opacity: 0; scale: .85; } }
+.pop-in { animation: pop-in var(--dur-base) var(--ease-out) backwards; }
 
 /*
  * 结果图标（components/pay-result）：圆底先弹出（--ease-spring），圆环描一圈，对勾随后画出来；
@@ -303,9 +297,9 @@ html { -webkit-tap-highlight-color: transparent; }
 .result-mark.is-muted { color: var(--muted-foreground); background: var(--muted); }
 .result-mark .ring { opacity: .3; }
 .draw-in { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw-in var(--dur-slow) var(--ease-out) .08s forwards; }
-.result-mark .tick { animation-duration: var(--dur-base); animation-delay: .34s; }
+.result-mark .tick { animation-duration: var(--dur-base); animation-delay: .2s; }
 @keyframes draw-in { to { stroke-dashoffset: 0; } }
-.shake-x { animation: pop-in var(--dur-base) var(--ease-spring) backwards, shake-x .56s var(--ease-out) .3s; }
+.shake-x { animation: pop-in var(--dur-base) var(--ease-spring) backwards, shake-x var(--dur-slow) var(--ease-out) .12s; }
 @keyframes shake-x { 20% { translate: -5px 0; } 40% { translate: 4px 0; } 60% { translate: -3px 0; } 80% { translate: 1.5px 0; } }
 .result-summary > div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; }
 .result-summary > div + div { border-top: 1px solid var(--border); }
@@ -313,16 +307,16 @@ html { -webkit-tap-highlight-color: transparent; }
 .result-summary dd { min-width: 0; text-align: right; font-weight: 500; overflow-wrap: anywhere; }
 
 /*
- * 按下：按钮、开关、可点的卡片（.press）缩到 .97，松手按 --ease-spring 回弹。
+ * 按下：按钮、开关、可点的卡片（.press）缩到 .985，松手回到原样（不回弹）。
  * 只动 scale（独立属性，不碰元素自己的 transform）；带下拉的按钮（aria-haspopup）不缩，菜单是贴着它弹出的。
  */
 [data-slot='button']:not(:disabled):not([aria-haspopup]), [data-slot='switch'], .press {
   transition-property: color, background-color, border-color, box-shadow, opacity, scale;
-  transition-duration: var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-base);
-  transition-timing-function: var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-out), var(--ease-spring);
+  transition-duration: var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-hover), var(--dur-press);
+  transition-timing-function: var(--ease-out);
 }
 :is([data-slot='button']:not(:disabled):not([aria-haspopup]), [data-slot='switch']:not([data-disabled]), .press):active {
-  scale: .97;
+  scale: .985;
   transition-duration: var(--dur-press);
   transition-timing-function: var(--ease-out);
 }
@@ -342,24 +336,13 @@ html { -webkit-tap-highlight-color: transparent; }
 /* 复制按钮上扫过的一道光 */
 @keyframes sweep { from { translate: -140% 0; } to { translate: 140% 0; } }
 
-/* 切页：旧页面淡出并略微下沉（EXIT），新页面上浮淡入（FAST），见 components/page-transition */
-@keyframes page-in { from { opacity: 0; translate: 0 8px; } }
+/* 切页：旧页面淡出（EXIT），新页面整页淡入（FAST），没有位移、区块不再错峰，见 components/page-transition */
+@keyframes page-in { from { opacity: 0; } }
 .page-in { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
 .page-out {
-  opacity: 0; translate: 0 4px; pointer-events: none;
-  transition: opacity var(--dur-exit) var(--ease-in), translate var(--dur-exit) var(--ease-in);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--dur-exit) var(--ease-in);
 }
-
-/*
- * 切页进来时，自己没有入场动画的区块（钱包、邀请、设置、订单详情这类页面的 .sec）错峰浮起：
- * 和用 lib/motion 的 enter() 的页面同一个手感，又不必给每个区块编号。
- * 已经有 data-enter 子元素的区块不再整体动——两层叠在一起会发飘。刷新后的第一页由启动画面的淡出接手，不播。
- */
-.page-in .sec:not(:has([data-enter])) { animation: akari-rise var(--dur-base) var(--ease-out) backwards; --enter-y: 10px; }
-.page-in .sec:nth-of-type(2) { animation-delay: .05s; }
-.page-in .sec:nth-of-type(3) { animation-delay: .1s; }
-.page-in .sec:nth-of-type(4) { animation-delay: .15s; }
-.page-in .sec:nth-of-type(n + 5) { animation-delay: .2s; }
 
 /* 提示条（sonner）：进退场沿用站内曲线；它自己的减少动效处理照旧 */
 html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
@@ -371,11 +354,11 @@ html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
  * e2e 与截图都在这个模式下跑（playwright.config.ts），时序因此稳定。
  */
 @media (prefers-reduced-motion: reduce) {
-  [data-enter], [data-grow], .page-in, .pop-in, .draw-in, .shake-x, .result-mark, .sec { animation: none !important; }
+  [data-enter], [data-grow], .page-in, .pop-in, .draw-in, .shake-x, .result-mark { animation: none !important; }
   .draw-in { stroke-dashoffset: 0; }
-  [data-enter='wait'] { opacity: 1; translate: none; scale: none; }
+  [data-enter='wait'] { opacity: 1; }
   [data-grow='wait'] { scale: none; }
-  [data-leave='true'], .page-out { transition: none; translate: none; }
+  [data-leave='true'], .page-out { transition: none; }
   [data-slot$='-content'], [data-slot$='-overlay'] { --tw-duration: 1ms !important; }
   :is([data-slot='button'], [data-slot='switch'], .press):active { scale: none; }
   [data-slot='switch-thumb'] { transition: none; }
@@ -385,30 +368,30 @@ html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
 
 /* 暗色：底色偏冷（和落地页首屏的夜色同一族），品牌蓝提亮一档才压得住深底 */
 .dark {
-  --background: oklch(0.16 0.014 258);
-  --foreground: oklch(0.97 0.004 258);
-  --card: oklch(0.196 0.015 258);
-  --card-foreground: oklch(0.97 0.004 258);
-  --popover: oklch(0.196 0.015 258);
-  --popover-foreground: oklch(0.97 0.004 258);
-  --primary: oklch(0.66 0.176 253);
-  --primary-foreground: oklch(0.15 0.02 258);
-  --secondary: oklch(0.25 0.015 258);
-  --secondary-foreground: oklch(0.97 0.004 258);
-  --muted: oklch(0.235 0.014 258);
-  --muted-foreground: oklch(0.68 0.014 258);
+  --background: #0b0c10;
+  --foreground: #eef0f5;
+  --card: #1a1b21;
+  --card-foreground: #eef0f5;
+  --popover: #202128;
+  --popover-foreground: #eef0f5;
+  --primary: #4a9dff;
+  --primary-foreground: #06101f;
+  --secondary: #272a32;
+  --secondary-foreground: #eef0f5;
+  --muted: #22242b;
+  --muted-foreground: #9aa1ae;
   /* 新增的几个：暗色下正文沿用原来的辅助色，装饰色取原来 muted/50 叠在深底上的灰度，状态色是原来夜间模式那一套亮一档的 400 */
-  --text-body: oklch(0.68 0.014 258);
-  --faint-foreground: oklch(0.53 0.014 258);
-  --success: #34d399;
+  --text-body: #b8beca;
+  --faint-foreground: #7d8492;
+  --success: #4ade80;
   --warning: #fbbf24;
   --danger: #f87171;
-  --accent: oklch(0.25 0.015 258);
-  --accent-foreground: oklch(0.97 0.004 258);
-  --border: oklch(1 0 0 / 11%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.66 0.176 253);
-  --destructive: oklch(0.704 0.191 22.216);
+  --accent: #22242b;
+  --accent-foreground: #eef0f5;
+  --border: rgb(255 255 255 / 0.08);
+  --input: rgb(255 255 255 / 0.15);
+  --ring: #4a9dff;
+  --destructive: #f87171;
 
   --brand: #4a9dff;
   --brand-light: #7fdcff;
@@ -421,33 +404,29 @@ html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
   --chart-4: #91caff;
   --chart-5: #bae0ff;
 
-  --sidebar: oklch(0.196 0.015 258);
-  --sidebar-foreground: oklch(0.97 0.004 258);
-  --sidebar-primary: oklch(0.66 0.176 253);
-  --sidebar-primary-foreground: oklch(0.15 0.02 258);
+  --sidebar: #1a1b21;
+  --sidebar-foreground: #eef0f5;
+  --sidebar-primary: #4a9dff;
+  --sidebar-primary-foreground: #06101f;
   --sidebar-accent: color-mix(in srgb, #4a9dff 14%, transparent);
   --sidebar-accent-foreground: #7fdcff;
-  --sidebar-border: oklch(1 0 0 / 11%);
-  --sidebar-ring: oklch(0.66 0.176 253);
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-ring: #4a9dff;
 }
 
 /*
- * 字体栈：全平台、中英文都用 Noto Sans SC（Google / Adobe 的开源黑体，SIL OFL），苹果设备也一样。
+ * 字体栈（2026-10-13 用户：字形、字重与后台一致）：拉丁字母与数字用 Inter（src/assets/fonts/inter.css，与后台同一子集），
+ * 汉字用 Noto Sans SC（Google / Adobe 的开源黑体，SIL OFL），全平台一样。
  *
- * · 网页字体收了英文、数字、常用 3500 字和界面用字，可变字重 300–700，写多少就是多少，中英文粗细一致。
- * · 家族名是 Noto Sans SC Variable，故意不和本机字体同名：@font-face 会遮住同名的本机字体，
- *   同名的话没收进子集的生僻字就找不到本机那份了。现在它们先找本机装的 Noto Sans SC，
- *   再落到苹方（苹果设备）/ 微软雅黑（Windows）。
- * · 字重比别的字体低一档用：Noto Sans SC 笔画粗，同样写 700，比苹方、微软雅黑黑得多，15–19px 的 600 就已经糊成一团。
+ * · Noto 网页字体收了常用 3500 字和界面用字，可变字重 300–700；Inter 的拉丁片排在前面，英文、数字都由它显示。
+ * · Noto 的家族名是 Noto Sans SC Variable，故意不和本机字体同名：@font-face 会遮住同名的本机字体，
+ *   同名的话没收进子集的生僻字就找不到本机那份了。现在它们先找本机装的 Noto Sans SC，再落到苹方 / 微软雅黑。
+ * · 字重与后台的层级一致：
  *     400  正文、说明
- *     500  按钮、导航、标签、表头、列表标题、24px 以下的小标题、正文里的强调（b / strong）、大号数字
- *     600  24px 及以上的页面与区块标题
- *   大号数字（统计值、价格、日期）用 500：Noto 的数字笔画粗，600 在 40px 以上显得笨重，500 已经足够醒目。
- *   区块说明（.sec-desc）是说明文字：400、辅助灰。
- *   夹在灰色说明里的数值、名称（「在线 5 / 6」「检测到你在用 Windows」）只换正文色、不加粗；
- *   行内链接（「按平台查看教程」「注册」）用品牌色、不加粗，悬停出下划线。
- *   不用 700 及以上（font-bold、700、650 这类写法都不要用）。
- * · Noto Sans SC 没有等宽数字特性（tnum），下面 .tnum 那条对它不起作用；不过它的数字本来就一样宽，数字照样对得齐、不跳动。
+ *     500  按钮、导航、表头、列表标题、正文里的数值
+ *     600  区块标题与小标签（.sec-title）、正文里的强调（b / strong）、大号数字（统计值、价格）
+ *     700  页面大标题（.page-title），和后台 PageHeader 一样
+ *   区块说明（.sec-desc）是说明文字：400、辅助灰。行内链接用品牌色、不加粗，悬停出下划线。
  * · Noto Sans SC 的 ’ ‘ “ ” … 是全角的，占一个汉字宽——中文排版本该如此，英文里却会把 month’s 撑出两道空。
  *   英文界面打开字体的比例宽度（pwid），换成窄的那一套；中文界面不动，中文引号保持全角。
  *   用 font-variant-east-asian 而不是 font-feature-settings：后者会被 .tnum 那条整个覆盖掉。
@@ -465,7 +444,7 @@ html [data-sonner-toast] { transition-timing-function: var(--ease-out); }
   --color-brand-deep: var(--brand-deep);
 }
 :root {
-  --font-stack: 'Noto Sans SC Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-stack: 'Inter Akari', 'Noto Sans SC Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
 :root:lang(en) {
   font-variant-east-asian: proportional-width;
@@ -482,6 +461,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-synthesis: none;
+  /* Inter：单层 a（cv11）、开放数字（ss01），与后台相同 */
+  font-feature-settings: 'cv11', 'ss01';
 }
 
 /*
@@ -491,7 +472,7 @@ body {
  */
 @layer base {
   /* <b> / <strong> 默认是 bolder，正文里会算成 700——在 Noto 上又粗又黑。强调用中黑（见上面「字体栈」的字重说明） */
-  b, strong { font-weight: 500; }
+  b, strong { font-weight: 600; }
   p { line-height: 1.75; }
   h1, h2, h3, h4 { line-height: 1.2; text-wrap: balance; }
 }
@@ -501,7 +482,7 @@ h1, h2, h3, h4 { letter-spacing: -0.022em; }
 /* 数字等宽：统计值、表格、价格对齐 */
 .tnum, .stat-v, .hero-num, table, code, time {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: 'tnum' 1;
+  font-feature-settings: 'tnum' 1, 'cv11', 'ss01';
 }
 
 ::selection { background: color-mix(in srgb, var(--brand) 22%, transparent); }
@@ -523,12 +504,6 @@ h1, h2, h3, h4 { letter-spacing: -0.022em; }
  */
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 
-/* ---------- 渐变文字 ---------- */
-.grad-text {
-  background: linear-gradient(100deg, var(--brand-deep) 0%, var(--brand) 45%, var(--brand-light) 100%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  -webkit-font-smoothing: subpixel-antialiased;
-}
 
 /* ===================================================================
    shadcn 版 · 编辑式极简版式（无卡片 · 大留白 · 排版优先）
@@ -541,7 +516,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 /* --- 页面大标题 --- */
 .page-title {
-  font-size: 34px; font-weight: 600; letter-spacing: -0.032em; line-height: 1.18;
+  font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2;
   /* 不写 margin：Tailwind 的基础样式已经清零，写在这里（层外）反而压掉了标题上的 mt-*（条款页、错误页的标题因此贴着上一行） */
 }
 .page-sub {
@@ -558,10 +533,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 20px; margin-bottom: 26px; flex-wrap: wrap;
 }
-/* 微标签式标题：小号大写字距 */
+/* 微标签式标题：小号、半粗、辅助灰（后台区块小标题同一写法） */
 .sec-title {
   display: flex; align-items: center; gap: 7px;
-  font-size: 12.5px; font-weight: 500; letter-spacing: .055em;
+  font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
   color: var(--muted-foreground);
 }
 .sec-title :is(svg) { letter-spacing: normal; }
@@ -625,7 +600,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 /* --- 指标：数字在上、标签在下、无分隔线 --- */
 .statrow { display: flex; flex-wrap: wrap; gap: 56px 72px; }
 .statrow > div { min-width: 0; }
-.stat-v { font-size: 46px; font-weight: 500; letter-spacing: -0.038em; line-height: 1.02; white-space: nowrap; }
+.stat-v { font-size: 36px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.02; white-space: nowrap; }
 /* 数字后的单位（GB / 个 / 天 / CNY）：小一号、灰一档，数字才是主角 */
 .stat-unit { font-size: .42em; font-weight: 500; letter-spacing: 0; color: var(--muted-foreground); margin-left: .22em; }
 .stat-k { font-size: 13px; color: var(--muted-foreground); margin-top: 12px; letter-spacing: -0.004em; }
@@ -698,18 +673,21 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 }
 
 .hero-line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.hero-num { font-size: 52px; font-weight: 500; letter-spacing: -0.04em; line-height: 1.02; }
+.hero-num { font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.02; }
 
-/* --- 定价三栏：靠间距分隔，主推列浅底圆角 --- */
+/* --- 商店套餐列（components/plan-grid，2026-10-13 改版）--- */
 /*
- * 商店的套餐列。沿用站内的语言：不画卡片框和投影，每列顶上一道细线，
- * 和区块之间的分隔线是同一种；当前套餐用浅灰底圆角块托住（接入前商店「热门」那一栏的写法）。
- * 悬停时一道品牌色细线从左往右扫过顶边——和顶部导航的下划线同一个动作，不上浮、不加阴影。
+ * 沿用站内的语言：不画卡片框和投影，每列顶上一道细线（和区块分隔线同一种）；当前套餐用白底细边圆角块托住。
+ * 列数随套餐个数：1 个不拉满（最宽 420px），2 个两栏，3 个三栏，4 个宽屏四栏，5–6 个三栏两行；平板两栏，手机一栏。
+ * 卡内自上而下：名称 + 状态 → 价格 → 三行规格（流量 / 重置 / 速率，每张卡同样三行，横着对齐比较）→ 说明 → 操作（贴底，各卡对齐）。
  */
-.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px 40px; }
+.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 40px; }
+.plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
+.plan-cols[data-count='2'] { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 900px; }
+@media (min-width: 1200px) { .plan-cols[data-count='4'] { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 28px; } }
 .plan-col {
   position: relative; display: flex; flex-direction: column;
-  padding: 26px 0 30px; border-top: 1px solid var(--border);
+  padding: 24px 0 28px; border-top: 1px solid var(--border);
 }
 .plan-col::before {
   content: ''; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
@@ -718,22 +696,24 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 }
 .plan-col:hover::before, .plan-col:focus-within::before { transform: scaleX(1); }
 .plan-col.is-current {
-  border-top-color: transparent;
-  background: var(--card);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 24px -6px rgba(15, 23, 42, 0.06), 0 2px 6px -2px rgba(15, 23, 42, 0.04);
-  border-radius: 20px; padding-inline: 24px; margin-inline: -12px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+  padding-inline: 22px; margin-inline: -12px;
 }
-.dark .plan-col.is-current {
-  background: var(--muted);
-  border-color: transparent;
-  box-shadow: none;
-}
+.dark .plan-col.is-current { background: var(--card); }
 .plan-col.is-current::before { display: none; }
-@media (max-width: 1023px) { .plan-cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* 买不了的套餐：内容淡一层，操作按钮自己是禁用样式 */
+.plan-col.is-off > :not(:last-child) { opacity: .6; }
+.plan-specs { margin-top: 20px; border-top: 1px solid var(--border); font-size: 13.5px; }
+.plan-specs > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.plan-specs dt { color: var(--muted-foreground); }
+.plan-specs dd { text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+@media (max-width: 1023px) {
+  .plan-cols, .plan-cols[data-count] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
+}
 @media (max-width: 640px) {
-  .plan-cols { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .plan-col.is-current { margin-inline: 0; }
+  .plan-cols, .plan-cols[data-count] { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .plan-col.is-current { margin-inline: 0; padding-inline: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { .plan-col::before { transition: none; } }
 
@@ -753,6 +733,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .topnav-link:hover { color: var(--foreground); }
 .topnav-link:hover::after { transform: scaleX(1); }
 .topnav-link[data-active='true'] { color: var(--brand); }
+/* 顶部导航项上的提醒点（工单有新回复） */
+.nav-dot { display: inline-block; width: 6px; height: 6px; margin-left: 4px; vertical-align: 7px; border-radius: 9999px; background: var(--brand); }
 /* 当前项的下划线由 NavIndicator 画（切页时从旧的一项滑到新的一项），伪元素只管悬停 */
 .nav-indicator {
   position: absolute; left: 0; top: 0; height: 2px; border-radius: 2px;
@@ -764,12 +746,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 @media (max-width: 1100px) { .page-wrap { padding-inline: 32px; } }
 @media (max-width: 991px) {
   .statrow { gap: 36px 48px; }
-  .stat-v { font-size: 38px; }
+  .stat-v { font-size: 32px; }
   .split2 { grid-template-columns: minmax(0, 1fr); gap: 44px; }
 }
 @media (max-width: 640px) {
   .page-wrap { padding-inline: 20px; }
-  .page-title { font-size: 27px; }
+  .page-title { font-size: 26px; }
   .statrow { gap: 28px 40px; }
 }
 
@@ -826,13 +808,13 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .lines[data-dark] > s { background: #4a9dff; }
 .lines[data-state='open'] > s { opacity: 0; transform: scale(.4); }
 /* 本次访问第一次出现时，下面那根从 0 画到当前值 */
-.lines[data-intro] > i > b { animation: line-draw 1s var(--ease-out) .35s both; }
+.lines[data-intro] > i > b { animation: line-draw var(--dur-slow) var(--ease-out) .1s both; }
 @keyframes line-draw { from { width: 0; } }
 
 /* 卡片顶边：按钮下面那根线放大后的样子，每次打开从左边画到对应的值 */
 .card-line { position: relative; height: 2px; background: rgb(10 10 10 / .08); }
 .dark .card-line { background: rgb(255 255 255 / .12); }
-.card-line > b { position: absolute; inset: 0 auto 0 0; width: var(--v, 0%); background: var(--brand); animation: line-draw .7s var(--ease-out) .06s both; }
+.card-line > b { position: absolute; inset: 0 auto 0 0; width: var(--v, 0%); background: var(--brand); animation: line-draw var(--dur-slow) var(--ease-out) both; }
 .card-line[data-tone='warn'] > b { background: #f59e0b; }
 
 /* 宽屏：名字下面一根细线，长度同样是剩余流量 */
@@ -1002,3 +984,76 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
 
+
+/*
+ * 仪表盘「近 7 日流量趋势」（pages/dash/week-chart）：纯 HTML/CSS 的堆叠柱。
+ * 下行 = 品牌蓝实色，上行 = 同色系浅一档，叠在下行上面，中间留 2px 底色缝；柱顶 4px 圆角、底部贴基线。
+ * 网格线、刻度用最淡的分隔色与辅助灰；没有动画。
+ */
+.wk { --wk-down: var(--chart-1); --wk-up: color-mix(in srgb, var(--chart-1) 38%, var(--background)); --wk-h: 200px; --wk-y: 34px; }
+.wk-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 18px; font-size: 12.5px; color: var(--muted-foreground); }
+.wk-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.wk-legend .wk-unit { margin-left: auto; }
+.wk-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+.wk-key.is-down { background: var(--wk-down); }
+.wk-key.is-up { background: var(--wk-up); }
+.wk-body { display: grid; grid-template-columns: var(--wk-y) minmax(0, 1fr); margin-top: 26px; }
+.wk-y { position: relative; height: var(--wk-h); }
+.wk-y > span {
+  position: absolute; right: 10px; translate: 0 50%; font-size: 11.5px; line-height: 1;
+  color: var(--faint-foreground); font-variant-numeric: tabular-nums;
+}
+.wk-plot { position: relative; height: var(--wk-h); }
+.wk-grid { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid var(--border); }
+.wk-grid.is-base { border-top-color: color-mix(in srgb, var(--foreground) 22%, transparent); }
+.wk-cols { position: absolute; inset: 0; display: flex; }
+.wk-col {
+  position: relative; flex: 1 1 0; min-width: 0; display: flex; align-items: flex-end; justify-content: center;
+  border-radius: 8px; background: transparent; cursor: default;
+  transition: background-color var(--dur-hover) var(--ease-out);
+}
+.wk-col[data-active] { background: color-mix(in srgb, var(--foreground) 5%, transparent); }
+.wk-col:focus-visible { outline-offset: -2px; }
+.wk-stack { position: relative; display: flex; flex-direction: column; gap: 2px; width: min(30px, 52%); min-height: 2px; }
+.wk-bar { display: block; flex-basis: 0; min-height: 2px; }
+.wk-bar:first-of-type { border-radius: 4px 4px 0 0; }
+.wk-bar.is-down { background: var(--wk-down); }
+.wk-bar.is-up { background: var(--wk-up); }
+.wk-total {
+  position: absolute; bottom: 100%; left: 50%; translate: -50% -6px; white-space: nowrap;
+  font-size: 11.5px; line-height: 1; color: var(--muted-foreground); font-variant-numeric: tabular-nums;
+}
+.wk-col[data-active] .wk-total { color: var(--foreground); }
+.wk-x { display: flex; margin-left: var(--wk-y); padding-top: 10px; }
+.wk-x > span { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11.5px; color: var(--muted-foreground); white-space: nowrap; }
+.wk-x b { font-weight: 500; font-size: 12px; color: var(--muted-foreground); }
+.wk-x .is-today b { color: var(--foreground); font-weight: 600; }
+.wk-x .is-active b { color: var(--foreground); }
+.wk-tip {
+  position: absolute; top: 0; z-index: 2; translate: -50% 0; min-width: 168px; padding: 10px 12px;
+  border-radius: 10px; border: 1px solid var(--border); background: var(--popover); color: var(--popover-foreground);
+  box-shadow: 0 8px 24px -10px rgb(18 21 28 / .18); font-size: 12.5px; pointer-events: none;
+}
+.wk-tip[data-edge='start'] { translate: -24px 0; }
+.wk-tip[data-edge='end'] { translate: calc(-100% + 24px) 0; }
+.wk-tip-h { font-weight: 600; margin-bottom: 6px; }
+.wk-tip dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 2px 0; }
+.wk-tip dt { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-foreground); }
+.wk-tip dd { font-variant-numeric: tabular-nums; }
+.wk-tip .is-sum { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 6px; }
+.wk-tip .is-sum dt, .wk-tip .is-sum dd { color: var(--foreground); font-weight: 600; }
+@media (max-width: 640px) {
+  .wk { --wk-h: 180px; --wk-y: 30px; }
+  .wk-total { font-size: 10.5px; }
+  .wk-x > span > span { font-size: 10.5px; }
+}
+
+/*
+ * 小号数字组（邀请与钱包页：可提现 / 审核中，已邀请 / 冻结中 / 已入账 / 已追回）：标签在上、数在下，不放大、不滚动。
+ * 分页里的小标题（.sub-title）：正文色 14px 半粗，比区块的灰色微标签低一级。
+ */
+.mini-stats { display: flex; flex-wrap: wrap; gap: 14px 40px; }
+.mini-stats > div { min-width: 0; }
+.mini-stats dt { font-size: 12.5px; color: var(--muted-foreground); }
+.mini-stats dd { margin-top: 3px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sub-title { font-size: 14px; font-weight: 600; color: var(--foreground); }

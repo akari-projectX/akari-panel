@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
-import { ArrowDownToLine, Check, Copy, History, Wallet as WalletIcon } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { ArrowDownToLine, Check, Copy, Share2, Wallet as WalletIcon } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
 import { FlowDialog, FlowFooter } from '@/components/ui/panels';
 import { Label } from '@/components/ui/label';
 import TextField from '@/components/text-field';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { PageTitle, Row, Section, StatRow } from '@/components/flat';
+import { PageTitle, PaneHead, Row, Section, Split } from '@/components/flat';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import StatusTag from '@/components/status-tag';
 import {
@@ -21,6 +23,7 @@ import { fieldOf, useFieldErrors } from '@/lib/form-errors';
 import { formatDateTime, formatMoney, parseYuan, signedMoney, type StatusTone } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { useT, useTp } from '@/i18n';
+import { InviteDetails, InviteLinkPane } from './wallet-invite';
 
 const LEDGER_TEXT: Record<LedgerKind, string> = {
   commission: '邀请佣金入账',
@@ -106,10 +109,18 @@ const W_STATUS: Record<WithdrawalStatus, { text: string; tone: StatusTone }> = {
 
 const PAGE = 30;
 
+/** 下面分页的三个：邀请返佣（仅 full）、收支流水、提现记录（仅 full）。地址 `?tab=`，旧地址 /invite 来到 `?tab=invite` */
+export type WalletTab = 'invite' | 'ledger' | 'withdrawals';
+
 /**
- * 钱包：面板只有一个余额（佣金入账就进余额，下单可以抵扣），其中「可提现」的部分可以申请提现。
+ * 邀请与钱包（2026-10-13 合并：原 /wallet 与 /invite，主地址 /wallet，/invite 跳到「邀请返佣」分页）。
+ *
+ * 面板只有一个余额（佣金入账就进余额，下单可以抵扣），其中「可提现」的部分可以申请 USDT 提现。
  * 佣金被追回（中-4）时余额够就当场扣回，不够只扣到 0，差额记为欠款，之后的佣金入账时先抵扣（余额本身永不为负）。
- * 提现记录与申请只对正常账户开放（面板 AuthUser）；过期 / 流量用完的账户仍能看余额和流水。
+ *
+ *   概览（Split）  左：账户余额、可提现、审核中 + 申请提现；右（仅 full）：邀请链接 + 返佣条款。两件最常做的事都在首屏。
+ *   分页（Tabs）   邀请返佣（收益数字、邀请码、返佣明细）/ 收支流水 / 提现记录。full 默认「邀请返佣」（导航上这一项叫「邀请」），
+ *                 续费范围（过期 / 流量用完）只有流水：面板对它们不开放提现与邀请（AuthUser），这一页就是「钱包」。
  */
 export default function Wallet() {
   const tr = useT();
@@ -117,10 +128,18 @@ export default function Wallet() {
   const errText = useErrorText();
   const { scope } = useAuth();
   const full = scope === 'full';
+  const [params, setParams] = useSearchParams();
 
   const balance = useApi(() => walletApi.balance({ limit: PAGE }), [], { key: K.balance });
   const withdrawals = useApi(() => walletApi.withdrawals(), [], { key: K.withdrawals, enabled: full });
   const invite = useApi(() => inviteApi.get(), [], { key: K.invite, enabled: full });
+  const codes = useApi(() => inviteApi.codes(), [], { key: K.inviteCodes, enabled: full });
+  const [creating, createCode] = useCreateCode(codes.reload);
+
+  const tabs: WalletTab[] = full ? ['invite', 'ledger', 'withdrawals'] : ['ledger'];
+  const asked = params.get('tab') as WalletTab | null;
+  const tab: WalletTab = asked && tabs.includes(asked) ? asked : tabs[0];
+  const setTab = (t: string) => setParams((p) => { const n = new URLSearchParams(p); n.set('tab', t); return n; }, { replace: true, preventScrollReset: true });
 
   /* 流水按 id 倒序翻页（keyset：before = 已显示的最小 id） */
   const [older, setOlder] = useState<LedgerEntry[]>([]);
@@ -213,46 +232,102 @@ export default function Wallet() {
     }
   });
 
+  const title = full ? tr('邀请') : tr('钱包');
+  const sub = full
+    ? tr('把邀请链接发给需要的人，对方付费后你按比例拿佣金。佣金进入账户余额，可以抵扣订单或提现为 USDT。')
+    : tr('账户余额与收支流水。余额可以在下单时抵扣。');
+
   /* 加载中也带上副标题：数据到了标题区不再往下跳一行 */
-  if (balance.loading && !balance.data) return <><PageTitle title={tr('钱包')} sub={tr('账户余额、收支流水与提现。余额可以在下单时抵扣。')} /><Loading /></>;
-  if (balance.error && !balance.data) return <><PageTitle title={tr('钱包')} /><LoadError error={balance.error} onRetry={balance.reload} className="py-24" /></>;
+  if (balance.loading && !balance.data) return <><PageTitle title={title} sub={sub} /><Loading /></>;
+  if (balance.error && !balance.data) return <><PageTitle title={title} sub={sub} /><LoadError error={balance.error} onRetry={balance.reload} className="py-24" /></>;
   const b = balance.data;
+  const pendingCents = pendingW.reduce((n, w) => n + w.amount_cents, 0);
 
-  return (
+  /* 左栏：余额 + 提现 */
+  const balancePane = (
     <>
-      <PageTitle title={tr('钱包')} sub={tr('账户余额、收支流水与提现。余额可以在下单时抵扣。')} />
-
-      <Section>
-        <StatRow
-          items={[
-            {
-              k: tr('账户余额'), v: b?.balance_cents ?? 0, fmt: formatMoney,
-              x: tr('下单时可以选择抵扣'),
-            },
-            { k: tr('可提现'), v: withdrawable, fmt: formatMoney, x: min > 0 ? tp('最低提现 {v}', { v: formatMoney(min) }) : tr('佣金过了冻结期即可提现') },
-            ...(full ? [{
-              k: tr('审核中的提现'), v: pendingW.reduce((n, w) => n + w.amount_cents, 0), fmt: formatMoney,
-              x: pendingW.length ? tp('{n} 笔待审核', { n: pendingW.length }) : tr('没有待审核的申请'),
-            }] : []),
-          ]}
-        />
-        {full && (
-          <div className="mt-8">
-            <Button className="h-11 px-6" disabled={withdrawable <= 0 || pendingW.length > 0 || chains.length === 0} onClick={openDialog}>
-              <ArrowDownToLine />{tr('申请提现')}
-            </Button>
-            {/* 按钮置灰时说清楚为什么（只说一条，按优先级） */}
-            {pendingW.length > 0 ? <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('同一时间只能有一笔待审核的提现申请。')}</p>
-              : invite.data && chains.length === 0 ? <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('暂未开放提现。')}</p>
-              : b && withdrawable <= 0 && <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('现在没有可提现的金额：佣金过了冻结期才能提现。')}</p>}
-            <p className="mt-2 text-[12.5px] text-muted-foreground">{tr('提现以 USDT 打款到你填写的链上地址。')}</p>
-          </div>
-        )}
-      </Section>
-
+      <PaneHead title={<><WalletIcon className="size-4 text-brand" />{tr('账户余额')}</>} desc={tr('下单时可以选择抵扣')} />
+      <div className="stat-v">{formatMoney(b?.balance_cents ?? 0)}</div>
+      <dl className="mini-stats mt-5">
+        <div><dt>{tr('可提现')}</dt><dd>{formatMoney(withdrawable)}</dd></div>
+        {full && <div><dt>{tr('审核中')}</dt><dd>{formatMoney(pendingCents)}</dd></div>}
+        {min > 0 && <div><dt>{tr('最低提现')}</dt><dd>{formatMoney(min)}</dd></div>}
+      </dl>
       {full && (
-        <Section title={<><WalletIcon className="size-4 text-brand" />{tr('提现记录')}</>}>
-          {withdrawals.loading && !withdrawals.data ? <Loading rows={2} />
+        <div className="mt-6">
+          <Button className="h-10 px-5" disabled={withdrawable <= 0 || pendingW.length > 0 || chains.length === 0} onClick={openDialog}>
+            <ArrowDownToLine />{tr('申请提现')}
+          </Button>
+          {/* 按钮置灰时说清楚为什么（只说一条，按优先级）；否则说明打款方式 */}
+          <p className="mt-2.5 text-[12.5px] leading-[1.7] text-muted-foreground">
+            {pendingW.length > 0 ? tr('同一时间只能有一笔待审核的提现申请。')
+              : invite.data && chains.length === 0 ? tr('暂未开放提现。')
+              : b && withdrawable <= 0 ? tr('现在没有可提现的金额：佣金过了冻结期才能提现。')
+              : tr('提现以 USDT 打款到你填写的链上地址。')}
+          </p>
+        </div>
+      )}
+    </>
+  );
+
+  const ledgerList = (
+        entries.length === 0 ? <Empty title="还没有收支记录" desc="佣金入账、余额支付、退款到余额、提现都会记在这里。" />
+          : (
+            <>
+              <div className="md:hidden">
+                {entries.map((e, i) => (
+                  <Row
+                    key={e.id} index={i}
+                    title={tr(LEDGER_TEXT[e.kind])}
+                    desc={[formatDateTime(e.created_at), e.out_trade_no ?? e.reason ?? ''].filter(Boolean).join(' · ')}
+                    extra={
+                      <span className="flex flex-col items-end gap-0.5">
+                        <span className={cn('tnum font-medium', e.amount_cents < 0 ? 'text-destructive' : 'text-success')}>{signedMoney(e.amount_cents)}</span>
+                        <span className="tnum text-[12px] text-muted-foreground">{formatMoney(e.balance_after_cents)}</span>
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[560px] text-[14px]">
+                  <thead>
+                    <tr className="border-b border-border text-[12.5px] text-muted-foreground">
+                      <th className="py-3 text-left font-normal">{tr('时间')}</th>
+                      <th className="py-3 text-left font-normal">{tr('类型')}</th>
+                      <th className="py-3 text-left font-normal">{tr('说明')}</th>
+                      <th className="py-3 text-right font-normal">{tr('变动')}</th>
+                      <th className="py-3 text-right font-normal">{tr('余额')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map((e) => (
+                      <tr key={e.id} className="border-b border-border last:border-b-0">
+                        <td className="tnum py-3.5 whitespace-nowrap text-muted-foreground">{formatDateTime(e.created_at)}</td>
+                        <td className="py-3.5 whitespace-nowrap">{tr(LEDGER_TEXT[e.kind])}</td>
+                        <td className="max-w-[260px] truncate py-3.5 text-muted-foreground">
+                          {e.out_trade_no ? <code className="text-[12.5px]">{e.out_trade_no}</code> : e.reason ?? ''}
+                        </td>
+                        <td className={cn('tnum py-3.5 text-right font-medium', e.amount_cents < 0 ? 'text-destructive' : 'text-success')}>
+                          {signedMoney(e.amount_cents)}
+                        </td>
+                        <td className="tnum py-3.5 text-right text-muted-foreground">{formatMoney(e.balance_after_cents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {hasMore && (
+                <div className="mt-5 flex justify-center">
+                  <Button variant="outline" size="sm" disabled={loadingMore} onClick={loadMore}>{tr('加载更早的记录')}</Button>
+                </div>
+              )}
+            </>
+          )
+  );
+
+  const withdrawalList = (
+            withdrawals.loading && !withdrawals.data ? <Loading rows={2} />
             : withdrawals.error && !withdrawals.data ? <LoadError error={withdrawals.error} onRetry={withdrawals.reload} />
             : (withdrawals.data ?? []).length === 0 ? <Empty title="还没有提现记录" />
             : (
@@ -307,64 +382,44 @@ export default function Wallet() {
                 </table>
               </div>
               </>
-            )}
-        </Section>
-      )}
+            )
+  );
 
-      <Section title={<><History className="size-4 text-brand" />{tr('收支流水')}</>}>
-        {entries.length === 0 ? <Empty title="还没有收支记录" desc="佣金入账、余额支付、退款到余额、提现都会记在这里。" />
-          : (
-            <>
-              <div className="md:hidden">
-                {entries.map((e, i) => (
-                  <Row
-                    key={e.id} index={i}
-                    title={tr(LEDGER_TEXT[e.kind])}
-                    desc={[formatDateTime(e.created_at), e.out_trade_no ?? e.reason ?? ''].filter(Boolean).join(' · ')}
-                    extra={
-                      <span className="flex flex-col items-end gap-0.5">
-                        <span className={cn('tnum font-medium', e.amount_cents < 0 ? 'text-destructive' : 'text-success')}>{signedMoney(e.amount_cents)}</span>
-                        <span className="tnum text-[12px] text-muted-foreground">{formatMoney(e.balance_after_cents)}</span>
-                      </span>
-                    }
-                  />
-                ))}
-              </div>
-              <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[560px] text-[14px]">
-                  <thead>
-                    <tr className="border-b border-border text-[12.5px] text-muted-foreground">
-                      <th className="py-3 text-left font-normal">{tr('时间')}</th>
-                      <th className="py-3 text-left font-normal">{tr('类型')}</th>
-                      <th className="py-3 text-left font-normal">{tr('说明')}</th>
-                      <th className="py-3 text-right font-normal">{tr('变动')}</th>
-                      <th className="py-3 text-right font-normal">{tr('余额')}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {entries.map((e) => (
-                      <tr key={e.id} className="border-b border-border last:border-b-0">
-                        <td className="tnum py-3.5 whitespace-nowrap text-muted-foreground">{formatDateTime(e.created_at)}</td>
-                        <td className="py-3.5 whitespace-nowrap">{tr(LEDGER_TEXT[e.kind])}</td>
-                        <td className="max-w-[260px] truncate py-3.5 text-muted-foreground">
-                          {e.out_trade_no ? <code className="text-[12.5px]">{e.out_trade_no}</code> : e.reason ?? ''}
-                        </td>
-                        <td className={cn('tnum py-3.5 text-right font-medium', e.amount_cents < 0 ? 'text-destructive' : 'text-success')}>
-                          {signedMoney(e.amount_cents)}
-                        </td>
-                        <td className="tnum py-3.5 text-right text-muted-foreground">{formatMoney(e.balance_after_cents)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {hasMore && (
-                <div className="mt-5 flex justify-center">
-                  <Button variant="outline" size="sm" disabled={loadingMore} onClick={loadMore}>{tr('加载更早的记录')}</Button>
-                </div>
-              )}
-            </>
+  return (
+    <>
+      <PageTitle title={title} sub={sub} />
+
+      <Section>
+        {full ? (
+          <Split
+            left={balancePane}
+            right={
+              <>
+                <PaneHead title={<><Share2 className="size-4 text-brand" />{tr('你的邀请链接')}</>} desc={tr('通过链接注册的人会记在你名下')} />
+                <InviteLinkPane codes={codes} invite={invite} onCreate={createCode} creating={creating} />
+              </>
+            }
+          />
+        ) : balancePane}
+      </Section>
+
+      <Section>
+        <Tabs value={tab} onValueChange={setTab} className="gap-0">
+          {tabs.length > 1 && (
+            <TabsList className="mb-7 h-9">
+              {full && <TabsTrigger value="invite" className="px-3">{tr('邀请返佣')}</TabsTrigger>}
+              <TabsTrigger value="ledger" className="px-3">{tr('收支流水')}</TabsTrigger>
+              {full && <TabsTrigger value="withdrawals" className="px-3">{tr('提现记录')}</TabsTrigger>}
+            </TabsList>
           )}
+          {full && (
+            <TabsContent value="invite">
+              <InviteDetails codes={codes} invite={invite} onCreate={createCode} creating={creating} />
+            </TabsContent>
+          )}
+          <TabsContent value="ledger">{ledgerList}</TabsContent>
+          {full && <TabsContent value="withdrawals">{withdrawalList}</TabsContent>}
+        </Tabs>
       </Section>
 
       <FlowDialog
@@ -416,4 +471,21 @@ export default function Wallet() {
       </FlowDialog>
     </>
   );
+}
+
+/** 生成邀请码（概览右栏与「邀请返佣」分页共用一个进行中状态） */
+function useCreateCode(reload: () => void): [boolean, () => void] {
+  const tr = useT();
+  const errText = useErrorText();
+  const [creating, run] = usePending();
+  const create = () => run(async () => {
+    try {
+      await inviteApi.createCode();
+      reload();
+      toast.success(tr('邀请码已生成'));
+    } catch (e) {
+      toast.error(errText(e));
+    }
+  });
+  return [creating, create];
 }

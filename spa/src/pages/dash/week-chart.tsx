@@ -1,101 +1,122 @@
-import { useMemo } from 'react';
-import { Area, AreaChart, ReferenceDot, XAxis, YAxis } from 'recharts';
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart';
-import type { TrafficDay } from '@/lib/traffic';
-import { useT, useTp } from '@/i18n';
+import { useMemo, useState } from 'react';
+import { formatBytes } from '@/lib/format';
+import { weekAxis, type TrafficDay } from '@/lib/traffic';
+import { useLocale, useT, useTp } from '@/i18n';
+import { cn } from '@/lib/utils';
 
 /*
- * 仪表盘「近 7 日流量趋势」那张面积图。
+ * 仪表盘「近 7 日流量趋势」（2026-10-13 改版）：每天一根柱子，下行在下、上行叠在上面，柱顶写当天合计。
  *
- * 单独成一个按需加载的分包：图表库（recharts 及其依赖）gzip 后 109 kB，
- * 放在仪表盘里静态引用，账户、订阅、节点这些卡片都得等它下完才出来。
- * 现在仪表盘先画别的，图表随后到，占位和图表一样高，页面不跳。
+ *   · 纵轴有刻度和单位：按最大一天自动选 GB / MB / KB（lib/traffic 的 weekAxis），刻度是整齐的步长。
+ *   · 横轴每天两行：星期 + 月-日；最后一天是今天（全站时区的日历日，面板已经按它切好），写「今天」。
+ *   · 悬停（鼠标）或点按（手机）一天出提示：日期、下行、上行、合计、计费。键盘可以 Tab 到每一天。
+ *   · 纯 HTML/CSS 画，不用图表库：以前的 recharts 分包 gzip 后约 109 kB，仪表盘要单独等它；现在随仪表盘一起到，没有动画。
  */
 
-/* 提示框读的是这里的 label，得跟着语言走 */
-const CHART_CFG = (tr: (s: string) => string) => ({
-  down: { label: tr('下行'), color: 'var(--chart-1)' },
-  up: { label: tr('上行'), color: 'var(--chart-2)' },
-}) satisfies ChartConfig;
+type Props = { week: TrafficDay[] };
 
-export default function WeekChart({ week }: { week: TrafficDay[] }) {
+/** 只用于显示：轴单位下的数值，最多一位小数 */
+const inUnit = (bytes: number, size: number) => {
+  const v = bytes / size;
+  return v >= 100 || v === 0 ? Math.round(v).toString() : (+v.toFixed(1)).toString();
+};
+
+export default function WeekChart({ week }: Props) {
   const tr = useT();
   const tp = useTp();
-  const chartConfig = useMemo(() => CHART_CFG(tr), [tr]);
-  const peak = week.length ? week.reduce((a, d) => (d.down > a.down ? d : a), week[0]) : null;
-  const last = week.length ? week[week.length - 1] : null;
+  const { locale } = useLocale();
+  const [active, setActive] = useState<number | null>(null);
+
+  const max = Math.max(0, ...week.map((d) => d.upBytes + d.downBytes));
+  const axis = useMemo(() => weekAxis(max), [max]);
+  const top = axis.top * axis.size;
+  const pct = (b: number) => (top > 0 ? (b / top) * 100 : 0);
+
+  /* 日子是 YYYY-MM-DD 的日历日：按 UTC 取星期，不再换算时区 */
+  const weekday = useMemo(
+    () => new Intl.DateTimeFormat(locale === 'en' ? 'en-US' : 'zh-CN', { weekday: 'short', timeZone: 'UTC' }),
+    [locale],
+  );
+  const dayName = (d: TrafficDay, i: number) =>
+    i === week.length - 1 ? tr('今天') : weekday.format(new Date(`${d.day}T00:00:00Z`));
+
+  const tip = active !== null ? week[active] : null;
+  const n = week.length;
 
   return (
-    <ChartContainer config={chartConfig} className="h-64 w-full">
-      <AreaChart data={week} margin={{ left: 10, right: 12, top: 34, bottom: 0 }}>
-        <defs>
-          <linearGradient id="gDown" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.28} />
-            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
-          </linearGradient>
-          <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-2)" stopOpacity={0.24} />
-            <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
-          </linearGradient>
-        </defs>
+    <div className="wk" onPointerLeave={(e) => { if (e.pointerType === 'mouse') setActive(null); }}>
+      <div className="wk-legend" aria-hidden>
+        <span><i className="wk-key is-down" />{tr('下行')}</span>
+        <span><i className="wk-key is-up" />{tr('上行')}</span>
+        <span className="wk-unit">{tp('单位 {u}', { u: axis.unit })}</span>
+      </div>
 
-        {/* 只保留 X 轴刻度，去掉网格与 Y 轴 —— 量级交给峰值标注与悬停 */}
-        <XAxis
-          dataKey="date" tickLine={false} axisLine={false} dy={8}
-          tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }}
-          interval="preserveStartEnd"
-        />
-        <YAxis hide domain={[0, (max: number) => max * 1.18]} />
+      <div className="wk-body">
+        {/* 纵轴刻度（只给视觉；读屏读每一天的说明） */}
+        <div className="wk-y" aria-hidden>
+          {axis.ticks.map((t) => (
+            <span key={t} style={{ bottom: `${(t / axis.top) * 100}%` }}>{t}</span>
+          ))}
+        </div>
 
-        <ChartTooltip
-          cursor={{ stroke: 'var(--chart-1)', strokeWidth: 1, strokeDasharray: '4 4', strokeOpacity: 0.45 }}
-          content={
-            <ChartTooltipContent
-              indicator="dot"
-              formatter={(value, name) => (
-                <div className="flex w-full items-center gap-2">
-                  <span
-                    className="size-2.5 shrink-0 rounded-[2px]"
-                    style={{ background: name === 'down' ? 'var(--chart-1)' : 'var(--chart-2)' }}
-                  />
-                  <span className="text-muted-foreground">{tr(name === 'down' ? '下行' : '上行')}</span>
-                  <span className="tnum ml-auto font-medium text-foreground">{value} GB</span>
-                </div>
-              )}
-            />
-          }
-        />
+        <div className="wk-plot">
+          {axis.ticks.map((t) => (
+            <i key={t} className={cn('wk-grid', t === 0 && 'is-base')} style={{ bottom: `${(t / axis.top) * 100}%` }} />
+          ))}
 
-        <Area
-          type="natural" dataKey="down" stroke="var(--chart-1)" strokeWidth={2.2} fill="url(#gDown)"
-          animationDuration={1000}
-          activeDot={{ r: 4.5, fill: 'var(--chart-1)', stroke: 'var(--background)', strokeWidth: 2 }}
-        />
-        <Area
-          type="natural" dataKey="up" stroke="var(--chart-2)" strokeWidth={1.8} fill="url(#gUp)"
-          animationDuration={1200}
-          activeDot={{ r: 4, fill: 'var(--chart-2)', stroke: 'var(--background)', strokeWidth: 2 }}
-        />
+          <div className="wk-cols" role="group" aria-label={tr('近 7 日流量，每天一项')}>
+            {week.map((d, i) => {
+              const total = d.upBytes + d.downBytes;
+              const on = active === i;
+              return (
+                <button
+                  key={d.day} type="button"
+                  className="wk-col" data-active={on || undefined}
+                  aria-label={tp('{d}：下行 {down}，上行 {up}，合计 {total}', {
+                    d: `${dayName(d, i)} ${d.date}`, down: formatBytes(d.downBytes), up: formatBytes(d.upBytes), total: formatBytes(total),
+                  })}
+                  aria-pressed={on}
+                  onPointerEnter={(e) => { if (e.pointerType === 'mouse') setActive(i); }}
+                  onFocus={() => setActive(i)}
+                  onBlur={() => setActive((a) => (a === i ? null : a))}
+                  onClick={() => setActive(i)}
+                >
+                  <span className="wk-stack" style={{ height: `${pct(total)}%` }}>
+                    {total > 0 && <small className="wk-total">{inUnit(total, axis.size)}</small>}
+                    {d.upBytes > 0 && <span className="wk-bar is-up" style={{ flexGrow: d.upBytes }} />}
+                    {d.downBytes > 0 && <span className="wk-bar is-down" style={{ flexGrow: d.downBytes }} />}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
 
-        {/* 峰值标注：让图表说出结论，而不只是画个形状 */}
-        {peak && (
-          <ReferenceDot
-            x={peak.date} y={peak.down} r={4}
-            fill="var(--chart-1)" stroke="var(--background)" strokeWidth={2}
-            label={{
-              value: tp('峰值 {v} GB', { v: peak.down }),
-              position: 'top', offset: 12,
-              fill: 'var(--foreground)', fontSize: 12, fontWeight: 500,
-            }}
-          />
-        )}
-        {last && (
-          <ReferenceDot
-            x={last.date} y={last.down} r={3}
-            fill="var(--background)" stroke="var(--chart-1)" strokeWidth={2}
-          />
-        )}
-      </AreaChart>
-    </ChartContainer>
+          {tip && active !== null && (
+            <div
+              className="wk-tip" role="status"
+              data-edge={active === 0 ? 'start' : active === n - 1 ? 'end' : undefined}
+              style={{ left: `${((active + 0.5) / n) * 100}%` }}
+            >
+              <div className="wk-tip-h">{dayName(tip, active)} · {tip.date}</div>
+              <dl>
+                <div><dt><i className="wk-key is-down" />{tr('下行')}</dt><dd>{formatBytes(tip.downBytes)}</dd></div>
+                <div><dt><i className="wk-key is-up" />{tr('上行')}</dt><dd>{formatBytes(tip.upBytes)}</dd></div>
+                <div className="is-sum"><dt>{tr('合计')}</dt><dd>{formatBytes(tip.upBytes + tip.downBytes)}</dd></div>
+                <div><dt>{tr('计费')}</dt><dd>{formatBytes(tip.billedBytes)}</dd></div>
+              </dl>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="wk-x" aria-hidden>
+        {week.map((d, i) => (
+          <span key={d.day} className={cn(i === n - 1 && 'is-today', active === i && 'is-active')}>
+            <b>{dayName(d, i)}</b>
+            <span>{d.date}</span>
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }

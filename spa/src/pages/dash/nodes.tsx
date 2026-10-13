@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { RefreshCw, Search } from 'lucide-react';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -25,7 +24,6 @@ import { useT, useTp } from '@/i18n';
  * 状态（在线 / 离线 / 维护中）、负载等级、延迟——面板不给 id、地址、协议或机器指标的数字。倍率按入口计（W28-a）；D9 合并后显示此刻的倍率和时段规则（rates 开关）。
  */
 export default function Nodes() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const { me } = useAuth();
@@ -162,7 +160,6 @@ export default function Nodes() {
                     return (
                       <tr
                         key={nodeKey(n, i)}
-                        {...enter({ delay: stagger(i), y: NUDGE, duration: DUR.fast })}
                         className={cn('border-b transition-colors hover:bg-brand/[.03]', !nodeUp(n) && 'opacity-55')}
                       >
                         <TableCell className="pl-0">

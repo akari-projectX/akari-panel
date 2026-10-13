@@ -1,10 +1,8 @@
 import type { CSSProperties, ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import CountUp from './count-up';
 import { useT, useTp } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { PageNotices } from '@/components/account-banners';
 
 /** 区块：标题 + 右侧操作 + 顶部细分隔线 */
@@ -32,22 +30,19 @@ export function Section({
   );
 }
 
-/** v 为数字时滚动显示；fmt 给出写法（金额：v 是分，fmt = formatMoney），否则按 decimals + suffix 写 */
+/** v 为数字时按 fmt 写（金额：v 是分，fmt = formatMoney），否则按 decimals 写；suffix 是单位 */
 export type Stat = { k: ReactNode; v: number | string; suffix?: string; decimals?: number; fmt?: (n: number) => string; x?: ReactNode };
 
 /**
- * 统计条：竖线分隔的指标行。
- * still：原地渲染——没有入场，数字第一次直接是终值（之后值变了照常滚动）。给页面的最大内容块用（仪表盘），
- * 免得 LCP 被启动画面淡出 + 入场 + 从 0 滚动拖到一秒之后。
+ * 统计条：竖线分隔的指标行。数字直接写终值，不滚动（2026-10-13 用户：动效太多太慢，去掉数字滚动）。
  */
-export function StatRow({ items, still = false }: { items: Stat[]; still?: boolean }) {
-  const enter = useEnter();
+export function StatRow({ items }: { items: Stat[] }) {
   return (
     <div className="statrow">
       {items.map((s, i) => (
-        <div key={i} {...(still ? {} : enter({ delay: stagger(i, 0.06) }))}>
+        <div key={i}>
           <div className="stat-v">
-            {typeof s.v === 'number' ? <CountUp to={s.v} decimals={s.decimals ?? 0} format={s.fmt} instant={still} /> : s.v}
+            {typeof s.v === 'number' ? (s.fmt ? s.fmt(s.v) : s.v.toFixed(s.decimals ?? 0)) : s.v}
             {s.suffix?.trim() && <span className="stat-unit">{s.suffix.trim()}</span>}
           </div>
           <div className="stat-k">{s.k}</div>
@@ -65,7 +60,6 @@ export function Row({
   avatar?: ReactNode; title: ReactNode; desc?: ReactNode; extra?: ReactNode;
   onClick?: () => void; index?: number; className?: string;
 }) {
-  const enter = useEnter();
   const classes = cn(
     'rowline group',
     index === 0 && !onClick && 'pt-0',
@@ -82,12 +76,10 @@ export function Row({
       {extra && <div className="rowline-x">{extra}</div>}
     </>
   );
-  const animate = enter({ delay: stagger(index), y: NUDGE, duration: DUR.fast });
-
   if (onClick) {
-    return <button type="button" className={classes} onClick={onClick} {...animate}>{content}</button>;
+    return <button type="button" className={classes} onClick={onClick}>{content}</button>;
   }
-  return <div className={classes} {...animate}>{content}</div>;
+  return <div className={classes}>{content}</div>;
 }
 
 /** 两栏分区（中间竖细线） */
@@ -105,10 +97,9 @@ export function Split({ left, right }: { left: ReactNode; right: ReactNode }) {
 export function PageTitle({
   title, sub, extra, notices, accountNotices = false,
 }: { title: string; sub?: ReactNode; extra?: ReactNode; notices?: ReactNode; accountNotices?: boolean }) {
-  const enter = useEnter();
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-6 pt-12 pb-2" {...enter()}>
+      <div className="flex flex-wrap items-end justify-between gap-6 pt-12 pb-2">
         <div>
           <h1 className="page-title">{title}</h1>
           {sub && <p className="page-sub">{sub}</p>}

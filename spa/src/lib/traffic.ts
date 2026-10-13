@@ -1,8 +1,11 @@
 import type { MyTraffic, RateRule } from '@/api';
 import { fillDays, formatMonthDay, toGB } from '@/lib/format';
 
-/** 图表与明细表用的一天：GB，保留两位小数 */
-export type TrafficDay = { date: string; day: string; up: number; down: number; billed: number };
+/** 图表与明细表用的一天：up / down / billed 是 GB（两位小数）；*Bytes 是原始字节（仪表盘的周图按量级自己选单位） */
+export type TrafficDay = {
+  date: string; day: string; up: number; down: number; billed: number;
+  upBytes: number; downBytes: number; billedBytes: number;
+};
 
 const gb = (b: number) => +toGB(b).toFixed(2);
 
@@ -18,7 +21,31 @@ export function trafficDays(t: MyTraffic | undefined): TrafficDay[] {
     up: gb(d.up_bytes),
     down: gb(d.down_bytes),
     billed: gb(d.billed_bytes),
+    upBytes: d.up_bytes,
+    downBytes: d.down_bytes,
+    billedBytes: d.billed_bytes,
   }));
+}
+
+const UNITS = [
+  { unit: 'GB', size: 1024 ** 3 },
+  { unit: 'MB', size: 1024 ** 2 },
+  { unit: 'KB', size: 1024 },
+] as const;
+
+/**
+ * 周图的纵轴：按最大一天的量选单位（≥ 1 GB 用 GB，否则 MB / KB），刻度取「1 / 2 / 2.5 / 5 × 10ⁿ」的整齐步长，
+ * 3–5 条线，顶线不低于最大值。max = 0 时给一条空轴（0–1 GB）。
+ */
+export function weekAxis(maxBytes: number): { unit: string; size: number; ticks: number[]; top: number } {
+  const u = UNITS.find((x) => maxBytes >= x.size) ?? UNITS[UNITS.length - 1];
+  const max = maxBytes > 0 ? maxBytes / u.size : 1;
+  const raw = max / 4;
+  const p = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * p).find((v) => v >= raw) ?? 10 * p;
+  const n = Math.max(1, Math.ceil(max / step - 1e-9));
+  const ticks = Array.from({ length: n + 1 }, (_, i) => +(i * step).toPrecision(6));
+  return { unit: u.unit, size: u.size, ticks, top: ticks[ticks.length - 1] };
 }
 
 /**

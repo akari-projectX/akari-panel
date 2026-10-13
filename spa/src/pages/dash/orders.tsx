@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
 import { toast } from '@/lib/toast';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -30,7 +29,6 @@ const TABS: { key: string; label: string; test: (o: MyOrder) => boolean }[] = [
 const spent = (o: MyOrder) => (o.status === 'paid' && !o.refunded_at ? o.amount_cents + o.balance_cents : 0);
 
 export default function Orders() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const nav = useNavigate();
@@ -137,10 +135,9 @@ export default function Orders() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {data.map((o, i) => (
+                  {data.map((o) => (
                     <tr
                       key={o.id}
-                      {...enter({ delay: stagger(i), y: NUDGE, duration: DUR.fast })}
                       className="border-b transition-colors hover:bg-brand/[.03]"
                     >
                       <TableCell className="pl-0"><code className="text-[12.5px]">{o.out_trade_no}</code></TableCell>

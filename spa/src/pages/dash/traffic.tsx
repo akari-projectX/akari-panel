@@ -3,7 +3,6 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAxis, YAxis,
 } from 'recharts';
 import { ArrowDown, ArrowUp, CloudDownload, PieChart as PieIcon } from 'lucide-react';
-import { DUR, useEnter } from '@/lib/motion';
 import { Badge } from '@/components/ui/badge';
 import {
   ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig,
@@ -45,7 +44,6 @@ function rangeOf(r: Range): { from: string; to: string } {
 }
 
 export default function Traffic() {
-  const enter = useEnter();
   const tr = useT();
   const tp = useTp();
   const { me, plan } = useAuth();
@@ -152,7 +150,7 @@ export default function Traffic() {
               </Tabs>
             }
           >
-            <div key={range} {...enter({ y: 0, duration: DUR.fast })}>
+            <div key={range}>
               <ChartContainer config={cfg} className="-mx-2 h-75 w-[calc(100%+16px)]">
                 <AreaChart data={data} margin={{ left: -20, right: 10, top: 8 }}>
                   <defs>
@@ -168,8 +166,8 @@ export default function Traffic() {
                   <YAxis tickLine={false} axisLine={false} unit="G" tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }} />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <ChartLegend content={<ChartLegendContent />} />
-                  <Area type="monotone" dataKey="down" stroke="var(--chart-1)" strokeWidth={2.2} fill="url(#tD)" animationDuration={900} />
-                  <Area type="monotone" dataKey="up" stroke="var(--chart-2)" strokeWidth={2.2} fill="url(#tU)" animationDuration={1200} />
+                  <Area type="monotone" dataKey="down" stroke="var(--chart-1)" strokeWidth={2.2} fill="url(#tD)" isAnimationActive={false} />
+                  <Area type="monotone" dataKey="up" stroke="var(--chart-2)" strokeWidth={2.2} fill="url(#tU)" isAnimationActive={false} />
                 </AreaChart>
               </ChartContainer>
             </div>
@@ -186,7 +184,7 @@ export default function Traffic() {
                   <ChartContainer config={pieCfg} className="h-68 w-full">
                     <PieChart>
                       <Pie data={rates} dataKey="value" nameKey="name" innerRadius={60} outerRadius={94}
-                           paddingAngle={3} animationDuration={1000}>
+                           paddingAngle={3} isAnimationActive={false}>
                         {rates.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} stroke="none" />)}
                       </Pie>
                       <ChartTooltip content={<ChartTooltipContent nameKey="name" />} />
@@ -208,7 +206,7 @@ export default function Traffic() {
                       <XAxis dataKey="date" tickLine={false} axisLine={false} minTickGap={18} tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }} />
                       <YAxis tickLine={false} axisLine={false} tick={{ fontSize: 12, fill: 'var(--muted-foreground)' }} />
                       <ChartTooltip cursor={{ fill: 'rgba(22,119,255,.05)' }} content={<ChartTooltipContent />} />
-                      <Bar dataKey="billed" radius={[6, 6, 0, 0]} animationDuration={1000} fill="var(--chart-1)" />
+                      <Bar dataKey="billed" radius={[6, 6, 0, 0]} isAnimationActive={false} fill="var(--chart-1)" />
                     </BarChart>
                   </ChartContainer>
                 </>

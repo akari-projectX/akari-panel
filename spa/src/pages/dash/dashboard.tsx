@@ -1,5 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
-import { DUR, NUDGE, stagger, useEnter } from '@/lib/motion';
+import { useMemo, useState } from 'react';
 import { useHashScroll } from '@/hooks/use-hash-scroll';
 import { Ban, BookOpen, ChevronRight, Headphones, Megaphone, TrendingUp, Wifi, Zap } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -25,8 +24,10 @@ import { useAutoReload } from '@/hooks/use-auto-reload';
 import { K } from '@/lib/cache';
 import { useAuth } from '@/lib/auth';
 import { NODES_REFRESH_MS, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, stripFlag } from '@/lib/node';
-import { addDays, daysLeft, formatDate, formatDateTime, formatMoney, formatRate, fromNow, siteToday, toGB, trafficUsage } from '@/lib/format';
+import { addDays, daysLeft, formatDate, formatDateTime, formatMoney, formatBytes, formatRate, fromNow, siteToday, trafficUsage } from '@/lib/format';
 import { trafficDays } from '@/lib/traffic';
+/* 近 7 日流量图：纯 HTML/CSS，不用图表库，随仪表盘一起到 */
+import WeekChart from './week-chart';
 import { summarize } from '@/lib/content-text';
 import { docCategories } from '@/lib/doc-categories';
 import { R } from '@/lib/routes';
@@ -34,8 +35,6 @@ import { mySubUrl } from '@/lib/sub-links';
 import { cn } from '@/lib/utils';
 import { useLocale, useT, useTp } from '@/i18n';
 
-/* 流量图要用图表库（109 kB gzip），单独按需加载，别让整个仪表盘等它，见 week-chart.tsx */
-const WeekChart = lazy(() => import('./week-chart'));
 
 /**
  * 仪表盘按账户范围变形（lib/auth 的 Scope）：
@@ -76,7 +75,6 @@ function BannedNotice() {
 }
 
 function Overview({ full }: { full: boolean }) {
-  const enter = useEnter();
   useHashScroll();
   const tr = useT();
   const tp = useTp();
@@ -109,8 +107,8 @@ function Overview({ full }: { full: boolean }) {
   const tickets = useApi(() => ticketApi.list(), [], { key: K.tickets });
 
   const week = useMemo(() => trafficDays(traffic.data), [traffic.data]);
-  const totalDown = week.reduce((n, d) => n + d.down, 0);
-  const totalUp = week.reduce((n, d) => n + d.up, 0);
+  const totalDown = week.reduce((n, d) => n + d.downBytes, 0);
+  const totalUp = week.reduce((n, d) => n + d.upBytes, 0);
 
   /* 能连的排前面（延迟低的在上），维护中 / 离线的沉底——也列出来，用户才知道哪条线路暂时用不了 */
   const list = useMemo(() => {
@@ -186,13 +184,8 @@ function Overview({ full }: { full: boolean }) {
         }
       />
 
-      {/*
-        统计条是这一页的最大内容块（LCP）：原地渲染，不做入场与数字滚动，否则最大内容要等启动画面淡出、
-        再等入场与 CountUp 播完才算画好（#117 的 LCP 退化）。其余区块照常错峰。
-      */}
       <Section>
         <StatRow
-          still
           items={[
             hasPlan && !usage.unlimited
               ? {
@@ -238,33 +231,20 @@ function Overview({ full }: { full: boolean }) {
         <Section
           title={<><TrendingUp className="size-4 text-brand" />{tr('近 7 日流量趋势')}</>}
           desc={traffic.data && (
-            <span className="flex flex-wrap items-center gap-x-5 gap-y-1">
-              <span className="flex items-baseline gap-1.5">
-                <i className="size-2 translate-y-[-1px] rounded-full bg-brand" />
-                {tr('下行')} <b className="tnum">{totalDown.toFixed(1)}</b>
-                <span className="text-[13px] font-normal text-muted-foreground">GB</span>
-              </span>
-              <span className="flex items-baseline gap-1.5">
-                <i className="size-2 translate-y-[-1px] rounded-full bg-brand-light" />
-                {tr('上行')} <b className="tnum">{totalUp.toFixed(1)}</b>
-                <span className="text-[13px] font-normal text-muted-foreground">GB</span>
-              </span>
+            <span className="tnum">
+              {tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(totalDown + totalUp), d: formatBytes(totalDown), u: formatBytes(totalUp) })}
             </span>
           )}
           extra={traffic.data && (
             <span className="text-[12.5px] text-muted-foreground">
-              {tr('计费')} <b className="tnum font-normal text-foreground">{toGB(traffic.data.total.billed_bytes).toFixed(1)}</b> GB
+              {tr('计费')} <span className="tnum text-foreground">{formatBytes(traffic.data.total.billed_bytes)}</span>
             </span>
           )}
         >
-          {traffic.loading && !traffic.data ? <Loading block={256} />
+          {traffic.loading && !traffic.data ? <Loading block={268} />
             : traffic.error && !traffic.data ? <LoadError error={traffic.error} onRetry={traffic.reload} />
             : totalDown + totalUp === 0 ? <Empty title="近 7 天还没有流量记录" desc="连上节点跑一会儿，这里就会有走势了。" />
-            : (
-              <Suspense fallback={<Loading block={256} />}>
-                <WeekChart week={week} />
-              </Suspense>
-            )}
+            : <WeekChart week={week} />}
         </Section>
       )}
 
@@ -350,7 +330,6 @@ function Overview({ full }: { full: boolean }) {
                   <>
                     <button
                       onClick={() => openCategory(featured.name)}
-                      {...enter()}
                       className="group/f w-full rounded-2xl bg-muted/60 p-4 text-left transition-colors hover:bg-muted"
                     >
                       <div className="flex items-center gap-3.5">
@@ -392,11 +371,10 @@ function Overview({ full }: { full: boolean }) {
                       <div className="mt-5">
                         <div className="mb-2.5 text-[12.5px] tracking-[.05em] text-muted-foreground">{tr('其他分类')}</div>
                         <div className="grid grid-cols-3 gap-1.5">
-                          {categories.slice(1, 7).map((c, i) => (
+                          {categories.slice(1, 7).map((c) => (
                             <button
                               key={c.name}
                               onClick={() => openCategory(c.name)}
-                              {...enter({ delay: stagger(i, 0.08), y: NUDGE, duration: DUR.fast })}
                               className="group/t flex min-w-0 flex-col items-center gap-2 rounded-xl px-2 py-3.5 transition-[background-color,translate] hover:-translate-y-0.5 hover:bg-muted/70"
                             >
                               <DocCategoryIcon name={c.name} platform={c.platform} className="size-5 text-muted-foreground" />

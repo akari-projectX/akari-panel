@@ -32,8 +32,8 @@ const overlay = 'fixed inset-0 z-50 bg-black/35 supports-backdrop-filter:backdro
 const sheet = cn(
   'panel fixed left-1/2 z-50 flex w-[calc(100%-24px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] bg-popover text-popover-foreground outline-none',
   'shadow-[0_24px_64px_-24px_rgba(13,21,38,.35)] ring-1 ring-foreground/8 sm:rounded-2xl',
-  'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-96 data-open:slide-in-from-bottom-2',
-  'data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-96',
+  'data-open:animate-in data-open:fade-in-0 data-open:zoom-in-98',
+  'data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-98',
 );
 
 /* 弹窗开着时跟踪可见视口（软键盘），见 lib/visual-viewport */

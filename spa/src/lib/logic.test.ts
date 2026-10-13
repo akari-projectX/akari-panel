@@ -4,9 +4,9 @@ import { safeRedirect, scopeOf } from './auth';
 import { docCategories, pick } from './doc-categories';
 import { defaultPasskeyName } from './passkey-name';
 import { allowed, R } from './routes';
-import { needsMethod, needsSwitchConfirm, offerKey, outcomeOf, planRefusal, preselect } from './shop';
+import { defaultPeriod, needsMethod, needsSwitchConfirm, offerKey, outcomeOf, periodChoices, planRefusal, preselect } from './shop';
 import { enabledFormats, importLinks, mySubUrl, withFormat } from './sub-links';
-import { ruleText, trafficByEntrance, trafficDays } from './traffic';
+import { ruleText, trafficByEntrance, trafficDays, weekAxis } from './traffic';
 
 const offer = (o: Partial<Offer>): Offer => ({
   period: 'month', days: null, price_cents: 1000, amount_cents: 1000, discount_cents: 0, credit_cents: 0,
@@ -34,6 +34,15 @@ describe('shop preselection (中-1)', () => {
     expect(preselect(plan([refused]), ok)).toBeUndefined();
     expect(planRefusal(plan([refused]))).toBe('sold_out');
     expect(planRefusal(plan([renew]))).toBeNull();
+  });
+  it('lists the period switcher in calendar order and defaults to the current plan\'s renewal, else the most common period', () => {
+    const a = plan([offer({ period: 'year' }), offer({ period: 'month' }), offer({ period: 'reset' })]);
+    const b = plan([offer({ period: 'month' }), offer({ period: 'days', days: 90 }), offer({ period: 'days', days: 30 })]);
+    expect(periodChoices([a, b]).map(offerKey)).toEqual(['month:', 'year:', 'days:30', 'days:90']);
+    expect(defaultPeriod([a, b], ok)).toBe('month:');
+    const cur = plan([offer({ period: 'year', action: 'renew' }), offer({ period: 'month', action: 'renew' })], true);
+    expect(defaultPeriod([cur, b], ok)).toBe('year:');
+    expect(defaultPeriod([], ok)).toBeUndefined();
   });
   it('keys multiple day-based offers apart', () => {
     expect(offerKey(offer({ period: 'days', days: 30 }))).not.toBe(offerKey(offer({ period: 'days', days: 90 })));
@@ -106,6 +115,15 @@ describe('account scopes and routes', () => {
 });
 
 describe('traffic and knowledge base shaping', () => {
+  it('picks the week chart unit and tidy ticks from the busiest day', () => {
+    const G = 1024 ** 3;
+    expect(weekAxis(3.4 * G)).toMatchObject({ unit: 'GB', ticks: [0, 1, 2, 3, 4], top: 4 });
+    expect(weekAxis(12 * G)).toMatchObject({ unit: 'GB', ticks: [0, 5, 10, 15], top: 15 });
+    expect(weekAxis(300 * 1024 ** 2)).toMatchObject({ unit: 'MB', ticks: [0, 100, 200, 300], top: 300 });
+    expect(weekAxis(0)).toMatchObject({ unit: 'KB' });
+    expect(weekAxis(0).top).toBeGreaterThan(0);
+  });
+
   const t: MyTraffic = {
     from: '2026-10-01', to: '2026-10-03', timezone: 'Asia/Shanghai', daily_since: null,
     total: { up_bytes: 0, down_bytes: 0, billed_bytes: 0 },

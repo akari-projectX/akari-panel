@@ -104,12 +104,12 @@
   /* 动效：与门户 spa/src/index.css 同名同值（scripts/check-tokens.mjs） */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
-  --dur-press: 0.12s;
-  --dur-hover: 0.2s;
-  --dur-fast: 0.26s;
-  --dur-base: 0.42s;
-  --dur-slow: 0.7s;
-  --dur-exit: 0.14s;
+  --dur-press: 0.1s;
+  --dur-hover: 0.16s;
+  --dur-fast: 0.16s;
+  --dur-base: 0.2s;
+  --dur-slow: 0.32s;
+  --dur-exit: 0.1s;
   /* 后台独有：开关的回弹 */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
@@ -300,11 +300,10 @@ html.dark {
   --tw-ease: var(--ease-in);
 }
 
-/* 切页：上浮 6px 淡入 */
+/* 切页：只淡入，不位移（2026-10-13 与门户一起改得更安静、更快） */
 @keyframes page-in {
   from {
     opacity: 0;
-    translate: 0 6px;
   }
 }
 .page-in {
@@ -313,7 +312,6 @@ html.dark {
 @keyframes akari-in {
   from {
     opacity: 0;
-    translate: 0 4px;
   }
 }
 .anim-in {
