@@ -562,6 +562,7 @@ export const EN: Record<string, string> = {
   "不支持的语言": "Unsupported language",
   "邮件服务未启用，请联系管理员": "Email is not available. Contact the administrator.",
   "请选择支付方式": "Choose a payment method.",
+  "暂时无法分配付款金额，请稍后再试": "No payment amount is free right now. Please try again later.",
   "该支付方式暂不可用，请选择其他方式": "This payment method is not available right now; choose another one.",
   "无法连接服务器，请检查网络后重试": "Cannot reach the server. Check your connection and try again.",
   "没有任何改动": "Nothing changed",

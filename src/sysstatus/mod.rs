@@ -66,15 +66,20 @@ pub enum Job {
     /// Remote rule-set refresh (every 5 min, one instance wins the round;
     /// an error while a list has failed for 2 days, `sub::rulesets`).
     RuleSets,
+    /// C2: on-chain payment watcher (every 5 s, one instance wins the
+    /// round; an error while a method's RPC has failed for 10 minutes,
+    /// `billing::chain::watch`).
+    ChainPayments,
 }
 
 impl Job {
-    pub const ALL: [Job; 5] = [
+    pub const ALL: [Job; 6] = [
         Job::Settlement,
         Job::Reconciliation,
         Job::Mail,
         Job::Alerts,
         Job::RuleSets,
+        Job::ChainPayments,
     ];
 
     /// Normal period; a job without a success for 6 periods is `stale`.
@@ -85,6 +90,7 @@ impl Job {
             Job::Mail => 2,
             Job::Alerts => 30,
             Job::RuleSets => 300,
+            Job::ChainPayments => 5,
         }
     }
 }
@@ -175,7 +181,7 @@ impl Local {
         }
     }
 
-    fn jobs(&self) -> HashMap<Job, JobStat> {
+    pub(crate) fn jobs(&self) -> HashMap<Job, JobStat> {
         self.jobs.lock().map(|j| j.clone()).unwrap_or_default()
     }
 }

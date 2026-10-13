@@ -8,6 +8,9 @@
 //!   `alipay_f2f` provider kind.
 //! - `epay` (C1): 易支付 (EPay, the common MD5 interface: mapi/submit,
 //!   GET/POST notify, api.php query), the `epay` provider kind.
+//! - `chain` (C2): USDT on-chain payments (Polygon, Plasma), the
+//!   `usdt_chain` kind: unique-amount reservation, the watcher, unmatched
+//!   transfers for the admin.
 //! - `http`: the minimal HTTPS client those calls use.
 //! - `orders`: order lifecycle; `apply_mark_paid` is THE paid transition
 //!   (entitle::lock → conditional UPDATE → fulfil via plans::apply_* →
@@ -37,6 +40,7 @@
 pub mod alipay;
 pub mod api;
 pub mod catalog;
+pub mod chain;
 pub mod commission;
 pub mod coupon_batches;
 pub mod coupons;

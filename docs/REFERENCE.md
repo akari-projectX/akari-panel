@@ -111,7 +111,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - `subscription-userinfo` 等配额头仅在成功时发送；错误令牌与其他所有拒绝一样得到同样的空 404。
   - 响应体按 8 KiB 分桶填充，大小不会泄露节点数量。
   - 按客户端地址和按用户限速（内置限额）；超限同样返回空 404。
-- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；类型：支付宝当面付、易支付（C1，MD5 接口，一个方式 = 一个商户的一个渠道），同类型允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
+- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；类型：支付宝当面付、易支付（C1，MD5 接口，一个方式 = 一个商户的一个渠道）、USDT 链上收款（C2，Polygon / Plasma：一个方式 = 一条链的一个收款地址，按每单唯一的精确金额自动核账，面板不持有私钥），同类型允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
   自助注册可选择是否做邮箱验证（系统设置 → 注册）。
 
 ## Layout
@@ -289,7 +289,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/users/{id}/revoke-sessions | admin | 让该账号在所有地方登出（204） |
 | POST | /api/v1/users/{id}/owner | owner | R47 `{confirm: true}`：把 owner 身份移交给一个已启用的管理员（204；400 `user.owner_confirm_required`，409 `user.owner_target` / `user.owner_already`，403 `user.owner_only`）；审计 `user.owner.transfer` |
 | GET | /api/v1/me/shop | user (renewal scope*) | 在售套餐及其每个标价周期按调用者此刻购买的价格（`action` new/renew/switch/reset、`discount_cents`、`credit_cents`、`balance_cents`、`amount_cents`，或 `refusal`）、描述、库存；调用者的订阅、切换抵扣和余额。W16：`?coupon=CODE`（限速）按优惠券计价（`coupon.refusal` / 各报价的 `coupon_refusal`），`?use_balance=true` 计入余额 |
-| GET/POST | /api/v1/me/orders | user (renewal scope*) | 自己的订单（最近 50 条）/ 创建 `{plan_id, period, coupon?, use_balance?}` → 订单 + 二维码（`qr_code`）或付款跳转链接（`pay_url`，如易支付）（金额 = 服务端价格减去优惠券、切换抵扣和余额，在 SQL 中计算；被完全抵扣的订单立即标记为已支付）；多于一个启用方式时须带 `method_id` |
+| GET/POST | /api/v1/me/orders | user (renewal scope*) | 自己的订单（最近 50 条）/ 创建 `{plan_id, period, coupon?, use_balance?}` → 订单 + 二维码（`qr_code`）或付款跳转链接（`pay_url`，如易支付）；USDT 链上收款的订单另带 `chain`（网络、代币合约、收款地址、精确金额 `amount`、所需确认数、保留截止、已看到的转账与确认数；`qr_code` = 收款地址），没有空闲的唯一金额时 503 `order.chain_busy`（金额 = 服务端价格减去优惠券、切换抵扣和余额，在 SQL 中计算；被完全抵扣的订单立即标记为已支付）；多于一个启用方式时须带 `method_id` |
 | GET | /api/v1/me/balance | user (renewal scope*) | W16：余额、可提现金额、流水（`?before&limit`） |
 | GET | /api/v1/me/invite | user | W16：邀请计划条款、已邀请人数、佣金合计与历史（邀请码：W15；R46：`usdt_chains` `[{id, name}]`、`usdt_rate_cents`） |
 | GET/POST | /api/v1/me/withdrawals | user | W16：自己的提现 / 申请 `{amount_cents, chain, address, memo?}`（R46：仅 USDT；chain 取自已启用的链，地址按链校验，memo 仅 TON；立即扣款；≤ 可提现金额） |
@@ -298,7 +298,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/me/orders/{id}/cancel | user (renewal scope*) | 取消待支付订单（先向支付宝查询并关闭） |
 | GET | /api/v1/plan-prices | admin | 每个套餐及其 `on_sale` 标记和价格，`payments_enabled` |
 | PUT | /api/v1/plans/{id}/prices | admin | `{on_sale, prices: [{period, days?, price_cents}]}` 替换该套餐的价格（W7 的周期类型） |
-| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&refunded&via&q&before&limit`（keyset；`q` = 后台账本的单一搜索框：以 `@` 开头（或含 `@`）= 买家当前邮箱包含该串，否则 = 订单号/交易号包含该串，不区分大小写，`%`/`_` 按字面，最长 100 字符；`refunded=true|false` = 已退款/未退款；`via=manual` = 管理员创建/确认；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）、`user_email`（当前地址，删除后为 null）和 `action`（new/renew/switch/reset，后台账本的类型小标） |
+| GET | /api/v1/orders | admin | 订单，`?status&email&out_trade_no&unfulfilled&refunded&via&q&before&limit`（keyset；`q` = 后台账本的单一搜索框：以 `@` 开头（或含 `@`）= 买家当前邮箱包含该串，否则 = 订单号/交易号包含该串，不区分大小写，`%`/`_` 按字面，最长 100 字符；`refunded=true|false` = 已退款/未退款；`via=manual` = 管理员创建/确认，`via=chain` = USDT 链上；`email` = 买家当前的地址）。行带有 `user_label`（Q4 快照）、`user_email`（当前地址，删除后为 null）和 `action`（new/renew/switch/reset，后台账本的类型小标） |
 | GET | /api/v1/orders/summary | admin | 后台账本（改版）：`?status&email&out_trade_no&unfulfilled&refunded&via&q&from&to`（与列表同样的筛选与校验）→ `{counts: {all, pending, paid, unfulfilled, refunded, expired, cancelled}, days: [{day, orders, paid_cents, refund_cents}]}`。`counts` 忽略状态类筛选（每个分段显示自己的数量）；`days` = `from..to`（站点时区的日，两者同给或都不给，≤366 天）内按下单日分组、套用全部筛选：笔数、已付订单的渠道实收 `amount_cents`、这些订单的渠道退款 `refund_gateway_cents`（无论何时退的）。一个 REPEATABLE READ 只读事务内两条聚合查询 |
 | POST | /api/v1/orders/manual | admin | 运维：`{user_id, plan_id, period, gift?, reason}` → 经由唯一的支付路径产生一个已支付订单（`paid_via` manual；金额 = 来自 SQL 的该周期价格，赠送为 0，绝不取自客户端；履约失败 = 409 且不保留任何内容） |
 | GET | /api/v1/orders/export.csv | admin | 运维：订单 CSV `?from&to&status&via`（按站点时区的天：本地午夜；≤366，默认最近 30 天；有审计） |
@@ -311,7 +311,10 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | GET/POST | /api/v1/coupon-batches | admin | 运维：批次（`codes`/`used`/`redeemed`，后台改版加 `codes_used` = 已被用过的码数）/ 生成 `{name?, prefix?, count ≤5000, length?, kind, value, …coupon terms, max_uses (per code, default 1)}` |
 | POST | /api/v1/coupon-batches/{id}/revoke | admin | 运维：停用该批次的所有码（仅一次） |
 | GET | /api/v1/coupon-batches/{id}/export.csv | admin | 运维：该批次的码，CSV 格式（有审计） |
-| GET | /api/v1/orders/{id} | admin | 订单 + 支付事件 |
+| GET | /api/v1/orders/{id} | admin | 订单 + 支付事件（链上订单的 `order.chain` 同门户） |
+| GET | /api/v1/payments/chain-transfers | admin | C2：链上转账（新的在前，`?status=pending\|credited\|unmatched\|assigned\|ignored\|dropped&method_id&before&limit`，`limit` ≤ 200）+ 每个链上支付方式的监听状态 `watchers`（游标、最新区块、错误、待确认/未匹配数）；见 docs/PAYMENTS.md「USDT 链上收款」 |
+| POST | /api/v1/payments/chain-transfers/{id}/assign | admin | C2：`{order_id, reason}` 把未匹配的转账指定给同一支付方式的未付款订单（经 `apply_mark_paid` 付款，`paid_via = chain`；409 `chain.transfer_not_open` / `chain.order_mismatch` / `chain.order_paid`，400 `chain.order_unknown`；审计 `chain_transfer.assign`） |
+| POST | /api/v1/payments/chain-transfers/{id}/ignore | admin | C2：`{reason}` 忽略未匹配的转账（已在面板外处理；204；审计 `chain_transfer.ignore`） |
 | POST | /api/v1/orders/{id}/fulfil | admin | `{reason}`：把未支付订单标记为已支付（手动），或重试失败的履约（有审计） |
 | POST | /api/v1/orders/{id}/refund | admin | W16 `{reason, to_balance, external_cents?, keep_plan?, original?, original_cents?}`：对已支付订单退款一次（余额部分退回；支付宝金额：① `original` = 经支付宝退款（`alipay.trade.refund`，全额或其中 `original_cents`，幂等的 `out_request_no`；确认时 200，结果未知时 202 `{pending}`——对账循环会查询并重试，被拒绝时 502 `order_admin.refund_gateway_failed`——不动任何资金；该支付方式的 `refund_original` 开关，默认开），② `to_balance`，③ 否则 `external_cents` = 在支付宝后台已退的金额，订单有支付宝金额时必填；记为 `refund_balance_cents` + `refund_external_cents` = `refund_cents`）；归还优惠券使用次数（低-2）；撤销待结算的佣金，追回已入账的佣金（中-4：立即从邀请人余额扣回，余下部分记为欠款，与后续佣金冲抵）；P1：撤销该订单对订阅的影响（新购 → 取消，续期 → 收回该期限，切换 → 恢复原套餐，重置包 → 仅退钱），除非带 `keep_plan` |
 | GET | /api/v1/orders/{id}/refund-preview | admin | P1：`{balance_part_cents, amount_cents, effect, original_available, original_request}`——此刻退款会产生的结果（`effect.kind` none/cancel/rollback/restore）；不可退款时 409 |

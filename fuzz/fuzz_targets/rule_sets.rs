@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 
-use akari_panel::sub::rulesets::fetch::public_address;
+use akari_panel::outbound::public_address;
 use akari_panel::sub::rulesets::parse::{RuleKind, check, cidr, parse, source_json};
 use libfuzzer_sys::fuzz_target;
 
