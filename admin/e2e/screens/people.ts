@@ -5,6 +5,8 @@
 // users-detail-loading / -error, finance-withdrawals-cap / -empty / -error,
 // finance-balances-error, finance-commissions-error, finance-withdrawals-memo
 // (needs a TON withdrawal with a memo).
+import { randomBytes } from "node:crypto";
+
 import { expect, type Page } from "@playwright/test";
 
 import { apiJson, sql } from "../helpers";
@@ -365,7 +367,7 @@ const financeShots: Shot[] = [
 async function financeSetup(c: Ctx): Promise<void> {
   const rpc = process.env.E2E_MOCK_RPC;
   if (!rpc || !c.planId) return;
-  const tag = Math.random().toString(16).slice(2, 10);
+  const tag = randomBytes(4).toString("hex");
   const addr = `0x${tag.repeat(5)}`;
   const name = `USDT（Polygon）${tag.slice(0, 4)}`;
   const m = await apiJson<{ id: string }>("POST", "/settings/payments", {
