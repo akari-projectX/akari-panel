@@ -2535,8 +2535,13 @@ last_json "d['config']['key_set'] and d['config']['api_url']=='http://127.0.0.1:
   || { echo "FAIL: EPay method view"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT position(convert_to('$EPAY_KEY', 'UTF8') IN secrets_enc) FROM payment_methods WHERE id = '$EMETHOD'")" = "0" ] \
   || { echo "FAIL: EPay key not sealed"; exit 1; }
+# Its own empty node group: the EPay buyer never reaches the node (later
+# sections count the node's users).
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H "$J" -d '{"name":"epay-group","entrance_ids":[]}')" = "201" ] \
+  || { echo "FAIL: create EPay group"; cat /tmp/akari-smoke/last; exit 1; }
+EGROUP=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H "$J" \
-    -d "{\"name\":\"epay-plan\",\"period\":\"monthly\",\"group_ids\":[\"$PAID_GROUP\"]}")" = "201" ] || { echo "FAIL: create EPay plan"; exit 1; }
+    -d "{\"name\":\"epay-plan\",\"period\":\"monthly\",\"group_ids\":[\"$EGROUP\"]}")" = "201" ] || { echo "FAIL: create EPay plan"; exit 1; }
 EPLAN=$(last_json "d['id']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$EPLAN/prices" -H "$J" \
     -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":990}]}')" = "204" ] || { echo "FAIL: EPay plan price"; exit 1; }
