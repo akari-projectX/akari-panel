@@ -100,7 +100,7 @@ describe('endpoints', () => {
     await walletApi.balance({ before: 42, limit: 30 });
     await walletApi.withdraw({ amount_cents: 990, chain: 'ton', address: 'UQx', memo: '42' });
     await walletApi.cancelWithdrawal('w1');
-    await inviteApi.deleteCode('A B');
+    await inviteApi.codes();
     await ticketApi.reply('t1', 'hi');
     await meApi.traffic('2026-10-01', '2026-10-06');
     await meApi.emailCode('n@x.y', { password: 'pw' });
@@ -109,7 +109,7 @@ describe('endpoints', () => {
       'GET /api/v1/me/balance?before=42&limit=30',
       'POST /api/v1/me/withdrawals',
       'POST /api/v1/me/withdrawals/w1/cancel',
-      'DELETE /api/v1/me/invite-codes/A%20B',
+      'GET /api/v1/me/invite-codes',
       'POST /api/v1/me/tickets/t1/replies',
       'GET /api/v1/me/traffic?from=2026-10-01&to=2026-10-06',
       'POST /api/v1/me/email/code',

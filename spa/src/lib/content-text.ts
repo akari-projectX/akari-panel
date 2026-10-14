@@ -87,3 +87,10 @@ export function parseDescription(text: string | null | undefined): DescriptionBl
   return blocks;
 }
 
+
+/** 商店卡片：说明开头的段落作一行简介，其余（功能清单等）照常渲染 */
+export function planSummary(content: string | null | undefined): { summary: string; rest: DescriptionBlock[] } {
+  const blocks = parseDescription(content);
+  const [first, ...rest] = blocks;
+  return first?.kind === 'p' ? { summary: first.lines.join(' '), rest } : { summary: '', rest: blocks };
+}

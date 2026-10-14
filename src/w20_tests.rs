@@ -346,7 +346,9 @@ async fn legacy_tokens_are_kept_and_guarded() {
     db.drop().await;
 }
 
-/// Minor 6: the first invite code appears on its own, once per account.
+/// Minor 6 + one code per account (2026-10-14): the code appears on its
+/// own once registration is open, is never replaced, cannot be deleted, and
+/// comes back for an account that somehow has none.
 #[tokio::test]
 async fn first_invite_code_is_created_once() {
     let Some(db) = TestDb::new().await else {
@@ -357,25 +359,24 @@ async fn first_invite_code_is_created_once() {
     let c = signed_in(&state, &login).await;
     // Registration closed: nothing created.
     let r = c.get("/test/api/v1/me/invite-codes").await.json();
-    assert_eq!(r["codes"].as_array().unwrap().len(), 0);
+    assert!(r["code"].is_null(), "{r}");
     sqlx::query("UPDATE signup_settings SET register_enabled = true")
         .execute(&db.pool)
         .await
         .unwrap();
     let r = c.get("/test/api/v1/me/invite-codes").await.json();
-    let codes = r["codes"].as_array().unwrap();
-    assert_eq!(codes.len(), 1);
-    let code = codes[0]["code"].as_str().unwrap().to_string();
+    let code = r["code"]["code"].as_str().unwrap().to_string();
+    assert_eq!(r["code"]["uses"], 0);
     assert_eq!(
-        c.get("/test/api/v1/me/invite-codes").await.json()["codes"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1,
+        c.get("/test/api/v1/me/invite-codes").await.json()["code"]["code"],
+        code.as_str(),
         "idempotent"
     );
     assert_eq!(audit_actions(&db, id).await, ["invite.create"]);
-    // Deleted on purpose: not recreated.
+    // No second code, no delete endpoint (the canonical 404 of junk paths).
+    let r = c.post("/test/api/v1/me/invite-codes", json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.json()["code"], "invite.exists");
     let r = c
         .req(
             axum::http::Method::DELETE,
@@ -383,14 +384,24 @@ async fn first_invite_code_is_created_once() {
             None,
         )
         .await;
-    assert!(r.status.is_success(), "{:?}", r.status);
-    assert_eq!(
-        c.get("/test/api/v1/me/invite-codes").await.json()["codes"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
-    );
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM invite_codes WHERE user_id = $1")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    assert_eq!(audit_actions(&db, id).await, ["invite.create"]);
+    // An account without a code (e.g. one that deleted them before the
+    // rule) gets one again.
+    sqlx::query("DELETE FROM invite_codes WHERE user_id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let again = c.get("/test/api/v1/me/invite-codes").await.json();
+    assert!(again["code"]["code"].is_string());
+    assert_ne!(again["code"]["code"], code.as_str());
     drop(state);
     db.drop().await;
 }

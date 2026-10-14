@@ -295,7 +295,7 @@ test('#19 renewal scope (expired): banner, no nodes or subscription, the shop st
   /* 账户提醒只在仪表盘 */
   await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
   /* 套餐到期后订阅已结束：可以重新订阅 */
-  await expect(page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' })).toBeVisible();
+  await expect(page.locator('.plan-card').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' })).toBeVisible();
   await open(page, '/wallet');
   await expect(page.getByRole('heading', { name: '钱包' })).toBeVisible();
   await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
@@ -307,7 +307,7 @@ test('#19 renewal scope (quota used up): the shop preselects the traffic reset p
   await page.getByRole('button', { name: '去恢复' }).click();
   await expect(page.getByRole('heading', { name: '商店' })).toBeVisible();
   /* 中-1：流量用完时，当前套餐默认给重置包 */
-  await expect(page.locator('.plan-col.is-current').getByRole('button', { name: '购买重置包' })).toBeVisible();
+  await expect(page.locator('.plan-card.is-current').getByRole('button', { name: '购买重置包' })).toBeVisible();
 });
 
 test('#18 banned: the reason and tickets only', async ({ page }) => {

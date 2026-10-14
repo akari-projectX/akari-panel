@@ -48,7 +48,6 @@ type Signup = {
   register_enabled: boolean;
   invite_required: boolean;
   invite_single_use: boolean;
-  invite_codes_per_user: number;
   email_domains: string[];
   trial_plan_id: string | null;
   trial_days: number;
@@ -80,20 +79,16 @@ function SignupForm({ s }: { s: Signup }) {
     domains: s.email_domains,
     invite_required: s.invite_required,
     invite_single_use: s.invite_single_use,
-    codes: String(s.invite_codes_per_user),
     trial_plan_id: s.trial_plan_id ?? "",
     trial_days: String(s.trial_days),
     reset_enabled: s.reset_enabled,
   });
   const v = f.value!;
   const domainList = v.domains;
-  const codesError = f.isEdited("codes")
-    ? intError(v.codes, 0, 100, tr) && tr("请输入 0–100 的整数（0 = 不能生成）", "Enter 0–100 (0 = none)")
-    : undefined;
   const daysError = v.trial_plan_id && f.isEdited("trial_days") ? intError(v.trial_days, 1, 3650, tr) : undefined;
   useSavePart({
     count: f.edited.length,
-    errors: (codesError ? 1 : 0) + (daysError ? 1 : 0),
+    errors: daysError ? 1 : 0,
     discard: f.reset,
     save: async () => {
       const cur = fresh(qc, ["settings", "signup"], s);
@@ -104,7 +99,6 @@ function SignupForm({ s }: { s: Signup }) {
             register_enabled: v.register_enabled,
             invite_required: v.invite_required,
             invite_single_use: v.invite_single_use,
-            invite_codes_per_user: intOf(v.codes),
             email_domains: v.domains,
             trial_plan_id: v.trial_plan_id || null,
             trial_days: intOf(v.trial_days),
@@ -195,26 +189,14 @@ function SignupForm({ s }: { s: Signup }) {
         />
         <SwitchRow
           label={tr("邀请码只能使用一次", "Invite codes are single use")}
+          description={tr(
+            "每个用户只有一个固定的邀请码，开启后每人只能邀请一人",
+            "Each user has one fixed code, so each user can invite only one person",
+          )}
           changed={f.isEdited("invite_single_use")}
           checked={v.invite_single_use}
           onChange={(x) => f.set("invite_single_use", x)}
         />
-        <FieldRow
-          label={tr("每个用户最多的邀请码数量", "Invite codes per user")}
-          description={tr("0–100，0 = 用户不能自己生成", "0–100, 0 = users cannot make their own")}
-          error={codesError}
-          changed={f.isEdited("codes")}
-        >
-          {(a) => (
-            <UnitInput
-              {...a}
-              unit={tr("个", "")}
-              invalid={!!codesError}
-              value={v.codes}
-              onChange={(e) => f.set("codes", e.target.value)}
-            />
-          )}
-        </FieldRow>
       </Group>
       <Group title={tr("试用", "Trial")}>
         <FieldRow

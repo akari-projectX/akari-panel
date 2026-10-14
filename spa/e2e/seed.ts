@@ -40,7 +40,7 @@ await admin.call('POST', '/api/v1/settings/payments', {
 const signup = await admin.call<{ version: number; trial_days: number }>('GET', '/api/v1/settings/signup');
 await admin.call('PUT', '/api/v1/settings/signup', {
   version: signup.version, register_enabled: true, invite_required: false, invite_single_use: false,
-  invite_codes_per_user: 5, email_domains: [], trial_plan_id: null, trial_days: signup.trial_days || 3,
+  email_domains: [], trial_plan_id: null, trial_days: signup.trial_days || 3,
   reset_enabled: true, email_verify: false,
 });
 

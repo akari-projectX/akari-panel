@@ -119,7 +119,7 @@ export function psql(sql: string): string {
 
 /** 各设置页 PUT 认得的字段（GET 里多出来的只读字段不能原样交回） */
 export const FIELDS = {
-  signup: ['register_enabled', 'invite_required', 'invite_single_use', 'invite_codes_per_user', 'email_domains', 'trial_plan_id', 'trial_days', 'reset_enabled', 'email_verify'],
+  signup: ['register_enabled', 'invite_required', 'invite_single_use', 'email_domains', 'trial_plan_id', 'trial_days', 'reset_enabled', 'email_verify'],
   auth: ['turnstile_site_key', 'turnstile_login', 'turnstile_register', 'turnstile_reset', 'honeypot', 'min_submit_secs', 'passkey_only_admins', 'passkey_only_users', 'passkey_prompt'],
   branding: ['footer_text', 'footer_links', 'tos_url', 'privacy_url', 'client_downloads'],
 } as const;

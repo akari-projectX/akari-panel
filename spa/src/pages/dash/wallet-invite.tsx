@@ -1,16 +1,12 @@
-import { useState } from 'react';
-import { Check, Copy, Plus, Trash2 } from 'lucide-react';
+import { Check, Copy } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import { Button } from '@/components/ui/button';
-import { ConfirmDialog } from '@/components/ui/panels';
 import { Input } from '@/components/ui/input';
 import { Row } from '@/components/flat';
 import { Empty, LoadError, Loading } from '@/components/data-state';
 import StatusTag from '@/components/status-tag';
 import { useCopy } from '@/hooks/use-copy';
-import { usePending } from '@/hooks/use-api';
-import { inviteApi, portalUrl, type CommissionStatus, type InviteCodes, type MyInvite } from '@/api';
-import { useErrorText } from '@/lib/errors';
+import { portalUrl, type CommissionStatus, type InviteCodes, type MyInvite } from '@/api';
 import { formatDate, formatMoney, type StatusTone } from '@/lib/format';
 import { R } from '@/lib/routes';
 import { useT, useTp } from '@/i18n';
@@ -18,7 +14,7 @@ import { useT, useTp } from '@/i18n';
 /*
  * 钱包与邀请页（pages/dash/wallet）里邀请的两块：
  *   · InviteLinkPane —— 概览右栏：邀请链接 + 复制、返佣条款一行；
- *   · InviteDetails  —— 「邀请返佣」分页：收益数字、邀请码管理、返佣明细。
+ *   · InviteDetails  —— 「邀请返佣」分页：收益数字、我的邀请码（每个账户一个，不能删除或重新生成）、返佣明细。
  * 佣金入账就进账户余额（单一余额），可提现的部分在同一页左栏申请。明细里只显示被邀请人的非个人标签，不显示对方邮箱。
  */
 
@@ -45,15 +41,13 @@ function terms(i: MyInvite, tr: (s: string) => string, tp: (s: string, v: Record
   ].join(' · ');
 }
 
-export function InviteLinkPane({ codes, invite, onCreate, creating }: {
-  codes: Api<InviteCodes>; invite: Api<MyInvite>; onCreate: () => void; creating: boolean;
-}) {
+export function InviteLinkPane({ codes, invite }: { codes: Api<InviteCodes>; invite: Api<MyInvite> }) {
   const tr = useT();
   const tp = useTp();
   const [copied, copy] = useCopy<string>();
   const c = codes.data;
-  const primary = c?.codes[0];
-  const link = primary ? inviteLink(primary.code, c?.link_base ?? null) : '';
+  const mine = c?.code;
+  const link = mine ? inviteLink(mine.code, c?.link_base ?? null) : '';
 
   return (
     <>
@@ -61,50 +55,35 @@ export function InviteLinkPane({ codes, invite, onCreate, creating }: {
         : codes.error && !c ? <LoadError error={codes.error} onRetry={codes.reload} />
         : c && !c.register_enabled ? (
           <p className="text-[13.5px] leading-[1.8] text-muted-foreground">{tr('站点现在关闭了注册，邀请链接暂时用不了。重新开放注册后这里会恢复。')}</p>
-        ) : c && primary ? (
-          <div className="flex flex-col gap-2.5 sm:flex-row">
-            <Input aria-label={tr('邀请链接')} readOnly value={link} className="h-10 font-mono text-[13px]" onFocus={(e) => e.currentTarget.select()} />
-            <Button
-              className="h-10 shrink-0 px-4"
-              onClick={async () => { if (await copy(link, 'link')) toast.success(tp('{what}已复制', { what: tr('邀请链接') })); }}
-            >
-              {copied === 'link' ? <Check className="pop-in" /> : <Copy />}{copied === 'link' ? tr('已复制') : tr('复制链接')}
-            </Button>
-          </div>
-        ) : c && (
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-[13.5px] text-muted-foreground">{tr('还没有邀请码，生成一个就有邀请链接了。')}</span>
-            <Button size="sm" disabled={creating} onClick={onCreate}><Plus className="size-3.5" />{creating ? tr('生成中') : tr('生成邀请码')}</Button>
-          </div>
+        ) : c && mine && (
+          <>
+            <div className="flex flex-col gap-2.5 sm:flex-row">
+              <Input aria-label={tr('邀请链接')} readOnly value={link} className="h-10 font-mono text-[13px]" onFocus={(e) => e.currentTarget.select()} />
+              <Button
+                className="h-10 shrink-0 px-4"
+                onClick={async () => { if (await copy(link, 'link')) toast.success(tp('{what}已复制', { what: tr('邀请链接') })); }}
+              >
+                {copied === 'link' ? <Check className="pop-in" /> : <Copy />}{copied === 'link' ? tr('已复制') : tr('复制链接')}
+              </Button>
+            </div>
+            {spent(c) && <p className="mt-2 text-[12.5px] text-warning">{tr('你的邀请码已经被使用过，不能再邀请新用户。')}</p>}
+          </>
         )}
       {invite.data && <p className="mt-3 text-[12.5px] leading-[1.7] text-muted-foreground">{terms(invite.data, tr, tp)}</p>}
     </>
   );
 }
 
-export function InviteDetails({ codes, invite, onCreate, creating }: {
-  codes: Api<InviteCodes>; invite: Api<MyInvite>; onCreate: () => void; creating: boolean;
-}) {
+/** 单次使用的站点上，邀请码已经用过（每个账户只有这一个码，不会再生成新的） */
+const spent = (c: InviteCodes) => c.single_use && !!c.code && c.code.uses > 0;
+
+export function InviteDetails({ codes, invite }: { codes: Api<InviteCodes>; invite: Api<MyInvite> }) {
   const tr = useT();
   const tp = useTp();
-  const errText = useErrorText();
   const [copied, copyText] = useCopy<string>();
-  const [deleting, runDelete] = usePending();
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const c = codes.data;
   const i = invite.data;
-  const create = onCreate;
-
-  const remove = (code: string) => runDelete(async () => {
-    try {
-      await inviteApi.deleteCode(code);
-      setPendingDelete(null);
-      codes.reload();
-      toast.success(tr('邀请码已删除'));
-    } catch (e) {
-      toast.error(errText(e));
-    }
-  });
+  const mine = c?.code;
 
   return (
     <div className="space-y-12">
@@ -127,52 +106,39 @@ export function InviteDetails({ codes, invite, onCreate, creating }: {
           </div>
         )}
 
-      {/* 邀请码 */}
+      {/* 邀请码：每个账户一个，不能删除或重新生成 */}
       <div>
-        <div className="mb-2 flex items-center justify-between gap-4">
-          <h3 className="sub-title">
-            {c ? tp('邀请码 {n} / {max}', { n: c.codes.length, max: c.limit }) : tr('邀请码')}
-            {c?.single_use && <span className="ml-2 font-normal text-muted-foreground">{tr('每个码只能用一次')}</span>}
-          </h3>
-          {c && c.register_enabled && (
-            <Button variant="outline" size="sm" disabled={creating || c.codes.length >= c.limit} onClick={create}>
-              <Plus />{creating ? tr('生成中') : tr('生成邀请码')}
-            </Button>
-          )}
-        </div>
+        <h3 className="sub-title mb-2">
+          {tr('我的邀请码')}
+          <span className="ml-2 font-normal text-muted-foreground">
+            {c?.single_use ? tr('每个账户一个，只能使用一次') : tr('每个账户一个，长期有效')}
+          </span>
+        </h3>
         {codes.loading && !c ? <Loading rows={1} />
           : codes.error && !c ? <LoadError error={codes.error} onRetry={codes.reload} />
-          : c && c.codes.length === 0 ? <Empty title="还没有邀请码" desc="生成一个之后就可以把链接发给别人了。" className="py-10" />
-          : c && c.codes.map((x) => (
-            <div key={x.code} className="flex items-center justify-between gap-4 border-b border-border py-2.5 text-[13.5px] last:border-b-0">
+          : c && !mine ? <Empty title="还没有邀请码" desc="站点开放注册后会自动为你生成。" className="py-10" />
+          : c && mine && (
+            <div className="flex items-center justify-between gap-4 border-b border-border py-2.5 text-[13.5px]">
               <span className="flex min-w-0 items-center gap-3">
-                <code className="truncate">{x.code}</code>
-                <span className="shrink-0 text-[12px] text-muted-foreground">{tp('已用 {n} 次', { n: x.uses })}</span>
+                <code className="truncate" data-testid="invite-code">{mine.code}</code>
+                <span className="shrink-0 text-[12px] text-muted-foreground">{tp('已用 {n} 次', { n: mine.uses })}</span>
               </span>
               <span className="flex shrink-0 items-center gap-1">
                 <Button
-                  variant="ghost" size="sm" aria-label={tr('复制链接')}
-                  onClick={async () => { if (await copyText(inviteLink(x.code, c.link_base), x.code)) toast.success(tp('{what}已复制', { what: tr('邀请链接') })); }}
+                  variant="ghost" size="sm" aria-label={tr('复制邀请码')}
+                  onClick={async () => { if (await copyText(mine.code, 'code')) toast.success(tp('{what}已复制', { what: tr('邀请码') })); }}
                 >
-                  {copied === x.code ? <Check className="pop-in" /> : <Copy />}<span className="hidden sm:inline">{tr('复制链接')}</span>
+                  {copied === 'code' ? <Check className="pop-in" /> : <Copy />}<span className="hidden sm:inline">{tr('复制邀请码')}</span>
                 </Button>
-                <ConfirmDialog
-                  trigger={
-                    <Button variant="ghost" size="sm" aria-label={tr('删除')} className="text-destructive hover:bg-destructive/10 hover:text-destructive" onClick={() => setPendingDelete(x.code)}>
-                      <Trash2 /><span className="hidden sm:inline">{tr('删除')}</span>
-                    </Button>
-                  }
-                  tone="danger"
-                  icon={<Trash2 />}
-                  title={tp('删除邀请码 {c}？', { c: x.code })}
-                  consequences={[tr('用这个码的链接立即失效'), tr('已经通过它注册的人不受影响，佣金照常计算')]}
-                  confirmLabel={tr('删除')}
-                  pending={deleting && pendingDelete === x.code}
-                  onConfirm={() => remove(x.code)}
-                />
+                <Button
+                  variant="ghost" size="sm" aria-label={tr('复制链接')}
+                  onClick={async () => { if (await copyText(inviteLink(mine.code, c.link_base), 'link')) toast.success(tp('{what}已复制', { what: tr('邀请链接') })); }}
+                >
+                  {copied === 'link' ? <Check className="pop-in" /> : <Copy />}<span className="hidden sm:inline">{tr('复制链接')}</span>
+                </Button>
               </span>
             </div>
-          ))}
+          )}
       </div>
 
       {/* 返佣明细 */}

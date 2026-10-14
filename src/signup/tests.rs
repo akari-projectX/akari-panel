@@ -222,7 +222,6 @@ fn req(domains: &[&str]) -> SignupReq {
         register_enabled: true,
         invite_required: false,
         invite_single_use: false,
-        invite_codes_per_user: 5,
         email_domains: domains.iter().map(|s| s.to_string()).collect(),
         trial_plan_id: None,
         trial_days: 3,
@@ -252,9 +251,6 @@ fn signup_values_normalise_and_bound() {
     assert!(signup_values(&req(&refs)).is_err());
     let mut r = req(&[]);
     r.trial_days = 0;
-    assert!(signup_values(&r).is_err());
-    let mut r = req(&[]);
-    r.invite_codes_per_user = 101;
     assert!(signup_values(&r).is_err());
     assert!(check_password("1234567").is_err());
     assert!(check_password(&"x".repeat(257)).is_err());
@@ -750,7 +746,7 @@ async fn invites_domains_and_trial() {
     set_signup(
         &db,
         "register_enabled = true, email_verify = true, invite_required = true, invite_single_use = true, \
-         invite_codes_per_user = 2, email_domains = '{example.com}'",
+         email_domains = '{example.com}'",
     )
     .await;
     let c = Client::new(&st, rand_ip());
@@ -778,7 +774,7 @@ async fn invites_domains_and_trial() {
         .await;
     assert_eq!(r.json()["error"], "invalid invite code");
 
-    // An inviter creates codes (limit 2); admins have none.
+    // An inviter has exactly one code; admins have none.
     let inviter = with_password(&db, "inviter-pw").await;
     let inviter_email = email_of(&db, inviter).await;
     let mut ic = Client::new(&st, rand_ip());
@@ -789,24 +785,14 @@ async fn invites_domains_and_trial() {
     let code1 = ic.post("/test/api/v1/me/invite-codes", json!({})).await;
     assert_eq!(code1.status, StatusCode::CREATED);
     let code1 = code1.json()["code"].as_str().unwrap().to_string();
-    let code2 = ic
-        .post("/test/api/v1/me/invite-codes", json!({}))
-        .await
-        .json()["code"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(
-        ic.post("/test/api/v1/me/invite-codes", json!({}))
-            .await
-            .status,
-        StatusCode::CONFLICT
-    );
-    let list = ic.get("/test/api/v1/me/invite-codes").await.json();
-    assert_eq!(list["codes"].as_array().unwrap().len(), 2);
-    assert_eq!(list["limit"], 2);
-    assert_eq!(list["single_use"], true);
-    assert_eq!(list["link_base"], format!("{ORIGIN}/register?invite="));
+    let again = ic.post("/test/api/v1/me/invite-codes", json!({})).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+    assert_eq!(again.json()["code"], "invite.exists");
+    let mine = ic.get("/test/api/v1/me/invite-codes").await.json();
+    assert_eq!(mine["code"]["code"], code1.as_str());
+    assert!(mine.get("codes").is_none() && mine.get("limit").is_none());
+    assert_eq!(mine["single_use"], true);
+    assert_eq!(mine["link_base"], format!("{ORIGIN}/register?invite="));
     let admin = db.admin().await;
     let mut ac = Client::new(&st, rand_ip());
     ac.cookie = Some(crate::auth::issue_token(&st, admin, "admin", 0).unwrap());
@@ -848,7 +834,8 @@ async fn invites_domains_and_trial() {
         1
     );
 
-    // Single use: code1 is spent (pre-check and the consuming UPDATE).
+    // Single use: code1 is spent (pre-check and the consuming UPDATE); it
+    // stays the account's code (shown as used, never replaced).
     let email2 = addr();
     let r = c
         .post(
@@ -857,6 +844,32 @@ async fn invites_domains_and_trial() {
         )
         .await;
     assert_eq!(r.json()["error"], "invalid invite code");
+    let mine = ic.get("/test/api/v1/me/invite-codes").await.json();
+    assert_eq!(
+        (mine["code"]["code"].as_str(), mine["code"]["uses"].as_i64()),
+        (Some(code1.as_str()), Some(1))
+    );
+    // An account from before the rule with more codes: all stay valid, the
+    // oldest one still admitting a registration is shown as its code.
+    let legacy = |code: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query("INSERT INTO invite_codes (code, user_id) VALUES ($1, $2)")
+                .bind(code)
+                .bind(inviter)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    legacy("legacytwo2").await;
+    legacy("legacythree3").await;
+    let code2 = "legacytwo2".to_string();
+    let code3 = "legacythree3".to_string();
+    assert_eq!(
+        ic.get("/test/api/v1/me/invite-codes").await.json()["code"]["code"],
+        "legacytwo2"
+    );
     // Spent between code request and completion: the whole registration
     // rolls back (the email code stays usable with another invite).
     let r = c
@@ -886,25 +899,8 @@ async fn invites_domains_and_trial() {
     };
     let r = reg(code_in(&body), code2.clone()).await;
     assert_eq!(r.json()["error"], "invalid invite code");
-    // Deleting a code; a fresh one admits the registration with the same
-    // (still unused) email code.
-    assert_eq!(
-        ic.req(
-            Method::DELETE,
-            &format!("/test/api/v1/me/invite-codes/{code2}"),
-            None
-        )
-        .await
-        .status,
-        StatusCode::NO_CONTENT
-    );
-    let code3 = ic
-        .post("/test/api/v1/me/invite-codes", json!({}))
-        .await
-        .json()["code"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    // Another (legacy) code admits the registration with the same (still
+    // unused) email code.
     let r = reg(code_in(&body), code3).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
 
@@ -1346,7 +1342,7 @@ async fn settings_api_validates_seals_and_audits() {
     let put = |v: i64, extra: Value| {
         let mut b = json!({
             "version": v, "register_enabled": true, "invite_required": false,
-            "invite_single_use": false, "invite_codes_per_user": 5, "email_domains": [],
+            "invite_single_use": false, "email_domains": [],
             "trial_plan_id": null, "trial_days": 7, "reset_enabled": true,
             "email_verify": false,
         });
@@ -1363,6 +1359,17 @@ async fn settings_api_validates_seals_and_audits() {
         )
         .await;
     assert_eq!(r.status, StatusCode::CONFLICT, "mail must be enabled first");
+    // The per-user invite code limit is gone (one code per user): an old
+    // client sending it is refused by the strict body.
+    let r = c
+        .req(
+            Method::PUT,
+            "/test/api/v1/settings/signup",
+            Some(put(0, json!({ "invite_codes_per_user": 5 }))),
+        )
+        .await;
+    assert!(r.status.is_client_error(), "{:?}", r.status);
+    assert_ne!(r.status, StatusCode::CONFLICT);
 
     let mail = |v: i64, extra: Value| {
         let mut b = json!({
@@ -1825,7 +1832,6 @@ struct SignupReqJson {
     register_enabled: bool,
     invite_required: bool,
     invite_single_use: bool,
-    invite_codes_per_user: i32,
     email_domains: Vec<String>,
     trial_plan_id: Option<Uuid>,
     trial_days: i32,
@@ -1840,7 +1846,6 @@ impl From<&SignupReq> for SignupReqJson {
             register_enabled: r.register_enabled,
             invite_required: r.invite_required,
             invite_single_use: r.invite_single_use,
-            invite_codes_per_user: r.invite_codes_per_user,
             email_domains: r.email_domains.clone(),
             trial_plan_id: r.trial_plan_id,
             trial_days: r.trial_days,

@@ -4,7 +4,7 @@ import { safeRedirect, scopeOf } from './auth';
 import { docCategories, pick } from './doc-categories';
 import { defaultPasskeyName } from './passkey-name';
 import { allowed, R } from './routes';
-import { defaultPeriod, needsMethod, needsSwitchConfirm, offerKey, outcomeOf, periodChoices, planRefusal, preselect } from './shop';
+import { headline, needsMethod, needsSwitchConfirm, offerKey, outcomeOf, planRefusal, preselect } from './shop';
 import { enabledFormats, importLinks, mySubUrl, withFormat } from './sub-links';
 import { ruleText, trafficByEntrance, trafficDays, weekAxis } from './traffic';
 
@@ -35,14 +35,24 @@ describe('shop preselection (中-1)', () => {
     expect(planRefusal(plan([refused]))).toBe('sold_out');
     expect(planRefusal(plan([renew]))).toBeNull();
   });
-  it('lists the period switcher in calendar order and defaults to the current plan\'s renewal, else the most common period', () => {
-    const a = plan([offer({ period: 'year' }), offer({ period: 'month' }), offer({ period: 'reset' })]);
-    const b = plan([offer({ period: 'month' }), offer({ period: 'days', days: 90 }), offer({ period: 'days', days: 30 })]);
-    expect(periodChoices([a, b]).map(offerKey)).toEqual(['month:', 'year:', 'days:30', 'days:90']);
-    expect(defaultPeriod([a, b], ok)).toBe('month:');
-    const cur = plan([offer({ period: 'year', action: 'renew' }), offer({ period: 'month', action: 'renew' })], true);
-    expect(defaultPeriod([cur, b], ok)).toBe('year:');
-    expect(defaultPeriod([], ok)).toBeUndefined();
+  it('headlines the lowest monthly equivalent, the number of periods and the best saving against monthly', () => {
+    const h = headline(plan([
+      offer({ period: 'month', price_cents: 700 }), offer({ period: 'quarter', price_cents: 1900 }),
+      offer({ period: 'year', price_cents: 6800 }), offer({ period: 'reset', price_cents: 100 }),
+    ]));
+    expect(h).toMatchObject({ cents: 567, per: 'month', from: true, count: 3 });
+    expect(h?.save).toMatchObject({ percent: 19 });
+    expect(h?.save?.offer.period).toBe('year');
+    /* 只有月付：不写「起」，没有省多少 */
+    expect(headline(plan([offer({ period: 'month', price_cents: 1200 })]))).toMatchObject({ cents: 1200, from: false, count: 1, save: undefined });
+    /* 一次性 / 按天：写最便宜那一档自己的价格 */
+    const once = offer({ period: 'onetime', days: null, price_cents: 2000 });
+    expect(headline(plan([once]))).toMatchObject({ cents: 2000, per: once, from: false });
+    const d30 = offer({ period: 'days', days: 30, price_cents: 900 });
+    expect(headline(plan([offer({ period: 'days', days: 90, price_cents: 2400 }), d30]))).toMatchObject({ cents: 900, per: d30, from: true, count: 2 });
+    /* 折扣不到 5% 不写；只有重置包没有大字价格 */
+    expect(headline(plan([offer({ period: 'month', price_cents: 1000 }), offer({ period: 'quarter', price_cents: 2900 })]))?.save).toBeUndefined();
+    expect(headline(plan([offer({ period: 'reset' })]))).toBeUndefined();
   });
   it('keys multiple day-based offers apart', () => {
     expect(offerKey(offer({ period: 'days', days: 30 }))).not.toBe(offerKey(offer({ period: 'days', days: 90 })));

@@ -681,41 +681,46 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
  * 列数随套餐个数：1 个不拉满（最宽 420px），2 个两栏，3 个三栏，4 个宽屏四栏，5–6 个三栏两行；平板两栏，手机一栏。
  * 卡内自上而下：名称 + 状态 → 价格 → 三行规格（流量 / 重置 / 速率，每张卡同样三行，横着对齐比较）→ 说明 → 操作（贴底，各卡对齐）。
  */
-.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 40px; }
+/* 商店套餐卡片（2026-10-14，样稿 design/shop-cards-2026-10）：白底卡、当前套餐描品牌色边框、买不了的整体淡一层 */
+.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
 .plan-cols[data-count='2'] { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 900px; }
-@media (min-width: 1200px) { .plan-cols[data-count='4'] { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px 28px; } }
-.plan-col {
-  position: relative; display: flex; flex-direction: column;
-  padding: 24px 0 28px; border-top: 1px solid var(--border);
-}
-.plan-col::before {
-  content: ''; position: absolute; left: 0; right: 0; top: -1px; height: 2px;
-  background: var(--brand); transform: scaleX(0); transform-origin: left;
-  transition: transform var(--dur-base) var(--ease-out);
-}
-.plan-col:hover::before, .plan-col:focus-within::before { transform: scaleX(1); }
-.plan-col.is-current {
+@media (min-width: 1200px) { .plan-cols[data-count='4'] { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.plan-card {
+  display: flex; flex-direction: column; justify-content: space-between;
   background: var(--card); border: 1px solid var(--border); border-radius: 16px;
-  padding-inline: 22px; margin-inline: -12px;
+  padding: 22px 22px 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  transition: border-color var(--dur-hover) var(--ease-out);
 }
-.dark .plan-col.is-current { background: var(--card); }
-.plan-col.is-current::before { display: none; }
-/* 买不了的套餐：内容淡一层，操作按钮自己是禁用样式 */
-.plan-col.is-off > :not(:last-child) { opacity: .6; }
-.plan-specs { margin-top: 20px; border-top: 1px solid var(--border); font-size: 13.5px; }
-.plan-specs > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--border); }
-.plan-specs dt { color: var(--muted-foreground); }
-.plan-specs dd { text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+.dark .plan-card { box-shadow: 0 1px 2px rgba(0, 0, 0, .3); }
+.plan-card:hover { border-color: color-mix(in srgb, var(--foreground) 16%, transparent); }
+.plan-card.is-current, .plan-card.is-current:hover { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
+/* 买不了的套餐：内容淡一层，按钮自己是禁用样式 */
+.plan-card.is-off > .plan-card-body { opacity: .62; }
+.plan-tag { flex-shrink: 0; border-radius: 6px; padding: 0 8px; font-size: 12px; line-height: 20px; white-space: nowrap; }
+.plan-tag.is-brand { color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent); }
+.plan-tag.is-warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.plan-specs {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px;
+  border-block: 1px solid var(--border); text-align: center;
+}
+.plan-specs > div { display: flex; flex-direction: column-reverse; padding: 12px 4px; min-width: 0; }
+.plan-specs > div + div { border-left: 1px solid var(--border); }
+.plan-specs dd { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.plan-specs dt { font-size: 12px; color: var(--faint-foreground); }
+.plan-card .plan-rich { font-size: 13.5px; }
+.plan-card .plan-rich ul { gap: 7px; }
+.plan-card .plan-rich ul li { padding-left: 22px; }
+.plan-card .plan-rich ul li::before { width: 14px; height: 14px; top: .35em; background: var(--success); }
 @media (max-width: 1023px) {
   .plan-cols, .plan-cols[data-count] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
 }
 @media (max-width: 640px) {
   .plan-cols, .plan-cols[data-count] { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .plan-col.is-current { margin-inline: 0; padding-inline: 18px; }
+  .plan-card { padding: 18px 18px 14px; }
 }
-@media (prefers-reduced-motion: reduce) { .plan-col::before { transition: none; } }
 
 /* --- 顶部导航：底部蓝线激活态，与文字链同一手法 --- */
 .topnav-link {

@@ -192,8 +192,6 @@ export const walletApi = {
 export const inviteApi = {
   get: () => api.get<MyInvite>('/me/invite'),
   codes: () => api.get<InviteCodes>('/me/invite-codes'),
-  createCode: () => api.post<void>('/me/invite-codes'),
-  deleteCode: (code: string) => api.del(`/me/invite-codes/${encodeURIComponent(code)}`),
 };
 
 /* ───────────── 工单、公告、知识库 ───────────── */

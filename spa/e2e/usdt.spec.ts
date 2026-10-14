@@ -31,7 +31,7 @@ test('USDT on-chain: unique exact amount on the shared address, the transfer con
     await signIn(page, email);
     const order = async () => {
       await open(page, '/shop');
-      await page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' }).click();
+      await page.locator('.plan-card').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' }).click();
       const dialog = page.getByRole('dialog');
       await dialog.locator('label').filter({ hasText: 'USDT（Polygon）' }).click();
       await dialog.getByRole('button', { name: /^支付 ¥/ }).click();

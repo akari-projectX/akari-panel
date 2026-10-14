@@ -1,5 +1,5 @@
 /*
- * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐、钱包与邀请，以及几张没改版的页面（仪表盘、订单、工单、设置），桌面 + 手机 × 浅色 + 深色，简体中文。
+ * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐卡片、使用手册、钱包与邀请（页头的 AKARI 标识在每一张里），以及几张没改版的页面（仪表盘、订单、工单、设置），桌面 + 手机 × 浅色 + 深色，简体中文。
  * 写到 test-results/screens/<名字>-<desktop|mobile>-<light|dark>.png，CI 作为 portal-screens 工件上传，给设计走查对照。
  * 放在最后跑（文件名 zz-，只在 mobile 项目里跑一次——那时两个视口的其余用例都跑完了），用前面用例留下的数据；
  * 另外加两个只为截图的套餐（多周期、仅限续费），看 1–4 个套餐时的排版。拍不到的图记一条注解，不让整套失败。
@@ -110,8 +110,17 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
         return s;
       },
     },
-    /* ② 商店 */
+    /* ② 商店（2026-10-14 套餐卡片：整页 + 只截卡片区） */
     { name: 'shop', account: 'user@e2e.test', run: (page) => ready(page, '/shop', seed.premium) },
+    {
+      name: 'shop-cards', account: 'user@e2e.test',
+      run: async (page) => {
+        await ready(page, '/shop', seed.premium);
+        return page.locator('.plan-cols').first();
+      },
+    },
+    /* 使用手册（2026-10-14：去掉「复制订阅地址」与设备下载链接，卡片区与搜索区拉开） */
+    { name: 'docs', account: 'user@e2e.test', run: (page) => ready(page, '/help') },
     /* ③ 钱包与邀请：默认分页、流水、提现记录、旧地址 /invite */
     { name: 'wallet', account: inviter, run: (page) => ready(page, '/wallet', '申请提现') },
     { name: 'wallet-ledger', account: inviter, run: (page) => ready(page, '/wallet?tab=ledger', '邀请佣金入账') },

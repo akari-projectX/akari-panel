@@ -196,7 +196,7 @@ export default function Shop() {
       )}
 
       {/* ── 套餐列表 ── */}
-      <Section title={tr('选择套餐')} desc={tr('价格按你现在下单计算：续费从到期日顺延，换套餐时旧套餐按剩余价值折算')}>
+      <Section title={tr('选择套餐')} desc={tr('价格为各周期按月折算后的最低价；购买时长在确认订单时选择')}>
         {shop.loading && !data ? <Loading block={420} />
           : shop.error && !data ? <LoadError error={shop.error} onRetry={shop.reload} />
           : plans.length === 0 ? <Empty title="暂时没有可购买的套餐" desc="站点还没有上架套餐。" />

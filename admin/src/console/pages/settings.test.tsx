@@ -138,7 +138,6 @@ const FIX: Record<string, unknown> = {
     register_enabled: false,
     invite_required: false,
     invite_single_use: false,
-    invite_codes_per_user: 5,
     email_domains: [],
     trial_plan_id: null,
     trial_days: 3,
@@ -420,20 +419,18 @@ test("overview: one request seeds every section", async () => {
 
 test("edit, bar, save", async () => {
   mount("/settings/signup");
-  const codes = await screen.findByLabelText("每个用户最多的邀请码数量");
-  fireEvent.change(codes, { target: { value: "-3" } });
-  await screen.findByText("请输入 0–100 的整数（0 = 不能生成）");
-  const bar = screen.getByRole("region", { name: "保存栏" });
-  expect(bar.textContent).toContain("1 处需要修正");
-  fireEvent.change(codes, { target: { value: "4" } });
+  fireEvent.click(await screen.findByRole("switch", { name: "邀请码只能使用一次" }));
   fireEvent.click(screen.getByRole("switch", { name: "开放注册" }));
+  const bar = await screen.findByRole("region", { name: "保存栏" });
   await waitFor(() => expect(bar.textContent).toContain("2 项未保存的修改"));
   await act(async () => {
     fireEvent.click(within(bar).getByRole("button", { name: "保存" }));
   });
   await waitFor(() => expect(calls.some((c) => c.method === "PUT" && c.path === "/settings/signup")).toBe(true));
   const put = calls.find((c) => c.method === "PUT")!.body as Record<string, unknown>;
-  expect(put.invite_codes_per_user).toBe(4);
+  // One invite code per user: the old per-user limit is not sent.
+  expect(put).not.toHaveProperty("invite_codes_per_user");
+  expect(put.invite_single_use).toBe(true);
   expect(put.register_enabled).toBe(true);
 });
 

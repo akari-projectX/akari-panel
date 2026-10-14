@@ -1,4 +1,5 @@
-//! Per-user invite codes (W15) and the invite attribution of registration.
+//! Invite codes (W15; one per user since 2026-10-14) and the invite
+//! attribution of registration.
 //!
 //! **Hook for W16 (commission):** the registration transaction
 //! (`register::apply_register`) consumes the code with `consume` and writes
@@ -7,15 +8,21 @@
 //! reads `users.inviter_id` of the paying user — nothing else here needs to
 //! change. `invite_codes.uses` counts registrations per code.
 //!
-//! Codes: 10 characters of `[a-z2-9]` (no 0/1, ~50 bits), at most
-//! `signup_settings.invite_codes_per_user` per account (creation serialised
-//! per account with an advisory transaction lock). Only role=user accounts
-//! have codes. Multi-use unless `invite_single_use` (then a code admits one
-//! registration: `uses = 0` checked in the consuming UPDATE, race-safe).
+//! Codes: 10 characters of `[a-z2-9]` (no 0/1, ~50 bits). Only role=user
+//! accounts have codes. **One code per account** (PLAN-next "门户下一批"):
+//! created automatically by `GET /me/invite-codes` while registration is
+//! open (or explicitly by `POST`, which refuses a second one with
+//! `invite.exists`); the user can neither delete nor regenerate it (there is
+//! no delete endpoint). Creation is serialised per account with an advisory
+//! transaction lock. Accounts from before the rule may hold several codes:
+//! all stay valid (shared links keep working); `mine` picks the one shown.
+//! Multi-use unless `invite_single_use` (then a code admits one
+//! registration: `uses = 0` checked in the consuming UPDATE, race-safe — so
+//! with one code per account, each account invites at most one person).
 
 use crate::auth::conflict;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde::Serialize;
@@ -89,9 +96,10 @@ pub struct CodeView {
 }
 
 #[derive(Serialize)]
-pub struct CodesView {
-    codes: Vec<CodeView>,
-    limit: i32,
+pub struct MyCodeView {
+    /// The account's invite code (None while registration is closed and no
+    /// code was made yet).
+    code: Option<CodeView>,
     register_enabled: bool,
     invite_required: bool,
     single_use: bool,
@@ -110,38 +118,45 @@ fn require_user(user: &AuthUser) -> Result<(), ApiError> {
     }
 }
 
-/// GET /api/v1/me/invite-codes
+/// The code shown as the account's: the oldest one that still admits a
+/// registration (with `single_use`: not used yet), else the oldest.
+pub async fn mine(
+    conn: &mut PgConnection,
+    user: Uuid,
+    single_use: bool,
+) -> sqlx::Result<Option<CodeView>> {
+    sqlx::query_as(
+        "SELECT code, uses, created_at FROM invite_codes WHERE user_id = $1 \
+         ORDER BY ($2 AND uses > 0), created_at, code LIMIT 1",
+    )
+    .bind(user)
+    .bind(single_use)
+    .fetch_optional(conn)
+    .await
+}
+
+/// GET /api/v1/me/invite-codes → the account's one code.
 ///
-/// W20 (Minor 6): while registration is open, an account's first code is
-/// created here automatically — once per account (`users.invite_autocreated`,
-/// 0120, flipped in the same transaction; audited `invite.create` like a
-/// manual one). An account that already has codes only gets the flag set;
-/// one that deleted its codes does not get them back.
+/// While registration is open, an account without a code gets it here
+/// (audited `invite.create`).
 pub async fn list_codes(
     State(state): State<AppState>,
     user: AuthUser,
-) -> Result<Json<CodesView>, ApiError> {
+) -> Result<Json<MyCodeView>, ApiError> {
     require_user(&user)?;
     let mut c = state.pg().begin().await?;
     let s = super::load_settings(&mut c).await?;
-    if s.register_enabled && s.invite_codes_per_user > 0 {
-        ensure_first(&mut c, &Actor::of(&user), user.id, s.invite_codes_per_user).await?;
+    if s.register_enabled {
+        apply_ensure(&mut c, &Actor::of(&user), user.id).await?;
     }
-    let codes = sqlx::query_as::<_, CodeView>(
-        "SELECT code, uses, created_at FROM invite_codes WHERE user_id = $1 \
-         ORDER BY created_at, code",
-    )
-    .bind(user.id)
-    .fetch_all(&mut *c)
-    .await?;
+    let code = mine(&mut c, user.id, s.invite_single_use).await?;
     let invited: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE inviter_id = $1")
         .bind(user.id)
         .fetch_one(&mut *c)
         .await?;
     c.commit().await?;
-    Ok(Json(CodesView {
-        codes,
-        limit: s.invite_codes_per_user,
+    Ok(Json(MyCodeView {
+        code,
         register_enabled: s.register_enabled,
         invite_required: s.invite_required,
         single_use: s.invite_single_use,
@@ -150,53 +165,30 @@ pub async fn list_codes(
     }))
 }
 
-/// W20: the once-per-account automatic first code (see `list_codes`).
-async fn ensure_first(
-    conn: &mut PgConnection,
-    actor: &Actor,
-    user: Uuid,
-    limit: i32,
-) -> Result<(), ApiError> {
-    let done: Option<bool> =
-        sqlx::query_scalar("SELECT invite_autocreated FROM users WHERE id = $1 FOR NO KEY UPDATE")
-            .bind(user)
-            .fetch_optional(&mut *conn)
-            .await?;
-    if done != Some(false) {
-        return Ok(());
-    }
-    let has: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM invite_codes WHERE user_id = $1)")
-            .bind(user)
-            .fetch_one(&mut *conn)
-            .await?;
-    if !has {
-        apply_create(conn, actor, user, limit).await?;
-    }
-    sqlx::query("UPDATE users SET invite_autocreated = true WHERE id = $1")
+async fn has_code(conn: &mut PgConnection, user: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM invite_codes WHERE user_id = $1)")
         .bind(user)
-        .execute(&mut *conn)
-        .await?;
-    Ok(())
+        .fetch_one(conn)
+        .await
 }
 
-/// Create a code for `user` in the caller's transaction (limit per user).
-pub async fn apply_create(
+/// Give `user` its invite code unless it already has one, in the caller's
+/// transaction: Some(new code), or None when the account has a code.
+pub async fn apply_ensure(
     conn: &mut PgConnection,
     actor: &Actor,
     user: Uuid,
-    limit: i32,
-) -> Result<String, ApiError> {
+) -> Result<Option<String>, ApiError> {
+    // Fast path: almost every call finds the code (no lock taken).
+    if has_code(conn, user).await? {
+        return Ok(None);
+    }
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('akari.invite.' || $1::text, 0))")
         .bind(user)
         .execute(&mut *conn)
         .await?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM invite_codes WHERE user_id = $1")
-        .bind(user)
-        .fetch_one(&mut *conn)
-        .await?;
-    if n >= i64::from(limit) {
-        return Err(conflict!("invite.limit", "invite code limit reached"));
+    if has_code(conn, user).await? {
+        return Ok(None);
     }
     let mut code = new_code();
     // ~50-bit codes: a collision is astronomically rare; retry anyway.
@@ -220,14 +212,15 @@ pub async fn apply_create(
                 Some(json!({ "code": code })),
             )
             .await?;
-            return Ok(code);
+            return Ok(Some(code));
         }
         code = new_code();
     }
     Err(ApiError::internal())
 }
 
-/// POST /api/v1/me/invite-codes → {code}
+/// POST /api/v1/me/invite-codes → 201 {code}; an account that already has
+/// its code → 409 `invite.exists` (one code per account, never replaced).
 pub async fn create_code(
     State(state): State<AppState>,
     user: AuthUser,
@@ -241,43 +234,17 @@ pub async fn create_code(
             "registration is closed"
         ));
     }
-    let code = apply_create(&mut tx, &Actor::of(&user), user.id, s.invite_codes_per_user).await?;
+    let Some(code) = apply_ensure(&mut tx, &Actor::of(&user), user.id).await? else {
+        return Err(conflict!(
+            "invite.exists",
+            "you already have an invite code; it cannot be replaced"
+        ));
+    };
     tx.commit().await?;
     Ok((
         axum::http::StatusCode::CREATED,
         Json(json!({ "code": code })),
     ))
-}
-
-/// DELETE /api/v1/me/invite-codes/{code}
-pub async fn delete_code(
-    State(state): State<AppState>,
-    user: AuthUser,
-    Path((_, code)): Path<(String, String)>,
-) -> Result<axum::http::StatusCode, ApiError> {
-    require_user(&user)?;
-    let mut tx = state.pg().begin().await?;
-    let n = sqlx::query("DELETE FROM invite_codes WHERE code = $1 AND user_id = $2")
-        .bind(&code)
-        .bind(user.id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    if n == 0 {
-        return Err(ApiError::not_found());
-    }
-    crate::audit::record(
-        &mut tx,
-        &Actor::of(&user),
-        "invite.delete",
-        "user",
-        Some(user.id.to_string()),
-        Some(json!({ "code": code })),
-        None,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

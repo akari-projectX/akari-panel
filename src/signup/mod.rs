@@ -1,6 +1,6 @@
 //! Self-service accounts (W15, M7): registration with an emailed code,
 //! password reset by emailed link, email (re)verification in the portal,
-//! per-user invite codes, and the 系统设置 → 注册 settings.
+//! one invite code per user, and the 系统设置 → 注册 settings.
 //!
 //! Rules (T1):
 //! - **Off by default.** While registration (or reset) is disabled its
@@ -87,7 +87,6 @@ pub struct SignupSettings {
     pub register_enabled: bool,
     pub invite_required: bool,
     pub invite_single_use: bool,
-    pub invite_codes_per_user: i32,
     pub email_domains: Vec<String>,
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
@@ -101,8 +100,7 @@ pub struct SignupSettings {
 }
 
 const SETTINGS_COLS: &str = "version, register_enabled, invite_required, invite_single_use, \
-     invite_codes_per_user, email_domains, trial_plan_id, trial_days, reset_enabled, email_verify, \
-     passkey_register";
+     email_domains, trial_plan_id, trial_days, reset_enabled, email_verify, passkey_register";
 
 pub async fn load_settings(conn: &mut PgConnection) -> sqlx::Result<SignupSettings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -137,7 +135,6 @@ pub struct SignupView {
     register_enabled: bool,
     invite_required: bool,
     invite_single_use: bool,
-    invite_codes_per_user: i32,
     email_domains: Vec<String>,
     trial_plan_id: Option<Uuid>,
     trial_days: i32,
@@ -206,7 +203,6 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
         register_enabled: s.register_enabled,
         invite_required: s.invite_required,
         invite_single_use: s.invite_single_use,
-        invite_codes_per_user: s.invite_codes_per_user,
         email_domains: s.email_domains,
         trial_plan_id: s.trial_plan_id,
         trial_days: s.trial_days,
@@ -237,7 +233,6 @@ pub struct SignupReq {
     pub register_enabled: bool,
     pub invite_required: bool,
     pub invite_single_use: bool,
-    pub invite_codes_per_user: i32,
     pub email_domains: Vec<String>,
     pub trial_plan_id: Option<Uuid>,
     pub trial_days: i32,
@@ -251,12 +246,6 @@ pub struct SignupReq {
 
 /// Validate and normalise a settings request (domains → punycode, deduped).
 pub fn signup_values(req: &SignupReq) -> Result<SignupReq, ApiError> {
-    if !(0..=100).contains(&req.invite_codes_per_user) {
-        return Err(bad_request!(
-            "signup_admin.invites_range",
-            "invite_codes_per_user must be 0-100"
-        ));
-    }
     if !(1..=3650).contains(&req.trial_days) {
         return Err(bad_request!(
             "signup_admin.trial_days_range",
@@ -348,14 +337,13 @@ pub async fn apply_update_settings(
     }
     sqlx::query(
         "UPDATE signup_settings SET version = version + 1, register_enabled = $1, \
-         invite_required = $2, invite_single_use = $3, invite_codes_per_user = $4, \
-         email_domains = $5, trial_plan_id = $6, trial_days = $7, reset_enabled = $8, \
-         email_verify = $9, passkey_register = $10, updated_at = now() WHERE id = 1",
+         invite_required = $2, invite_single_use = $3, email_domains = $4, \
+         trial_plan_id = $5, trial_days = $6, reset_enabled = $7, email_verify = $8, \
+         passkey_register = $9, updated_at = now() WHERE id = 1",
     )
     .bind(v.register_enabled)
     .bind(v.invite_required)
     .bind(v.invite_single_use)
-    .bind(v.invite_codes_per_user)
     .bind(&v.email_domains)
     .bind(v.trial_plan_id)
     .bind(v.trial_days)
@@ -364,14 +352,13 @@ pub async fn apply_update_settings(
     .bind(v.passkey_register)
     .execute(&mut *conn)
     .await?;
-    let snap =
-        |r: bool, ir: bool, su: bool, n: i32, d: &[String], p: Option<Uuid>, td: i32, re: bool| {
-            json!({
-                "register_enabled": r, "invite_required": ir, "invite_single_use": su,
-                "invite_codes_per_user": n, "email_domains": d, "trial_plan_id": p,
-                "trial_days": td, "reset_enabled": re,
-            })
-        };
+    let snap = |r: bool, ir: bool, su: bool, d: &[String], p: Option<Uuid>, td: i32, re: bool| {
+        json!({
+            "register_enabled": r, "invite_required": ir, "invite_single_use": su,
+            "email_domains": d, "trial_plan_id": p,
+            "trial_days": td, "reset_enabled": re,
+        })
+    };
     let with_verify = |mut j: serde_json::Value, ev: (bool, bool)| {
         j["email_verify"] = json!(ev.0);
         j["passkey_register"] = json!(ev.1);
@@ -388,7 +375,6 @@ pub async fn apply_update_settings(
                 cur.register_enabled,
                 cur.invite_required,
                 cur.invite_single_use,
-                cur.invite_codes_per_user,
                 &cur.email_domains,
                 cur.trial_plan_id,
                 cur.trial_days,
@@ -401,7 +387,6 @@ pub async fn apply_update_settings(
                 v.register_enabled,
                 v.invite_required,
                 v.invite_single_use,
-                v.invite_codes_per_user,
                 &v.email_domains,
                 v.trial_plan_id,
                 v.trial_days,
@@ -794,7 +779,7 @@ pub(crate) fn ok_json(v: serde_json::Value) -> Response {
 }
 
 pub fn routes() -> axum::Router<AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/{prefix}/auth/options", get(options))
         .route("/{prefix}/auth/register/code", post(register::request_code))
@@ -842,10 +827,6 @@ pub fn routes() -> axum::Router<AppState> {
         .route(
             "/{prefix}/api/v1/me/invite-codes",
             get(invite::list_codes).post(invite::create_code),
-        )
-        .route(
-            "/{prefix}/api/v1/me/invite-codes/{code}",
-            delete(invite::delete_code),
         )
 }
 
