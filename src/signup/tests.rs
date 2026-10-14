@@ -2091,12 +2091,12 @@ async fn user_invites_switch() {
     set_signup(&db, "register_enabled = true").await;
     let admin = db.admin().await;
     let ca = crate::testdb::http::client_for(&st, admin).await;
-    let inviter = with_password(&db, "inviter-pw").await;
+    // Generated test passwords (no hard-coded credentials).
+    let pw = format!("pw-{}", Uuid::new_v4().simple());
+    let inviter = with_password(&db, &pw).await;
     let mut ic = Client::new(&st, rand_ip());
     assert_eq!(
-        ic.login(&email_of(&db, inviter).await, "inviter-pw")
-            .await
-            .status,
+        ic.login(&email_of(&db, inviter).await, &pw).await.status,
         StatusCode::OK
     );
     let mine = ic.get("/test/api/v1/me/invite-codes").await.json();
@@ -2165,14 +2165,14 @@ async fn user_invites_switch() {
     assert_eq!(c.get("/test/auth/options").await.json()["invites"], false);
     // The existing code = an unknown code (same status and body).
     let try_code = |invite: String| {
-        let st = &st;
+        let (st, pw) = (&st, &pw);
         async move {
             let c = Client::new(st, rand_ip());
             let p = pow(&c).await;
             let r = c
                 .post(
                     "/test/auth/register",
-                    json!({ "email": addr(), "password": "long enough", "pow": p,
+                    json!({ "email": addr(), "password": pw, "pow": p,
                             "invite_code": invite }),
                 )
                 .await;
@@ -2184,7 +2184,7 @@ async fn user_invites_switch() {
     assert_eq!(known, unknown);
     assert_eq!(known.1["code"], "signup.invalid_invite");
     // Without a code, registration stays open.
-    let r = register_unverified(&mut Client::new(&st, rand_ip()), &addr(), "long enough").await;
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &addr(), &pw).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
 
     // On again: the same code admits a registration.
