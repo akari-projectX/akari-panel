@@ -5,18 +5,18 @@ import SEAL_LIGHT from '@/assets/brand/logo.png';
 import SEAL_DARK from '@/assets/brand/logo-dark.png';
 
 /**
- * 品牌印章（AKARI 灯塔）—— 实现设计规范《印章系统》。
+ * 品牌印章（AKARI）—— 实现设计规范《印章系统》。2026-10-14 用户：去掉「灯塔」与它的金色块，只留拉丁块。
  *
  * 整套只有两个动作：切一个方块、把字填满它。规范明令禁止：缝、圆角、渐变、投影、外发光、描边、换字体。
  *
  * 印章是两张现成的 PNG（src/assets/brand/），不是网页字体、也不再是运行时拼的字形轮廓：
- *   logo.png       浅色底用：夜色拉丁块 + 金色中文块
- *   logo-dark.png  深色底用：雾白拉丁块 + 金色中文块（主锁定）
- * 字面是 Michroma 400 与 Noto Serif SC 900，由这两款字体按规范比例排好后栅格化，
- * 与 public/brand/ 下的两张矢量标志逐像素对齐（584×124，纯色三种、只有抗锯齿边缘是过渡色）。
- * 每张约 3 kB，打包时直接内联进脚本：零请求、零字体，首帧就是最终形态。
+ *   logo.png       浅色底用：夜色拉丁块
+ *   logo-dark.png  深色底用：雾白拉丁块（主锁定）
+ * 字面是 Michroma 400，按规范比例排好后栅格化（383×124：原 584×124 双块锁定裁掉右边的中文块，
+ * 纯色两种、只有抗锯齿边缘是过渡色）。
+ * 每张约 1.6 kB，打包时直接内联进脚本：零请求、零字体，首帧就是最终形态。
  * 页头显示 31px 高，图是它的 4 倍，1x、2x 屏正好整数倍缩小，3x 屏也够清楚。
- * 改字标要找设计重出这两张图（或用 public/brand/ 下的矢量标志导出），替换同名文件即可。
+ * 改字标要找设计重出这两张图，替换同名文件并改 SEAL_RATIO 即可。
  */
 
 /** 透镜 O：一个圆被一道横向光带切开。规范给定路径，按原样使用。 */
@@ -29,8 +29,10 @@ export const LENS_PATH = 'M50 2A48 48 0 1 0 50 98A48 48 0 1 0 50 2Z M2 42H98V58H
 const SEAL = { onLight: SEAL_LIGHT, onDark: SEAL_DARK } as const;
 export type SealTone = keyof typeof SEAL;
 
-/** 图片原尺寸 584×124 */
-const SEAL_RATIO = 584 / 124;
+/** 图片原尺寸 383×124 */
+const SEAL_RATIO = 383 / 124;
+/** 原来的双块锁定（AKARI + 灯塔）的宽高比：印章仍占这么宽，页头导航不往左挪 */
+const RESERVED_RATIO = 584 / 124;
 
 /**
  * 尺寸只有一个驱动量：拉丁字号 en，方块高度 H = en × 1.64（规范 04）。
@@ -84,11 +86,13 @@ export function Logo({
       />
     );
   }
-  if (tone !== 'auto') return <Seal tone={tone} size={size} className={className} />;
+  /* 印章占原来双块锁定（584×124）的宽度、左对齐：去掉「灯塔」后页头导航的位置不变（2026-10-14 用户） */
+  const reserve = { minWidth: Math.round(Math.round(SIZE[size] * 1.64) * RESERVED_RATIO) };
+  if (tone !== 'auto') return <span className="inline-block" style={reserve}><Seal tone={tone} size={size} className={className} /></span>;
   return (
-    <>
+    <span className="inline-block" style={reserve}>
       <Seal tone="onLight" size={size} className={cn('dark:hidden', className)} />
       <Seal tone="onDark" size={size} className={cn('hidden dark:inline-block', className)} />
-    </>
+    </span>
   );
 }

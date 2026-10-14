@@ -758,13 +758,6 @@ pub async fn my_invite(
     .bind(user.id)
     .fetch_all(&mut *c)
     .await?;
-    // W15: the account's invite codes (managed at /me/invite-codes).
-    let invite_codes: Vec<String> = sqlx::query_scalar(
-        "SELECT code FROM invite_codes WHERE user_id = $1 ORDER BY created_at, code",
-    )
-    .bind(user.id)
-    .fetch_all(&mut *c)
-    .await?;
     let withdrawable = ledger::withdrawable(&mut c, user.id).await?;
     let balance = ledger::balance(&mut c, user.id).await?;
     Ok(Json(json!({
@@ -779,8 +772,6 @@ pub async fn my_invite(
             "name": super::usdt::CHAINS.iter().find(|(id, _)| id == c).map(|(_, n)| *n),
         })).collect::<Vec<_>>(),
         "usdt_rate_cents": s.usdt_rate_cents,
-        // W15's per-user codes (registration invite links).
-        "invite_codes": invite_codes,
         "invited_count": invited,
         "pending_cents": pending,
         "credited_cents": credited,

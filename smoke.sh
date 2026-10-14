@@ -2237,7 +2237,7 @@ for p in register/code register password-reset/request password-reset; do
 done
 [ "$(code "$BASE/auth/options")" = "200" ] && last_json "d['register'] or d['reset'] or d['mail']" | matches False \
   || { echo "FAIL: auth options while disabled (register / reset / mail)"; cat /tmp/akari-smoke/last; exit 1; }
-SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"invite_codes_per_user":5,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true,"email_verify":true'
+SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true,"email_verify":true'
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "409" ] \
   || { echo "FAIL: registration enabled without mail"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/mail" -H "$J" -d '{"version":0,"enabled":true,"host":"127.0.0.1","port":11025,"security":"none","username":null,"from_addr":"noreply@akari.test","from_name":"Akari Smoke","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true}')" = "200" ] \
@@ -2307,6 +2307,21 @@ mp_mail "$REG" 3 | matches 'https\?://127\.0\.0\.1:8080/' || { echo "FAIL: reset
   || { echo "FAIL: reset link reused"; exit 1; }
 [ "$(code -c "$RJAR" -X POST "$BASE/auth/login" -H "$J" -d "{\"email\":\"$REG\",\"password\":\"reg-password-2\"}")" = "200" ] \
   || { echo "FAIL: login with the new password"; exit 1; }
+# One invite code per account (2026-10-14): made on first view while
+# registration is open; a second one is refused; there is no delete endpoint.
+[ "$(code -b "$RJAR" "$BASE/api/v1/me/invite-codes")" = "200" ] \
+  && [ "$(last_json "d['code']['uses'] == 0 and len(d['code']['code']) == 10 and 'codes' not in d and 'limit' not in d")" = "True" ] \
+  || { echo "FAIL: GET /me/invite-codes (one code)"; cat /tmp/akari-smoke/last; exit 1; }
+ICODE=$(last_json "d['code']['code']")
+[ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/invite-codes")" = "409" ] && [ "$(last_json "d['code']")" = "invite.exists" ] \
+  || { echo "FAIL: a second invite code is not refused"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(fp -b "$RJAR" -X DELETE "$BASE/api/v1/me/invite-codes/$ICODE")" = "$REJ" ] \
+  || { echo "FAIL: the invite code delete endpoint still answers"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ "$(code -b "$RJAR" "$BASE/api/v1/me/invite-codes")" = "200" ] && [ "$(last_json "d['code']['code']")" = "$ICODE" ] \
+  && [ "$(psql_q "SELECT count(*) FROM invite_codes c JOIN users u ON u.id = c.user_id WHERE u.email = '$REG'")" = "1" ] \
+  || { echo "FAIL: the invite code changed or a second one exists"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/signup")" = "200" ] && [ "$(last_json "'invite_codes_per_user' in d")" = "False" ] \
+  || { echo "FAIL: signup settings still carry the per-user invite code limit"; cat /tmp/akari-smoke/last; exit 1; }
 # Outbox: settled bodies cleared; codes/tokens never in the log; audited.
 for _ in $(seq 1 20); do
   [ "$(psql_q "SELECT count(*) FROM mail_outbox WHERE status = 'pending'")" = "0" ] && break; sleep 0.5

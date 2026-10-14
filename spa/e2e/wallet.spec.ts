@@ -63,8 +63,9 @@ test('#52 an approved withdrawal shows the USDT sent and the transaction hash', 
   await expect(page.getByText(/aaaaaaaa…aaaaaaaa/).locator('visible=true').first()).toBeVisible();
 });
 
-test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, stats, commissions without the invitee\'s address; codes are created and deleted', async ({ page }, info) => {
-  await signIn(page, mine(info, 'inviter'));
+test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, stats, commissions without the invitee\'s address; one invite code that cannot be deleted or regenerated', async ({ page }, info) => {
+  const email = mine(info, 'inviter');
+  await signIn(page, email);
   await open(page, '/invite');
   await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
   await expect(page.getByRole('heading', { name: '邀请', exact: true })).toBeVisible();
@@ -74,14 +75,23 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await expect(page.getByRole('button', { name: '申请提现' })).toBeVisible();
   await expect(page.getByText('已入账').first()).toBeVisible();
   await expect(page.getByText(`invitee-${info.project.name}`)).toHaveCount(0);
-  await page.getByRole('button', { name: /生成邀请码|再生成一个/ }).first().click();
-  await expect(page.getByText('邀请码已生成').first()).toBeVisible();
-  /* 邀请链接用面板给的 link_base（主域名 + /register?invite=） */
-  await expect(page.locator('input[value*="/register?invite="]').first()).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=`));
-  await page.getByRole('button', { name: '删除' }).locator('visible=true').first().click();
-  const confirm = page.getByRole('alertdialog').or(page.getByRole('dialog'));
-  if (await confirm.count()) await confirm.getByRole('button', { name: /删除|确认/ }).last().click();
-  await expect(page.getByText('邀请码已删除').first()).toBeVisible();
+  /* 每个账户一个邀请码：自动生成，没有「生成」与「删除」 */
+  const shown = page.getByTestId('invite-code');
+  await expect(shown).toHaveCount(1);
+  const code = (await shown.textContent())?.trim() ?? '';
+  const uid = `(SELECT id FROM users WHERE email = '${email}')`;
+  expect(psql(`SELECT code FROM invite_codes WHERE user_id = ${uid} ORDER BY created_at, code LIMIT 1;`)).toBe(code);
+  await expect(page.getByText('每个账户一个，长期有效')).toBeVisible();
+  await expect(page.getByRole('button', { name: /生成邀请码|再生成一个/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '删除' })).toHaveCount(0);
+  /* 邀请链接用面板给的 link_base（主域名 + /register?invite=）+ 这个码 */
+  await expect(page.locator('input[value*="/register?invite="]').first()).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=${code}$`));
+  await page.getByRole('button', { name: '复制邀请码' }).click();
+  await expect(page.getByText('邀请码已复制').first()).toBeVisible();
+  /* 规则之前留下的多个码：都还有效，页面只显示最早的那个 */
+  psql(`INSERT INTO invite_codes (code, user_id, created_at) VALUES ('zzlegacy${info.project.name === 'mobile' ? 'm' : 'd'}', ${uid}, now() + interval '1 second') ON CONFLICT DO NOTHING;`);
+  await page.reload();
+  await expect(page.getByTestId('invite-code')).toHaveText(code);
 });
 
 test('#56 a refund after the commission was credited claws it back (the balance stops at zero, the rest is owed)', async ({ page }, info) => {

@@ -1,21 +1,28 @@
-import { useState } from 'react';
-import type { Me, Offer, ShopPlan } from '@/api';
+import type { Me, Offer, OfferAction, ShopPlan } from '@/api';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import PlanContent from '@/components/plan-content';
-import { PERIOD_MONTHS, formatBytes, formatMoney, periodText, resetPeriodText, yuan } from '@/lib/format';
-import { ACTION_TEXT, REFUSAL_TEXT, defaultPeriod, offerKey, periodChoices, planRefusal, preselect } from '@/lib/shop';
+import PlanBlocks from '@/components/plan-blocks';
+import { planSummary } from '@/lib/content-text';
+import { formatBytes, periodText, yuan } from '@/lib/format';
+import { ACTION_TEXT, REFUSAL_TEXT, headline, planRefusal, preselect } from '@/lib/shop';
 import { useT, useTp } from '@/i18n';
 import { cn } from '@/lib/utils';
 
+/** 按钮下面的一行说明（新购没有） */
+const ACTION_NOTE: Partial<Record<OfferAction, string>> = {
+  renew: '从到期日顺延',
+  switch: '旧套餐剩余价值自动抵扣',
+  reset: '不改变套餐与到期时间',
+};
+
 /**
- * 商店的套餐列表（2026-10-13 改版）：顶上一个时长切换（月付 / 季付 / 年付 …），每张卡显示这一时长的价格，
- * 套餐之间横向比较的是同一个周期；下面是对齐的规格行（流量、重置、速率）与站长写的说明（设备、线路等），最下面是操作。
+ * 商店的套餐卡片（2026-10-14，按用户确认的样稿 design/shop-cards-2026-10）：卡片上方**没有**周期切换，
+ * 周期只在确认订单弹窗里选。每张卡 = 名称 + 状态标签（当前套餐 / 已售罄 / 仅续费 / 仅剩 N 个名额；面板没有「推荐」标记，不显示）
+ * + 一行简介（说明开头的段落）→ 大字「¥x /月 起」（各周期按月折算的最低价，lib/shop 的 headline；只有按天 / 一次性的写那一档自己的价格）
+ * +「N 种周期可选 · 年付省 x%」→ 三格规格（流量 / 重置 / 速率）→ 功能清单（说明其余部分）→ 一个按钮 + 一行说明。
  *
- * 价格全部来自面板（/me/shop）：大字是该周期的标价；面板算出的本次应付（换套餐的折算、余额抵扣）不同时另起一行写出来。
- * 状态用一行小字，不用徽章：当前套餐 / 已售罄 / 仅剩 N 个名额 / 仅限现有用户续费。
- * 没有这个时长的套餐写明「没有{时长}」并给一个「看 {它有的时长}」的按钮（切换整个列表）。
- * 流量用完的当前套餐，操作仍是重置包（preselect，中-1）。
+ * 价格全部来自面板（/me/shop 的标价），这里只是换算成每月的说法；本次应付（折算、余额、优惠码）在确认订单弹窗里。
+ * 按钮的动作就是 preselect（流量用完的当前套餐 = 重置包，中-1）；买不了的套餐按钮置灰并写原因。
+ * 当前套餐描品牌色边框。列数随套餐数（1 个最宽 420px，2/3 栏，4 个在宽屏四栏，5–6 个三栏；平板两栏，手机一栏）。
  */
 export default function PlanGrid({
   plans, me, onBuy,
@@ -26,108 +33,91 @@ export default function PlanGrid({
 }) {
   const tr = useT();
   const tp = useTp();
-  const choices = periodChoices(plans);
-  const [picked, setPicked] = useState<string | undefined>();
-  const key = picked && choices.some((o) => offerKey(o) === picked) ? picked : defaultPeriod(plans, me);
-  const label = (o: Pick<Offer, 'period' | 'days'>) => periodText(o.period, o.days, tr, tp);
-  const keyOffer = choices.find((o) => offerKey(o) === key);
+  const ok = me ?? { expired: false, quota_exhausted: false };
+
+  const reset = (p: ShopPlan['period']) => {
+    if (p === 'monthly') return tr('每月');
+    const m = /^days-(\d+)$/.exec(p);
+    return m ? tp('每 {n} 天', { n: m[1] }) : tr('不重置');
+  };
 
   return (
-    <>
-      {choices.length > 1 && (
-        <div className="mb-7 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <Tabs value={key} onValueChange={setPicked}>
-            <TabsList aria-label={tr('购买时长')} className="h-9 max-w-full overflow-x-auto">
-              {choices.map((o) => <TabsTrigger key={offerKey(o)} value={offerKey(o)} className="px-3">{label(o)}</TabsTrigger>)}
-            </TabsList>
-          </Tabs>
-        </div>
-      )}
+    <div className="plan-cols" data-count={Math.min(plans.length, 6)}>
+      {plans.map((pl) => {
+        const act = preselect(pl, ok);
+        const refusal = planRefusal(pl);
+        const h = headline(pl);
+        const { summary, rest } = planSummary(pl.description);
+        const tag = pl.current ? { t: tr('当前套餐'), c: 'is-brand' }
+          : pl.sold_out ? { t: tr('已售罄'), c: 'is-warn' }
+          : refusal === 'renewal_only' ? { t: tr('仅续费'), c: 'is-warn' }
+          : pl.remaining != null ? { t: tp('仅剩 {n} 个名额', { n: pl.remaining }), c: 'is-warn' }
+          : null;
+        const off = !!refusal && !pl.current;
+        const note = act?.action ? ACTION_NOTE[act.action] : undefined;
 
-      <div className="plan-cols" data-count={Math.min(plans.length, 6)}>
-        {plans.map((pl) => {
-          const sel = pl.offers.find((o) => offerKey(o) === key);
-          const pre = me ? preselect(pl, me) : undefined;
-          /* 流量用完的当前套餐：操作是重置包（价格仍按所选时长显示） */
-          const act = pre?.action === 'reset' ? pre : sel;
-          const refusal = planRefusal(pl);
-          const fallback = !sel ? pl.offers.find((o) => o.period !== 'reset' && o.action) ?? pl.offers.find((o) => o.period !== 'reset') : undefined;
-          const months = sel ? PERIOD_MONTHS[sel.period] : undefined;
-          const amount = sel?.amount_cents;
-          const status = pl.current ? { t: tr('当前套餐'), c: 'text-brand' }
-            : pl.sold_out ? { t: tr('已售罄'), c: 'text-muted-foreground' }
-            : refusal === 'renewal_only' ? { t: tr('仅限现有用户续费'), c: 'text-muted-foreground' }
-            : pl.remaining != null ? { t: tp('仅剩 {n} 个名额', { n: pl.remaining }), c: 'text-warning' }
-            : null;
-          const off = !!refusal && !pl.current;
-
-          return (
-            <article key={pl.plan_id} className={cn('plan-col', pl.current && 'is-current', off && 'is-off')} aria-label={pl.name}>
-              <header className="flex items-baseline justify-between gap-3">
-                <h3 className="text-[17px] font-semibold tracking-[-0.01em]">{pl.name}</h3>
-                {status && <span className={cn('shrink-0 text-[12.5px] font-medium', status.c)}>{status.t}</span>}
+        return (
+          <article key={pl.plan_id} className={cn('plan-card', pl.current && 'is-current', off && 'is-off')} aria-label={pl.name}>
+            <div className="plan-card-body">
+              <header className="flex min-h-[22px] items-center gap-2">
+                <h3 className="truncate text-[16px] font-semibold">{pl.name}</h3>
+                {tag && <span className={cn('plan-tag', tag.c)}>{tag.t}</span>}
               </header>
+              <p className="mt-1 min-h-[21px] text-[13px] text-muted-foreground">{summary}</p>
 
-              {/* 价格：所选时长的标价；没有这个时长时写明 */}
-              <div className="mt-4 min-h-[76px]">
-                {sel ? (
+              {/* 价格：按月折算的最低价（或唯一 / 最便宜那一档的标价） */}
+              <div className="mt-[18px] flex items-baseline gap-1" data-testid="plan-price">
+                {h ? (
                   <>
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="tnum text-[34px] leading-none font-semibold tracking-[-0.03em]">
-                        <span className="mr-0.5 align-[0.32em] text-[17px] font-medium">¥</span>{yuan(sel.price_cents)}
-                      </span>
-                      <span className="text-[13.5px] text-muted-foreground">/ {label(sel)}</span>
-                    </div>
-                    <div className="mt-2 space-y-0.5 text-[12.5px] text-muted-foreground">
-                      {months && months > 1 && <div className="tnum">{tp('折合每月 {v}', { v: formatMoney(Math.round(sel.price_cents / months)) })}</div>}
-                      {amount != null && amount !== sel.price_cents && (
-                        <div className="tnum text-foreground">
-                          {tp('本次应付 {v}', { v: formatMoney(amount) })}
-                          {sel.credit_cents > 0 && <span className="text-muted-foreground">{tp('（已折算旧套餐 {v}）', { v: formatMoney(sel.credit_cents) })}</span>}
-                        </div>
-                      )}
-                    </div>
+                    <span className="self-start pt-1.5 text-[15px] font-semibold">¥</span>
+                    <span className="tnum text-[34px] leading-[1.1] font-semibold tracking-[-0.02em]">{yuan(h.cents)}</span>
+                    <span className="text-[13px] text-muted-foreground">
+                      {h.per === 'month' ? tr('/月') : `/ ${periodText(h.per.period, h.per.days, tr, tp)}`}
+                      {h.from && ` ${tr('起')}`}
+                    </span>
                   </>
-                ) : (
-                  <div className="pt-1 text-[13.5px] text-muted-foreground">
-                    <div className="text-[34px] leading-none font-semibold text-faint">—</div>
-                    {keyOffer && <div className="mt-2">{tp('没有{p}', { p: label(keyOffer) })}</div>}
-                  </div>
+                ) : <span className="text-[34px] leading-[1.1] font-semibold text-faint">—</span>}
+              </div>
+              <div className="min-h-5 text-[12.5px] text-muted-foreground">
+                {h && (h.only ? periodText(h.only.period, h.only.days, tr, tp) : tp('{n} 种周期可选', { n: h.count }))}
+                {h?.save && (
+                  <>
+                    {' · '}
+                    <b className="font-medium whitespace-nowrap text-success">
+                      {tp('{p}省 {n}%', { p: periodText(h.save.offer.period, h.save.offer.days, tr, tp), n: h.save.percent })}
+                    </b>
+                  </>
                 )}
               </div>
 
-              {/* 规格：每张卡同样三行，横向对齐着比 */}
+              {/* 规格：三格，每张卡对齐着比 */}
               <dl className="plan-specs">
-                <div><dt>{tr('流量')}</dt><dd>{pl.traffic_quota_bytes != null ? formatBytes(pl.traffic_quota_bytes) : tr('不限流量')}</dd></div>
-                <div><dt>{tr('重置')}</dt><dd>{pl.traffic_quota_bytes != null ? resetPeriodText(pl.period, tr, tp) : '—'}</dd></div>
-                <div><dt>{tr('速率')}</dt><dd>{pl.speed_limit_mbps ? `${pl.speed_limit_mbps} Mbps` : tr('不限速')}</dd></div>
+                <div><dd>{pl.traffic_quota_bytes != null ? formatBytes(pl.traffic_quota_bytes) : tr('不限')}</dd><dt>{tr('流量')}</dt></div>
+                <div><dd>{pl.traffic_quota_bytes != null ? reset(pl.period) : '—'}</dd><dt>{tr('重置')}</dt></div>
+                <div><dd>{pl.speed_limit_mbps ? `${pl.speed_limit_mbps} Mbps` : tr('不限速')}</dd><dt>{tr('速率')}</dt></div>
               </dl>
 
-              <PlanContent content={pl.description} className="mt-5 flex-1" />
-              {!pl.description.trim() && <div className="flex-1" />}
+              <PlanBlocks blocks={rest} className="mt-4" />
+            </div>
 
-              <div className="mt-6">
-                {act?.action ? (
-                  <Button
-                    variant={pl.current ? 'default' : 'outline'} className="h-10 w-full"
-                    onClick={() => onBuy(pl, act, act.action === 'reset')}
-                  >
-                    {tr(ACTION_TEXT[act.action])}
-                  </Button>
-                ) : !sel && fallback ? (
-                  <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={() => setPicked(offerKey(fallback))}>
-                    {tp('看{p}', { p: label(fallback) })}
-                  </Button>
-                ) : (
-                  <Button variant="outline" disabled className="h-10 w-full">
-                    {tr(REFUSAL_TEXT[sel?.refusal ?? refusal ?? 'not_for_sale'])}
-                  </Button>
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </>
+            <div className="mt-[18px]">
+              {act?.action ? (
+                <Button
+                  variant={pl.current ? 'default' : 'outline'} className="h-[42px] w-full"
+                  onClick={() => onBuy(pl, act, act.action === 'reset')}
+                >
+                  {tr(ACTION_TEXT[act.action])}
+                </Button>
+              ) : (
+                <Button variant="outline" disabled className="h-[42px] w-full">
+                  {tr(REFUSAL_TEXT[refusal ?? 'not_for_sale'])}
+                </Button>
+              )}
+              <p className="mt-2 min-h-[18px] text-center text-[12px] text-faint">{note ? tr(note) : ''}</p>
+            </div>
+          </article>
+        );
+      })}
+    </div>
   );
 }

@@ -1,4 +1,5 @@
-import { PERIOD_KINDS, type CouponRefusal, type Me, type MyOrder, type Offer, type OfferAction, type OfferRefusal, type Shop, type ShopPlan } from '@/api';
+import type { CouponRefusal, Me, MyOrder, Offer, OfferAction, OfferRefusal, Shop, ShopPlan } from '@/api';
+import { PERIOD_MONTHS } from '@/lib/format';
 
 /**
  * 商店的纯逻辑（有单测）。价格一律由面板算好（/me/shop 的 offers），前端只负责挑选和展示，不做任何价格计算。
@@ -28,26 +29,42 @@ export function preselect(p: ShopPlan, me: Pick<Me, 'expired' | 'quota_exhausted
 export const offerKey = (o: Pick<Offer, 'period' | 'days'>) => `${o.period}:${o.days ?? ''}`;
 
 /**
- * 商店顶上的时长切换：所有套餐出现过的周期（重置包除外），按 月 → 季 → … → N 天 → 一次性 排，同种按天数。
- * 每项带一个代表报价（第一个有它的套餐的），只用来取名字。
+ * 套餐卡片的大字价格（2026-10-14 商店卡片）：只是把面板给的标价换个说法，不算任何应付金额。
+ *   · 有按月计的周期 → 各周期按月折算后最低的那个（`per: 'month'`，分取整）；
+ *   · 只有按天 / 一次性 → 最便宜那一档的标价（`per: offer`，写它自己的时长）；
+ *   · `from`：不止一种周期可选（「起」）；`count`：周期数（不含重置包）；
+ *   · `save`：相对月付，折扣最大的长周期省了多少（≥ 5% 才写）。
  */
-export function periodChoices(plans: ShopPlan[]): Offer[] {
-  const seen = new Map<string, Offer>();
-  for (const p of plans) for (const o of p.offers) if (o.period !== 'reset' && !seen.has(offerKey(o))) seen.set(offerKey(o), o);
-  const rank = (o: Offer) => PERIOD_KINDS.indexOf(o.period);
-  return [...seen.values()].sort((a, b) => rank(a) - rank(b) || (a.days ?? 0) - (b.days ?? 0));
-}
+export type Headline = {
+  cents: number;
+  per: 'month' | Offer;
+  from: boolean;
+  count: number;
+  only?: Offer;
+  save?: { offer: Offer; percent: number };
+};
 
-/**
- * 默认选中的时长：当前套餐默认要续的那一档（preselect，非重置包）；否则最多套餐都有的那一档（同样多取排在前面的）。
- */
-export function defaultPeriod(plans: ShopPlan[], me: Pick<Me, 'expired' | 'quota_exhausted'> | undefined): string | undefined {
-  const cur = plans.find((p) => p.current);
-  const pre = cur && me ? preselect(cur, me) : undefined;
-  if (pre && pre.period !== 'reset') return offerKey(pre);
-  const choices = periodChoices(plans);
-  const count = (k: string) => plans.filter((p) => p.offers.some((o) => offerKey(o) === k)).length;
-  return choices.map((o) => offerKey(o)).reduce<string | undefined>((best, k) => (best === undefined || count(k) > count(best) ? k : best), undefined);
+export function headline(p: Pick<ShopPlan, 'offers'>): Headline | undefined {
+  const offers = p.offers.filter((o) => o.period !== 'reset');
+  if (offers.length === 0) return undefined;
+  const monthly = offers.filter((o) => PERIOD_MONTHS[o.period]);
+  const base = { from: offers.length > 1, count: offers.length, only: offers.length === 1 ? offers[0] : undefined };
+  const month = offers.find((o) => o.period === 'month');
+  let save: Headline['save'];
+  if (month && month.price_cents > 0) {
+    for (const o of monthly) {
+      const m = PERIOD_MONTHS[o.period]!;
+      if (m <= 1) continue;
+      const percent = Math.round((1 - o.price_cents / (month.price_cents * m)) * 100);
+      if (percent >= 5 && (!save || percent > save.percent)) save = { offer: o, percent };
+    }
+  }
+  if (monthly.length > 0) {
+    const cents = Math.min(...monthly.map((o) => Math.round(o.price_cents / PERIOD_MONTHS[o.period]!)));
+    return { ...base, cents, per: 'month', save };
+  }
+  const cheapest = offers.reduce((a, b) => (b.price_cents < a.price_cents ? b : a));
+  return { ...base, cents: cheapest.price_cents, per: cheapest, save };
 }
 
 /** 套餐整体为什么买不了（第一个报价的拒绝原因）；能买时为 null */

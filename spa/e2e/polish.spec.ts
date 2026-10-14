@@ -60,7 +60,7 @@ test('#52 withdrawal form: inline errors, the first bad field is focused, nothin
   await page.route(/\/api\/v1\/me\/invite$/, (r) => r.fulfill({
     json: {
       enabled: true, rate_percent: 20, first_order_only: false, hold_days: 7, min_withdrawal_cents: 1000,
-      usdt_chains: [{ id: 'trc20', name: 'TRC20 (Tron)' }], usdt_rate_cents: null, invite_codes: [], invited_count: 0,
+      usdt_chains: [{ id: 'trc20', name: 'TRC20 (Tron)' }], usdt_rate_cents: null, invited_count: 0,
       pending_cents: 0, credited_cents: 5000, reversed_cents: 0, balance_cents: 8000, withdrawable_cents: 5000, commissions: [],
     },
   }));

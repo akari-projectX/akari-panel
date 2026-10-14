@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, ArrowRight, BookOpen, Calendar, Check, ChevronDown, ChevronRight, Clock,
-  Copy, Download, Headphones, Search, X,
+  Copy, Headphones, Search, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +14,6 @@ import PlatformIcon from '@/components/platform-icon';
 import { docCategories, pick, type DocCategory, type KbArticle } from '@/lib/doc-categories';
 import { detectPlatform } from '@/data/platforms';
 import { useAuth } from '@/lib/auth';
-import { useSite } from '@/lib/site';
 import { mySubUrl } from '@/lib/sub-links';
 import { contentApi } from '@/api';
 import { R } from '@/lib/routes';
@@ -63,10 +62,6 @@ function ListView() {
     setKw(q);
   }
 
-  const { me } = useAuth();
-  const subUrl = mySubUrl(me);
-  const [copied, copyText] = useCopy();
-
   const all = useKnowledge();
   const found = useKnowledge(q);
   const chapters = all.chapters;
@@ -100,9 +95,7 @@ function ListView() {
   const totalHitCount = displayArticles.length;
 
   const { isUnread } = useReadState();
-  const site = useSite();
   const device = detectPlatform();
-  const download = site.downloads.find((d) => d.platform === device.id);
 
   const setCategoryFilter = (catName: string) => {
     const next: Record<string, string> = {};
@@ -133,30 +126,12 @@ function ListView() {
     setParams(next);
   };
 
-  const handleCopySubscribe = async () => {
-    if (!subUrl) return;
-    if (await copyText(subUrl, 'sub')) {
-      toast.success(tr('订阅地址已复制到剪贴板'));
-    }
-  };
-
-  /* 当前设备：有同名分类就给「看教程」，站长配了下载地址就给「下载」；都没有就不占位置 */
+  /* 当前设备：有同名分类就给「看教程」；没有就不占位置（客户端下载在仪表盘） */
   const deviceChapter = chapters.find((c) => c.platform?.id === device.id);
 
   return (
     <div className="pb-16">
-      <PageTitle
-        title={tr('使用手册')}
-        sub={tr('客户端下载、连接指南与常见问题。')}
-        extra={
-          subUrl && (
-            <Button variant="outline" className="h-9" onClick={handleCopySubscribe}>
-              {copied === 'sub' ? <Check className="pop-in size-3.5 text-success" /> : <Copy className="size-3.5" />}
-              {copied === 'sub' ? tr('已复制') : tr('复制订阅地址')}
-            </Button>
-          )
-        }
-      />
+      <PageTitle title={tr('使用手册')} sub={tr('客户端下载、连接指南与常见问题。')} />
 
       {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
       <div className="mt-8 space-y-4">
@@ -204,31 +179,19 @@ function ListView() {
           </nav>
         )}
 
-        {(deviceChapter || download?.url) && !q && currentCategory === 'all' && (
+        {deviceChapter && !q && currentCategory === 'all' && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13.5px] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5">
               <PlatformIcon name={device.icon} className="size-4 text-brand" />
               {tp('你正在使用 {p}', { p: device.name })}
             </span>
-            {deviceChapter && (
-              <button
-                type="button"
-                onClick={() => setCategoryFilter(deviceChapter.name)}
-                className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
-              >
-                {tp('查看 {p} 教程', { p: deviceChapter.name })}<ArrowRight className="size-3.5" />
-              </button>
-            )}
-            {download?.url && (
-              <a
-                href={download.url}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
-              >
-                <Download className="size-3.5" />{tp('下载 {p} 客户端', { p: device.name })}
-              </a>
-            )}
+            <button
+              type="button"
+              onClick={() => setCategoryFilter(deviceChapter.name)}
+              className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
+            >
+              {tp('查看 {p} 教程', { p: deviceChapter.name })}<ArrowRight className="size-3.5" />
+            </button>
           </div>
         )}
 
@@ -242,8 +205,8 @@ function ListView() {
         )}
       </div>
 
-      <div className="mt-8">
-      {/* ── 文档卡片区 ── */}
+      {/* ── 文档卡片区：与搜索区拉开一段距离，上面一行小标题（全部文档 / 分类 / 搜索结果 · N 篇） ── */}
+      <section aria-label={tr('文档列表')} className="mt-10 sm:mt-12">
       {all.loading && !all.data ? (
         <Loading rows={4} />
       ) : all.error && !all.data ? (
@@ -253,6 +216,13 @@ function ListView() {
       ) : totalHitCount === 0 ? (
         <Empty title={tr('未找到相关文档')} desc={tr('请尝试使用其他关键词，或在上方选择不同的平台分类。')} />
       ) : (
+        <>
+        <h2 className="sub-title mb-4" data-testid="docs-heading">
+          {tp('{c} · {n} 篇', {
+            c: q ? tr('搜索结果') : currentCategory === 'all' ? tr('全部文档') : currentCategory,
+            n: totalHitCount,
+          })}
+        </h2>
         <div className="grid grid-cols-1 gap-4.5 md:grid-cols-2 lg:grid-cols-3">
           {displayArticles.map(({ article, category }) => (
             <GuideCard
@@ -264,8 +234,9 @@ function ListView() {
             />
           ))}
         </div>
+        </>
       )}
-      </div>
+      </section>
     </div>
   );
 }

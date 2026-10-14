@@ -446,7 +446,6 @@ export type MyInvite = {
   usdt_chains: { id: UsdtChain; name: string }[];
   /** 参考汇率：1 USDT 折合多少分人民币（只用于显示「约 N USDT」）；没设为 null */
   usdt_rate_cents: number | null;
-  invite_codes: string[] | null;
   invited_count: number;
   pending_cents: number;
   credited_cents: number;
@@ -456,9 +455,9 @@ export type MyInvite = {
   commissions: Commission[];
 };
 
+/** 每个账户一个邀请码（不能删除或重新生成）；注册开放时面板自动生成，注册关闭且还没生成过时为 null */
 export type InviteCodes = {
-  codes: { code: string; uses: number; created_at: string }[];
-  limit: number;
+  code: { code: string; uses: number; created_at: string } | null;
   register_enabled: boolean;
   invite_required: boolean;
   single_use: boolean;

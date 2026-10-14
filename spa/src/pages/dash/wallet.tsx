@@ -134,7 +134,6 @@ export default function Wallet() {
   const withdrawals = useApi(() => walletApi.withdrawals(), [], { key: K.withdrawals, enabled: full });
   const invite = useApi(() => inviteApi.get(), [], { key: K.invite, enabled: full });
   const codes = useApi(() => inviteApi.codes(), [], { key: K.inviteCodes, enabled: full });
-  const [creating, createCode] = useCreateCode(codes.reload);
 
   const tabs: WalletTab[] = full ? ['invite', 'ledger', 'withdrawals'] : ['ledger'];
   const asked = params.get('tab') as WalletTab | null;
@@ -396,7 +395,7 @@ export default function Wallet() {
             right={
               <>
                 <PaneHead title={<><Share2 className="size-4 text-brand" />{tr('你的邀请链接')}</>} desc={tr('通过链接注册的人会记在你名下')} />
-                <InviteLinkPane codes={codes} invite={invite} onCreate={createCode} creating={creating} />
+                <InviteLinkPane codes={codes} invite={invite} />
               </>
             }
           />
@@ -414,7 +413,7 @@ export default function Wallet() {
           )}
           {full && (
             <TabsContent value="invite">
-              <InviteDetails codes={codes} invite={invite} onCreate={createCode} creating={creating} />
+              <InviteDetails codes={codes} invite={invite} />
             </TabsContent>
           )}
           <TabsContent value="ledger">{ledgerList}</TabsContent>
@@ -471,21 +470,4 @@ export default function Wallet() {
       </FlowDialog>
     </>
   );
-}
-
-/** 生成邀请码（概览右栏与「邀请返佣」分页共用一个进行中状态） */
-function useCreateCode(reload: () => void): [boolean, () => void] {
-  const tr = useT();
-  const errText = useErrorText();
-  const [creating, run] = usePending();
-  const create = () => run(async () => {
-    try {
-      await inviteApi.createCode();
-      reload();
-      toast.success(tr('邀请码已生成'));
-    } catch (e) {
-      toast.error(errText(e));
-    }
-  });
-  return [creating, create];
 }

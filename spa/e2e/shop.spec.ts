@@ -11,17 +11,35 @@ test.describe.configure({ mode: 'serial' });
 test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 #44 a switch with proration is paid by QR', async ({ page }, info) => {
   await signIn(page, mine(info, 'shop'));
   await open(page, '/shop');
-  await expect(page.locator('.plan-col').filter({ hasText: seed.premium })).toBeVisible();
-  /* 服务端报价：顶上的时长切换列出各套餐的周期，切到年付，卡片显示该周期的标价与折合每月（价格都来自 /me/shop） */
-  const std = page.locator('.plan-col').filter({ hasText: seed.plan });
-  await page.getByRole('tab', { name: '年付' }).click();
-  await expect(std.getByText('/ 年付')).toBeVisible();
-  await expect(std.getByText(/折合每月 ¥12\.5/)).toBeVisible();
-  /* 高级套餐没有年付：写明并给一个回到它有的时长的按钮 */
-  const prem = page.locator('.plan-col').filter({ hasText: seed.premium });
-  await expect(prem.getByText('没有年付')).toBeVisible();
-  await prem.getByRole('button', { name: '看月付' }).click();
-  await expect(page.getByRole('tab', { name: '月付' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.plan-card').filter({ hasText: seed.premium })).toBeVisible();
+  /* 商店卡片（2026-10-14）：上面没有周期切换；大字是各周期按月折算的最低价（面板标价换算），周期数与年付省多少 */
+  await expect(page.getByRole('tablist')).toHaveCount(0);
+  const std = page.locator('.plan-card').filter({ hasText: seed.plan });
+  await expect(std.getByTestId('plan-price')).toHaveText(/¥\s*12\.50\s*\/月 起/);
+  await expect(std.getByText('2 种周期可选')).toBeVisible();
+  await expect(std.getByText('年付省 17%')).toBeVisible();
+  /* 三格规格 + 说明里的功能清单 */
+  await expect(std.locator('.plan-specs > div')).toHaveCount(3);
+  await expect(std.locator('.plan-specs')).toContainText('100 GB');
+  await expect(std.locator('.plan-specs')).toContainText('每月');
+  await expect(std.getByText('全部节点')).toBeVisible();
+  const prem = page.locator('.plan-card').filter({ hasText: seed.premium });
+  await expect(prem.getByTestId('plan-price')).toHaveText(/¥\s*30\s*\/月$/);
+  await expect(prem.getByText('更多流量')).toBeVisible();
+  /* 当前套餐：品牌色边框、标签、续费 + 一行说明；别的套餐：换套餐 + 折算说明 */
+  const cur = page.locator('.plan-card.is-current');
+  await expect(cur).toHaveCount(1);
+  await expect(cur.locator('.plan-tag')).toHaveText('当前套餐');
+  await expect(cur.getByText('从到期日顺延')).toBeVisible();
+  await expect(prem.getByText('旧套餐剩余价值自动抵扣')).toBeVisible();
+  /* 手机一栏，桌面同一行并排 */
+  const [b1, b2] = [await std.boundingBox(), await prem.boundingBox()];
+  if (info.project.name === 'mobile') expect(Math.abs((b1?.x ?? 0) - (b2?.x ?? 1))).toBeLessThan(2);
+  else expect(Math.abs((b1?.y ?? 0) - (b2?.y ?? 1))).toBeLessThan(2);
+  /* 周期只在确认订单弹窗里选：弹窗照旧 */
+  await prem.getByRole('button', { name: '更换到此套餐' }).click();
+  await expect(page.getByRole('dialog').getByText('金额明细')).toBeVisible();
+  await page.keyboard.press('Escape');
 
   /* 流量重置包，余额全额抵扣：面板当场付清 */
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
@@ -46,7 +64,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   /* 用余额续费一个月（换套餐的折算按实付的订单算） */
   await open(page, '/shop');
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
-  await page.locator('.plan-col.is-current').getByRole('button', { name: '续费' }).click();
+  await page.locator('.plan-card.is-current').getByRole('button', { name: '续费' }).click();
   await page.getByRole('dialog').getByRole('button', { name: /月付/ }).first().click();
   await page.getByRole('button', { name: '确认开通' }).click();
   await payResult(page, '支付成功', seed.plan);
@@ -67,7 +85,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   try {
     /* 换到高级套餐：旧套餐折算抵扣（#37），支付宝付：订单页二维码，模拟网关标记已付款后页面自己变成已付款（#44） */
     await open(page, '/shop');
-    await page.locator('.plan-col').filter({ hasText: seed.premium }).getByRole('button', { name: '更换到此套餐' }).click();
+    await page.locator('.plan-card').filter({ hasText: seed.premium }).getByRole('button', { name: '更换到此套餐' }).click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByText('旧套餐折算抵扣')).toBeVisible();
     /* 两种支付方式：没选之前付不了 */
@@ -94,7 +112,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
 test('#37 credit beyond the new price is forfeited only after an explicit acknowledgement', async ({ page }, info) => {
   await signIn(page, mine(info, 'shop'));
   await open(page, '/shop');
-  await page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '更换到此套餐' }).click();
+  await page.locator('.plan-card').filter({ hasText: seed.plan }).getByRole('button', { name: '更换到此套餐' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('折算作废')).toBeVisible();
   await expect(dialog.getByRole('button', { name: '确认开通' })).toBeDisabled();
@@ -108,7 +126,7 @@ test('#37 credit beyond the new price is forfeited only after an explicit acknow
 test('#45 a pending order can be cancelled', async ({ page }) => {
   await signIn(page, 'plain@e2e.test');
   await open(page, '/shop');
-  await page.locator('.plan-col').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' }).click();
+  await page.locator('.plan-card').filter({ hasText: seed.plan }).getByRole('button', { name: '立即订阅' }).click();
   await page.getByRole('dialog').getByRole('button', { name: /^支付 ¥/ }).click();
   await expect(page.getByRole('heading', { name: '订单详情' })).toBeVisible();
   await page.getByRole('button', { name: '取消订单' }).first().click();
@@ -127,11 +145,11 @@ test('#40 coupons are entered in the order confirmation: refused in the UI langu
   await a.call('POST', '/api/v1/coupons', { code: `${code}S`, kind: 'percent', value: 10, plan_ids: [standard.id] });
   await signIn(page, 'user@e2e.test');
   await open(page, '/shop');
-  await expect(page.locator('.plan-col').filter({ hasText: seed.premium })).toBeVisible();
+  await expect(page.locator('.plan-card').filter({ hasText: seed.premium })).toBeVisible();
   /* 商店列表上没有优惠码框 */
   await expect(page.getByLabel('优惠码')).toHaveCount(0);
 
-  const premium = page.locator('.plan-col').filter({ hasText: seed.premium }).getByRole('button').last();
+  const premium = page.locator('.plan-card').filter({ hasText: seed.premium }).getByRole('button').last();
   const dialog = page.getByRole('dialog');
   const apply = async (c: string) => {
     await dialog.getByLabel('优惠码').fill(c);
@@ -177,11 +195,11 @@ test('#38 #48 refusals: renewal-only plans are not offered to newcomers, sold-ou
   try {
     await signIn(page, 'plain@e2e.test');
     await open(page, '/shop');
-    const soldOutFirst = page.locator('.plan-col').filter({ hasText: 'E2E 售罄' });
+    const soldOutFirst = page.locator('.plan-card').filter({ hasText: 'E2E 售罄' });
     await expect(soldOutFirst).toBeVisible();
     /* 仅续费的套餐不卖给新用户：不在目录里 */
-    await expect(page.locator('.plan-col').filter({ hasText: 'E2E 仅续费' })).toHaveCount(0);
-    const soldOut = page.locator('.plan-col').filter({ hasText: 'E2E 售罄' });
+    await expect(page.locator('.plan-card').filter({ hasText: 'E2E 仅续费' })).toHaveCount(0);
+    const soldOut = page.locator('.plan-card').filter({ hasText: 'E2E 售罄' });
     await expect(soldOut.getByText('已售罄').first()).toBeVisible();
     await expect(soldOut.getByRole('button', { name: '已售罄' })).toBeDisabled();
     expect(plans.length).toBeGreaterThan(0);

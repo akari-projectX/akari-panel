@@ -67,6 +67,20 @@ test('#59 knowledge base: categories wrap (none cut off), search, article with a
   await expect(page.getByRole('heading', { name: '使用手册' })).toBeVisible();
   const nav = page.locator('nav[aria-label="文档分类"]');
   await expect(nav.getByRole('button')).toHaveCount(8);
+  /* 2026-10-14：页头没有「复制订阅地址」，设备那一行没有下载链接；卡片区上面一行小标题，与分类拉开距离 */
+  await expect(page.getByRole('button', { name: '复制订阅地址' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: /下载 .* 客户端/ })).toHaveCount(0);
+  const heading = page.getByTestId('docs-heading');
+  await expect(heading).toHaveText(/^全部文档 · \d+ 篇$/);
+  const gap = ((await heading.boundingBox())?.y ?? 0) - (((await nav.boundingBox())?.y ?? 0) + ((await nav.boundingBox())?.height ?? 0));
+  expect(gap).toBeGreaterThanOrEqual(32);
+  /* 页头标识只有 AKARI 一块（不再有「灯塔」金色块）：图片宽高比 383:124 */
+  const logo = page.locator('header img').first();
+  const box = await logo.boundingBox();
+  expect(Math.abs((box?.width ?? 0) / (box?.height ?? 1) - 383 / 124)).toBeLessThan(0.1);
+  /* 标识仍占原来双块锁定的宽度（31 × 584/124 ≈ 146px），导航的位置不变 */
+  const slot = await page.locator('header a[href="/"] > span').first().boundingBox();
+  expect(Math.abs((slot?.width ?? 0) - 146)).toBeLessThanOrEqual(1);
   /* 每个分类都完整地在视口里（换行排开，不被截断） */
   const width = page.viewportSize()?.width ?? 0;
   for (const b of await nav.getByRole('button').all()) {
