@@ -97,10 +97,14 @@ pub struct SignupSettings {
     /// The registration page offers "register with a passkey" (the address
     /// is bound after, `passkey_register.rs`; default off).
     pub passkey_register: bool,
+    /// 允许用户邀请 (migration 1113, default on): users get an invite code
+    /// and codes admit registrations. Off: no codes, every code is unknown.
+    pub user_invites: bool,
 }
 
 const SETTINGS_COLS: &str = "version, register_enabled, invite_required, invite_single_use, \
-     email_domains, trial_plan_id, trial_days, reset_enabled, email_verify, passkey_register";
+     email_domains, trial_plan_id, trial_days, reset_enabled, email_verify, passkey_register, \
+     user_invites";
 
 pub async fn load_settings(conn: &mut PgConnection) -> sqlx::Result<SignupSettings> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -143,6 +147,8 @@ pub struct SignupView {
     email_verify: bool,
     /// "Register with a passkey" is offered (needs passkeys to work).
     passkey_register: bool,
+    /// 允许用户邀请 (default on).
+    user_invites: bool,
     /// Passkeys work (a main domain or passkey centre that is a DNS name
     /// over https): the switch above can be on.
     passkey_available: bool,
@@ -173,6 +179,13 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
                 "不验证邮箱且赠送试用套餐：试用容易被批量注册薅取，建议开启「必须邀请码」".into(),
             );
         }
+    }
+    if !s.user_invites {
+        warnings.push(
+            "用户邀请已关闭：用户没有邀请码，已发出的邀请码不能用于注册（与不存在的码同样回答），\
+             邀请返佣也不会产生新的被邀请人；重新开启后原来的邀请码恢复有效"
+                .into(),
+        );
     }
     if s.reset_enabled && origin.is_none() {
         warnings.push("未设置主域名：找回密码的重置链接无法生成".into());
@@ -209,6 +222,7 @@ async fn view(state: &AppState, conn: &mut PgConnection) -> Result<SignupView, A
         reset_enabled: s.reset_enabled,
         email_verify: s.email_verify,
         passkey_register: s.passkey_register,
+        user_invites: s.user_invites,
         passkey_available: crate::passkey::Rp::current(state).is_some(),
         mail_enabled: smtp.enabled,
         public_origin: origin,
@@ -242,6 +256,9 @@ pub struct SignupReq {
     /// 允许用通行密钥注册 (default off; older clients omit it).
     #[serde(default)]
     pub passkey_register: bool,
+    /// 允许用户邀请 (absent = unchanged).
+    #[serde(default)]
+    pub user_invites: Option<bool>,
 }
 
 /// Validate and normalise a settings request (domains → punycode, deduped).
@@ -298,6 +315,15 @@ pub async fn apply_update_settings(
             "settings changed meanwhile; reload and retry"
         ));
     }
+    let user_invites = v.user_invites.unwrap_or(cur.user_invites);
+    // There are no admin-issued codes: requiring a code while users have
+    // none would let nobody register.
+    if v.register_enabled && v.invite_required && !user_invites {
+        return Err(bad_request!(
+            "signup_admin.invites_needed",
+            "invite codes are required but user invites are off: nobody could register"
+        ));
+    }
     let smtp = crate::mail::load(conn).await?;
     // Verified registration (and reset) need mail; registration without
     // verification does not (W24).
@@ -339,7 +365,7 @@ pub async fn apply_update_settings(
         "UPDATE signup_settings SET version = version + 1, register_enabled = $1, \
          invite_required = $2, invite_single_use = $3, email_domains = $4, \
          trial_plan_id = $5, trial_days = $6, reset_enabled = $7, email_verify = $8, \
-         passkey_register = $9, updated_at = now() WHERE id = 1",
+         passkey_register = $9, user_invites = $10, updated_at = now() WHERE id = 1",
     )
     .bind(v.register_enabled)
     .bind(v.invite_required)
@@ -350,6 +376,7 @@ pub async fn apply_update_settings(
     .bind(v.reset_enabled)
     .bind(v.email_verify)
     .bind(v.passkey_register)
+    .bind(user_invites)
     .execute(&mut *conn)
     .await?;
     let snap = |r: bool, ir: bool, su: bool, d: &[String], p: Option<Uuid>, td: i32, re: bool| {
@@ -359,9 +386,10 @@ pub async fn apply_update_settings(
             "trial_days": td, "reset_enabled": re,
         })
     };
-    let with_verify = |mut j: serde_json::Value, ev: (bool, bool)| {
+    let with_verify = |mut j: serde_json::Value, ev: (bool, bool, bool)| {
         j["email_verify"] = json!(ev.0);
         j["passkey_register"] = json!(ev.1);
+        j["user_invites"] = json!(ev.2);
         j
     };
     crate::audit::record(
@@ -380,7 +408,7 @@ pub async fn apply_update_settings(
                 cur.trial_days,
                 cur.reset_enabled,
             ),
-            (cur.email_verify, cur.passkey_register),
+            (cur.email_verify, cur.passkey_register, cur.user_invites),
         )),
         Some(with_verify(
             snap(
@@ -392,7 +420,7 @@ pub async fn apply_update_settings(
                 v.trial_days,
                 v.reset_enabled,
             ),
-            (v.email_verify, v.passkey_register),
+            (v.email_verify, v.passkey_register, user_invites),
         )),
     )
     .await?;
@@ -448,6 +476,9 @@ pub async fn options(State(state): State<AppState>) -> Response {
             json!({
                 "register": s.register_enabled,
                 "invite_required": s.register_enabled && s.invite_required,
+                // 允许用户邀请: off = the register page has no invite field
+                // (every code would be refused).
+                "invites": s.register_enabled && s.user_invites,
                 "email_domains": if s.register_enabled { s.email_domains.clone() } else { Vec::new() },
                 // W24: false = register with email + password (no code;
                 // a proof-of-work challenge instead).
@@ -461,7 +492,7 @@ pub async fn options(State(state): State<AppState>) -> Response {
             })
         }
         None => {
-            json!({ "register": false, "invite_required": false, "email_domains": [], "email_verify": false, "passkey_register": false, "reset": false, "site_name": site_name, "branding": branding })
+            json!({ "register": false, "invite_required": false, "invites": false, "email_domains": [], "email_verify": false, "passkey_register": false, "reset": false, "site_name": site_name, "branding": branding })
         }
     };
     // The forms refuse every submission while their settings cannot be

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MyTraffic, Offer, ShopPlan } from '@/api';
 import { safeRedirect, scopeOf } from './auth';
-import { docCategories, pick } from './doc-categories';
+import { docCategories, guideLinkKey, pick } from './doc-categories';
 import { defaultPasskeyName } from './passkey-name';
 import { allowed, R } from './routes';
 import { headline, needsMethod, needsSwitchConfirm, offerKey, outcomeOf, planRefusal, preselect } from './shop';
@@ -14,7 +14,7 @@ const offer = (o: Partial<Offer>): Offer => ({
 });
 const plan = (offers: Offer[], current = false): ShopPlan => ({
   plan_id: 'p', name: 'P', description: '', traffic_quota_bytes: null, period: 'monthly', speed_limit_mbps: null,
-  device_seats: null, current, remaining: null, sold_out: false, offers,
+  device_seats: null, current, remaining: null, sold_out: false, recommended: false, offers,
 });
 const ok = { expired: false, quota_exhausted: false };
 
@@ -188,5 +188,16 @@ describe('payment result (pay-result dialog)', () => {
     expect(outcomeOf({ status: 'expired', fulfilled: false })).toBe('expired');
     expect(outcomeOf({ status: 'cancelled', fulfilled: false })).toBeNull();
     expect(outcomeOf({ status: 'pending', fulfilled: false })).toBeNull();
+  });
+});
+
+describe('guideLinkKey', () => {
+  it('does not repeat 教程 / guides when the category name already ends with it', () => {
+    expect(guideLinkKey('Android 教程')).toBe('查看 {p}');
+    expect(guideLinkKey('Windows 使用指南')).toBe('查看 {p}');
+    expect(guideLinkKey('Android guides')).toBe('查看 {p}');
+    expect(guideLinkKey('iOS Tutorial ')).toBe('查看 {p}');
+    expect(guideLinkKey('Android')).toBe('查看 {p} 教程');
+    expect(guideLinkKey('常见问题')).toBe('查看 {p} 教程');
   });
 });

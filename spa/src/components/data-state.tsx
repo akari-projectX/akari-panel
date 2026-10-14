@@ -32,12 +32,12 @@ export function Loading({
       ) : (
         Array.from({ length: rows }, (_, i) => (
           <div key={i} className="flex items-center gap-4 border-b border-border py-4 last:border-b-0">
-            <Sk className="size-7 shrink-0 rounded-full" d={i * 0.05} />
+            <Sk className="size-7 shrink-0 rounded-full" />
             <div className="flex min-w-0 grow flex-col gap-2">
-              <Sk className="h-[13px]" style={{ width: `${58 - i * 9}%` }} d={0.02 + i * 0.05} />
-              <Sk className="h-[11px]" style={{ width: `${36 - i * 5}%` }} d={0.04 + i * 0.05} />
+              <Sk className="h-[13px]" style={{ width: `${58 - i * 9}%` }} />
+              <Sk className="h-[11px]" style={{ width: `${36 - i * 5}%` }} />
             </div>
-            <Sk className="hidden h-[13px] w-[64px] shrink-0 sm:block" d={0.06 + i * 0.05} />
+            <Sk className="hidden h-[13px] w-[64px] shrink-0 sm:block" />
           </div>
         ))
       )}

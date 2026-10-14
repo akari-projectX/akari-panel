@@ -65,6 +65,10 @@ test('#59 knowledge base: categories wrap (none cut off), search, article with a
   await signIn(page, 'user@e2e.test');
   await open(page, '/help');
   await expect(page.getByRole('heading', { name: '使用手册' })).toBeVisible();
+  /* 下载已不在本页：副标题不再提「客户端下载」；设备捷径不重复「教程」（分类名已以「教程」结尾） */
+  await expect(page.getByText('各设备的连接教程与常见问题。')).toBeVisible();
+  await expect(page.getByText(/客户端下载、连接指南/)).toHaveCount(0);
+  await expect(page.getByText(/教程\s+教程/)).toHaveCount(0);
   const nav = page.locator('nav[aria-label="文档分类"]');
   await expect(nav.getByRole('button')).toHaveCount(8);
   /* 2026-10-14：页头没有「复制订阅地址」，设备那一行没有下载链接；卡片区上面一行小标题，与分类拉开距离 */

@@ -2336,6 +2336,35 @@ grep -qe "$RESET_TOKEN" -e "\"$REG_CODE\"" "$LOG/panel.log" && { echo "FAIL: a c
 [ "$(code -b "$JAR" "$BASE/api/v1/users?limit=200")" = "200" ] \
   && python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); u=[x for x in (d['users'] if isinstance(d, dict) else d) if x['email']=='$REG'][0]; assert u['email_verified'], u" \
   || { echo "FAIL: user list email"; exit 1; }
+# 允许用户邀请 (PR #132 follow-up, default on). Off: no code in the portal,
+# creation refused, the register page drops the invite field, the existing
+# code answers like an unknown one; requiring codes at the same time is
+# refused (no admin-issued codes exist); on again, the code is back.
+signup_put() {
+  local v; code -b "$JAR" "$BASE/api/v1/settings/signup" >/dev/null; v=$(last_json "d['version']")
+  code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":$v,$1}"
+}
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/signup")" = "200" ] && [ "$(last_json "d['user_invites']")" = "True" ] \
+  || { echo "FAIL: user invites not on by default"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(signup_put "${SIGNUP_ON/\"invite_required\":false/\"invite_required\":true},\"user_invites\":false")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "signup_admin.invites_needed" ] \
+  || { echo "FAIL: required invite codes with user invites off accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(signup_put "$SIGNUP_ON,\"user_invites\":false")" = "200" ] && [ "$(last_json "d['user_invites']")" = "False" ] \
+  || { echo "FAIL: turn user invites off"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$RJAR" "$BASE/api/v1/me/invite-codes")" = "200" ] && [ "$(last_json "d['code'] is None and d['user_invites'] is False")" = "True" ] \
+  || { echo "FAIL: invite code shown while user invites are off"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$RJAR" -X POST "$BASE/api/v1/me/invite-codes")" = "409" ] && [ "$(last_json "d['code']")" = "invite.disabled" ] \
+  || { echo "FAIL: invite code creation while user invites are off"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code "$BASE/auth/options")" = "200" ] && [ "$(last_json "d['invites']")" = "False" ] \
+  || { echo "FAIL: auth options still offer invites"; cat /tmp/akari-smoke/last; exit 1; }
+INV_OFF=$(code -X POST "$BASE/auth/register/code" -H "$J" -d "{\"email\":\"$NEW\",\"invite_code\":\"$ICODE\"}")/$(last_json "d['code']")
+INV_UNK=$(code -X POST "$BASE/auth/register/code" -H "$J" -d "{\"email\":\"$NEW\",\"invite_code\":\"zzzzzzzzzz\"}")/$(last_json "d['code']")
+[ "$INV_OFF" = "400/signup.invalid_invite" ] && [ "$INV_OFF" = "$INV_UNK" ] \
+  || { echo "FAIL: an existing invite code works while user invites are off ($INV_OFF vs $INV_UNK)"; exit 1; }
+[ "$(signup_put "$SIGNUP_ON,\"user_invites\":true")" = "200" ] \
+  && [ "$(code -b "$RJAR" "$BASE/api/v1/me/invite-codes")" = "200" ] && [ "$(last_json "d['code']['code']")" = "$ICODE" ] \
+  && [ "$(code "$BASE/auth/options")" = "200" ] && [ "$(last_json "d['invites']")" = "True" ] \
+  || { echo "FAIL: user invites back on"; cat /tmp/akari-smoke/last; exit 1; }
 
 echo "== W24: registration without email verification: proof of work, generic refusal, unverified login, admin verify =="
 # v0.4: verification is its own switch (SMTP stays on here).
@@ -2439,8 +2468,8 @@ PRICES="$BASE/api/v1/plans/$PAID_PLAN/prices"
   || { echo "FAIL: plan-prices / payments not enabled"; cat /tmp/akari-smoke/last; exit 1; }
 python3 -c "import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]; assert p['on_sale'] and len(p['prices'])==3, d" \
   || { echo "FAIL: plan-prices content"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"description":"Smoke\n- fast","capacity":5,"allow_switch_in":true}')" = "200" ] \
-  && [ "$(last_json "d['capacity']")/$(last_json "d['renew_off_sale']")" = "5/True" ] || { echo "FAIL: plan catalogue fields"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"description":"Smoke\n- fast","capacity":5,"allow_switch_in":true,"recommended":true}')" = "200" ] \
+  && [ "$(last_json "d['capacity']")/$(last_json "d['renew_off_sale']")/$(last_json "d['recommended']")" = "5/True/True" ] || { echo "FAIL: plan catalogue fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-buyer@smoke.test","password":"buyer-password-123"}')" = "201" ] || { echo "FAIL: create buyer"; exit 1; }
 BUYER=$(last_json "d['id']")
@@ -2451,7 +2480,7 @@ BJAR="$LOG/buyer-cookies"
 python3 -c "
 import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]
 o={x['period']: x for x in p['offers']}
-assert d['enabled'] and p['description']=='Smoke\n- fast' and p['remaining']==5, d
+assert d['enabled'] and p['description']=='Smoke\n- fast' and p['remaining']==5 and p['recommended'] is True, d
 assert sorted(o)==['days','month'] and o['days']['price_cents']==1 and o['days']['amount_cents']==1 and o['days']['action']=='new', d
 " || { echo "FAIL: shop content"; cat /tmp/akari-smoke/last; exit 1; }
 # W15: the buyer adds an email address in the portal (current password +

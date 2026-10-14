@@ -11,7 +11,7 @@ import { Empty, LoadError, Loading } from '@/components/data-state';
 import ServerHtml from '@/components/server-html';
 import DocCategoryIcon from '@/components/doc-category-icon';
 import PlatformIcon from '@/components/platform-icon';
-import { docCategories, pick, type DocCategory, type KbArticle } from '@/lib/doc-categories';
+import { docCategories, guideLinkKey, pick, type DocCategory, type KbArticle } from '@/lib/doc-categories';
 import { detectPlatform } from '@/data/platforms';
 import { useAuth } from '@/lib/auth';
 import { mySubUrl } from '@/lib/sub-links';
@@ -131,7 +131,7 @@ function ListView() {
 
   return (
     <div className="pb-16">
-      <PageTitle title={tr('使用手册')} sub={tr('客户端下载、连接指南与常见问题。')} />
+      <PageTitle title={tr('使用手册')} sub={tr('各设备的连接教程与常见问题。')} />
 
       {/* ── 顶部：搜索独占一行，分类在下面换行排开（不截断、不横向滚动），当前设备的捷径单独一行 ── */}
       <div className="mt-8 space-y-4">
@@ -190,7 +190,7 @@ function ListView() {
               onClick={() => setCategoryFilter(deviceChapter.name)}
               className="inline-flex items-center gap-1 font-medium text-brand underline-offset-4 hover:underline"
             >
-              {tp('查看 {p} 教程', { p: deviceChapter.name })}<ArrowRight className="size-3.5" />
+              {tp(guideLinkKey(deviceChapter.name), { p: deviceChapter.name })}<ArrowRight className="size-3.5" />
             </button>
           </div>
         )}

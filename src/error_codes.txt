@@ -181,6 +181,7 @@ inbound.not_object
 inbound.protocol_missing
 install.origin_invalid
 install.origin_required
+invite.disabled
 invite.exists
 invite.invalid_inviter
 invite.registration_closed
@@ -428,6 +429,7 @@ signup.invalid_link
 signup.invite_required
 signup.unavailable
 signup_admin.domain_invalid
+signup_admin.invites_needed
 signup_admin.mail_off
 signup_admin.needs_main_domain
 signup_admin.passkey_unavailable

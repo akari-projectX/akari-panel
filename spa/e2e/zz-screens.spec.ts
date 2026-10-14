@@ -1,5 +1,5 @@
 /*
- * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐卡片、使用手册、钱包与邀请（页头的 AKARI 标识在每一张里），以及几张没改版的页面（仪表盘、订单、工单、设置），桌面 + 手机 × 浅色 + 深色，简体中文。
+ * 截图集（不是验收用例）：仪表盘「近 7 日流量趋势」、商店套餐卡片、使用手册、钱包与邀请、加载骨架（页头的 AKARI 标识在每一张里），以及几张没改版的页面（仪表盘、订单、工单、设置），桌面 + 手机 × 浅色 + 深色，简体中文。
  * 写到 test-results/screens/<名字>-<desktop|mobile>-<light|dark>.png，CI 作为 portal-screens 工件上传，给设计走查对照。
  * 放在最后跑（文件名 zz-，只在 mobile 项目里跑一次——那时两个视口的其余用例都跑完了），用前面用例留下的数据；
  * 另外加两个只为截图的套餐（多周期、仅限续费），看 1–4 个套餐时的排版。拍不到的图记一条注解，不让整套失败。
@@ -144,6 +144,24 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
       name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
       run: (page: Page) => ready(page, path),
     })),
+    /* 加载态（2026-10-15：骨架条与后台同一观感）：订单列表的请求挂住不回，拍骨架；整页加载仍是菊花 */
+    {
+      name: 'loading-skeleton', account: 'user@e2e.test',
+      run: async (page) => {
+        const hold = '**/api/v1/me/orders';
+        await page.route(hold, () => undefined);
+        try {
+          await page.evaluate(() => sessionStorage.clear());
+          await page.goto('/orders');
+          await page.locator('.sk').first().waitFor({ timeout: WAIT });
+          await page.waitForTimeout(300);
+        } finally {
+          /* 挂住的那个请求不会再回来：解除拦截后页面仍停在骨架上，下一张图的跳转会把它丢掉 */
+          await page.unroute(hold);
+        }
+        return 'viewport';
+      },
+    },
   ];
   const notes: string[] = [];
   /* USDT 链上收款（C2b）：临时启用一个方式（高确认数：拍摄期间一直「确认中」），一单等待转账，一单已看到转账 */

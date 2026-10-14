@@ -144,6 +144,7 @@ const FIX: Record<string, unknown> = {
     reset_enabled: false,
     email_verify: false,
     passkey_register: false,
+    user_invites: true,
     passkey_available: true,
     mail_enabled: false,
     public_origin: null,

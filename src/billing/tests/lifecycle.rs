@@ -436,3 +436,73 @@ async fn late_payment_never_replaces_a_newer_plan() {
     drop(state);
     db.drop().await;
 }
+
+/// PR #132 follow-up: the "推荐" flag (default off) is set through the plan
+/// update path (audited like every plan field), shown to the shop, and
+/// changes nothing about what can be bought.
+#[tokio::test]
+async fn recommended_flag_reaches_the_shop() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "rec", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    let shown = |shop: &Value| {
+        shop["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["plan_id"] == json!(plan))
+            .map(|p| p["recommended"].clone())
+    };
+    assert_eq!(
+        shown(&c.get("/test/api/v1/me/shop").await.json()),
+        Some(json!(false))
+    );
+    let path = format!("/test/api/v1/plans/{plan}");
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &path,
+            Some(json!({"recommended": null})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let r = admin
+        .req(
+            axum::http::Method::PATCH,
+            &path,
+            Some(json!({"recommended": true})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["recommended"], true);
+    let (before, after): (Value, Value) = sqlx::query_as(
+        "SELECT before->'recommended', after->'recommended' FROM audit_log \
+         WHERE action = 'plan.update' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((before, after), (json!(false), json!(true)));
+    assert_eq!(
+        shown(&c.get("/test/api/v1/me/shop").await.json()),
+        Some(json!(true))
+    );
+    let listed = admin.get("/test/api/v1/plans").await.json();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == json!(plan) && p["recommended"] == true),
+        "{listed}"
+    );
+    bought(&db, &c, plan, "month").await;
+    drop(state);
+    db.drop().await;
+}

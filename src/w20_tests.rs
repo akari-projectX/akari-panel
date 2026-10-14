@@ -392,8 +392,8 @@ async fn first_invite_code_is_created_once() {
         .unwrap();
     assert_eq!(n, 1);
     assert_eq!(audit_actions(&db, id).await, ["invite.create"]);
-    // An account without a code (e.g. one that deleted them before the
-    // rule) gets one again.
+    // An account without a code (e.g. one created while registration was
+    // closed) gets one when the portal asks.
     sqlx::query("DELETE FROM invite_codes WHERE user_id = $1")
         .bind(id)
         .execute(&db.pool)

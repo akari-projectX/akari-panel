@@ -228,6 +228,7 @@ fn req(domains: &[&str]) -> SignupReq {
         reset_enabled: false,
         email_verify: false,
         passkey_register: false,
+        user_invites: None,
     }
 }
 
@@ -337,7 +338,7 @@ async fn disabled_endpoints_are_the_canonical_rejection() {
     assert!(branding["logo_url"].is_null() && branding["footer_links"] == json!([]));
     assert_eq!(
         v,
-        json!({ "register": false, "invite_required": false, "email_domains": [], "reset": false,
+        json!({ "register": false, "invite_required": false, "invites": false, "email_domains": [], "reset": false,
                 "email_verify": false, "passkey_register": false, "passkey_rp": "panel.example",
                 "site_name": "Akari", "timezone": "Asia/Shanghai", "mail": false })
     );
@@ -849,26 +850,31 @@ async fn invites_domains_and_trial() {
         (mine["code"]["code"].as_str(), mine["code"]["uses"].as_i64()),
         (Some(code1.as_str()), Some(1))
     );
-    // An account from before the rule with more codes: all stay valid, the
-    // oldest one still admitting a registration is shown as its code.
-    let legacy = |code: &'static str| {
-        let pool = db.pool.clone();
+    // Two more inviters (one code each; a second code for the same
+    // account is refused by the database).
+    let code_of = |code: &'static str| {
+        let db = &db;
         async move {
+            let owner = db.user().await;
             sqlx::query("INSERT INTO invite_codes (code, user_id) VALUES ($1, $2)")
                 .bind(code)
-                .bind(inviter)
-                .execute(&pool)
+                .bind(owner)
+                .execute(&db.pool)
                 .await
                 .unwrap();
         }
     };
-    legacy("legacytwo2").await;
-    legacy("legacythree3").await;
-    let code2 = "legacytwo2".to_string();
-    let code3 = "legacythree3".to_string();
-    assert_eq!(
-        ic.get("/test/api/v1/me/invite-codes").await.json()["code"]["code"],
-        "legacytwo2"
+    code_of("secondtwo2").await;
+    code_of("thirdthree3").await;
+    let code2 = "secondtwo2".to_string();
+    let code3 = "thirdthree3".to_string();
+    assert!(
+        sqlx::query("INSERT INTO invite_codes (code, user_id) VALUES ('extraextra', $1)")
+            .bind(inviter)
+            .execute(&db.pool)
+            .await
+            .is_err(),
+        "one code per account (unique index)"
     );
     // Spent between code request and completion: the whole registration
     // rolls back (the email code stays usable with another invite).
@@ -899,7 +905,7 @@ async fn invites_domains_and_trial() {
     };
     let r = reg(code_in(&body), code2.clone()).await;
     assert_eq!(r.json()["error"], "invalid invite code");
-    // Another (legacy) code admits the registration with the same (still
+    // Another code admits the registration with the same (still
     // unused) email code.
     let r = reg(code_in(&body), code3).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
@@ -2067,5 +2073,129 @@ async fn unverified_account_verifies_later() {
         .post(&format!("/test/api/v1/users/{id2}/email/verify"), json!({}))
         .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
+    db.drop().await;
+}
+
+/// PR #132 follow-up: 允许用户邀请 (`user_invites`, default on). Off: the
+/// portal gets no code and cannot create one (`invite.disabled`), the
+/// register page drops its invite field, an existing code answers exactly
+/// like an unknown one, and requiring codes at the same time is refused
+/// (there are no admin-issued codes: nobody could register). Audited;
+/// absent from the request = unchanged; on again, the old code works.
+#[tokio::test]
+async fn user_invites_switch() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    set_signup(&db, "register_enabled = true").await;
+    let admin = db.admin().await;
+    let ca = crate::testdb::http::client_for(&st, admin).await;
+    let inviter = with_password(&db, "inviter-pw").await;
+    let mut ic = Client::new(&st, rand_ip());
+    assert_eq!(
+        ic.login(&email_of(&db, inviter).await, "inviter-pw")
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let mine = ic.get("/test/api/v1/me/invite-codes").await.json();
+    assert_eq!(mine["user_invites"], true);
+    let code = mine["code"]["code"].as_str().unwrap().to_string();
+    let c = Client::new(&st, rand_ip());
+    assert_eq!(c.get("/test/auth/options").await.json()["invites"], true);
+    assert_eq!(
+        ca.get("/test/api/v1/settings/signup").await.json()["user_invites"],
+        true,
+        "default on"
+    );
+
+    let version = || async {
+        sqlx::query_scalar::<_, i64>("SELECT version FROM signup_settings")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    };
+    let put = |v: Value| {
+        let ca = &ca;
+        async move {
+            ca.req(Method::PUT, "/test/api/v1/settings/signup", Some(v))
+                .await
+        }
+    };
+    let body = |version: i64, required: bool, invites: Option<bool>| {
+        let mut r = req(&[]);
+        r.version = version;
+        r.invite_required = required;
+        let mut b = serde_json::to_value(SignupReqJson::from(&r)).unwrap();
+        if let Some(i) = invites {
+            b["user_invites"] = json!(i);
+        }
+        b
+    };
+    // Required codes + user invites off: refused while registration is open.
+    let r = put(body(version().await, true, Some(false))).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert_eq!(r.json()["code"], "signup_admin.invites_needed");
+    let r = put(body(version().await, false, Some(false))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["user_invites"], false);
+    assert!(r.json()["warnings"].to_string().contains("用户邀请已关闭"));
+    let (before, after): (Value, Value) = sqlx::query_as(
+        "SELECT before->'user_invites', after->'user_invites' FROM audit_log \
+         WHERE action = 'settings.signup.update' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((before, after), (json!(true), json!(false)));
+    // Absent = unchanged (still off), and the combination is refused then too.
+    let r = put(body(version().await, false, None)).await;
+    assert_eq!(r.json()["user_invites"], false);
+    let r = put(body(version().await, true, None)).await;
+    assert_eq!(r.json()["code"], "signup_admin.invites_needed");
+
+    // The portal: no code, no creation; the register page: no invite field.
+    let mine = ic.get("/test/api/v1/me/invite-codes").await.json();
+    assert!(mine["code"].is_null(), "{mine}");
+    assert_eq!(mine["user_invites"], false);
+    let r = ic.post("/test/api/v1/me/invite-codes", json!({})).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.json()["code"], "invite.disabled");
+    assert_eq!(c.get("/test/auth/options").await.json()["invites"], false);
+    // The existing code = an unknown code (same status and body).
+    let try_code = |invite: String| {
+        let st = &st;
+        async move {
+            let c = Client::new(st, rand_ip());
+            let p = pow(&c).await;
+            let r = c
+                .post(
+                    "/test/auth/register",
+                    json!({ "email": addr(), "password": "long enough", "pow": p,
+                            "invite_code": invite }),
+                )
+                .await;
+            (r.status, r.json())
+        }
+    };
+    let known = try_code(code.clone()).await;
+    let unknown = try_code("zzzzzzzzzz".into()).await;
+    assert_eq!(known, unknown);
+    assert_eq!(known.1["code"], "signup.invalid_invite");
+    // Without a code, registration stays open.
+    let r = register_unverified(&mut Client::new(&st, rand_ip()), &addr(), "long enough").await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+
+    // On again: the same code admits a registration.
+    let r = put(body(version().await, false, Some(true))).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let (status, v) = try_code(code.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["invited"], true);
+    assert_eq!(
+        ic.get("/test/api/v1/me/invite-codes").await.json()["code"]["code"],
+        code.as_str()
+    );
     db.drop().await;
 }

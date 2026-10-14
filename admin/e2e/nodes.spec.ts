@@ -474,6 +474,9 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   await d.getByLabel("月付价格").fill("10");
   await section("库存与上架").click();
   await d.getByLabel("库存（同时持有的人数上限）").fill("10");
+  // The portal shop's "推荐" tag (display only).
+  await d.getByRole("switch", { name: "推荐" }).click();
+  await expect(d.getByRole("switch", { name: "推荐" })).toHaveAttribute("aria-checked", "true");
   await section("节点组").click();
   await d.getByRole("checkbox", { name: group }).click();
   await expect(d.getByText("用户将获得这些入口 · 1")).toBeVisible();
@@ -484,6 +487,7 @@ test("NOD-21 PLN-01 PLN-02 PLN-03 PLN-04: node groups, plans with prices and gro
   await expect(card).toContainText("¥10");
   await expect(card).toContainText("100 GiB");
   await expect(card).toContainText(group);
+  await expect(card).toContainText("推荐");
   // Numbers are checked in place: a bad speed limit is never sent as "no limit"; the editor jumps to its section.
   await card.getByRole("button", { name: plan, exact: true }).click();
   d = dialog(page, `编辑「${plan}」`);

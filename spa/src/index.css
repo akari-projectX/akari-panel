@@ -701,6 +701,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .plan-tag { flex-shrink: 0; border-radius: 6px; padding: 0 8px; font-size: 12px; line-height: 20px; white-space: nowrap; }
 .plan-tag.is-brand { color: var(--brand); background: color-mix(in srgb, var(--brand) 10%, transparent); }
 .plan-tag.is-warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.plan-tag.is-rec { color: var(--foreground); background: var(--secondary); }
 .plan-specs {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px;
   border-block: 1px solid var(--border); text-align: center;
@@ -935,22 +936,19 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 }
 
 /*
- * 骨架条。扫光用统一的 --sk-delay 排相位，
- * 一屏骨架合起来是一道光扫过整页，而不是每条各闪各的。
+ * 骨架条：与后台的 `.skeleton` 同一观感（灰底 + 一道渐变来回流动，background-size 400%，1.4s ease 循环，
+ * 圆角 = 后台的 rounded-md，9px），颜色取门户自己的 token（浅色 / 深色各随 --muted、--background）。
  */
 .sk {
-  position: relative; display: block; overflow: hidden; border-radius: 3px;
-  background: color-mix(in srgb, var(--muted-foreground) 13%, transparent);
+  display: block; border-radius: 9px;
+  background: linear-gradient(90deg, var(--muted) 25%, var(--background) 37%, var(--muted) 63%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.4s ease infinite;
 }
-.sk::after {
-  content: ''; position: absolute; inset: 0;
-  background: linear-gradient(90deg,
-    transparent, color-mix(in srgb, var(--foreground) 9%, transparent), transparent);
-  transform: translateX(-100%);
-  animation: sk-beam 1.75s cubic-bezier(.5, 0, .3, 1) infinite;
-  animation-delay: var(--sk-delay, 0s);
+@keyframes sk-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
-@keyframes sk-beam { to { transform: translateX(100%); } }
 
 /* 三秒之内加载完就不该看到这句话 */
 /*
@@ -967,7 +965,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 @keyframes load-hint { to { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .sk::after { display: none; }
+  .sk { animation: none; }
   .load-hint { opacity: 1; animation: none; }
 }
 

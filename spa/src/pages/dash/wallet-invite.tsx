@@ -53,7 +53,9 @@ export function InviteLinkPane({ codes, invite }: { codes: Api<InviteCodes>; inv
     <>
       {codes.loading && !c ? <Loading rows={1} />
         : codes.error && !c ? <LoadError error={codes.error} onRetry={codes.reload} />
-        : c && !c.register_enabled ? (
+        : c && !c.user_invites ? (
+          <p className="text-[13.5px] leading-[1.8] text-muted-foreground" data-testid="invites-closed">{tr('本站已关闭用户邀请，暂时不能邀请新用户。已邀请的用户与返佣不受影响。')}</p>
+        ) : c && !c.register_enabled ? (
           <p className="text-[13.5px] leading-[1.8] text-muted-foreground">{tr('站点现在关闭了注册，邀请链接暂时用不了。重新开放注册后这里会恢复。')}</p>
         ) : c && mine && (
           <>
@@ -116,6 +118,7 @@ export function InviteDetails({ codes, invite }: { codes: Api<InviteCodes>; invi
         </h3>
         {codes.loading && !c ? <Loading rows={1} />
           : codes.error && !c ? <LoadError error={codes.error} onRetry={codes.reload} />
+          : c && !c.user_invites ? <Empty title="邀请已关闭" desc="本站暂时关闭了用户邀请；重新开放后你的邀请码会恢复。" className="py-10" />
           : c && !mine ? <Empty title="还没有邀请码" desc="站点开放注册后会自动为你生成。" className="py-10" />
           : c && mine && (
             <div className="flex items-center justify-between gap-4 border-b border-border py-2.5 text-[13.5px]">

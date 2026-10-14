@@ -518,6 +518,7 @@ struct PlanRow {
     renewal_only: bool,
     allow_switch_in: bool,
     renew_off_sale: bool,
+    recommended: bool,
     prices: Value,
     group_ids: Vec<Uuid>,
     active_users: i64,
@@ -553,6 +554,8 @@ pub struct PlanView {
     /// 中-6: off sale, its current subscribers can still renew it and buy
     /// its reset pack.
     renew_off_sale: bool,
+    /// Marked "推荐" in the portal shop (display only).
+    recommended: bool,
     /// [{period, days, price_cents}] in period order.
     prices: Value,
     group_ids: Vec<Uuid>,
@@ -578,6 +581,7 @@ impl From<PlanRow> for PlanView {
             renewal_only: r.renewal_only,
             allow_switch_in: r.allow_switch_in,
             renew_off_sale: r.renew_off_sale,
+            recommended: r.recommended,
             prices: r.prices,
             group_ids: r.group_ids,
             active_users: r.active_users,
@@ -590,7 +594,7 @@ impl From<PlanRow> for PlanView {
 const PLAN_VIEW_SQL: &str = "SELECT p.id, p.name, p.traffic_quota_bytes, p.reset_period, \
      p.reset_days, p.speed_limit_mbps, p.device_seats, p.sort, p.enabled, p.description, \
      p.on_sale, p.capacity, p.renewal_only, p.allow_switch_in, p.renew_off_sale, \
-     COALESCE((SELECT jsonb_agg(jsonb_build_object('period', pp.period, 'days', pp.days, \
+     p.recommended, COALESCE((SELECT jsonb_agg(jsonb_build_object('period', pp.period, 'days', pp.days, \
        'price_cents', pp.price_cents) ORDER BY array_position(ARRAY['month', 'quarter', \
        'half_year', 'year', 'two_year', 'three_year', 'days', 'onetime', 'reset'], pp.period)) \
        FROM plan_period_prices pp WHERE pp.plan_id = p.id), '[]'::jsonb) AS prices, \
@@ -618,7 +622,7 @@ fn plan_snapshot_sql(alias: &str) -> String {
          'speed_limit_mbps', {a}.speed_limit_mbps, 'device_seats', {a}.device_seats, \
          'sort', {a}.sort, 'enabled', {a}.enabled, 'description', {a}.description, \
          'capacity', {a}.capacity, 'renewal_only', {a}.renewal_only, \
-         'allow_switch_in', {a}.allow_switch_in, 'renew_off_sale', {a}.renew_off_sale)",
+         'allow_switch_in', {a}.allow_switch_in, 'renew_off_sale', {a}.renew_off_sale, 'recommended', {a}.recommended)",
         a = alias
     )
 }
@@ -653,6 +657,8 @@ pub struct CreatePlanReq {
     pub allow_switch_in: Option<bool>,
     /// 中-6: subscribers may renew while the plan is off sale (default true).
     pub renew_off_sale: Option<bool>,
+    /// Marked "推荐" in the portal shop (default false).
+    pub recommended: Option<bool>,
     /// W21 (M11): the plan's prices and on-sale flag, set in the same
     /// transaction (one dialog, one save). Absent = no prices.
     pub pricing: Option<crate::billing::catalog::SetPricesReq>,
@@ -690,6 +696,8 @@ pub struct UpdatePlanReq {
     pub allow_switch_in: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     pub renew_off_sale: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub recommended: Option<Option<bool>>,
     /// W21 (M11): replace the prices and on-sale flag in the same
     /// transaction as the field changes (absent = unchanged).
     #[serde(default)]
@@ -717,6 +725,7 @@ impl UpdatePlanReq {
             || self.renewal_only.is_some()
             || self.allow_switch_in.is_some()
             || self.renew_off_sale.is_some()
+            || self.recommended.is_some()
             || self.apply_to_existing
     }
 }
@@ -784,8 +793,8 @@ pub async fn apply_create_plan(
     let r: Result<Value, _> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO plans (id, name, traffic_quota_bytes, reset_period, reset_days, \
          speed_limit_mbps, device_seats, sort, enabled, description, capacity, renewal_only, \
-         allow_switch_in, renew_off_sale) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING {}",
+         allow_switch_in, renew_off_sale, recommended) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING {}",
         plan_snapshot_sql("plans")
     )))
     .bind(id)
@@ -802,6 +811,7 @@ pub async fn apply_create_plan(
     .bind(req.renewal_only.unwrap_or(false))
     .bind(req.allow_switch_in.unwrap_or(true))
     .bind(req.renew_off_sale.unwrap_or(true))
+    .bind(req.recommended.unwrap_or(false))
     .fetch_one(&mut *conn)
     .await;
     let mut after = match r {
@@ -864,6 +874,7 @@ pub async fn apply_update_plan(
     let renewal_only = non_null("renewal_only", &req.renewal_only)?;
     let allow_switch_in = non_null("allow_switch_in", &req.allow_switch_in)?;
     let renew_off_sale = non_null("renew_off_sale", &req.renew_off_sale)?;
+    let recommended = non_null("recommended", &req.recommended)?;
     let description = match &req.description {
         None => None,
         Some(d) => Some(clean_plan_description(d.as_deref().unwrap_or(""))?),
@@ -887,6 +898,7 @@ pub async fn apply_update_plan(
         && renewal_only.is_none()
         && allow_switch_in.is_none()
         && renew_off_sale.is_none()
+        && recommended.is_none()
         && !req.apply_to_existing
     {
         return Err(bad_request!("request.no_fields", "no fields to update"));
@@ -948,6 +960,9 @@ pub async fn apply_update_plan(
     }
     if let Some(r) = renew_off_sale {
         set.push("renew_off_sale = ").push_bind_unseparated(r);
+    }
+    if let Some(r) = recommended {
+        set.push("recommended = ").push_bind_unseparated(r);
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(

@@ -16,7 +16,7 @@ export default function HolderConfirm({ h, id, label, error, onInput }: {
 }) {
   const tr = useT();
   if (h.unknown === 'loading') {
-    return <div aria-busy className="space-y-2"><Sk className="h-[13px] w-24" /><Sk className="h-10 w-full rounded-lg" d={0.04} /></div>;
+    return <div aria-busy className="space-y-2"><Sk className="h-[13px] w-24" /><Sk className="h-10 w-full rounded-lg" /></div>;
   }
   if (h.unknown === 'error') {
     return (

@@ -85,7 +85,7 @@ const plan = await admin.call<{ id: string }>('POST', '/api/v1/plans', {
 });
 const premium = await admin.call<{ id: string }>('POST', '/api/v1/plans', {
   name: 'E2E 高级', period: 'monthly', traffic_quota_bytes: 500 * 1024 ** 3, speed_limit_mbps: null, group_ids: [group.id],
-  description: '更多流量', pricing: { on_sale: true, prices: [{ period: 'month', days: null, price_cents: 3000 }] },
+  description: '更多流量', recommended: true, pricing: { on_sale: true, prices: [{ period: 'month', days: null, price_cents: 3000 }] },
 });
 
 /* ── 账户 ── */

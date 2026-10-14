@@ -26,6 +26,9 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   const prem = page.locator('.plan-card').filter({ hasText: seed.premium });
   await expect(prem.getByTestId('plan-price')).toHaveText(/¥\s*30\s*\/月$/);
   await expect(prem.getByText('更多流量')).toBeVisible();
+  /* 后台标了「推荐」：淡灰标签（不是品牌色 / 警示色） */
+  await expect(prem.locator('.plan-tag')).toHaveText('推荐');
+  await expect(prem.locator('.plan-tag')).toHaveClass(/is-rec/);
   /* 当前套餐：品牌色边框、标签、续费 + 一行说明；别的套餐：换套餐 + 折算说明 */
   const cur = page.locator('.plan-card.is-current');
   await expect(cur).toHaveCount(1);
