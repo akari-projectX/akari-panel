@@ -390,7 +390,7 @@ test("SET-08 SET-14: sign-in policies (admins passkey-only confirmed on save wit
   }
 });
 
-test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign-up, trial, password reset", async ({
+test("SET-13 SET-28: sign-up, invites (one code per user), passkey sign-up, trial, password reset", async ({
   page,
 }) => {
   await openConsole(page, "/settings/signup");
@@ -398,12 +398,9 @@ test("SET-13 SET-28: sign-up, invites (numbers validated in place), passkey sign
   await setSwitch(page.getByRole("switch", { name: "注册需要邀请码" }), true);
   // SET-28: the passkey sign-up switch is here (not changed: zz-passkeys covers it).
   await expect(page.getByRole("switch", { name: "允许用通行密钥注册" })).toBeVisible();
-  const codes = page.getByLabel("每个用户最多的邀请码数量");
-  await codes.fill("-3");
-  await expect(page.getByText("请输入 0–100 的整数（0 = 不能生成）")).toBeVisible();
-  await expect(bar(page)).toContainText("1 处需要修正");
-  await expect(bar(page).getByRole("button", { name: "保存", exact: true })).toBeDisabled();
-  await codes.fill("3");
+  // One invite code per user (2026-10-14): no per-user limit field any more.
+  await expect(page.getByLabel("每个用户最多的邀请码数量")).toHaveCount(0);
+  await expect(page.getByText("每个用户只有一个固定的邀请码，开启后每人只能邀请一人")).toBeVisible();
   const domains = page.getByLabel("添加邮箱域名");
   for (const d of ["e2e.test", "example.com"]) {
     await domains.fill(d);

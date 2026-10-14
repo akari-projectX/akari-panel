@@ -69,8 +69,8 @@ export const shots: Shot[] = [
   {
     name: "settings-savebar-invalid",
     open: async (page) => {
-      await goto(page, "/settings/signup");
-      await edit(page, "每个用户最多的邀请码数量", "-3");
+      await goto(page, "/settings/cleanup");
+      await edit(page, "注册超过 N 天", "0");
     },
   },
   {
