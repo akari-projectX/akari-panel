@@ -91,6 +91,7 @@ type Form = {
   renewalOnly: boolean;
   renewOffSale: boolean;
   allowSwitchIn: boolean;
+  recommended: boolean;
 };
 
 function resetOf(period: string): Reset {
@@ -119,6 +120,7 @@ function formOf(plan: PlanView | null, nextSort: number): Form {
     renewalOnly: plan?.renewal_only ?? false,
     renewOffSale: plan?.renew_off_sale ?? true,
     allowSwitchIn: plan?.allow_switch_in ?? true,
+    recommended: plan?.recommended ?? false,
   };
 }
 
@@ -192,6 +194,7 @@ function bodyOf(
     renewal_only: f.renewalOnly,
     renew_off_sale: f.renewOffSale,
     allow_switch_in: f.allowSwitchIn,
+    recommended: f.recommended,
     sort: Number(f.sort),
     enabled: f.enabled,
   };
@@ -208,6 +211,7 @@ function bodyOf(
     renewal_only: plan.renewal_only,
     renew_off_sale: plan.renew_off_sale,
     allow_switch_in: plan.allow_switch_in,
+    recommended: plan.recommended,
     sort: plan.sort,
     enabled: plan.enabled,
   };
@@ -785,6 +789,15 @@ export function PlanEditor({
                   hint={tr("用户可以把当前套餐换成这个", "Users may switch to it from other plans")}
                   checked={f.allowSwitchIn}
                   onChange={(v) => set("allowSwitchIn", v)}
+                />
+                <SwitchRow
+                  label={tr("推荐", "Recommended")}
+                  hint={tr(
+                    "门户商店的套餐卡片显示「推荐」标签，购买按钮用主色；只影响显示",
+                    "The portal shop card shows a “Recommended” tag and a primary button; display only",
+                  )}
+                  checked={f.recommended}
+                  onChange={(v) => set("recommended", v)}
                 />
               </div>
               {show("onSale") && (

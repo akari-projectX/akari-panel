@@ -142,7 +142,7 @@ export function PasskeyList({ methods }: { methods: ApiState<LoginMethods> }) {
       <div className="mt-4">
         {methods.loading && !m ? (
           <div aria-busy className="space-y-3 py-1">
-            <Sk className="h-[13px] w-1/3" /><Sk className="h-[11px] w-1/2" d={0.05} />
+            <Sk className="h-[13px] w-1/3" /><Sk className="h-[11px] w-1/2" />
           </div>
         ) : methods.error && !m ? (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-muted/60 px-4 py-3 text-[13px]">

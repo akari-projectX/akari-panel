@@ -52,3 +52,11 @@ export function docCategories(
   const i = mineFirst ? out.findIndex((c) => c.mine) : -1;
   return i > 0 ? [out[i], ...out.slice(0, i), ...out.slice(i + 1)] : out;
 }
+
+/**
+ * 「查看 X 教程」捷径的文案键：分类名本身已经以「教程 / 指南 / guide(s) / tutorial(s)」结尾时
+ * 不再重复（不然会出现「查看 Android 教程 教程」）。返回的是 tp() 的键，{p} = 分类名。
+ */
+export function guideLinkKey(name: string): '查看 {p}' | '查看 {p} 教程' {
+  return /(教程|指南|guides?|tutorials?)\s*$/i.test(name.trim()) ? '查看 {p}' : '查看 {p} 教程';
+}

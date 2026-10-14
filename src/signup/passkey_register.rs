@@ -173,7 +173,7 @@ async fn admit_invite(
         None => Ok(None),
         Some(c) => {
             let mut conn = state.pg().acquire().await?;
-            if !invite::usable(&mut conn, c, s.invite_single_use).await? {
+            if !invite::usable(&mut conn, c, s).await? {
                 return Err(bad_request!("signup.invalid_invite", "invalid invite code"));
             }
             Ok(code)
@@ -266,7 +266,7 @@ async fn apply_register_pending(
     let inviter = match st.invite.as_deref() {
         None => None,
         Some(c) => Some(
-            invite::consume(conn, c, s.invite_single_use)
+            invite::consume(conn, c, s)
                 .await?
                 .ok_or_else(|| bad_request!("signup.invalid_invite", "invalid invite code"))?,
         ),

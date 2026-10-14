@@ -21,6 +21,8 @@ export type Site = {
   registerOpen: boolean;
   resetOpen: boolean;
   inviteRequired: boolean;
+  /** 后台「允许用户邀请」：关着时注册页不显示邀请码（任何码都会被拒），邀请链接里的码也不带上 */
+  invites: boolean;
   emailVerify: boolean;
   emailDomains: string[];
   passkey: boolean;
@@ -46,6 +48,7 @@ export function siteFrom(o: AuthOptions | undefined): Site {
     registerOpen: !!o?.register,
     resetOpen: !!o?.reset,
     inviteRequired: !!o?.invite_required,
+    invites: !!o?.invites,
     emailVerify: !!o?.email_verify,
     emailDomains: o?.email_domains ?? [],
     passkey: !!o?.passkey,

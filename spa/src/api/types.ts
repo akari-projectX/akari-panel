@@ -42,6 +42,8 @@ export type FormGuardOptions = {
 export type AuthOptions = {
   register: boolean;
   invite_required: boolean;
+  /** 后台「允许用户邀请」（且开放注册）：false = 注册页不显示邀请码输入框（任何码都会被拒） */
+  invites: boolean;
   /** 空数组 = 不限域名 */
   email_domains: string[];
   reset: boolean;
@@ -273,6 +275,8 @@ export type ShopPlan = {
   /** 剩余名额（null = 不限） */
   remaining: number | null;
   sold_out: boolean;
+  /** 后台标了「推荐」（只影响显示：淡灰标签 + 主色按钮） */
+  recommended: boolean;
   offers: Offer[];
 };
 
@@ -455,10 +459,12 @@ export type MyInvite = {
   commissions: Commission[];
 };
 
-/** 每个账户一个邀请码（不能删除或重新生成）；注册开放时面板自动生成，注册关闭且还没生成过时为 null */
+/** 每个账户一个邀请码（不能删除或重新生成）；注册开放时面板自动生成，注册关闭且还没生成过、或后台关闭了用户邀请时为 null */
 export type InviteCodes = {
   code: { code: string; uses: number; created_at: string } | null;
   register_enabled: boolean;
+  /** 后台「允许用户邀请」：false = 没有邀请码，已发出的码不能用于注册 */
+  user_invites: boolean;
   invite_required: boolean;
   single_use: boolean;
   invited: number;

@@ -335,6 +335,8 @@ struct ShopPlanRow {
     capacity: Option<i32>,
     renewal_only: bool,
     allow_switch_in: bool,
+    /// Marked "推荐" by the operator (display only).
+    recommended: bool,
     /// Slots taken (active subscribers + reservations, 中-2).
     taken: i64,
 }
@@ -364,7 +366,8 @@ fn sale_plan_sql(user: &str) -> String {
     format!(
         "SELECT p.id AS plan_id, p.name, p.description, \
          p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
-         p.device_seats, p.capacity, p.renewal_only, p.allow_switch_in, {} AS taken \
+         p.device_seats, p.capacity, p.renewal_only, p.allow_switch_in, p.recommended, \
+         {} AS taken \
          FROM plans p WHERE p.enabled AND (p.on_sale OR (p.renew_off_sale AND EXISTS ( \
            SELECT 1 FROM user_plans up WHERE up.plan_id = p.id AND up.user_id = {user} \
            AND up.status = 'active')))",
@@ -549,6 +552,7 @@ pub async fn shop(
                 "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
                 "speed_limit_mbps": r.speed_limit_mbps,
                 "device_seats": r.device_seats,
+                "recommended": r.recommended,
                 "current": holder,
                 "remaining": remaining,
                 "sold_out": !holder && remaining == Some(0),

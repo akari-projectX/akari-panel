@@ -54,6 +54,7 @@ type Signup = {
   reset_enabled: boolean;
   email_verify: boolean;
   passkey_register: boolean;
+  user_invites: boolean;
   passkey_available: boolean;
   mail_enabled: boolean;
   public_origin: string | null;
@@ -77,6 +78,7 @@ function SignupForm({ s }: { s: Signup }) {
     email_verify: s.email_verify,
     passkey_register: s.passkey_register,
     domains: s.email_domains,
+    user_invites: s.user_invites,
     invite_required: s.invite_required,
     invite_single_use: s.invite_single_use,
     trial_plan_id: s.trial_plan_id ?? "",
@@ -86,9 +88,12 @@ function SignupForm({ s }: { s: Signup }) {
   const v = f.value!;
   const domainList = v.domains;
   const daysError = v.trial_plan_id && f.isEdited("trial_days") ? intError(v.trial_days, 1, 3650, tr) : undefined;
+  // No admin-issued codes exist: requiring a code while users have none
+  // would let nobody register (the panel refuses it: signup_admin.invites_needed).
+  const invitesClash = v.register_enabled && v.invite_required && !v.user_invites;
   useSavePart({
     count: f.edited.length,
-    errors: daysError ? 1 : 0,
+    errors: (daysError ? 1 : 0) + (invitesClash ? 1 : 0),
     discard: f.reset,
     save: async () => {
       const cur = fresh(qc, ["settings", "signup"], s);
@@ -105,6 +110,7 @@ function SignupForm({ s }: { s: Signup }) {
             reset_enabled: v.reset_enabled,
             email_verify: v.email_verify,
             passkey_register: v.passkey_register,
+            user_invites: v.user_invites,
           }),
         { ok: tr("注册设置已保存", "Sign-up settings saved") },
       );
@@ -182,11 +188,41 @@ function SignupForm({ s }: { s: Signup }) {
         }
       >
         <SwitchRow
+          label={tr("允许用户邀请", "Allow user invites")}
+          changed={f.isEdited("user_invites")}
+          description={
+            v.user_invites
+              ? tr(
+                  "每个用户有一个邀请码，可以邀请别人注册并获得返利",
+                  "Every user has one invite code to invite others and earn commission",
+                )
+              : tr(
+                  "已关闭：用户看不到邀请码，已发出的邀请码不能用于注册（与不存在的码一样），注册页不显示邀请码；重新开启后原来的邀请码恢复有效。已邀请的用户与返利不受影响",
+                  "Off: users have no invite code, codes already shared do not work for sign-up (same as an unknown code), the sign-up page has no invite field; turning it back on restores the old codes. Existing invitees and commissions are unaffected",
+                )
+          }
+          checked={v.user_invites}
+          onChange={(x) => f.set("user_invites", x)}
+        />
+        <SwitchRow
           label={tr("注册需要邀请码", "Registration needs an invite code")}
           changed={f.isEdited("invite_required")}
+          description={tr(
+            "邀请码只来自用户邀请（后台不发码），所以需要先允许用户邀请",
+            "Invite codes come only from user invites (the admin issues none), so user invites must be allowed",
+          )}
           checked={v.invite_required}
           onChange={(x) => f.set("invite_required", x)}
-        />
+        >
+          {invitesClash && (
+            <Callout tone="danger">
+              {tr(
+                "「注册需要邀请码」与关闭「允许用户邀请」不能同时开启：没有任何邀请码可用，没人能注册。要暂停注册请关闭「开放注册」。",
+                "Requiring an invite code while user invites are off would let nobody register. To pause sign-ups, turn off “Open registration”.",
+              )}
+            </Callout>
+          )}
+        </SwitchRow>
         <SwitchRow
           label={tr("邀请码只能使用一次", "Invite codes are single use")}
           description={tr(

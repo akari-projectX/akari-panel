@@ -8,8 +8,7 @@ import { cn } from '@/lib/utils';
  * - `Spinner` —— 苹果那只活动指示器，用在「除了等没别的可做」的地方。
  * - `Sk`      —— 骨架条，用在「已经知道版式长什么样」的地方。
  *
- * 骨架条上扫过的那道光有统一的相位（`--sk-delay`），
- * 所以一屏骨架看起来是**一道光扫过整页**，而不是各闪各的。
+ * 骨架条的样子与后台一致（`.sk` = 后台 `.skeleton`：灰底上一道渐变来回流动，1.4s）。
  */
 
 const SPOKES = Array.from({ length: 12 }, (_, i) => i);
@@ -33,15 +32,9 @@ export function Spinner({
   );
 }
 
-/** 骨架条。`d` 是这道光束的出发时间，按它在页面上的先后给。 */
-export function Sk({ className, style, d = 0 }: { className?: string; style?: CSSProperties; d?: number }) {
-  return (
-    <span
-      aria-hidden
-      className={cn('sk', className)}
-      style={{ ...style, '--sk-delay': `${d}s` } as CSSProperties}
-    />
-  );
+/** 骨架条（与后台的骨架同一观感） */
+export function Sk({ className, style }: { className?: string; style?: CSSProperties }) {
+  return <span aria-hidden className={cn('sk', className)} style={style} />;
 }
 
 /**
@@ -78,14 +71,14 @@ export function DashSkeleton({ hold = true }: { hold?: boolean }) {
   useHoldBoot(hold);
   return (
     <div aria-busy className="load-in pt-11">
-      <Sk className="h-[30px] w-[190px]" d={0} />
-      <Sk className="mt-3.5 h-[15px] w-[min(340px,70%)]" d={0.06} />
+      <Sk className="h-[30px] w-[190px]" />
+      <Sk className="mt-3.5 h-[15px] w-[min(340px,70%)]" />
 
       <div className="mt-11 grid gap-y-7 border-y border-border py-8 sm:grid-cols-2 lg:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
           <div key={i} className="flex flex-col gap-2.5">
-            <Sk className="h-[26px] w-[86px]" d={0.12 + i * 0.05} />
-            <Sk className="h-[12px] w-[62px]" d={0.15 + i * 0.05} />
+            <Sk className="h-[26px] w-[86px]" />
+            <Sk className="h-[12px] w-[62px]" />
           </div>
         ))}
       </div>
@@ -93,12 +86,12 @@ export function DashSkeleton({ hold = true }: { hold?: boolean }) {
       <div className="mt-9 flex flex-col gap-0">
         {[0, 1, 2, 3, 4].map((i) => (
           <div key={i} className="flex items-center gap-4 border-b border-border py-4.5 last:border-b-0">
-            <Sk className="size-8 shrink-0 rounded-full" d={0.3 + i * 0.05} />
+            <Sk className="size-8 shrink-0 rounded-full" />
             <div className="flex min-w-0 grow flex-col gap-2">
-              <Sk className="h-[14px]" style={{ width: `${52 - i * 6}%` }} d={0.32 + i * 0.05} />
-              <Sk className="h-[11px]" style={{ width: `${72 - i * 5}%` }} d={0.34 + i * 0.05} />
+              <Sk className="h-[14px]" style={{ width: `${52 - i * 6}%` }} />
+              <Sk className="h-[11px]" style={{ width: `${72 - i * 5}%` }} />
             </div>
-            <Sk className="hidden h-[14px] w-[68px] shrink-0 sm:block" d={0.36 + i * 0.05} />
+            <Sk className="hidden h-[14px] w-[68px] shrink-0 sm:block" />
           </div>
         ))}
       </div>
@@ -113,24 +106,24 @@ export function DocSkeleton() {
   return (
     <div aria-busy className="load-in page-wrap pt-14 pb-24">
       <div className="max-w-[62ch] border-b border-border pb-10">
-        <Sk className="h-[13px] w-[120px]" d={0} />
-        <Sk className="mt-4 h-[34px] w-[260px]" d={0.06} />
-        <Sk className="mt-4 h-[15px] w-full" d={0.1} />
-        <Sk className="mt-2 h-[15px] w-[64%]" d={0.13} />
+        <Sk className="h-[13px] w-[120px]" />
+        <Sk className="mt-4 h-[34px] w-[260px]" />
+        <Sk className="mt-4 h-[15px] w-full" />
+        <Sk className="mt-2 h-[15px] w-[64%]" />
       </div>
       <div className="grid gap-x-14 pt-12 lg:grid-cols-[190px_1fr]">
         <div className="mb-10 hidden flex-col gap-3 lg:mb-0 lg:flex">
           {[0, 1, 2, 3, 4, 5].map((i) => (
-            <Sk key={i} className="h-[13px]" style={{ width: `${88 - i * 7}%` }} d={0.18 + i * 0.04} />
+            <Sk key={i} className="h-[13px]" style={{ width: `${88 - i * 7}%` }} />
           ))}
         </div>
         <div className="min-w-0 lg:border-l lg:border-border lg:pl-14">
           {[0, 1, 2].map((s) => (
             <div key={s} className="border-b border-border py-9 first:pt-0 last:border-b-0">
-              <Sk className="h-[19px] w-[200px]" d={0.24 + s * 0.12} />
+              <Sk className="h-[19px] w-[200px]" />
               <div className="mt-5 flex flex-col gap-2.5">
                 {[0, 1, 2, 3].map((l) => (
-                  <Sk key={l} className="h-[13px]" style={{ width: `${96 - l * 11}%` }} d={0.28 + s * 0.12 + l * 0.03} />
+                  <Sk key={l} className="h-[13px]" style={{ width: `${96 - l * 11}%` }} />
                 ))}
               </div>
             </div>

@@ -547,8 +547,12 @@ function PlanCard({
           )}
         </div>
 
-        {(p.renewal_only || !p.allow_switch_in || (!sale && p.renew_off_sale && p.active_users > 0)) && (
+        {(p.recommended ||
+          p.renewal_only ||
+          !p.allow_switch_in ||
+          (!sale && p.renew_off_sale && p.active_users > 0)) && (
           <div className="mt-2 flex flex-wrap gap-1 px-4">
+            {p.recommended && <Badge tone="outline">{tr("推荐", "Recommended")}</Badge>}
             {p.renewal_only && <Badge tone="outline">{tr("仅续费", "Renewal only")}</Badge>}
             {!sale && p.enabled && p.renew_off_sale && p.active_users > 0 && (
               <Badge tone="outline">{tr("下架后可续费", "Renewable off sale")}</Badge>

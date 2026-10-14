@@ -396,6 +396,15 @@ test("SET-13 SET-28: sign-up, invites (one code per user), passkey sign-up, tria
   await openConsole(page, "/settings/signup");
   await setSwitch(page.getByRole("switch", { name: "开放注册" }), true);
   await setSwitch(page.getByRole("switch", { name: "注册需要邀请码" }), true);
+  // 允许用户邀请 (default on): off while codes are required = nobody could
+  // register (no admin-issued codes), so the page says so and will not save.
+  const userInvites = page.getByRole("switch", { name: "允许用户邀请" });
+  await expect(userInvites).toHaveAttribute("aria-checked", "true");
+  await setSwitch(userInvites, false);
+  await expect(page.getByText("已发出的邀请码不能用于注册", { exact: false })).toBeVisible();
+  await expect(page.getByText("没有任何邀请码可用，没人能注册", { exact: false })).toBeVisible();
+  await setSwitch(userInvites, true);
+  await expect(page.getByText("没有任何邀请码可用，没人能注册", { exact: false })).toHaveCount(0);
   // SET-28: the passkey sign-up switch is here (not changed: zz-passkeys covers it).
   await expect(page.getByRole("switch", { name: "允许用通行密钥注册" })).toBeVisible();
   // One invite code per user (2026-10-14): no per-user limit field any more.

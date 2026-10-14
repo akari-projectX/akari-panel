@@ -168,6 +168,8 @@ export type PlanView = {
   renewal_only: boolean;
   renew_off_sale: boolean;
   allow_switch_in: boolean;
+  /** Portal shop "推荐" tag (display only). */
+  recommended: boolean;
   on_sale: boolean;
   prices: PlanPrice[];
   active_users: number;

@@ -80,7 +80,7 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await expect(shown).toHaveCount(1);
   const code = (await shown.textContent())?.trim() ?? '';
   const uid = `(SELECT id FROM users WHERE email = '${email}')`;
-  expect(psql(`SELECT code FROM invite_codes WHERE user_id = ${uid} ORDER BY created_at, code LIMIT 1;`)).toBe(code);
+  expect(psql(`SELECT code FROM invite_codes WHERE user_id = ${uid};`)).toBe(code);
   await expect(page.getByText('每个账户一个，长期有效')).toBeVisible();
   await expect(page.getByRole('button', { name: /生成邀请码|再生成一个/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除' })).toHaveCount(0);
@@ -90,10 +90,8 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await page.getByRole('button', { name: '复制邀请码' }).click();
   await expect(page.getByText('邀请码已复制').first()).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
-  /* 规则之前留下的多个码：都还有效，页面只显示最早的那个 */
-  psql(`INSERT INTO invite_codes (code, user_id, created_at) VALUES ('zzlegacy${info.project.name === 'mobile' ? 'm' : 'd'}', ${uid}, now() + interval '1 second') ON CONFLICT DO NOTHING;`);
-  await page.reload();
-  await expect(page.getByTestId('invite-code')).toHaveText(code);
+  /* 数据库保证每个账户只有一个码 */
+  expect(psql(`SELECT count(*) FROM invite_codes WHERE user_id = ${uid};`)).toBe('1');
 });
 
 test('#56 a refund after the commission was credited claws it back (the balance stops at zero, the rest is owed)', async ({ page }, info) => {

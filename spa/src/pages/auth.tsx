@@ -315,6 +315,8 @@ export function Register() {
     'signup.invalid_code': 'code',
   } as const;
   const emailError = () => (!email.trim() ? tr('请输入邮箱') : !isEmail(email) ? tr('请输入有效的邮箱地址') : undefined);
+  /* 后台关了「允许用户邀请」：不显示也不提交邀请码（邀请链接带进来的也不带上，否则注册会被拒） */
+  const inviteCode = site.invites ? invite.trim() : '';
   const inviteError = () => (site.inviteRequired && !invite.trim() ? tr('请填写邀请码') : undefined);
   const showServerError = (err: unknown) => {
     const k = fieldOf(err, FIELD_CODES);
@@ -335,7 +337,7 @@ export function Register() {
     try {
       await authApi.registerCode({
         email: email.trim(),
-        ...(invite.trim() ? { invite_code: invite.trim() } : {}),
+        ...(inviteCode ? { invite_code: inviteCode } : {}),
         locale: mailLocale(locale),
         guard: await guard.build(),
       });
@@ -371,7 +373,7 @@ export function Register() {
         email: email.trim(),
         password: pwd,
         ...(site.emailVerify ? { code: code.trim() } : { pow }),
-        ...(invite.trim() ? { invite_code: invite.trim() } : {}),
+        ...(inviteCode ? { invite_code: inviteCode } : {}),
         locale: mailLocale(locale),
         guard: await guard.build(),
       });
@@ -397,7 +399,7 @@ export function Register() {
       setPhase('submit');
       const result = await authApi.registerPasskey({
         pow,
-        ...(invite.trim() ? { invite_code: invite.trim() } : {}),
+        ...(inviteCode ? { invite_code: inviteCode } : {}),
         locale: mailLocale(locale),
         guard: await guard.build(),
       });
@@ -479,13 +481,15 @@ export function Register() {
           </div>
         </div>
 
-        {/* 没强制要求时邀请码也留着：从邀请链接进来的人得有地方填 */}
-        <Field
-          {...f.field('invite', 'register-invite')}
-          label={site.inviteRequired ? tr('邀请码') : tp('{label}（选填）', { label: tr('邀请码') })}
-          placeholder={tr('填写邀请码')}
-          value={invite} onChange={(e) => setInvite(e.target.value)}
-        />
+        {/* 没强制要求时邀请码也留着：从邀请链接进来的人得有地方填；关了用户邀请就不显示 */}
+        {site.invites && (
+          <Field
+            {...f.field('invite', 'register-invite')}
+            label={site.inviteRequired ? tr('邀请码') : tp('{label}（选填）', { label: tr('邀请码') })}
+            placeholder={tr('填写邀请码')}
+            value={invite} onChange={(e) => setInvite(e.target.value)}
+          />
+        )}
 
         {site.emailVerify && (
           <CodeField

@@ -28,6 +28,7 @@ type SignupS = {
   register_enabled: boolean;
   email_verify: boolean;
   invite_required: boolean;
+  user_invites: boolean;
   trial_plan_id: string | null;
   trial_days: number;
 };
@@ -307,7 +308,14 @@ export function useOverview() {
   if (signup)
     sum.signup = [
       { k: tr("注册", "Sign-up"), v: signup.register_enabled ? tr("开放", "Open") : tr("关闭", "Closed") },
-      { k: tr("邀请码", "Invites"), v: signup.invite_required ? tr("需要", "Required") : tr("不需要", "Optional") },
+      {
+        k: tr("邀请码", "Invites"),
+        v: !signup.user_invites
+          ? tr("用户邀请已关闭", "User invites off")
+          : signup.invite_required
+            ? tr("需要", "Required")
+            : tr("不需要", "Optional"),
+      },
       {
         k: tr("试用", "Trial"),
         v: signup.trial_plan_id ? tr(`${signup.trial_days} 天`, `${signup.trial_days} d`) : tr("无", "None"),

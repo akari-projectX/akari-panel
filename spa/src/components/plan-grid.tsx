@@ -16,7 +16,8 @@ const ACTION_NOTE: Partial<Record<OfferAction, string>> = {
 
 /**
  * 商店的套餐卡片（2026-10-14，按用户确认的样稿 design/shop-cards-2026-10）：卡片上方**没有**周期切换，
- * 周期只在确认订单弹窗里选。每张卡 = 名称 + 状态标签（当前套餐 / 已售罄 / 仅续费 / 仅剩 N 个名额；面板没有「推荐」标记，不显示）
+ * 周期只在确认订单弹窗里选。每张卡 = 名称 + 状态标签（当前套餐 / 已售罄 / 仅续费 / 推荐 / 仅剩 N 个名额；「推荐」= 后台套餐的推荐开关，淡灰色小标签，
+ * 买得了时按钮用主色，与样稿一致）
  * + 一行简介（说明开头的段落）→ 大字「¥x /月 起」（各周期按月折算的最低价，lib/shop 的 headline；只有按天 / 一次性的写那一档自己的价格）
  * +「N 种周期可选 · 年付省 x%」→ 三格规格（流量 / 重置 / 速率）→ 功能清单（说明其余部分）→ 一个按钮 + 一行说明。
  *
@@ -51,6 +52,7 @@ export default function PlanGrid({
         const tag = pl.current ? { t: tr('当前套餐'), c: 'is-brand' }
           : pl.sold_out ? { t: tr('已售罄'), c: 'is-warn' }
           : refusal === 'renewal_only' ? { t: tr('仅续费'), c: 'is-warn' }
+          : pl.recommended ? { t: tr('推荐'), c: 'is-rec' }
           : pl.remaining != null ? { t: tp('仅剩 {n} 个名额', { n: pl.remaining }), c: 'is-warn' }
           : null;
         const off = !!refusal && !pl.current;
@@ -103,7 +105,7 @@ export default function PlanGrid({
             <div className="mt-[18px]">
               {act?.action ? (
                 <Button
-                  variant={pl.current ? 'default' : 'outline'} className="h-[42px] w-full"
+                  variant={pl.current || pl.recommended ? 'default' : 'outline'} className="h-[42px] w-full"
                   onClick={() => onBuy(pl, act, act.action === 'reset')}
                 >
                   {tr(ACTION_TEXT[act.action])}
