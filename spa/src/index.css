@@ -939,11 +939,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
  * 骨架条：与后台的 `.skeleton` 同一观感（灰底 + 一道渐变来回流动，background-size 400%，1.4s ease 循环，
  * 圆角 = 后台的 rounded-md，9px），颜色取门户自己的 token（浅色 / 深色各随 --muted、--background）。
  */
-.sk {
-  display: block; border-radius: 9px;
-  background: linear-gradient(90deg, var(--muted) 25%, var(--background) 37%, var(--muted) 63%);
-  background-size: 400% 100%;
-  animation: sk-shimmer 1.4s ease infinite;
+@layer components {
+  /* 分层：调用处的 rounded-full / rounded-xl 等工具类能改圆角（同后台 cn("skeleton rounded-md", className)） */
+  .sk {
+    display: block; border-radius: 9px;
+    background: linear-gradient(90deg, var(--muted) 25%, var(--background) 37%, var(--muted) 63%);
+    background-size: 400% 100%;
+    animation: sk-shimmer 1.4s ease infinite;
+  }
 }
 @keyframes sk-shimmer {
   0% { background-position: -200% 0; }
