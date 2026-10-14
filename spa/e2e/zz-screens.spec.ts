@@ -144,29 +144,6 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
       name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
       run: (page: Page) => ready(page, path),
     })),
-    /* 加载态（2026-10-15：骨架条与后台同一观感）：订单列表的请求挂住不回，拍骨架；整页加载仍是菊花 */
-    {
-      name: 'loading-skeleton', account: 'user@e2e.test',
-      run: async (page) => {
-        const hold = '**/api/v1/me/orders';
-        await page.route(hold, () => undefined);
-        try {
-          /* 整页重新加载时启动画面会盖住骨架：先在仪表盘落地（缓存清空），再站内跳到订单页 */
-          await page.evaluate(() => sessionStorage.clear());
-          await ready(page, '/', '近 7 日流量趋势');
-          await page.evaluate(() => {
-            history.pushState({}, '', '/orders');
-            dispatchEvent(new PopStateEvent('popstate'));
-          });
-          await page.locator('.sk:visible').first().waitFor({ timeout: WAIT });
-          await page.waitForTimeout(300);
-        } finally {
-          /* 挂住的那个请求不会再回来：解除拦截后页面仍停在骨架上，下一张图的跳转会把它丢掉 */
-          await page.unroute(hold);
-        }
-        return 'viewport';
-      },
-    },
   ];
   const notes: string[] = [];
   /* USDT 链上收款（C2b）：临时启用一个方式（高确认数：拍摄期间一直「确认中」），一单等待转账，一单已看到转账 */
@@ -181,6 +158,25 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
       { name: 'usdt-confirming', account: usdt.seen.email, run: order(usdt.seen.order, '确认中') },
     );
   }
+  /* 加载态（2026-10-15：骨架条与后台同一观感）：订单列表的请求挂住不回，拍骨架；整页加载仍是菊花 */
+  shots.push({
+    name: 'loading-skeleton', account: 'user@e2e.test',
+    run: async (page) => {
+      /* 订单列表的请求一直挂着（这是每个浏览器上下文的最后一张，拍完上下文就关，拦截随之消失），
+         否则页面重新取数（回到前台等）就把骨架换成了内容 */
+      await page.route('**/api/v1/me/orders', () => undefined);
+      /* 整页重新加载时启动画面会盖住骨架：先在仪表盘落地（缓存清空），再站内跳到订单页 */
+      await page.evaluate(() => sessionStorage.clear());
+      await ready(page, '/', '近 7 日流量趋势');
+      await page.evaluate(() => {
+        history.pushState({}, '', '/orders');
+        dispatchEvent(new PopStateEvent('popstate'));
+      });
+      await page.locator('.sk:visible').first().waitFor({ timeout: WAIT });
+      await page.waitForTimeout(300);
+      return 'viewport';
+    },
+  });
   try {
     for (const device of ['desktop', 'mobile'] as const) {
       for (const theme of ['light', 'dark'] as const) {
