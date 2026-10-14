@@ -151,9 +151,14 @@ test('screens: dashboard chart, shop plans, wallet and invite (desktop + mobile 
         const hold = '**/api/v1/me/orders';
         await page.route(hold, () => undefined);
         try {
+          /* 整页重新加载时启动画面会盖住骨架：先在仪表盘落地（缓存清空），再站内跳到订单页 */
           await page.evaluate(() => sessionStorage.clear());
-          await page.goto('/orders');
-          await page.locator('.sk').first().waitFor({ timeout: WAIT });
+          await ready(page, '/', '近 7 日流量趋势');
+          await page.evaluate(() => {
+            history.pushState({}, '', '/orders');
+            dispatchEvent(new PopStateEvent('popstate'));
+          });
+          await page.locator('.sk:visible').first().waitFor({ timeout: WAIT });
           await page.waitForTimeout(300);
         } finally {
           /* 挂住的那个请求不会再回来：解除拦截后页面仍停在骨架上，下一张图的跳转会把它丢掉 */
