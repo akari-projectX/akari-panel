@@ -86,8 +86,10 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await expect(page.getByRole('button', { name: '删除' })).toHaveCount(0);
   /* 邀请链接用面板给的 link_base（主域名 + /register?invite=）+ 这个码 */
   await expect(page.locator('input[value*="/register?invite="]').first()).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=${code}$`));
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: '复制邀请码' }).click();
   await expect(page.getByText('邀请码已复制').first()).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
   /* 规则之前留下的多个码：都还有效，页面只显示最早的那个 */
   psql(`INSERT INTO invite_codes (code, user_id, created_at) VALUES ('zzlegacy${info.project.name === 'mobile' ? 'm' : 'd'}', ${uid}, now() + interval '1 second') ON CONFLICT DO NOTHING;`);
   await page.reload();
