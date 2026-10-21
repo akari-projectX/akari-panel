@@ -386,11 +386,11 @@ jobs:
       # The runner's own Postgres would collide with compose's port.
       - run: sudo systemctl stop postgresql || true
       - run: cd spa && npm ci && npx playwright install --with-deps chromium
-      # admin/ and spa/ pin their own Playwright versions; each needs its browser build.
+      # admin/, spa/ and portal/ pin their own Playwright versions; each needs its browser build.
       - run: cd admin && npm ci && npx playwright install chromium
+      - run: cd portal && npm ci && npx playwright install chromium
       # E2E_PERF_OUT: the portal performance report (report only, see
       # scripts/e2e-portal.sh); its summary goes to the job summary below.
-      # portal/ pins the same Playwright, so the Chromium above serves both.
       - run: make e2e
         # Leave time for the uploads below when a run hangs.
         timeout-minutes: 60
