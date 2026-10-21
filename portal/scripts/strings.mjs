@@ -123,13 +123,15 @@ export function scanSvelte(src) {
   };
   while (i < n) {
     if (src.startsWith('<!--', i)) { flush(); const e = src.indexOf('-->', i); i = e < 0 ? n : e + 3; continue; }
-    const block = /^<(script|style)\b[^>]*>/.exec(src.slice(i, i + 200));
+    const block = /^<(script|style)\b[^>]*>/i.exec(src.slice(i, i + 200));
     if (block) {
       flush();
-      const close = src.indexOf(`</${block[1]}>`, i);
-      const end = close < 0 ? n : close;
-      if (block[1] === 'script') scanCode(src.slice(i + block[0].length, end), 0, out, false);
-      i = close < 0 ? n : close + block[1].length + 3;
+      const tag = block[1].toLowerCase();
+      const body = i + block[0].length;
+      const close = new RegExp(`</${tag}\\s*>`, 'i').exec(src.slice(body));
+      const end = close ? body + close.index : n;
+      if (tag === 'script') scanCode(src.slice(body, end), 0, out, false);
+      i = close ? end + close[0].length : n;
       continue;
     }
     const c = src[i];

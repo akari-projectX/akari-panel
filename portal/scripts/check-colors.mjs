@@ -15,10 +15,26 @@ const RULES = [
   ['named colour', /(?:fill|stroke|color|background(?:-color)?|border(?:-[a-z]+)?-color|stop-color)\s*[:=]\s*["']?(?:white|black|red|green|blue|gray|grey|yellow|orange|purple|pink)\b/i],
 ];
 
-const strip = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/<!--[\s\S]*?-->/g, '')
-  .replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
+/* 去掉注释（/* … *\/、<!-- … -->、行尾的 // …）；逐字扫描，不用替换（替换后可能拼出新的注释开头） */
+function strip(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    if (src.startsWith('/*', i)) {
+      const e = src.indexOf('*/', i + 2);
+      i = e < 0 ? src.length : e + 2;
+    } else if (src.startsWith('<!--', i)) {
+      const e = src.indexOf('-->', i + 4);
+      i = e < 0 ? src.length : e + 3;
+    } else if (src.startsWith('//', i) && !/[:'"`\\]/.test(src[i - 1] ?? '')) {
+      const e = src.indexOf('\n', i);
+      i = e < 0 ? src.length : e;
+    } else {
+      out += src[i++];
+    }
+  }
+  return out;
+}
 
 function* files(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
