@@ -165,8 +165,10 @@ jobs:
           cache: npm
           cache-dependency-path: |
             spa/package-lock.json
+            portal/package-lock.json
             admin/package-lock.json
       - run: cd spa && npm ci --ignore-scripts
+      - run: cd portal && npm ci --ignore-scripts
       - run: cd admin && npm ci --ignore-scripts
       - run: |
           cargo fetch --locked

@@ -2,7 +2,7 @@
 /*
  * 英文词典（src/i18n/dict.ts，键 = 简体原文）与界面文案一一对应（CI 必跑）：
  *   · 不能留没人用的条目：「有人用」= 源码某处（测试除外）有一模一样的字符串字面量 / 模板字符串 / JSX 文本
- *     （错误文案 src/i18n/errors.ts 也算）。删功能、改文案时旧条目会留下来，这里让它们当场失败；
+ *     （错误文案 src/i18n/errors.ts 也算；门户 v2 portal/src 里的字符串也算，见 portal/scripts/strings.mjs）。删功能、改文案时旧条目会留下来，这里让它们当场失败；
  *   · 不能缺翻译：源码里每个含汉字的字符串都要有英文条目（界面上的中文都经 tr()/tp() 显示）。
  *     例外只有不显示的匹配数据（KEYWORDS / keywords：认地区、认平台用的写法）、后台生成的协议表单、开发者日志与断言。
  *
@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { portalStrings } from '../../portal/scripts/strings.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DICT = path.join(root, 'src/i18n/dict.ts');
@@ -63,6 +64,9 @@ for (const file of sources(path.join(root, 'src'))) {
   };
   visit(sf);
 }
+
+/* 门户 v2（portal/）与这里共用词典 */
+for (const s of portalStrings()) used.add(s);
 
 const unused = [];
 const walk = (n) => {

@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa admin panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down spa portal admin panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -12,6 +12,11 @@ dev-down:
 
 spa:
 	cd spa && npm ci && npm run build
+
+# Portal v2 (Svelte, portal/dist/app): embedded too, served only with
+# AKARI_PORTAL_V2=1 until the cutover (portal/CLAUDE.md).
+portal:
+	cd portal && npm ci && npm run build
 
 # W33-b: the admin app (sign-in page + console), its own build (admin/dist).
 admin:
@@ -26,6 +31,7 @@ agent-build:
 check: check-generated shellcheck
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd spa && npm run check
+	cd portal && npm run check
 	cd admin && npm run check
 
 # Every shell script (installer, backup/restore, smoke, test drivers, the
@@ -56,7 +62,7 @@ check-generated:
 # own database / Valkey index / data dir / port 8090 (does not touch smoke's).
 # Needs `make dev-up` and `npx playwright install chromium` once. Both suites
 # run even when the first fails (one CI run reports both); either failing fails.
-e2e: dev-up spa admin panel
+e2e: dev-up spa portal admin panel
 	./scripts/e2e-portal.sh; p=$$?; ./scripts/e2e.sh; a=$$?; [ $$p -eq 0 ] && [ $$a -eq 0 ]
 
 # Smoke isolation (parallel checkouts): SMOKE_DB=<name> runs against its own

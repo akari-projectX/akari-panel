@@ -2,6 +2,9 @@
 #
 # akari panel image (M1-1). Multi-stage:
 #   spa        builds the user portal (embedded into the binary)
+#   portal     builds portal v2 (Svelte; embedded too, served only with
+#              AKARI_PORTAL_V2=1 until the cutover; shares framework-free
+#              modules and the bundle scripts with spa/)
 #   admin      builds the admin app (embedded into the binary)
 #   chef       rust:alpine + build tools + cargo-chef (pinned)
 #   planner    `cargo chef prepare`: the dependency recipe (manifests and
@@ -41,6 +44,16 @@ WORKDIR /src/spa
 COPY spa/package.json spa/package-lock.json ./
 RUN npm ci
 COPY spa/ ./
+RUN npm run build
+
+FROM ${NODE_IMAGE} AS portal
+WORKDIR /src/portal
+COPY portal/package.json portal/package-lock.json ./
+RUN npm ci
+COPY spa/src /src/spa/src
+COPY spa/public /src/spa/public
+COPY spa/scripts /src/spa/scripts
+COPY portal/ ./
 RUN npm run build
 
 # W33-b: the admin app (sign-in page + console), built on its own.
@@ -90,6 +103,7 @@ COPY migrations migrations
 COPY src src
 COPY deploy/systemd deploy/systemd
 COPY --from=spa /src/spa/dist spa/dist
+COPY --from=portal /src/portal/dist portal/dist
 COPY --from=admin /src/admin/dist admin/dist
 RUN cargo build --profile "$CARGO_PROFILE" --locked \
  && cp "target/$CARGO_PROFILE/akari" /akari

@@ -162,6 +162,35 @@ jobs:
       # sizes are reported by the spa-size job, never gated.
       - run: npm run build
 
+  portal:
+    # Portal v2 (portal/, Svelte 5; preview behind AKARI_PORTAL_V2=1 until
+    # the cutover): typecheck (svelte-check, warnings fail), oxlint, colour
+    # literals only in src/styles/tokens.css, i18n against the shared
+    # dictionary, unit tests, build + dist/bundle checks. The shared
+    # modules and scripts it uses from spa/ need no spa/node_modules.
+    name: portal (svelte-check, lint, i18n, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24" # package.json engines: >=22.18
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run check:colors
+      - run: npm run check:i18n
+      - run: npm test
+      - run: npm run build
+      - run: node ../spa/scripts/bundle-report.mjs dist/app --markdown "$RUNNER_TEMP/size.md" && cat "$RUNNER_TEMP/size.md" >>"$GITHUB_STEP_SUMMARY"
+
   spa-size:
     # Report only, never blocks (not a required check; continue-on-error):
     # portal bundle sizes (gzip) per chunk with the delta against the base
@@ -330,13 +359,15 @@ jobs:
     # Browser end-to-end (Playwright, Chromium; desktop + phone) against a real
     # panel serving the embedded portal at / with its real CSP, behind a TLS
     # front (passkeys): every line of research/portal-gap.md, no CSP violations
-    # (scripts/e2e-portal.sh, spa/e2e/).
+    # (scripts/e2e-portal.sh, spa/e2e/). Then portal v2 (portal/e2e/, the
+    # same panel restarted with AKARI_PORTAL_V2=1) and the performance report
+    # for both portals from the same harness (artifact portal-perf).
     # Required check; W37: runs when the SPA (or what serves it) changes.
     name: e2e (playwright, real CSP)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the compiler (same as the Dockerfile).
@@ -350,6 +381,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             spa/package-lock.json
+            portal/package-lock.json
             admin/package-lock.json
       # The runner's own Postgres would collide with compose's port.
       - run: sudo systemctl stop postgresql || true
@@ -358,9 +390,10 @@ jobs:
       - run: cd admin && npm ci && npx playwright install chromium
       # E2E_PERF_OUT: the portal performance report (report only, see
       # scripts/e2e-portal.sh); its summary goes to the job summary below.
+      # portal/ pins the same Playwright, so the Chromium above serves both.
       - run: make e2e
         # Leave time for the uploads below when a run hangs.
-        timeout-minutes: 50
+        timeout-minutes: 60
         env:
           E2E_PERF_OUT: ${{ runner.temp }}/perf
       - if: always()
@@ -374,6 +407,27 @@ jobs:
           path: spa/test-results/screens
           if-no-files-found: ignore
           retention-days: 7
+      # Portal v2 screenshot set (portal/e2e/; desktop 1440 / mobile 390,
+      # light / dark) for design review; grows with each portal v2 PR.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portal-v2-screens
+          path: portal/test-results/screens
+          if-no-files-found: warn
+          retention-days: 14
+      # Portal performance, React vs Svelte from the same harness (JSON per
+      # portal and profile, bundle sizes, summary.md); report only.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portal-perf
+          path: |
+            ${{ runner.temp }}/perf/perf-*.json
+            ${{ runner.temp }}/perf/size-*.json
+            ${{ runner.temp }}/perf/summary.md
+          if-no-files-found: warn
+          retention-days: 30
       # Admin screenshot set (admin/e2e/zz-screens.spec.ts) for design review.
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -398,6 +452,7 @@ jobs:
           name: playwright-report
           path: |
             spa/test-results
+            portal/test-results
             admin/playwright-report
             admin/test-results/*/error-context.md
             /tmp/akari-e2e-portal/*.log

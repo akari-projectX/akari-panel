@@ -4,6 +4,12 @@ React 19 + Vite 8（Rolldown）+ Tailwind 4 + shadcn/ui（Radix，`src/component
 W36-b（R45 修订）起 spa/ 就是用户门户：源码来自 Akari-theme（mwnydev/Akari-theme，导入后归档），构建配置与依赖以它为准。
 **管理后台是另一个应用**（`admin/`，W33-b），门户与它不共享源码、路由与产物。
 
+**门户 v2（`../portal/`，Svelte 5，2026-10-22 起逐 PR 重写）共用这里与框架无关的模块**：`src/api/`（整个接口层）、`src/i18n/dict.ts`
+（词典：门户 v2 的新文案也加在这里）、`src/i18n/errors.ts`、`src/lib/format.ts`、`src/lib/cache.ts`、`src/assets/fonts/`、`public/`，
+以及 `scripts/check-bundles.mjs`、`scripts/bundle-report.mjs`、`e2e/perf/`。改这些文件要让两边都通过（`make check`）；它们不能引入 React。
+`scripts/check-i18n.mjs` 把 `portal/src` 的字符串也算作「有人用」，`collect-text.mjs` 把它们收进字体子集（`portal/scripts/strings.mjs`）。
+切换 PR 会把它们搬进 `portal/` 并删除本目录。见 `../portal/CLAUDE.md`。
+
 产物 `dist/app`（`index.html` + `assets/**`），面板用 rust-embed 编进二进制（`src/spa.rs` 的 `UserAssets`）：
 门户在主域名根路径 `/`（D11），`access::PORTAL_PAGES` 里的每个顶层路径都返回 index，`/assets/*` 不可变缓存。改完前端 `make spa && make panel` 才生效（debug 构建运行时读磁盘上的 dist）。
 

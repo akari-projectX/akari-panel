@@ -1,7 +1,9 @@
 /*
  * 门户性能报告（只报告，不判定；2026-10-07 用户裁决：以真实性能指标代替硬性体积预算）。
- * 由 ../scripts/e2e-portal.sh 在 E2E_PERF_OUT 设置时用 playwright.perf.config.ts 跑，
- * 每个画像写一份 JSON，e2e/perf/summary.mjs 合并成 Markdown（CI 写进任务摘要）。
+ * 由 ../scripts/e2e-portal.sh 在 E2E_PERF_OUT 设置时用 playwright.perf.config.ts 跑，对 React 门户与门户 v2（portal/，
+ * 同一个面板以 AKARI_PORTAL_V2=1 重启）各跑一遍：E2E_PERF_LABEL=react|svelte，每个门户每个画像写一份
+ * perf-<门户>-<画像>.json，e2e/perf/summary.mjs 合并成 Markdown（CI 写进任务摘要并作为工件 portal-perf 上传）。
+ * 两个门户用同一套测法：登录走接口（门户 v2 的登录页还没迁过来），之后的冷启动、切页都一样。
  *
  *   画像    desktop（不限速）/ mobile-mid（Pixel 7 视口 + CPU 4× 降速 + 150 ms RTT、1.6 Mbps 下行，近似 Lighthouse 的移动端）
  *   指标    冷启动（新上下文 = 空缓存）的 FCP、LCP、TTI（简化：FCP 之后最后一个长任务结束，至少到 DOMContentLoaded；
@@ -15,6 +17,7 @@ import { join } from 'node:path';
 import { test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 
 const OUT = process.env.E2E_PERF_OUT ?? 'test-results/perf';
+const LABEL = process.env.E2E_PERF_LABEL ?? 'react';
 const RUNS = Number(process.env.E2E_PERF_RUNS ?? 5);
 const USER = 'user@e2e.test';
 const PASSWORD = 'e2e-password-123';
@@ -114,17 +117,20 @@ const median = (xs: number[]) => {
 
 test('portal performance report', async ({ browser }, info) => {
   test.setTimeout(10 * 60_000);
-  /* 登录一次，存会话（后面每次冷启动都是新上下文 + 空缓存，只带 cookie） */
-  const state = join(OUT, `state-${info.project.name}.json`);
+  /*
+   * 登录一次（接口，与 e2e/panel.ts 的 Client.login 一样带表单令牌、等过最短提交时间），存会话：
+   * 后面每次冷启动都是新上下文 + 空缓存，只带 cookie。会话文件不放进报告目录（那里的 JSON 会作为工件上传）。
+   */
+  const state = join('test-results', `perf-state-${LABEL}-${info.project.name}.json`);
+  mkdirSync('test-results', { recursive: true });
   mkdirSync(OUT, { recursive: true });
   {
     const ctx = await browser.newContext({ ...info.project.use });
-    const page = await ctx.newPage();
-    await page.goto('/login');
-    await page.getByLabel('邮箱', { exact: true }).fill(USER);
-    await page.getByLabel('密码', { exact: true }).fill(PASSWORD);
-    await page.getByRole('button', { name: '登录', exact: true }).click();
-    await page.waitForURL((u) => !u.pathname.endsWith('/login'));
+    const o = await (await ctx.request.get('/auth/options')).json() as { guard?: { form_token?: string; form_min_secs?: number } };
+    await new Promise((r) => setTimeout(r, (o.guard?.form_min_secs ?? 0) * 1000 + 300));
+    const guard = { ...(o.guard?.form_token ? { form_token: o.guard.form_token } : {}), website: '' };
+    const res = await ctx.request.post('/auth/login', { data: { email: USER, password: PASSWORD, guard } });
+    if (!res.ok()) throw new Error(`login failed: ${res.status()}`);
     await ctx.storageState({ path: state });
     await ctx.close();
   }
@@ -145,6 +151,9 @@ test('portal performance report', async ({ browser }, info) => {
   }
 
   const result = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, median(v)]));
-  writeFileSync(join(OUT, `perf-${info.project.name}.json`), JSON.stringify({ profile: info.project.name, runs: RUNS, result }, null, 2));
-  console.log(info.project.name, result);
+  writeFileSync(
+    join(OUT, `perf-${LABEL}-${info.project.name}.json`),
+    JSON.stringify({ portal: LABEL, profile: info.project.name, runs: RUNS, result }, null, 2),
+  );
+  console.log(LABEL, info.project.name, result);
 });

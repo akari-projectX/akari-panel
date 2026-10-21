@@ -1,0 +1,157 @@
+/*
+ * 门户 v2 的全部颜色（palette A，2026-10-22 用户选定 = 样稿 design/portal-v2-2026-10/styles.css 的令牌）。
+ *
+ * **颜色只在这个文件里**：组件、app.css、boot.css、Tailwind 类、SVG 一律用 var(--…) 或 @theme 映射出来的名字，
+ * 不写十六进制 / rgb() / hsl()（scripts/check-colors.mjs 在 npm run check 里检查）。换配色 = 只改这个文件。
+ *
+ * 明暗：浅色在 :root；深色写两遍——:root.dark（src/boot/boot.js 在首帧前按用户选择加的类）与
+ * prefers-color-scheme 的回退（boot.js 读不了存储、没加类时跟随系统）。两段必须一致。
+ */
+
+:root {
+  /* 底与文字 */
+  --bg: #f7f8fa;
+  --surface: #fff;
+  --fg: #12151c;
+  --body: #3a404c;
+  --muted: #5c6473;
+  --faint: #6b7280;
+  --line: rgba(17, 24, 39, .08);
+  --line2: rgba(17, 24, 39, .14);
+  --secondary: #e9ebf0;
+  --hover: rgba(17, 24, 39, .04);
+  /* 品牌蓝：唯一的强调色 */
+  --brand: #2563eb;
+  --brand-hover: #1d4ed8;
+  --on-brand: #fff;
+  --brand-soft: rgba(37, 99, 235, .07);
+  --brand-2: #a9c1f5;
+  /* 状态（总配文字） */
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #dc2626;
+  /* 公告标签（实底，design/announcement-tags-2026-10） */
+  --t-red: #dc2626;
+  --t-orange: #c2410c;
+  --t-amber: #b45309;
+  --t-green: #15803d;
+  --t-teal: #0f766e;
+  --t-cyan: #0e7490;
+  --t-blue: #1d4ed8;
+  --t-indigo: #4338ca;
+  --t-violet: #7c3aed;
+  --t-pink: #be185d;
+  --t-slate: #475569;
+  --on-solid: #fff;
+  /* 弹出层与焦点 */
+  --overlay: rgba(15, 18, 25, .32);
+  --pop-shadow: 0 8px 28px rgba(16, 24, 40, .10), 0 1px 3px rgba(16, 24, 40, .06);
+  --focus-ring: rgba(37, 99, 235, .55);
+  /* 顶栏的文字 Logo（没上传品牌 Logo 时） */
+  --logo-bg: #14161b;
+  --logo-fg: #fff;
+  /* 流量图（PR 3：平滑面积图 design/portal-v2-2026-10/chart.js） */
+  --chart-area-opacity: .16;
+  --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+}
+
+:root.dark {
+  --bg: #141518;
+  --surface: #1c1d21;
+  --fg: #eceef2;
+  --body: #c9cdd5;
+  --muted: #9aa1ad;
+  --faint: #8a919d;
+  --line: rgba(255, 255, 255, .07);
+  --line2: rgba(255, 255, 255, .13);
+  --secondary: #26282d;
+  --hover: rgba(255, 255, 255, .04);
+  --brand: #4a9dff;
+  --brand-hover: #69afff;
+  --on-brand: #0b1526;
+  --brand-soft: rgba(74, 157, 255, .10);
+  --brand-2: #2c4f7c;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --t-red: #f87171;
+  --t-orange: #fb923c;
+  --t-amber: #fbbf24;
+  --t-green: #4ade80;
+  --t-teal: #2dd4bf;
+  --t-cyan: #22d3ee;
+  --t-blue: #60a5fa;
+  --t-indigo: #818cf8;
+  --t-violet: #a78bfa;
+  --t-pink: #f472b6;
+  --t-slate: #94a3b8;
+  --on-solid: #111317;
+  --overlay: rgba(0, 0, 0, .55);
+  --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
+  --focus-ring: rgba(74, 157, 255, .6);
+  --logo-bg: #2a2c31;
+  --logo-fg: #fff;
+  --chart-area-opacity: .16;
+  --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --bg: #141518;
+    --surface: #1c1d21;
+    --fg: #eceef2;
+    --body: #c9cdd5;
+    --muted: #9aa1ad;
+    --faint: #8a919d;
+    --line: rgba(255, 255, 255, .07);
+    --line2: rgba(255, 255, 255, .13);
+    --secondary: #26282d;
+    --hover: rgba(255, 255, 255, .04);
+    --brand: #4a9dff;
+    --brand-hover: #69afff;
+    --on-brand: #0b1526;
+    --brand-soft: rgba(74, 157, 255, .10);
+    --brand-2: #2c4f7c;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
+    --t-red: #f87171;
+    --t-orange: #fb923c;
+    --t-amber: #fbbf24;
+    --t-green: #4ade80;
+    --t-teal: #2dd4bf;
+    --t-cyan: #22d3ee;
+    --t-blue: #60a5fa;
+    --t-indigo: #818cf8;
+    --t-violet: #a78bfa;
+    --t-pink: #f472b6;
+    --t-slate: #94a3b8;
+    --on-solid: #111317;
+    --overlay: rgba(0, 0, 0, .55);
+    --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
+    --focus-ring: rgba(74, 157, 255, .6);
+    --logo-bg: #2a2c31;
+    --logo-fg: #fff;
+    --chart-area-opacity: .16;
+    --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  }
+}
+
+/* 由上面派生的用途名（不新增颜色）：启动画面、流量图、焦点环 */
+:root {
+  --boot-bg: var(--bg);
+  --boot-fg: var(--fg);
+  --boot-link: var(--brand);
+  --chart-line: var(--brand);
+  --chart-area: var(--brand);
+  --chart-up: var(--brand-2);
+  --chart-grid: var(--line);
+  --chart-axis: var(--line2);
+  --chart-text: var(--faint);
+  --chart-dot-ring: var(--bg);
+  --chart-tip-bg: var(--fg);
+  --chart-tip-fg: var(--bg);
+  --chart-switch-bg: var(--secondary);
+  --chart-switch-on: var(--surface);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--focus-ring);
+}

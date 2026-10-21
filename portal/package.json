@@ -1,0 +1,38 @@
+{
+  "name": "akari-portal-v2",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/check-dist.mjs && node ../spa/scripts/check-bundles.mjs dist/app",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "lint": "oxlint --deny-warnings src scripts e2e",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:i18n && npm run test",
+    "report:size": "node ../spa/scripts/bundle-report.mjs dist/app",
+    "e2e": "playwright test",
+    "check:colors": "node scripts/check-colors.mjs"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.61.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.19.2",
+    "oxlint": "^1.89.0",
+    "parse5": "^8.0.1",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.5",
+    "vitest": "^4.1.12"
+  }
+}
