@@ -14,7 +14,7 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
+import { request, test, type Browser, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 
 const OUT = process.env.E2E_PERF_OUT ?? 'test-results/perf';
 const LABEL = process.env.E2E_PERF_LABEL ?? 'react';
@@ -125,14 +125,17 @@ test('portal performance report', async ({ browser }, info) => {
   mkdirSync('test-results', { recursive: true });
   mkdirSync(OUT, { recursive: true });
   {
-    const ctx = await browser.newContext({ ...info.project.use });
-    const o = await (await ctx.request.get('/auth/options')).json() as { guard?: { form_token?: string; form_min_secs?: number } };
+    /* 接口请求在 Node 里发（浏览器的域名映射管不到）：直连面板（E2E_API），cookie 记到门户的域名下 */
+    const api = await request.newContext({ baseURL: process.env.E2E_API });
+    const o = await (await api.get('/auth/options')).json() as { guard?: { form_token?: string; form_min_secs?: number } };
     await new Promise((r) => setTimeout(r, (o.guard?.form_min_secs ?? 0) * 1000 + 300));
     const guard = { ...(o.guard?.form_token ? { form_token: o.guard.form_token } : {}), website: '' };
-    const res = await ctx.request.post('/auth/login', { data: { email: USER, password: PASSWORD, guard } });
+    const res = await api.post('/auth/login', { data: { email: USER, password: PASSWORD, guard } });
     if (!res.ok()) throw new Error(`login failed: ${res.status()}`);
-    await ctx.storageState({ path: state });
-    await ctx.close();
+    const host = new URL(String(info.project.use.baseURL ?? process.env.E2E_BASE)).hostname;
+    const { cookies } = await api.storageState();
+    writeFileSync(state, JSON.stringify({ cookies: cookies.map((c) => ({ ...c, domain: host })), origins: [] }));
+    await api.dispose();
   }
 
   const samples: Record<string, number[]> = {};
