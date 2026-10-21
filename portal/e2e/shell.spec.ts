@@ -236,8 +236,13 @@ test('old and unknown addresses', async ({ page }) => {
   await page.goto('/invite');
   await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
   await ready(page, '钱包');
-  await page.goto('/no-such-page');
+  /* 面板只对门户的顶层路径返回页面（其余是统一的拒绝），所以 404 页只会在站内跳转时出现 */
+  await page.evaluate(() => {
+    history.pushState({}, '', '/wallet/no-such-page');
+    dispatchEvent(new PopStateEvent('popstate'));
+  });
   await expect(page.locator('main h1')).toHaveText('这片海图上没有这一页');
+  await expect(page).toHaveTitle(/这片海图上没有这一页/);
 });
 
 test('sign out ends the session', async ({ page }, info) => {

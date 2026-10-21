@@ -8,7 +8,7 @@
   import { loc } from '$lib/router.svelte';
 
   /*
-   * 邮箱下拉（WAI-ARIA menu button）：Enter / 空格 / ↓ 打开并聚焦第一项，↑ 打开并聚焦最后一项；
+   * 邮箱下拉（WAI-ARIA menu button）：点击、Enter / 空格 / ↓ 打开并聚焦第一项，↑ 打开并聚焦最后一项；
    * 菜单里 ↑ ↓ Home End 移动，Esc 关闭并把焦点还给按钮，Tab 关闭（焦点照常往下走），点外面关闭。
    */
   let open = $state(false);
@@ -18,13 +18,13 @@
 
   const entries = () => [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
 
-  async function show(focus: 'first' | 'last' | null) {
+  async function show(focus: 'first' | 'last') {
     open = true;
     loadMenuFacts(scope());
     await tick();
     const list = entries();
     if (focus === 'first') list[0]?.focus();
-    else if (focus === 'last') list.at(-1)?.focus();
+    else list.at(-1)?.focus();
   }
 
   function hide(returnFocus = true) {
@@ -78,7 +78,7 @@
     aria-haspopup="menu"
     aria-expanded={open}
     aria-controls="user-menu"
-    onclick={() => (open ? hide(false) : show(null))}
+    onclick={() => (open ? hide(false) : show('first'))}
     onkeydown={onButtonKey}
   >
     <span>{auth.me?.email}</span><ChevronDown class="i" size={16} strokeWidth={1.75} aria-hidden="true" />
