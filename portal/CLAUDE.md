@@ -69,7 +69,7 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
 
 ## 端到端与性能
 
-- `e2e/`（Playwright，与 spa 同一版本、同一个 Chromium）：`../scripts/e2e-portal.sh` 跑完 React 门户的用例后，以 `AKARI_PORTAL_V2=1`
+- `e2e/`（Playwright，自己的 Playwright 版本与 Chromium（CI 单独安装））：`../scripts/e2e-portal.sh` 跑完 React 门户的用例后，以 `AKARI_PORTAL_V2=1`
   重启同一个面板（同一份种子数据），跑这里的用例：桌面 1440×900、手机 390×844，减少动效；每个用例收集 CSP 违规与页面异常。
   登录走接口（PR 2 才有登录页）。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`。
 - 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-v2-screens`；每个 PR 的终版截图另存到工作区

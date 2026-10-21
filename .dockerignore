@@ -19,3 +19,4 @@ scripts
 *.md
 !README.md
 fuzz
+portal/.svelte-check
