@@ -47,9 +47,9 @@
   --overlay: rgba(15, 18, 25, .32);
   --pop-shadow: 0 8px 28px rgba(16, 24, 40, .10), 0 1px 3px rgba(16, 24, 40, .06);
   --focus-ring: rgba(37, 99, 235, .55);
-  /* 顶栏的文字 Logo（没上传品牌 Logo 时） */
-  --logo-bg: #14161b;
-  --logo-fg: #fff;
+  /* 默认 Logo（akari 字标，没上传品牌 Logo 时）：字的颜色与品牌蓝的 i 点 */
+  --logo-ink: #12151c;
+  --logo-dot: #2563eb;
   /* 流量图（PR 3：平滑面积图 design/portal-v2-2026-10/chart.js） */
   --chart-area-opacity: .16;
   --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .08);
@@ -89,8 +89,8 @@
   --overlay: rgba(0, 0, 0, .55);
   --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
   --focus-ring: rgba(74, 157, 255, .6);
-  --logo-bg: #2a2c31;
-  --logo-fg: #fff;
+  --logo-ink: #eceef2;
+  --logo-dot: #4a9dff;
   --chart-area-opacity: .16;
   --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
 }
@@ -130,8 +130,8 @@
     --overlay: rgba(0, 0, 0, .55);
     --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
     --focus-ring: rgba(74, 157, 255, .6);
-    --logo-bg: #2a2c31;
-    --logo-fg: #fff;
+    --logo-ink: #eceef2;
+    --logo-dot: #4a9dff;
     --chart-area-opacity: .16;
     --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
   }

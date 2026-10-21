@@ -21,6 +21,10 @@ html { background: var(--boot-bg); }
 html.js #boot { display: flex; }
 #boot.boot-out { opacity: 0; pointer-events: none; }
 
+/* 默认 Logo（akari 字标）在指示器上方 */
+#boot .mark { display: block; height: 28px; width: auto; color: var(--logo-ink); stroke: currentColor; }
+#boot .mark .dot { fill: var(--logo-dot); stroke: none; }
+
 /* 12 根锥形短棒的活动指示器（与 React 门户相同）；序号用 :nth-child（CSP 下不能写 style="--i:n"） */
 #boot .sp { position: relative; width: 30px; height: 30px; }
 #boot .sp i {

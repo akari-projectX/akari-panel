@@ -16,6 +16,7 @@
   `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、字体 `@/assets/fonts/{akari,inter}.css?url`、
   字体许可证（`publicDir` = `../spa/public`）。**不要引用 `@/lib/routes` 或任何引了 React 的模块**（`@/i18n` 的 index、`@/lib/auth` 等）。
   切换 PR 把这些文件 `git mv` 进 `portal/src`。`$lib/` = 本应用自己的代码。
+- 默认 Logo = L3 小写 akari 字标（`src/components/Wordmark.svelte`、`index.html` 启动画面里同形的 SVG，颜色 `--logo-ink` / `--logo-dot`；favicon `src/assets/favicon.svg`、`apple-touch-icon.png`；源文件 `design/portal-v2-2026-10/logo/`）；站长上传了 Logo / favicon 时用站长的。
 - 外壳（`src/components/`、`src/layouts/`）：顶栏导航、邮箱下拉、窄屏全屏菜单都是手写的、完整无障碍（menu button 模式：↑↓ Home End、
   Esc 还焦点、Tab 关闭、点外面关闭；全屏菜单是模态对话框：焦点困在「关闭按钮 + 菜单」、Esc、锁滚动、切页 / 变宽自动收起；
   aria-expanded / aria-controls；减少动效）。不为外壳引入 bits-ui，首屏更小；**PR 2 起对话框、表单用 bits-ui / shadcn-svelte**。
