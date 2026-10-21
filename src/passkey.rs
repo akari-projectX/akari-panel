@@ -41,7 +41,7 @@ use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use fred::prelude::*;
-use rand::RngCore;
+use rand::Rng;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

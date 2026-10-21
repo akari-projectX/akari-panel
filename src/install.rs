@@ -1,7 +1,7 @@
 use std::{fs, net::IpAddr, path::Path};
 
 use anyhow::{Context, Result};
-use rand::RngCore;
+use rand::Rng;
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, DistinguishedName, DnType,
     ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, SerialNumber,

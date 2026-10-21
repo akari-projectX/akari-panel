@@ -42,7 +42,7 @@ use crate::auth::{bad_request, conflict};
 use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};

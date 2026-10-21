@@ -31,7 +31,7 @@ use std::net::IpAddr;
 
 use axum::Json;
 use axum::extract::State;
-use rand::RngCore;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
