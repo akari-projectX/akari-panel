@@ -6,7 +6,7 @@
 //! templates and credential generators produce (`w26_golden_tests`) are
 //! byte-for-byte reproducible.
 
-use rand::RngCore;
+use rand::Rng;
 
 #[cfg(test)]
 thread_local! {

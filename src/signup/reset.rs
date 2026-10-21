@@ -22,7 +22,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};

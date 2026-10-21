@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use rand::Rng;
+use rand::RngExt;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;

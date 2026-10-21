@@ -29,7 +29,7 @@ use std::net::IpAddr;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
-use rand::RngCore;
+use rand::Rng;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sqlx::PgConnection;

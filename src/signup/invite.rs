@@ -28,7 +28,7 @@ use crate::auth::conflict;
 use axum::Json;
 use axum::extract::State;
 use chrono::{DateTime, Utc};
-use rand::Rng;
+use rand::RngExt;
 use serde::Serialize;
 use serde_json::json;
 use sqlx::PgConnection;

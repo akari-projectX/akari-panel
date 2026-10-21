@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use hdrhistogram::Histogram;
-use rand::Rng;
+use rand::RngExt;
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 

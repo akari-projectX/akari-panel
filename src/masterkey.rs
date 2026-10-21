@@ -10,7 +10,7 @@
 //! password and the alert channel secrets; TOTP itself is gone).
 //! `tests::derived_keys_are_unchanged` pins every one of them.
 
-use rand::RngCore;
+use rand::Rng;
 use ring::{aead, hmac};
 use uuid::Uuid;
 
