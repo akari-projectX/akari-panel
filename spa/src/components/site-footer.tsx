@@ -3,6 +3,9 @@ import { useT } from '@/i18n';
 import { useSite } from '@/lib/site';
 import { R } from '@/lib/routes';
 
+// Read once per page load (render must stay pure; oxlint react/purity).
+const YEAR = new Date().getFullYear();
+
 /**
  * 全站唯一的页脚：一行版权 + 一组法务/支持链接。
  * 站长在后台配了条款、隐私的外链就用外链，没配用门户的条款 / 隐私页（内容取自知识库）；后台加的页脚文字和链接接在后面。
@@ -23,7 +26,7 @@ export default function SiteFooter() {
       <div className="page-wrap flex flex-wrap items-center justify-between gap-x-8 gap-y-4 py-7 text-[12.5px] text-muted-foreground">
         {/* 版权署站点名称（后台系统设置）。不显示后端版本号：等于告诉别人后端是什么 */}
         <span className="flex flex-wrap items-center gap-x-2">
-          <span>© {new Date().getFullYear()} {site.title}</span>
+          <span>© {YEAR} {site.title}</span>
           {site.footerText && <span className="whitespace-pre-line">{site.footerText}</span>}
         </span>
 
