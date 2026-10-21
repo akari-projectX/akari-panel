@@ -1,0 +1,56 @@
+# Dependency version updates (rule 2026-10-22: every dependency stays on its
+# latest version). Weekly, grouped: one PR per ecosystem/directory for
+# minor+patch, majors in their own PR so breaking changes are reviewed alone.
+# A 3-day cooldown skips releases younger than that (supply-chain hygiene).
+# Security updates are separate (repo setting) and are not delayed.
+# portal/ (Svelte portal v2) gets its own npm entry once it lands on main.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /admin
+    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "deps(admin)" }
+    groups:
+      admin-minor:
+        update-types: [minor, patch]
+      admin-major:
+        update-types: [major]
+
+  # spa/ is being replaced by portal/; minor/patch only, no majors.
+  - package-ecosystem: npm
+    directory: /spa
+    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 2
+    commit-message: { prefix: "deps(spa)" }
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+    groups:
+      spa-minor:
+        update-types: [minor, patch]
+
+  # Root crate, bench/ and fuzz/ (separate lockfiles) move together.
+  - package-ecosystem: cargo
+    directories: [/, /bench, /fuzz]
+    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "deps(rust)" }
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+      cargo-major:
+        update-types: [major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "ci" }
+    groups:
+      actions:
+        update-types: [minor, patch, major]

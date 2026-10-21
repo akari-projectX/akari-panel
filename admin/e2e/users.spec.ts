@@ -306,7 +306,7 @@ test("USR-20 USR-21 USR-22 USR-23: owner transfer and back, delete with impact, 
   await user(admin3, { role: "admin" });
   const me = await apiJson<{ id: string }>("GET", "/me");
   await openConsole(page, "/users");
-  let u = await openUser(page, admin3);
+  await openUser(page, admin3);
   await more(page, admin3, /转让所有者/);
   await expect(page.getByRole("alertdialog")).toContainText("变为管理员");
   await confirmDialog(page, admin3, "转让所有者");
@@ -325,7 +325,7 @@ test("USR-20 USR-21 USR-22 USR-23: owner transfer and back, delete with impact, 
   const vid = await user(victim);
   await apiJson("POST", `/users/${vid}/balance`, { amount_cents: 1234, reason: "e2e" });
   await openConsole(page, "/users");
-  u = await openUser(page, victim);
+  const u = await openUser(page, victim);
   await expect(u.getByRole("group", { name: "概要" })).toContainText("¥12.34");
   // 账单: orders + the ledger; adjust (the resulting balance is previewed).
   await tab(page, victim, "账单");
