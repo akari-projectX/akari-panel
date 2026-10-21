@@ -19,10 +19,37 @@ use crate::state::AppState;
 #[folder = "spa/dist/app"]
 struct UserAssets;
 
+// Portal v2 (Svelte, portal/dist/app; `make portal`), served instead of the
+// React portal only while `AKARI_PORTAL_V2=1` is set (preview until the
+// cutover PR; portal/CLAUDE.md). Same placeholder rule in build.rs.
+#[derive(RustEmbed)]
+#[folder = "portal/dist/app"]
+struct PortalAssets;
+
+/// The opt-in switch for portal v2 (env, read once at startup).
+pub const PORTAL_V2_ENV: &str = "AKARI_PORTAL_V2";
+
+static PORTAL_V2: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var(PORTAL_V2_ENV).is_ok_and(|v| v.trim() == "1"));
+
+/// Whether this process serves portal v2 instead of the React portal.
+pub fn portal_v2() -> bool {
+    *PORTAL_V2
+}
+
+/// One embedded portal file: portal v2 when `v2`, else the React portal.
+fn file(v2: bool, key: &str) -> Option<rust_embed::EmbeddedFile> {
+    if v2 {
+        PortalAssets::get(key)
+    } else {
+        UserAssets::get(key)
+    }
+}
+
 /// The portal's pages at `/` (D11; `console::app_entry` hands them over).
 /// Client-side routes all land here.
 pub async fn index(state: &AppState) -> Response {
-    let Some(file) = UserAssets::get("index.html") else {
+    let Some(file) = file(portal_v2(), "index.html") else {
         return reject::not_found();
     };
     let html = String::from_utf8_lossy(&file.data).into_owned();
@@ -52,7 +79,7 @@ async fn turnstile_on(state: &AppState) -> bool {
 /// secret prefix.
 pub async fn asset(Path((_, rel)): Path<(String, String)>) -> Response {
     let key = format!("assets/{rel}");
-    match UserAssets::get(&key) {
+    match file(portal_v2(), &key) {
         Some(file) => file_response(
             &key,
             file.data.to_vec(),
@@ -105,6 +132,22 @@ mod tests {
             .get(name)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
+    }
+
+    /// The switch picks the embedded build: portal v2 only when on.
+    #[test]
+    fn switch_picks_the_build() {
+        let react = UserAssets::get("index.html").map(|f| f.data.into_owned());
+        let svelte = PortalAssets::get("index.html").map(|f| f.data.into_owned());
+        assert!(react.is_some() && svelte.is_some());
+        assert_eq!(
+            file(false, "index.html").map(|f| f.data.into_owned()),
+            react
+        );
+        assert_eq!(
+            file(true, "index.html").map(|f| f.data.into_owned()),
+            svelte
+        );
     }
 
     /// The portal is public at `/` and its assets are immutable; it never

@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // sign-in page in admin/dist/login, the console in admin/dist/console).
     for (dir, file) in [
         ("spa/dist/app", "index.html"),
+        ("portal/dist/app", "index.html"),
         ("admin/dist/login", "login.html"),
         ("admin/dist/console", "index.html"),
     ] {
@@ -24,13 +25,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(
                 &index,
                 format!(
-                    "<!doctype html><html><body>akari panel: {} not built yet — run `make spa admin`.</body></html>",
+                    "<!doctype html><html><body>akari panel: {} not built yet — run `make spa portal admin`.</body></html>",
                     dir.display()
                 ),
             )?;
         }
     }
     println!("cargo:rerun-if-changed=spa/dist");
+    println!("cargo:rerun-if-changed=portal/dist");
     println!("cargo:rerun-if-changed=admin/dist");
     emit_git_sha();
     println!("cargo:rerun-if-changed=proto/agent.proto");

@@ -250,6 +250,12 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tracing::warn!("config: {w}");
     }
     metrics::init()?;
+    if akari_panel::spa::portal_v2() {
+        tracing::warn!(
+            "{}=1: serving the portal v2 preview instead of the React portal",
+            akari_panel::spa::PORTAL_V2_ENV
+        );
+    }
     tracing::info!(
         version = metrics::VERSION,
         git_sha = metrics::GIT_SHA,

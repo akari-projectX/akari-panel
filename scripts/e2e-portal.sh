@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Portal end-to-end (W36-b): a real panel serving the embedded portal at `/`
 # with its real CSP, driven by Playwright (spa/e2e/, desktop + phone).
+# Then portal v2 (portal/e2e/): the same panel and data, restarted with
+# AKARI_PORTAL_V2=1 so it serves portal/dist/app instead (skipped when the
+# panel binary was built without portal v2, i.e. `make portal` not run, or
+# with E2E_SKIP_PORTAL_V2=1). Both suites run; the script fails if either did.
 #
 # Isolated from smoke and the dev panel: own database ($E2E_DB, dropped and
 # recreated), own Valkey index ($E2E_VALKEY_DB, flushed), own data dir
@@ -98,14 +102,20 @@ RELAY_PID=$!
 PIDS+=("$RELAY_PID")
 
 PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')
-AKARI_TEST_LIMITS=chain_rpc_loopback=1 "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
-PANEL_PID=$!
-PIDS+=("$PANEL_PID")
-for _ in $(seq 1 120); do
-  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/$PREFIX/healthz")" = "200" ] && break
-  kill -0 $PANEL_PID 2>/dev/null || { echo "FAIL: panel exited"; cat "$DIR/panel.log"; exit 1; }
-  sleep 0.5
-done
+# start_panel [ENV=VALUE…]: the panel in the background (extra environment
+# for this run), then wait for healthz.
+start_panel() {
+  env AKARI_TEST_LIMITS=chain_rpc_loopback=1 "$@" "$PANEL" -c "$DIR/panel.toml" serve >>"$DIR/panel.log" 2>&1 &
+  PANEL_PID=$!
+  PIDS+=("$PANEL_PID")
+  for _ in $(seq 1 120); do
+    [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/$PREFIX/healthz")" = "200" ] && return 0
+    kill -0 "$PANEL_PID" 2>/dev/null || { echo "FAIL: panel exited"; cat "$DIR/panel.log"; exit 1; }
+    sleep 0.5
+  done
+  echo "FAIL: panel not healthy"; exit 1
+}
+start_panel
 
 ADMIN_PW="e2e-admin-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" -c "$DIR/panel.toml" admin add admin@e2e.test >/dev/null
@@ -122,16 +132,39 @@ node spa/e2e/seed.ts >"$E2E_SEED"
 
 echo "e2e: $E2E_ORIGIN/"
 cd spa
-E2E_BASE="$E2E_ORIGIN" npx playwright test "$@"
+react=0
+E2E_BASE="$E2E_ORIGIN" npx playwright test "$@" || react=$?
 
 # Performance report (report only, never fails the run; user ruling
 # 2026-10-07: real metrics instead of a bundle-size gate). Set
 # E2E_PERF_OUT=<dir> to measure cold load / LCP / TTI / route switches on
-# desktop and a throttled mid-range phone (spa/e2e/perf/); the Markdown
-# summary lands in <dir>/summary.md (CI: the e2e job summary).
-if [ -n "${E2E_PERF_OUT:-}" ]; then
+# desktop and a throttled mid-range phone (spa/e2e/perf/), for the React
+# portal and then for portal v2 from the same harness; the Markdown summary
+# lands in <dir>/summary.md (CI: the e2e job summary + artifact portal-perf).
+perf() {
+  [ -n "${E2E_PERF_OUT:-}" ] || return 0
   mkdir -p "$E2E_PERF_OUT"
-  E2E_BASE="$E2E_ORIGIN" npx playwright test --config playwright.perf.config.ts \
-    || echo "::warning::portal performance measurement failed (report only)"
-  node e2e/perf/summary.mjs "$E2E_PERF_OUT" >"$E2E_PERF_OUT/summary.md" || true
+  (cd "$ROOT/spa" && E2E_PERF_LABEL=$1 E2E_BASE="$E2E_ORIGIN" npx playwright test --config playwright.perf.config.ts) \
+    || echo "::warning::$1 portal performance measurement failed (report only)"
+  node "$ROOT/spa/scripts/bundle-report.mjs" "$ROOT/$2/dist/app" --json "$E2E_PERF_OUT/size-$1.json" >/dev/null || true
+}
+ROOT=$(cd .. && pwd)
+perf react spa
+
+# Portal v2: only when the embedded build is the real one (build.rs writes a
+# placeholder index without the boot script when portal/ was not built).
+svelte=0
+if [ "${E2E_SKIP_PORTAL_V2:-0}" != 1 ] && grep -q '/assets/boot-' "$ROOT/portal/dist/app/index.html" 2>/dev/null; then
+  kill "$PANEL_PID" && wait "$PANEL_PID" 2>/dev/null || true
+  start_panel AKARI_PORTAL_V2=1
+  echo "e2e (portal v2): $E2E_ORIGIN/"
+  (cd "$ROOT/portal" && E2E_BASE="$E2E_ORIGIN" npx playwright test) || svelte=$?
+  perf svelte portal
+else
+  echo "e2e: portal v2 not built (make portal) — skipped"
 fi
+
+if [ -n "${E2E_PERF_OUT:-}" ]; then
+  node "$ROOT/spa/e2e/perf/summary.mjs" "$E2E_PERF_OUT" >"$E2E_PERF_OUT/summary.md" || true
+fi
+[ "$react" -eq 0 ] && [ "$svelte" -eq 0 ]

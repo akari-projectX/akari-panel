@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { portalStrings } from '../../portal/scripts/strings.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -37,6 +38,9 @@ for (const file of sources(path.join(root, 'src'))) {
   };
   visit(sf);
 }
+
+/* 门户 v2（portal/src）的界面文字 */
+for (const s of portalStrings()) if (/\P{ASCII}/u.test(s)) strings.push(s);
 
 const extra = path.join(root, 'fonts-src/akari/extra-chars.txt');
 if (fs.existsSync(extra)) strings.push(...fs.readFileSync(extra, 'utf8').split('\n').filter((l) => !l.startsWith('#')));

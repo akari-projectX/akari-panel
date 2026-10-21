@@ -2,7 +2,7 @@
 """Third-party licences of the panel binary (`make third-party`, release.yml).
 
 The `akari` binary statically links Rust crates and embeds the built
-frontends (spa/dist, the portal, and admin/dist, the admin app: the npm
+frontends (spa/dist, the portal; portal/dist, portal v2; and admin/dist, the admin app: the npm
 packages bundled into them). This writes one text file:
 a table of every such component with its declared licence, then the
 licence/notice files those packages ship, verbatim (identical texts once).
@@ -72,7 +72,7 @@ def cargo_components():
 
 def npm_components():
     out, seen = [], set()
-    for app in ("spa", "admin"):
+    for app in ("spa", "portal", "admin"):
         out += npm_app(app, seen)
     return out
 

@@ -11,12 +11,13 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
 | `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、易支付通知与网关应答（C1）、USDT 链上收款的 RPC 应答（C2 `chain_rpc`）、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏、W15 邮箱地址/注册与重置请求体/邮件模板转义；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（每目标 20s：main、发版前、改了 fuzz 编译范围或带 `full-ci` 的 PR；夜间 5min） | `docs/FUZZING.md` |
 | `spa/` | 用户门户（W36-b：Akari-theme 并入，React 19 + Vite 8 + Tailwind 4 + shadcn/Radix，产物 `spa/dist/app`；Playwright e2e `spa/e2e/`） | `spa/CLAUDE.md` |
+| `portal/` | 门户 v2（Svelte 5 + Vite + Tailwind 4，产物 `portal/dist/app`；也编进面板，**只有 `AKARI_PORTAL_V2=1` 才代替 `spa/` 下发**，直到切换 PR；与 `spa/src` 共用与框架无关的模块；颜色只在 `src/styles/tokens.css`；Playwright `portal/e2e/`） | `portal/CLAUDE.md` |
 | `admin/` | W33-b 新管理后台（独立 Vite + React + TS + Tailwind 应用：登录页包 `dist/login` + 控制台包 `dist/console`，中英双语，Playwright e2e 桌面 + 手机）；功能清单 `admin/INVENTORY.md` | `admin/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行；v0.4 基线 `1000_baseline.sql`） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto`；W26 协议能力清单 `protocols.toml`（同样同步给 agent） | `proto/CLAUDE.md` |
-| `build.rs` | protox 编译 proto；缺前端产物时写占位 `spa/dist/app/index.html`、`admin/dist/login/login.html`、`admin/dist/console/index.html` | — |
+| `build.rs` | protox 编译 proto；缺前端产物时写占位 `spa/dist/app/index.html`、`portal/dist/app/index.html`、`admin/dist/login/login.html`、`admin/dist/console/index.html` | — |
 | `smoke.sh` | 跨仓端到端验收（需 `../akari-agent`） | — |
-| `Dockerfile` | 多阶段：spa → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
+| `Dockerfile` | 多阶段：spa、portal（门户 v2）、admin → musl 静态二进制 → distroless nonroot 镜像（target `artifact`/`prebuilt`/`runtime`） | — |
 | `deploy/` | systemd 单元、生产 compose、Caddy/nginx、Prometheus 告警、Grafana 面板 | `docs/DEPLOY.md` |
 | `README.md` / `docs/REFERENCE.md` | `README.md` = 项目介绍（对比传统面板、部署 / 升级 / 迁移 / 卸载、目录树与功能映射、路线）；`docs/REFERENCE.md` = 原 README（逐功能行为说明、API 表、设计笔记） | — |
 | `docs/PAYMENTS.md` | 支付宝当面付、易支付（C1）与 USDT 链上收款（C2）：配置、签名规则、唯一金额与监听、沙箱、通知 URL、对账、实测记录 | — |
@@ -29,11 +30,12 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 ```bash
 make dev-up        # docker compose: PG 5432 / Valkey 6379（仅 127.0.0.1）
 make spa           # npm ci + 门户构建（tsc + vite build + check-dist/check-bundles）→ spa/dist/app
+make portal        # 门户 v2：npm ci + vite build（check-dist/check-bundles）→ portal/dist/app（`AKARI_PORTAL_V2=1` 时下发）
 make admin         # 新后台：npm ci + 检查 + 两次 vite build（登录页、控制台）→ admin/dist
 make panel         # cargo build --release（嵌入当前 spa/dist）
-make check         # shellcheck + cargo fmt --check + clippy -D warnings + spa `npm run check` + admin `npm run check`
+make check         # shellcheck + cargo fmt --check + clippy -D warnings + spa `npm run check` + portal `npm run check` + admin `npm run check`
 make shellcheck    # 所有 shell 脚本（smoke.sh 只到 warning 级；CI job shellcheck）
-make e2e           # Playwright（桌面 + 手机）对真实面板 + 真实 CSP：先门户（scripts/e2e-portal.sh，TLS 前端，通行密钥），再后台（scripts/e2e.sh）；各自独立库/端口 8090，依次跑
+make e2e           # Playwright（桌面 + 手机）对真实面板 + 真实 CSP：先门户（scripts/e2e-portal.sh，TLS 前端，通行密钥；React 门户之后以 `AKARI_PORTAL_V2=1` 重启同一面板跑 portal/e2e，两边性能同一套测法），再后台（scripts/e2e.sh）；各自独立库/端口 8090，依次跑
 make bench-up      # 基准专用栈（bench/compose.yml：PG 5433 / Valkey 6380）
 make bench-seed    # 200 节点 / 5 万用户 / 每节点 1 万（约 60s，独立库 akari_bench）
 make bench         # criterion（快照构建、订阅渲染、flush 5 万行）；其余工具见 docs/PERF.md
@@ -52,8 +54,8 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + SPA 打
 
 ## CI 分级（W37）
 
-- **每个 PR 都跑（快速）**：`rust (fmt, clippy, test)`（含真库测试）、`spa`、`cargo-deny`、`release keys`、`shellcheck`。
-- **按改动范围**：`changes` job 跑 `scripts/ci-changes.sh`（PR 合并提交 `HEAD^1..HEAD` 的文件列表 → 分组），重型 job 用 job 级 `if:` 决定真跑或跳过（跳过 = 成功，必需检查不会卡在 waiting；`changes` 失败时一律真跑）。分组：`rust`（coverage ≥90% 门、bench tooling）、`smoke`（src/migrations/proto/Cargo/smoke.sh/Makefile/compose/deploy/systemd、节点测试镜像 `scripts/install-test{,-alpine}/`）、`e2e`（spa/、admin/、`src/spa.rs`、`src/console.rs`、`src/web.rs`、门户调用的用户 API 与迁移、e2e.sh、e2e-portal.sh）、`installer`（install.sh、installer-test、deploy/、backup/restore、Dockerfile）、`docker`（Dockerfile、Cargo.lock/toml、spa 锁文件、toolchain、监控配置）、`fuzz`（fuzz.yml）。改 `.github/` 或该脚本 = 全部分组。新增重型 job 或新目录时同步更新脚本里的映射。
+- **每个 PR 都跑（快速）**：`rust (fmt, clippy, test)`（含真库测试）、`spa`、`portal`（门户 v2，非必需检查）、`cargo-deny`、`release keys`、`shellcheck`。
+- **按改动范围**：`changes` job 跑 `scripts/ci-changes.sh`（PR 合并提交 `HEAD^1..HEAD` 的文件列表 → 分组），重型 job 用 job 级 `if:` 决定真跑或跳过（跳过 = 成功，必需检查不会卡在 waiting；`changes` 失败时一律真跑）。分组：`rust`（coverage ≥90% 门、bench tooling）、`smoke`（src/migrations/proto/Cargo/smoke.sh/Makefile/compose/deploy/systemd、节点测试镜像 `scripts/install-test{,-alpine}/`）、`e2e`（spa/、portal/、admin/、`src/spa.rs`、`src/console.rs`、`src/web.rs`、门户调用的用户 API 与迁移、e2e.sh、e2e-portal.sh）、`installer`（install.sh、installer-test、deploy/、backup/restore、Dockerfile）、`docker`（Dockerfile、Cargo.lock/toml、spa/portal 锁文件、toolchain、监控配置）、`fuzz`（fuzz.yml）。改 `.github/` 或该脚本 = 全部分组。新增重型 job 或新目录时同步更新脚本里的映射。
 - **全套**：push 到 main、每晚、`workflow_dispatch`、发版前（release.yml 调用）、以及带 **`full-ci` 标签**的 PR（涉及资金、认证、协议、并发的 PR 必须加）。
 - **构建只做一次**：`build (static binary + images)` job 用 Dockerfile 以 `CARGO_PROFILE=ci`（`Cargo.toml` `[profile.ci]`：继承 release、不开 LTO、16 个 codegen unit；只给 CI 用，release.yml 发布的仍是 `release` 配置）构建静态二进制、`runtime` 镜像与 `prebuilt` 镜像，以工件交给 `docker build (no push)`（载入镜像做属性检查 + 监控配置）与 installer 各 job。Dockerfile 构建期给 musl 版 rustc 预载 mimalloc（musl 分配器让编译慢数倍；不影响产物，release 产物已验证逐字节相同）。依赖由 Dockerfile 的 cargo-chef `deps` 阶段编译，经 BuildKit `type=gha` 层缓存复用（只由 main 上与 build 并行的 `image cache (main)` job 写入，只含依赖层，从不导出 crate 自己的 target/）；原生 cargo job 用 Swatinem/rust-cache（`save-if` 仅 main）。PR 只读两种缓存。
 - worker 本地只跑快速检查（`make check`、`cargo test`）；smoke/e2e/installer 只在 Actions 上跑。
@@ -67,7 +69,7 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + SPA 打
 ## 硬性不变量
 
 - **前门（v0.4 D4/D11，`access.rs` + `web.rs::front`）**：门户在主域名 `/`（页面白名单 `access::PORTAL_PAGES` + `/api`、`/auth`、`/brand`、`/assets`、`/healthz`）；后台与全部 API 在**后台前缀**下（全站唯一的秘密前缀，存 `access_settings`（迁移 1014），首次启动从 `data/state.json` 导入（`access::ensure`），所有者轮换即时生效、旧前缀立即失效，可选 CIDR 白名单（白名单外 = 规范拒绝））；订阅 `/{sub_path}/{token}`（站点级随机路径，首次启动生成，可改，旧路径立即失效）与其旁边的公开托管规则集 `/{sub_path}/rules/{id}.json`（路由 PR 2，见下「订阅」）；安装链接 `/install/…`、支付通知 `/pay/…`（独立公开路径，**后台前缀下不提供**这三类，`access::PUBLIC_ONLY`）。`front` 把外部路径改写为内部 `/_/…`（`access::INNER`）并打 `access::Via` 标签，内部路由仍是 `/{prefix}/…` 形式（`prefix_gate` 只放行带标签的 `/_/…`）。门户上：管理员登录 = 错误密码的回答（`Entry::refuses`），管理员会话 = 规范拒绝（`auth::portal`，`ApiError::rejected`）；门户代码与响应永不包含后台前缀，也不从门户跳转到后台。
-- **门户页面与 CSP（W36-b）**：门户的每个客户端路由（`access::PORTAL_PAGES`，与 `spa/src/lib/routes.ts` 由 `access::tests::routes_match_the_portal` 保持一致）都返回 index；全站 CSP `web::CSP`（`default-src 'self'; style-src 'self' 'unsafe-inline'`），唯一例外是站长为任一表单开了 Turnstile 时，**只有门户页面**（`spa::index`，每请求读 `auth_settings`）与登录方式开了 Turnstile 时的后台登录页（`console::app_entry`）换成 `web::CSP_TURNSTILE`（另加 `script-src`/`frame-src https://challenges.cloudflare.com`），API、资源与控制台从不放行外部来源。`/me` 与 `/auth/options` 带站点时区 `timezone`；用户订单视图 `MyOrderView` 带 `action` 与退款去向（`refund_route` original/balance/manual、两部分金额、`refund_pending`、`refund_effect`）。
+- **门户页面与 CSP（W36-b）**：门户的每个客户端路由（`access::PORTAL_PAGES`，与 `spa/src/lib/routes.ts`、门户 v2 的 `portal/src/lib/routes.ts` 由 `access::tests::routes_match_the_portal` 保持一致）都返回 index；全站 CSP `web::CSP`（`default-src 'self'; style-src 'self' 'unsafe-inline'`），唯一例外是站长为任一表单开了 Turnstile 时，**只有门户页面**（`spa::index`，每请求读 `auth_settings`）与登录方式开了 Turnstile 时的后台登录页（`console::app_entry`）换成 `web::CSP_TURNSTILE`（另加 `script-src`/`frame-src https://challenges.cloudflare.com`），API、资源与控制台从不放行外部来源。`/me` 与 `/auth/options` 带站点时区 `timezone`；用户订单视图 `MyOrderView` 带 `action` 与退款去向（`refund_route` original/balance/manual、两部分金额、`refund_pending`、`refund_effect`）。
 - **拒绝同构**：任何"拒绝"（未知路径、错前缀、裸前缀、白名单外、未匹配路由、错误方法、坏 token、缺资源）都必须返回 `reject::not_found()`：404、空 body、不带安全头，除 `Date` 外字节同构（smoke 断言）；订阅失败绝不带 quota 头。没有伪装站。
 - **前后台拆分（R23 / W33-b）**：用户门户在 `/`（D11，`spa/dist/app`，`spa.rs`）；后台是独立应用 `admin/`（`console.rs`，两个 rust-embed）：**登录页** `/{prefix}/app`（`admin/dist/login`，公开但只在后台前缀下；邮箱+密码、通行密钥、登录方式策略、Turnstile/蜜罐；非管理员账户登录后立即登出并提示；Turnstile 开启时该页 CSP 放行 challenges.cloudflare.com）与**控制台** `/{prefix}/admin`（`admin/dist/console`）。两个包与门户互不共享代码/路由/产物（`admin/scripts/check-bundles.mjs` 双向标记 grep：控制台标记不得出现在登录页包与门户包，门户标记不得出现在后台包；smoke 对实际下发的文件再跑一次）；**控制台 index 与资源只对管理员会话下发**（`AuthUser` role=admin；index 与无内容哈希的文件 `private, no-store`；带内容哈希的 `assets/<名>-<8 位哈希>.<扩展名>`（`console::hashed`）为 `private, max-age=31536000, immutable`——主管 2026-10-12 决定（T1）：JS 不含秘密也不含前缀，缓存只在管理员自己的浏览器，吊销的会话拿缓存的代码也调不动 API；每次请求仍过会话闸门；ETag 按编码各自计算，`Vary: Accept-Encoding`；拒绝响应永不带缓存头（`console::tests` + smoke）），无 cookie/用户会话/伪造或吊销会话/DB 错误一律 `reject::not_found()`（字节同构，`console::tests` + smoke + e2e 断言）。主域名已配置（R22 Host 闸门开启）时，控制台与登录页只在主域名与 IP 字面量上下发（R23-3，`web::front` 的 Host 角色，`console::tests`）。门户资源 `/{prefix}/assets/*`、登录页资源 `/{prefix}/app/assets/*` immutable，控制台资源只在 `/{prefix}/admin/assets/*`。后台两包的 JS/CSS 构建时另写 `.br`/`.gz` 预压缩副本（`admin/scripts/precompress.mjs`），`console::encoded` 按 `Accept-Encoding` 下发（`Content-Encoding` + `Vary`），副本本身不能按名字取。CSP 一律 `'self'`（无内联脚本）。
 - **PostgreSQL ≥ 18**：计费依赖 `RETURNING old/new`；`db::migrate` 启动时校验版本。

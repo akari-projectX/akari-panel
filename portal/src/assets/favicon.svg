@@ -1,0 +1,7 @@
+<!-- Akari 灯塔图标：金底 + 夜色透镜（规范 03 首选版）。方块不切圆角，交给系统去切。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <rect width="100" height="100" fill="#D8A43C"/>
+  <path d="M50 2A48 48 0 1 0 50 98A48 48 0 1 0 50 2Z M2 42H98V58H2Z"
+        fill="#12100C" fill-rule="evenodd"
+        transform="translate(18.2,18.2) scale(0.636)"/>
+</svg>
