@@ -93,13 +93,10 @@
   /* ========== 顶栏 ========== */
   .top { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line); }
   .top .wrap { display: flex; align-items: center; height: 60px; }
-  .logo {
-    display: inline-flex; align-items: center; height: 30px; padding: 0 9px 0 12px; flex: none;
-    background: var(--logo-bg); color: var(--logo-fg); border-radius: 2px;
-    font-weight: 500; letter-spacing: .28em; font-size: 15px; text-transform: uppercase;
-  }
-  .logo-img { display: inline-flex; align-items: center; height: 30px; flex: none; }
-  .logo-img img { display: block; max-height: 30px; max-width: 160px; }
+  .logo { display: inline-flex; align-items: center; height: 30px; flex: none; color: var(--logo-ink); }
+  .logo img { display: block; max-height: 30px; max-width: 160px; }
+  .wordmark { display: block; height: 24px; width: auto; stroke: currentColor; }
+  .wordmark-dot { fill: var(--logo-dot); stroke: none; }
   .nav { display: flex; align-self: stretch; gap: 28px; margin-left: 56px; }
   .nav a { position: relative; display: flex; align-items: center; color: var(--muted); font-size: 14px; white-space: nowrap; transition: color var(--dur-hover) var(--ease-out); }
   .nav a:hover { color: var(--fg); }
