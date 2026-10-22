@@ -70,7 +70,6 @@ async function stubNotices(page: Page) {
   }));
 }
 
-test.describe.configure({ mode: 'serial' });
 
 test('#60 plan, days left, traffic left, lines, balance, subscription, announcements; nothing waits on a spinner', async ({ page }) => {
   await signIn(page, 'user@e2e.test');

@@ -135,10 +135,10 @@
   {#if active !== null && days[active]}
     {@const d = days[active]}
     <div class="ttip" role="status" data-edge={tipEdge || undefined} style:left="{X(active)}px" style:top="{Math.max(0, Y(totals[active]) - 16)}px">
-      <div class="h"><b>{dayName(active)} {d.date}</b><span>{formatBytes(totals[active])}</span></div>
-      <div><i class="k-down"></i>{t('下行')}<span>{formatBytes(d.downBytes)}</span></div>
-      <div><i class="k-up"></i>{t('上行')}<span>{formatBytes(d.upBytes)}</span></div>
-      <div class="billed">{t('计费')}<span>{formatBytes(d.billedBytes)}</span></div>
+      <div class="h"><b>{dayName(active)} {d.date}</b><span class="val">{formatBytes(totals[active])}</span></div>
+      <div><i class="k-down"></i><span>{t('下行')}</span><span class="val">{formatBytes(d.downBytes)}</span></div>
+      <div><i class="k-up"></i><span>{t('上行')}</span><span class="val">{formatBytes(d.upBytes)}</span></div>
+      <div class="billed"><span>{t('计费')}</span><span class="val">{formatBytes(d.billedBytes)}</span></div>
     </div>
   {/if}
 </div>
@@ -167,7 +167,7 @@
   .ttip[data-edge='end'] { transform: translate(calc(-100% + 12px), -100%); }
   .ttip[data-edge='start'] { transform: translate(-12px, -100%); }
   .ttip div { display: flex; align-items: center; gap: 6px; }
-  .ttip span { margin-left: auto; padding-left: 16px; }
+  .ttip .val { margin-left: auto; padding-left: 16px; }
   .ttip .h { gap: 12px; margin-bottom: 2px; }
   .ttip b { font-weight: 600; }
   .ttip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
