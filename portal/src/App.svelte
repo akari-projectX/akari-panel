@@ -9,6 +9,7 @@
   import { boot, startBoot } from '$lib/boot.svelte';
   import { t } from '$lib/i18n.svelte';
   import { REDIRECTS, match } from '$lib/pages';
+  import { prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
   import { loc, navigate } from '$lib/router.svelte';
   import { allowed, R, safeRedirect } from '$lib/routes';
 
@@ -61,6 +62,15 @@
   const who = $derived(auth.me && !auth.me.email_pending ? `${auth.me.id}:${scope()}` : '');
   $effect(() => {
     if (boot.out && who) loadAttention(scope());
+  });
+
+  /* 切页预取（lib/prefetch）：启动画面收起后趁空闲把其余页面的分包与首屏数据取好；换了账户（范围）重新来 */
+  $effect(() => {
+    if (!boot.out || auth.booting) return;
+    const s = scope();
+    /* 用户中心：启动画面收起时首屏已经画全，最多等 500ms 空闲就开始（切页常在进门后一两秒内） */
+    if (who && s) return whenIdle(() => prefetchDash(s), 500);
+    if (!auth.me) return whenIdle(prefetchSite);
   });
 
   const dash = $derived(found ? found.page.layout === 'dash' : !!auth.me);

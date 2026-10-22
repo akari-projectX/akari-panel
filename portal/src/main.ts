@@ -10,6 +10,7 @@ import { loadFonts } from '$lib/fonts';
 import { startInputModality } from '$lib/input-modality';
 import { startI18n } from '$lib/i18n.svelte';
 import { watchPreloadErrors } from '$lib/lazy';
+import { startIntentPrefetch } from '$lib/prefetch';
 import { startRouter } from '$lib/router.svelte';
 import { startTheme } from '$lib/theme.svelte';
 
@@ -18,6 +19,7 @@ startInputModality();
 startI18n();
 startRouter();
 watchPreloadErrors();
+startIntentPrefetch();
 startAuth();
 loadFonts();
 
