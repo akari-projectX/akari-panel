@@ -230,7 +230,8 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await page.evaluate(() => sessionStorage.clear());
   await signIn(page, 'banned@e2e.test');
   await page.goto('/');
-  await ready(page, '仪表盘');
+  /* 封禁账户的仪表盘就是封禁说明（dashboard.spec.ts 详测） */
+  await ready(page, '账户已被封禁');
   expect(await navNames(page, isDesktop)).toEqual(['仪表盘', '工单']);
   await page.goto('/shop');
   await expect(page).toHaveURL(/\/$/);

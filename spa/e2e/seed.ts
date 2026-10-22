@@ -109,6 +109,9 @@ for (const p of PROJECTS) {
   /* 门户 v2 的用例（portal/e2e，在这个套件之后跑、同一份数据）：会改密码 / 改成只用通行密钥的账户各用一个新的 */
   await user(`v2-passkey-${p}@e2e.test`, false);
   await user(`v2-reset-${p}@e2e.test`, false);
+  /* 仪表盘（PR 3）：重置订阅链接、验证邮箱 */
+  await user(`v2-sub-${p}@e2e.test`);
+  await user(`v2-verify-${p}@e2e.test`);
 }
 const expired = await user('expired@e2e.test');
 const quota = await user('quota@e2e.test');

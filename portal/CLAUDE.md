@@ -13,7 +13,7 @@
 - **路由表 `src/lib/routes.ts`** 与 `spa/src/lib/routes.ts` 地址相同；面板测试 `access::tests::routes_match_the_portal` 两个文件都读
   （`export const R = {` 到 `} as const;` 之间的单引号路径），加路由要和 `access::PORTAL_PAGES` 一起改。
 - **与 React 门户共用、与框架无关的模块经别名 `@/` 直接引用 `../spa/src`**（同一份源码，不手抄）：`@/api`（整个接口层）、
-  `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、字体 `@/assets/fonts/{akari,inter}.css?url`、
+  `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、`@/lib/traffic`、`@/lib/node`、`@/lib/sub-links`、`@/lib/content-text`、`@/lib/doc-categories`、`@/data/platforms`、字体 `@/assets/fonts/{akari,inter}.css?url`、
   字体许可证（`publicDir` = `../spa/public`）。**不要引用 `@/lib/routes` 或任何引了 React 的模块**（`@/i18n` 的 index、`@/lib/auth` 等）。
   切换 PR 把这些文件 `git mv` 进 `portal/src`。`$lib/` = 本应用自己的代码。
 - 默认 Logo = L3 小写 akari 字标（`src/components/Wordmark.svelte`、`index.html` 启动画面里同形的 SVG，颜色 `--logo-ink` / `--logo-dot`；favicon `src/assets/favicon.svg`、`apple-touch-icon.png`；源文件 `design/portal-v2-2026-10/logo/`）；站长上传了 Logo / favicon 时用站长的。
@@ -31,6 +31,15 @@
   `components/Turnstile.svelte`、`GuardFields.svelte`、`lib/errors.ts`（面板错误码 → 一句话，同 React 的 `errorText`）、`lib/site.ts`（`/auth/options` 的开关）。
   站点配置在 `lib/auth.svelte.ts`：`site.options`（只有表单令牌以外变了才替换）、`site.turnstileAllowed`（第一次取到时定下）、`refreshOptions()`；
   `signIn(result)`（登录答复之后取账户，记下 `passkey_prompt`）。用通行密钥注册的账户（`me.email_pending`）在 DashLayout 里只有不可关闭的「绑定邮箱」。
+- **页面取数** `lib/resource.svelte.ts`：`resource(() => ({ key, fetch, enabled }))`（= React 的 `useApi` 带缓存用法：先读 sessionStorage 缓存、后台刷新、
+  没缓存时 soft 拖住启动画面、键变了读新键的缓存）与 `autoReload`（线路每 30 秒，后台标签页不取）。只能在组件初始化时调用。
+  区块占位用 `components/Loading.svelte`（`aria-busy`，测速脚本等它消失），空状态 `Empty.svelte`（文字由调用处 `t()`）。
+- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、最新未读公告横幅、`Notices` 提醒细行、
+  四个关键数字、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
+  图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
+  下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
+  小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
+  线路状态、空状态）在 `src/styles/content.css`（main.ts 在 app.css 之后引入）。e2e `e2e/dashboard.spec.ts`。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
 - 面板下发的 HTML（条款、之后的公告 / 文章）只经 `components/RichHtml.svelte` 的 `{@html}`（全站唯一一处，约定同 React 的 server-html）。
 - 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。

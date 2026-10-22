@@ -17,13 +17,13 @@ export type Page = { path: string; title: string; layout: Layout; load: () => Pr
 
 const placeholder = () => import('../pages/Placeholder.svelte');
 
-const dash = (path: string, title: string): Page => ({ path, title, layout: 'dash', load: placeholder });
+const dash = (path: string, title: string, load: Page['load'] = placeholder): Page => ({ path, title, layout: 'dash', load });
 const guest = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'guest', load });
 const pub = (path: string, title: string, load: Page['load'], wide = false): Page => ({ path, title, layout: 'public', load, wide });
 const legal = () => import('../pages/Legal.svelte');
 
 export const PAGES: Page[] = [
-  dash(R.dashboard, '仪表盘'),
+  dash(R.dashboard, '仪表盘', () => import('../pages/Dashboard.svelte')),
   dash(R.shop, '商店'),
   dash(R.nodes, '线路'),
   dash(R.traffic, '用量'),

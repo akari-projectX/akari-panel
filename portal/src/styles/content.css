@@ -1,0 +1,119 @@
+/*
+ * 用户中心页面的内容样式（样稿 design/portal-v2-2026-10/styles.css）：区块头、两栏、行式列表、提醒行、横幅、
+ * 公告标签、线路状态、空状态。仪表盘先用，之后的线路、公告、商店页共用。颜色只引用 tokens.css 的 var(--…)。
+ * main.ts 在 app.css 之后引入；层名与 Tailwind 的 components 层相同（工具类仍然优先）。
+ */
+@layer components {
+  /* ── 区块头：标题 + 一行真实信息，右侧一个文字链接 ── */
+  .sh { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+  .sh h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--fg); }
+  .sh p { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .sh .link { flex: none; }
+  .link.quiet-link { color: var(--muted); }
+  .link.quiet-link:hover { color: var(--fg); }
+  .link.warn-link { color: var(--warn); }
+  button.link { border: 0; background: none; padding: 0; font: inherit; font-size: 13px; cursor: pointer; }
+
+  /* ── 两栏（7 : 5），窄屏一栏 ── */
+  .cols { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 0 64px; }
+  .cols > .sec { min-width: 0; }
+
+  /* ── 行式列表 ── */
+  .list { border-top: 1px solid var(--line); }
+  .li {
+    display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; padding: 13px 0;
+    border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left;
+  }
+  button.li { cursor: pointer; border-radius: 0; }
+  button.li:hover .t > span:last-of-type { color: var(--brand); }
+  .li .main { flex: 1; min-width: 0; }
+  .li .t { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--fg); font-weight: 500; }
+  .li .t > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .li .t > .read { font-weight: 400; }
+  .li .s { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .li .r { flex: none; color: var(--faint); font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .li.dim .t { color: var(--muted); }
+  .unread-dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
+  .pin { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--muted); font-size: 12px; font-weight: 400; }
+
+  /* ── 公告标签（实底，design/announcement-tags-2026-10） ── */
+  .tg {
+    --c: var(--t-slate); display: inline-flex; align-items: center; flex: none; white-space: nowrap;
+    font-size: 12px; line-height: 20px; font-weight: 500; padding: 0 7px; border-radius: 5px; color: var(--on-solid); background: var(--c);
+  }
+  .c-red { --c: var(--t-red); } .c-orange { --c: var(--t-orange); } .c-amber { --c: var(--t-amber); } .c-green { --c: var(--t-green); }
+  .c-teal { --c: var(--t-teal); } .c-cyan { --c: var(--t-cyan); } .c-blue { --c: var(--t-blue); } .c-indigo { --c: var(--t-indigo); }
+  .c-violet { --c: var(--t-violet); } .c-pink { --c: var(--t-pink); } .c-slate { --c: var(--t-slate); }
+
+  /* ── 线路：地区码（等宽灰字）、状态（色点 + 文字）、倍率（纯文字右对齐）、线路标签（细描边） ── */
+  .rc { width: 28px; flex: none; font: 600 12px/1 var(--font-mono); color: var(--muted); letter-spacing: .04em; }
+  .st { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .st::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+  .st.ok::before { background: var(--ok); }
+  .st.warn { color: var(--warn); }
+  .st.warn::before { background: var(--warn); }
+  .st.off::before { background: var(--danger); }
+  .load-low { color: var(--ok); } .load-medium { color: var(--warn); } .load-high { color: var(--danger); }
+  .mult { flex: none; width: 44px; text-align: right; font-size: 13px; color: var(--body); font-variant-numeric: tabular-nums; }
+  .mult.lo { color: var(--ok); }
+  .mult.hi { color: var(--warn); }
+  .ntag {
+    display: inline-flex; align-items: center; height: 18px; padding: 0 6px; flex: none; border: 1px solid var(--line2); border-radius: 5px;
+    font-size: 11px; font-weight: 500; color: var(--muted); white-space: nowrap;
+  }
+
+  /* ── 页面提醒：插在关键数字上方的细行（不是彩色卡片），图标单色，警告类琥珀 ── */
+  .notes { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: -8px 0 32px; }
+  .note { display: flex; align-items: center; gap: 12px; padding: 12px 0; font-size: 13.5px; color: var(--body); }
+  .note + .note { border-top: 1px solid var(--line); }
+  .note > svg { flex: none; color: var(--muted); }
+  .note.warn > svg { color: var(--warn); }
+  .note b { color: var(--fg); font-weight: 600; }
+  .note .tx { flex: 1; min-width: 0; }
+  .note .tx span { color: var(--muted); }
+  .note .gap { display: inline-block; width: 1em; }
+  .note .acts { display: flex; flex: none; align-items: center; gap: 4px; }
+  .btn.ghost { border-color: transparent; background: none; color: var(--muted); }
+  .btn.ghost:hover { color: var(--fg); background: var(--hover); border-color: transparent; }
+
+  /* ── 最新公告横幅：左边 3px 标签色 ── */
+  .banner {
+    --c: var(--brand); position: relative; display: flex; align-items: center; gap: 16px; margin-bottom: 32px; padding: 14px 16px 14px 20px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+  }
+  .banner::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--c); }
+  .banner .tx { flex: 1; min-width: 0; }
+  .banner .tt { display: flex; align-items: center; gap: 10px; color: var(--fg); font-weight: 600; }
+  .banner .tt span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .banner .sm { color: var(--muted); font-size: 13px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .banner .iconbtn { color: var(--faint); }
+
+  /* ── 空状态：一句标题 + 一句说明 + 可选按钮，不画插图 ── */
+  .empty { padding: 20px 0 8px; }
+  .empty b { display: block; color: var(--fg); font-weight: 500; }
+  .empty p { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .empty .btn { margin-top: 14px; }
+
+  /* ── 翻页（上一页 / 下一页 + 页码说明） ── */
+  .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; font-size: 12.5px; color: var(--faint); }
+  .pager div { display: flex; gap: 4px; }
+}
+
+@media (max-width: 960px) {
+  .cols { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .sec { padding: 28px 0; }
+  .sh { align-items: flex-start; }
+  .banner { align-items: flex-start; margin-bottom: 24px; padding: 12px 12px 12px 16px; }
+  .banner .tt { flex-wrap: wrap; row-gap: 4px; }
+  .banner .tt span, .banner .sm { white-space: normal; }
+  .banner .go { display: none; }
+  .note { align-items: flex-start; flex-wrap: wrap; }
+  .note > svg { margin-top: 3px; }
+  .note .tx { flex-basis: calc(100% - 28px); }
+  .note .tx b { display: block; }
+  .note .gap { display: none; }
+  .note .acts { margin-left: 28px; }
+  .d-only { display: none; }
+}
