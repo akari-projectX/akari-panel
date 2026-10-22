@@ -477,7 +477,7 @@ test('registration with a passkey: no address or password, then an email must be
     await page.getByRole('button', { name: '用通行密钥注册' }).click();
     const bind = page.getByRole('dialog', { name: '绑定邮箱' });
     await expect(bind).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('账号已创建')).toBeVisible();
+    await expect(page.getByText('账号已创建', { exact: true })).toBeVisible();
     /* 不可关闭：没有关闭按钮，Esc 不起作用 */
     await expect(bind.getByRole('button', { name: '关闭' })).toHaveCount(0);
     await page.keyboard.press('Escape');
