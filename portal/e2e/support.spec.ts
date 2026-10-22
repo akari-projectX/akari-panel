@@ -112,7 +112,7 @@ test('#58 announcements: unread first, the panel\'s HTML, read state kept by the
   });
   await signIn(page, 'user@e2e.test');
   await open(page, '/announcements', '公告与动态');
-  await expect(page.getByText('条未读').first()).toBeVisible();
+  await expect(page.locator('main').getByText('条未读').first()).toBeVisible();
   /* 置顶的在前（种子数据的维护通知）；最新的一条是头条 */
   await expect(page.getByText('置顶').first()).toBeVisible();
   await shot(page, info, 'announcements-light');
