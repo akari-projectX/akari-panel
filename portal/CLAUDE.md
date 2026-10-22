@@ -58,6 +58,16 @@
   复制 `lib/copy.svelte.ts`（`Copied`）。content.css 新增共用的关键数字 `.kpis`、范围切换 `.rng`、页内分页 `.ptabs`、表格 `.tbl`、
   小数字 `.mini`、占比细条 `.share`、`.copy-row` / `.mono`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
   seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
+- **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
+  当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
+  窄屏 `<details>`，`RichHtml headings` 给 h3 / h4 补锚点）、同类文档、上一篇 / 下一篇、复制订阅链接）；`pages/Announcements.svelte`（头条 + 按月细线时间轴，
+  打开 = 面板记已读并更新导航未读数；标签只在接口给了 `tags` 时画，`lib/announcement.ts` 的 `tagsOf`）；`pages/Tickets.svelte` → `components/tickets/`
+  （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
+  `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
+  `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。
+  设置行样式 `.set-row` 在 `styles/content.css`。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。
+  e2e `e2e/support.spec.ts`（React support #57–#59、polish #57）、`e2e/account.spec.ts`（React account 的设置场景）、`auth.spec.ts` #3–#5 接着测设置页的通行密钥管理；
+  账户 `v2-account-`、`v2-settings-`、`v2-legacy-`、`v2-delete-<视口>`（seed）。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
 - 面板下发的 HTML（条款、之后的公告 / 文章）只经 `components/RichHtml.svelte` 的 `{@html}`（全站唯一一处，约定同 React 的 server-html）。
 - 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。

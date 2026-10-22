@@ -13,8 +13,10 @@
    * 选项：label（已翻译）、selected（打勾）、onselect。
    */
 
-  let { label, items, class: cls = '', children }: {
+  let { label, items, class: cls = '', align = 'start', children }: {
     label: string;
+    /** end = 菜单右边与按钮对齐（按钮在行尾时，不伸出屏幕） */
+    align?: 'start' | 'end';
     items: MenuItem[];
     class?: string;
     children: Snippet;
@@ -92,7 +94,7 @@
   </button>
   {#if open}
     <!-- svelte-ignore a11y_interactive_supports_focus -->
-    <div bind:this={menu} id="{uid}-menu" class="menu-pop" role="menu" aria-label={label} onkeydown={onMenuKey}>
+    <div bind:this={menu} id="{uid}-menu" class="menu-pop" class:end={align === 'end'} role="menu" aria-label={label} onkeydown={onMenuKey}>
       {#each items as item (item.id)}
         <button
           type="button"
@@ -116,6 +118,7 @@
     background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--pop-shadow);
     animation: pop-in var(--dur-hover) var(--ease-out);
   }
+  .menu-pop.end { left: auto; right: 0; }
   [role='menuitem'] {
     display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 7px 14px;
     border: 0; border-radius: 0; background: none; color: var(--body); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer;

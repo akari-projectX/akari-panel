@@ -39,6 +39,14 @@ export function param(name: string): string | null {
   return new URLSearchParams(loc.search).get(name);
 }
 
+/** 换掉整个查询串（同一页内：文档的分类 / 搜索 / 文章、工单的 ?id=）；值为空的参数不写 */
+export function setParams(next: Record<string, string | null | undefined>, opts: { replace?: boolean; keepScroll?: boolean } = {}) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(next)) if (v) q.set(k, v);
+  const s = q.toString();
+  navigate(`${loc.path}${s ? `?${s}` : ''}`, opts);
+}
+
 function onClick(e: MouseEvent) {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = (e.target as Element | null)?.closest?.('a');

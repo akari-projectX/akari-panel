@@ -9,9 +9,18 @@
    * 再加上面板的 CSP（default-src 'self'，不允许内联脚本），前端不再解析 Markdown，也不做第二遍清洗。
    * 只能把面板接口返回的 HTML 传进来——用户输入、地址栏参数、任何别的来源都不行。
    */
-  let { html }: { html?: string | null } = $props();
+  import { headingId } from '@/lib/content-text';
+
+  /* headings：给 h3 / h4 按顺序补上目录锚点 id（编号与 @/lib/content-text 的 outline 一致；只加属性，不改内容） */
+  let { html, headings = false }: { html?: string | null; headings?: boolean } = $props();
+  let el = $state<HTMLDivElement>();
+
+  $effect(() => {
+    void html;
+    if (headings && el) el.querySelectorAll('h3, h4').forEach((h, i) => { h.id = headingId(i); });
+  });
 </script>
 
 {#if html}
-  <div class="rich">{@html html}</div>
+  <div class="rich" bind:this={el}>{@html html}</div>
 {/if}
