@@ -229,6 +229,8 @@
     transition: border-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out);
   }
   .input.pwd { padding-right: 40px; }
+  textarea.input { height: auto; min-height: 64px; padding: 9px 12px; line-height: 1.7; resize: none; }
+  select.input { padding-right: 8px; }
   .input::placeholder { color: var(--faint); }
   .input:focus, .input:focus-visible { outline: none; border-radius: 8px; border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent); }
   .input[aria-invalid='true'] { border-color: var(--danger); }
@@ -307,6 +309,7 @@
   .rich strong { color: var(--fg); font-weight: 600; }
   .rich h3, .rich h4, .rich h5, .rich h6 { color: var(--fg); font-weight: 600; line-height: 1.45; margin-top: 24px; }
   .rich h3 { font-size: 17px; }
+  .rich h3[id], .rich h4[id] { scroll-margin-top: 80px; }
   .rich h4 { font-size: 15.5px; }
   .rich h5, .rich h6 { font-size: 14.5px; }
   .rich ul, .rich ol { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }

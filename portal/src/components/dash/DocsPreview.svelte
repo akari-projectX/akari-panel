@@ -1,22 +1,12 @@
 <script lang="ts">
-  import BookOpen from '@lucide/svelte/icons/book-open';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import CircleHelp from '@lucide/svelte/icons/circle-help';
-  import CreditCard from '@lucide/svelte/icons/credit-card';
-  import Laptop from '@lucide/svelte/icons/laptop';
-  import Megaphone from '@lucide/svelte/icons/megaphone';
-  import Monitor from '@lucide/svelte/icons/monitor';
-  import Rocket from '@lucide/svelte/icons/rocket';
-  import Router from '@lucide/svelte/icons/router';
-  import ShieldCheck from '@lucide/svelte/icons/shield-check';
-  import Smartphone from '@lucide/svelte/icons/smartphone';
-  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import { contentApi } from '@/api';
   import { K } from '@/lib/cache';
-  import { docCategories, type DocCategory } from '@/lib/doc-categories';
+  import { docCategories } from '@/lib/doc-categories';
   import Empty from '../Empty.svelte';
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
+  import { iconOf } from '$lib/doc-icons';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
   import { R } from '$lib/routes';
@@ -25,23 +15,8 @@
    * 使用文档：知识库的分类入口（与 React 门户相同的数据与顺序：lib/doc-categories，当前设备的分类排第一并标「当前设备」，
    * 没有分类的文章归到「其他」）。版式按样稿：两列细线列表，单色线性图标 + 分类名 + 篇数，点进文档页的该分类。最多 8 个。
    */
-  type Icon = typeof BookOpen;
   const docs = resource(() => ({ key: K.help(), fetch: () => contentApi.help() }));
   const categories = $derived(docCategories(docs.data, i18n.locale, t('其他')));
-
-  /* 认得出平台的用平台的通用图形，其余按名字里的关键词挑一个，都对不上就是一本书（只是装饰） */
-  const PLATFORM_ICON: Record<string, Icon> = {
-    windows: Monitor, macos: Laptop, ios: Smartphone, android: Smartphone, harmony: Smartphone, linux: SquareTerminal, router: Router,
-  };
-  const GENERIC: [RegExp, Icon][] = [
-    [/常见|问题|疑问|faq|q&a|help/i, CircleHelp],
-    [/购买|付款|支付|续费|订单|账单|充值|退款|billing|pay/i, CreditCard],
-    [/账号|账户|帐号|安全|密码|登录|account|security/i, ShieldCheck],
-    [/公告|更新|日志|变更|news|changelog/i, Megaphone],
-    [/新手|入门|开始|快速|指南|start|guide/i, Rocket],
-  ];
-  const iconOf = (c: DocCategory): Icon =>
-    (c.platform && PLATFORM_ICON[c.platform.id]) || GENERIC.find(([re]) => re.test(c.name))?.[1] || BookOpen;
 </script>
 
 <section class="sec" aria-labelledby="h-docs">

@@ -114,6 +114,11 @@ for (const p of PROJECTS) {
   await user(`v2-verify-${p}@e2e.test`);
   /* 商店（PR 4）：余额付重置包 / 续费、换套餐（折算、作废）；USDT 的账户在用例里建 */
   await credit((await user(`v2-shop-${p}@e2e.test`)).id, 20000);
+  /* 设置（PR 6）：验证 / 更换邮箱 + 改密码、分区与明暗、旧格式订阅链接、自助注销 */
+  await user(`v2-account-${p}@e2e.test`);
+  await user(`v2-settings-${p}@e2e.test`);
+  await user(`v2-legacy-${p}@e2e.test`);
+  await user(`v2-delete-${p}@e2e.test`, false);
 }
 const expired = await user('expired@e2e.test');
 const quota = await user('quota@e2e.test');

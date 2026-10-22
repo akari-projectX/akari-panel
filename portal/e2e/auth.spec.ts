@@ -462,6 +462,57 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
     await dashboard(page);
     /* 「以后再说」只问一次：没有 passkey_prompt 的登录不再弹 */
     await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    /* 设置页（PR 6）：通行密钥列表、改名、删除最后一个的确认、只用通行密钥的开关、再添加一个 */
+    await page.goto('/account#security');
+    await ready(page, '设置');
+    const security = page.locator('#security');
+    const onlySwitch = security.getByRole('switch', { name: '只用通行密钥登录' });
+    await expect(onlySwitch).toHaveAttribute('aria-checked', 'true');
+    const row = security.locator('li').first();
+    await expect(row.getByText(/添加于 \d{4}-/)).toBeVisible();
+    const desktopView = info.project.name === 'desktop';
+    if (desktopView) await row.getByRole('button', { name: /^重命名 / }).click();
+    else {
+      await row.getByRole('button', { name: /的操作$/ }).click();
+      await page.getByRole('menuitem', { name: '重命名' }).click();
+    }
+    const name = security.getByLabel('通行密钥名称');
+    await name.fill('E2E 钥匙');
+    await security.getByRole('button', { name: '保存' }).click();
+    await expect(row.getByText('E2E 钥匙', { exact: true })).toBeVisible();
+    /* 删除最后一个当前可用的通行密钥：确认框写明「只用通行密钥」会随之失效（这里取消） */
+    if (desktopView) await row.getByRole('button', { name: '删除 E2E 钥匙' }).click();
+    else {
+      await row.getByRole('button', { name: 'E2E 钥匙 的操作' }).click();
+      await page.getByRole('menuitem', { name: '删除' }).click();
+    }
+    const del = page.getByRole('dialog', { name: '删除通行密钥「E2E 钥匙」？' });
+    await expect(del.getByText('设备里保存的那一份需要在设备上自行删除')).toBeVisible();
+    await expect(del.getByText(/这是最后一个可用的通行密钥/)).toBeVisible();
+    await shot(page, info, 'account-passkey-delete');
+    await del.getByRole('button', { name: '取消' }).click();
+    await expect(del).toHaveCount(0);
+    /* 关掉直接生效；再打开要先确认 */
+    await onlySwitch.click();
+    await expect(page.getByText('已恢复密码登录').first()).toBeVisible();
+    await expect(onlySwitch).toHaveAttribute('aria-checked', 'false');
+    await onlySwitch.click();
+    const ask = page.getByRole('dialog', { name: '只用通行密钥登录？' });
+    await expect(ask.getByText('通行密钥全部丢失时，需要联系管理员恢复')).toBeVisible();
+    await ask.getByRole('button', { name: '取消' }).click();
+    await expect(onlySwitch).toHaveAttribute('aria-checked', 'false');
+    await onlySwitch.click();
+    await ask.getByRole('button', { name: '确认开启' }).click();
+    await expect(page.getByText('已改为只用通行密钥登录').first()).toBeVisible();
+    await expect(onlySwitch).toHaveAttribute('aria-checked', 'true');
+    await onlySwitch.click();
+    await expect(page.getByText('已恢复密码登录').first()).toBeVisible();
+    /* 设置页上再添加一个（虚拟认证器） */
+    await security.getByRole('button', { name: '添加通行密钥' }).click();
+    await expect(page.getByText('通行密钥已添加').first()).toBeVisible();
+    await expect(security.locator('li')).toHaveCount(2);
+    await shot(page, info, 'account-security');
   } finally {
     await a.patch('auth', FIELDS.auth, before);
   }

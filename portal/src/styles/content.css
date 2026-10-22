@@ -172,6 +172,18 @@
   /* ── 翻页（上一页 / 下一页 + 页码说明） ── */
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; font-size: 12.5px; color: var(--faint); }
   .pager div { display: flex; gap: 4px; }
+
+  /* ── 设置行（设置页）：左边名称 + 说明，右边当前值 + 操作，细线分隔；窄屏上下两层 ── */
+  .set-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 10px 32px; padding: 18px 0; border-bottom: 1px solid var(--line); }
+  .set-row:first-of-type { border-top: 1px solid var(--line); }
+  .set-row.stack { display: block; }
+  .set-t { font-size: 14px; font-weight: 500; color: var(--fg); }
+  .set-d { margin-top: 4px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+  .set-r { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; min-width: 0; }
+  .set-r .val { min-width: 0; font-size: 14px; color: var(--fg); overflow-wrap: anywhere; }
+  .set-r .muted, .set-r .val.muted { color: var(--muted); }
+  .set-r .btns { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+  .set-r > .btn, .set-r > .switch, .set-r > .seg { margin-left: auto; }
 }
 
 @media (max-width: 1080px) {
@@ -206,4 +218,6 @@
   .mini > div { padding: 0 16px; }
   .mini > div:first-child { padding-left: 0; }
   .copy-row { flex-direction: column; }
+  .set-row { grid-template-columns: minmax(0, 1fr); }
+  .set-r > .btn, .set-r > .switch, .set-r > .seg, .set-r .btns { margin-left: 0; }
 }

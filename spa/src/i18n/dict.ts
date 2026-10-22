@@ -1233,4 +1233,8 @@ export const EN: Record<string, string> = {
   '按状态筛选': 'Filter by status',
   '还剩 {n} 天': '{n} days left',
   '余额 {v}。开启后下单时先扣余额，不足部分再用所选方式支付。': 'Balance {v}. When on, orders use your balance first and the rest is paid with the method you choose.',
+  /* ── 门户 v2：文档、公告、工单、设置 ── */
+  '上一篇 / 下一篇': 'Previous / next',
+  '工单概况': 'Tickets at a glance',
+  '客服有新回复': 'New reply from support',
 };
