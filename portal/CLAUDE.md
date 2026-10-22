@@ -13,7 +13,7 @@
 - **路由表 `src/lib/routes.ts`** 与 `spa/src/lib/routes.ts` 地址相同；面板测试 `access::tests::routes_match_the_portal` 两个文件都读
   （`export const R = {` 到 `} as const;` 之间的单引号路径），加路由要和 `access::PORTAL_PAGES` 一起改。
 - **与 React 门户共用、与框架无关的模块经别名 `@/` 直接引用 `../spa/src`**（同一份源码，不手抄）：`@/api`（整个接口层）、
-  `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、`@/lib/traffic`、`@/lib/node`、`@/lib/sub-links`、`@/lib/content-text`、`@/lib/doc-categories`、`@/data/platforms`、字体 `@/assets/fonts/{akari,inter}.css?url`、
+  `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、`@/lib/traffic`、`@/lib/node`、`@/lib/sub-links`、`@/lib/content-text`、`@/lib/doc-categories`、`@/lib/shop`、`@/lib/confetti`、`@/data/platforms`、字体 `@/assets/fonts/{akari,inter}.css?url`、
   字体许可证（`publicDir` = `../spa/public`）。**不要引用 `@/lib/routes` 或任何引了 React 的模块**（`@/i18n` 的 index、`@/lib/auth` 等）。
   切换 PR 把这些文件 `git mv` 进 `portal/src`。`$lib/` = 本应用自己的代码。
 - 默认 Logo = L3 小写 akari 字标（`src/components/Wordmark.svelte`、`index.html` 启动画面里同形的 SVG，颜色 `--logo-ink` / `--logo-dot`；favicon `src/assets/favicon.svg`、`apple-touch-icon.png`；源文件 `design/portal-v2-2026-10/logo/`）；站长上传了 Logo / favicon 时用站长的。
@@ -40,6 +40,14 @@
   下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/content.css`（main.ts 在 app.css 之后引入）。e2e `e2e/dashboard.spec.ts`。
+- **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
+  `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；只有当前套餐卡用主按钮）、`ConfirmOrder`（确认订单对话框，
+  第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
+  `ChainPayment` / `ChainStatus` / `ChainLateNote`（USDT 链上：唯一金额、共用地址 + 二维码、倒计时、确认数、超时后的说明）、`PayResult`（付款结果，
+  轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑用 React 门户的 `@/lib/shop`；
+  本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
+  余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
+  e2e `e2e/shop.spec.ts`（React shop / usdt 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）、`v2-usdt-<视口>`（用例里建，收款地址 c… / d…）。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
 - 面板下发的 HTML（条款、之后的公告 / 文章）只经 `components/RichHtml.svelte` 的 `{@html}`（全站唯一一处，约定同 React 的 server-html）。
 - 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。

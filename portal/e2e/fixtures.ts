@@ -7,7 +7,12 @@ import { readFileSync } from 'node:fs';
 import { expect, request, test as base, type CDPSession, type Page, type TestInfo } from '@playwright/test';
 import { Client } from '../../spa/e2e/panel.ts';
 
-export const seed = JSON.parse(readFileSync(process.env.E2E_SEED ?? '', 'utf8')) as { password: string; plan: string };
+export const seed = JSON.parse(readFileSync(process.env.E2E_SEED ?? '', 'utf8')) as {
+  password: string;
+  plan: string;
+  premium: string;
+  refundOrders: Record<'original' | 'balance' | 'manual', string>;
+};
 
 /** 每个视口（desktop / mobile）各用一个账户的用例：`logout` → `logout-desktop@e2e.test` */
 export const mine = (info: TestInfo, name: string) => `${name}-${info.project.name}@e2e.test`;
@@ -106,4 +111,17 @@ export async function authenticator(page: Page): Promise<CDPSession> {
 export async function dark(page: Page) {
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/dark/);
+}
+
+/**
+ * 付款结果（components/shop/PayResult）：等它出现，核对标题与小结里的套餐名（可选截图），再从右上角关掉。
+ * 对话框开着时页面其余部分对无障碍树是隐藏的，所以先处理它（同 spa/e2e/fixtures.ts 的 payResult）。
+ */
+export async function payResult(page: Page, title: string, plan?: string, timeout = 10_000, screen?: { info: TestInfo; name: string }) {
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: title })).toBeVisible({ timeout });
+  if (plan) await expect(dialog.getByText(plan, { exact: true })).toBeVisible();
+  if (screen) await page.screenshot({ path: `test-results/screens/${screen.info.project.name}-${screen.name}.png` });
+  await dialog.getByRole('button', { name: '关闭' }).click();
+  await expect(dialog).toHaveCount(0);
 }

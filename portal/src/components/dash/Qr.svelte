@@ -4,9 +4,10 @@
 
   /*
    * 订阅二维码：在浏览器里本地生成（uqr，几 kB，不出浏览器），画成一条 SVG path（同一行相邻的深色格子合成一段）。
-   * 明暗两套主题都是白底深色码（--qr-paper / --qr-ink），扫码器只认得这种。<title> 给读屏（e2e 也用它找二维码）。
+   * 明暗两套主题都是白底深色码（--qr-paper / --qr-ink），扫码器只认得这种。<title> 给读屏（e2e 也用它找二维码）；
+   * 订单页的付款码、收款地址码也用它（label 换成各自的说法）。
    */
-  let { value }: { value: string } = $props();
+  let { value, label }: { value: string; label?: string } = $props();
 
   const qr = $derived(encode(value, { ecc: 'M', border: 0 }));
   const d = $derived.by(() => {
@@ -25,7 +26,7 @@
 </script>
 
 <svg viewBox="0 0 {qr.size} {qr.size}" shape-rendering="crispEdges" role="img">
-  <title>{t('订阅二维码')}</title>
+  <title>{label ?? t('订阅二维码')}</title>
   <path {d} />
 </svg>
 
