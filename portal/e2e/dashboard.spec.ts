@@ -214,8 +214,12 @@ test('#28 #29 W30: formats and import buttons follow the site switches; an impor
   }
 });
 
-test('B1 own client only: no link, copy, QR or import buttons; only the client download', async ({ page }, info) => {
+test('B1 own client only: no link, copy, QR or import buttons; only the client download; the subscription answers only the Akari client', async ({ page }, info) => {
   const a = await admin();
+  const id = await a.userId('user@e2e.test');
+  const sub = await a.call<{ sub_url: string }>('GET', `/api/v1/users/${id}/subscription`);
+  const path = new URL(sub.sub_url, process.env.E2E_API).pathname;
+  const fetchAs = (ua: string) => fetch(`${process.env.E2E_API}${path}`, { headers: { 'user-agent': ua } });
   const cur = await a.call<{ version: number }>('GET', '/api/v1/settings');
   await a.call('PUT', '/api/v1/settings/subscription', { version: cur.version, own_client_only: true });
   let branding: Record<string, unknown> | null = null;
@@ -231,6 +235,10 @@ test('B1 own client only: no link, copy, QR or import buttons; only the client d
     await expect(page.getByRole('button', { name: '订阅格式' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Clash Verge \/ mihomo/ })).toHaveCount(0);
     await expect(page.locator('svg:has(> title)').filter({ hasText: '订阅二维码' })).toHaveCount(0);
+    /* 订阅只回答 Akari 客户端；其余（含显式格式）都是统一的 404 */
+    expect((await fetchAs('akari-client/0.1.0 mihomo')).status).toBe(200);
+    expect((await fetchAs('clash-verge/v2.4')).status).toBe(404);
+    expect((await fetch(`${process.env.E2E_API}${path}?format=clash`)).status).toBe(404);
     /* 配了客户端下载：接入区就是下载按钮 */
     branding = await a.patch('branding', FIELDS.branding, {
       client_downloads: [{ platform: 'windows', label: 'E2E Akari 客户端', url: 'https://example.com/akari.exe' }],
