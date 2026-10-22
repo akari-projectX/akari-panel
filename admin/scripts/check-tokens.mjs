@@ -3,13 +3,13 @@
 // portal's motion variables under the same names and values. R23 forbids
 // sharing source between the two apps, so this compares values only:
 // every --ease-* / --dur-* custom property the portal declares on :root in
-// ../spa/src/index.css must be declared in src/shared/index.css with the
+// ../portal/src/app.css must be declared in src/shared/index.css with the
 // same value (numbers normalised: ".2s" = "0.2s"). Admin-only tokens
 // (e.g. --ease-spring) are allowed.
 //   node scripts/check-tokens.mjs [portalCss] [adminCss]
 import { existsSync, readFileSync } from "node:fs";
 
-const [portalCss = "../spa/src/index.css", adminCss = "src/shared/index.css"] = process.argv.slice(2);
+const [portalCss = "../portal/src/app.css", adminCss = "src/shared/index.css"] = process.argv.slice(2);
 
 /** `--name: value;` pairs of the motion tokens in the plain `:root {…}` blocks. */
 function tokens(file) {

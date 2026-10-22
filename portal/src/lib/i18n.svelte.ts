@@ -1,8 +1,8 @@
 import { holdBoot } from './boot.svelte';
 
 /**
- * 界面语言：简体中文 / English。词典与 React 门户共用（../spa/src/i18n/dict.ts，键 = 简体原文），
- * 英文词典按需加载（中文用户不下载它）。存储键与 React 门户相同。
+ * 界面语言：简体中文 / English。词典 src/shared/i18n/dict.ts（键 = 简体原文），
+ * 英文词典按需加载（中文用户不下载它）。存储键 akari.locale。
  *
  * t() / tp() 读 $state（i18n.locale、i18n.en），模板里调用它们会随语言切换重新渲染。
  * 缺条目时回落到简体原文，不显示 key。

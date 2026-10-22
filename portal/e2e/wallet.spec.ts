@@ -1,5 +1,5 @@
 /*
- * 门户 v2 · PR 5：钱包与邀请（/wallet，旧地址 /invite）。覆盖 React 门户 spa/e2e 的 wallet.spec.ts（#51–#56：USDT 提现的网络、
+ * 门户 v2 · PR 5：钱包与邀请（/wallet，旧地址 /invite）。覆盖切换前 React 门户 e2e 的 wallet.spec.ts（#51–#56：USDT 提现的网络、
  * 地址提示、TON Memo、参考汇率、撤回、通过后的实付与交易哈希、邀请统计与唯一的邀请码、佣金追回）、polish.spec.ts #52
  * （提现表单的内联错误）、account.spec.ts #19 / #18 的钱包部分（续费范围只有流水、封禁看不到），外加：「允许用户邀请」关闭、
  * 单次使用的邀请码、流水翻页、分页的键盘操作与地址，以及设计评审截图（邀请 / 流水 / 提现记录 / 提现对话框 / 续费范围 × 桌面 / 手机 × 浅 / 深）。
@@ -7,7 +7,7 @@
  * expired / banned。改站点设置的用例在 finally 里恢复。
  */
 import type { Page, TestInfo } from '@playwright/test';
-import { FIELDS, psql } from '../../spa/e2e/panel.ts';
+import { FIELDS, psql } from './support/panel.ts';
 import { admin, dark, expect, mine, ready, shot, signIn, test } from './fixtures';
 
 /* 不用 serial：workers = 1 本来就按文件顺序跑；一条失败不该让后面的都跳过。#56 的退款依赖它前面的邀请用例先看过「已入账」，顺序保留。 */

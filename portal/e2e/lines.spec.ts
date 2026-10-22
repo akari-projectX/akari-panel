@@ -1,12 +1,12 @@
 /*
- * 门户 v2 · PR 5：线路（/nodes）与用量明细（/traffic）。覆盖 React 门户 spa/e2e 的 subscription.spec.ts #32 #33（每个入口一行、
+ * 门户 v2 · PR 5：线路（/nodes）与用量明细（/traffic）。覆盖切换前 React 门户 e2e 的 subscription.spec.ts #32 #33（每个入口一行、
  * 此刻的倍率、状态与图例、维护中置灰）与 #34（按全站时区的日、按入口的倍率与时段规则）、polish.spec.ts #60（手机不横向滚动）、
  * shell / account 的范围门禁（续费范围没有线路与用量），外加：倍率排序、搜索与空结果、刷新、用量的范围切换与平滑面积图、
  * 每日明细，以及设计评审截图（线路 / 用量 × 桌面 / 手机 × 浅 / 深）。
  * 账户：user@e2e.test（两天流量：香港 01 直连 + IPLC 中转（2×），日本 01 直连（全天 0.5×））、expired。
  */
 import type { Page } from '@playwright/test';
-import { psql } from '../../spa/e2e/panel.ts';
+import { psql } from './support/panel.ts';
 import { dark, expect, ready, shot, signIn, test } from './fixtures';
 
 async function open(page: Page, path: string, title: string) {

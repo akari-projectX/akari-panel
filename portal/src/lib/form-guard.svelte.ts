@@ -3,8 +3,7 @@ import { buildGuard, guardStale } from '@/api/guard';
 import { refreshOptions, site } from './auth.svelte';
 
 /**
- * 一张公开表单的防护状态（蜜罐、Turnstile、表单令牌），配合 components/GuardFields.svelte 用
- * （与 React 门户 spa/src/lib/form-guard.ts 相同的行为）：
+ * 一张公开表单的防护状态（蜜罐、Turnstile、表单令牌），配合 components/GuardFields.svelte 用：
  *
  *   const g = new FormGuard('login');      // 在组件初始化时创建（构造函数里挂了 $effect）
  *   <GuardFields guard={g} />              // 隐藏的蜜罐 + 需要时的 Turnstile

@@ -551,34 +551,30 @@ async fn subscription_path_change_mails_the_users() {
     db.drop().await;
 }
 
-/// W36-b: every top-level route of the portal (spa/src/lib/routes.ts, and
-/// portal v2's portal/src/lib/routes.ts) answers the portal's index, and
-/// nothing else does; none of them can be taken by a subscription path.
+/// W36-b: every top-level route of the portal (portal/src/lib/routes.ts)
+/// answers the portal's index, and nothing else does; none of them can be
+/// taken by a subscription path.
 #[test]
 fn routes_match_the_portal() {
-    for (name, src) in [
-        ("spa", include_str!("../../spa/src/lib/routes.ts")),
-        ("portal", include_str!("../../portal/src/lib/routes.ts")),
-    ] {
-        let body = src
-            .split("export const R = {")
-            .nth(1)
-            .and_then(|s| s.split("} as const;").next())
-            .expect("routes.ts declares `export const R = { … } as const;`");
-        let mut routes: Vec<&str> = body
-            .split('\'')
-            .skip(1)
-            .step_by(2)
-            .filter_map(|p| p.strip_prefix('/'))
-            .map(|p| p.split('/').next().unwrap_or(""))
-            .filter(|s| !s.is_empty())
-            .collect();
-        routes.sort_unstable();
-        routes.dedup();
-        let mut pages = PORTAL_PAGES.to_vec();
-        pages.sort_unstable();
-        assert_eq!(routes, pages, "{name}");
-    }
+    let src = include_str!("../../portal/src/lib/routes.ts");
+    let body = src
+        .split("export const R = {")
+        .nth(1)
+        .and_then(|s| s.split("} as const;").next())
+        .expect("routes.ts declares `export const R = { … } as const;`");
+    let mut routes: Vec<&str> = body
+        .split('\'')
+        .skip(1)
+        .step_by(2)
+        .filter_map(|p| p.strip_prefix('/'))
+        .map(|p| p.split('/').next().unwrap_or(""))
+        .filter(|s| !s.is_empty())
+        .collect();
+    routes.sort_unstable();
+    routes.dedup();
+    let mut pages = PORTAL_PAGES.to_vec();
+    pages.sort_unstable();
+    assert_eq!(routes, pages);
     for p in PORTAL_PAGES {
         assert!(RESERVED.contains(p), "{p} must be reserved");
     }

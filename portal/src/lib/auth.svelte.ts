@@ -11,7 +11,7 @@ import { navigate } from './router.svelte';
 import { R, scopeOf, type Scope } from './routes';
 
 /**
- * 登录态与站点公开配置（与 React 门户 spa/src/lib/auth-provider.tsx 同一套行为）。
+ * 登录态与站点公开配置。
  *
  * 会话是面板发的 httpOnly cookie，前端不存令牌；登录状态以 GET /me 为准（401 = 没登录；
  * 404 = 统一的拒绝，同一浏览器里的管理员会话在门户上就是它——都按没登录处理）。

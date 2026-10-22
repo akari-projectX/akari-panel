@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /*
  * 构建产物检查（CI 必跑）：产物能在面板的 CSP 下工作，面板也下发得到。
- * 与 React 门户的 spa/scripts/check-dist.mjs 同一套规则（门户 v2 切换时那一份随 spa/ 删除）。
  *
  *   node scripts/check-dist.mjs [产物目录，默认 dist/app]
  *
  * 面板在主域名根路径下发门户（D11）：
  *   · CSP = default-src 'self'; style-src 'self' 'unsafe-inline'
  *     （站长开了 Turnstile 时面板才为门户页另外放行 https://challenges.cloudflare.com 的 script-src / frame-src，
- *       这是产物里唯一允许出现的外部脚本地址，见 components/turnstile.tsx）
+ *       这是产物里唯一允许出现的外部脚本地址，见 components/Turnstile.svelte）
  *     → index.html 不能有内联 <script>、on* 事件属性、javascript: 地址；
  *       也不放内联 <style> / style=""（虽然 CSP 暂时允许内联样式，我们不依赖它）；
  *       图片、字体只能来自本站，data: 也不行。

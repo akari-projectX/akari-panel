@@ -387,12 +387,10 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 
 **流量明细的存储**：`traffic_daily` 按月分区（`traffic_daily_YYYYMM`）。面板启动时和每 10 分钟检查一次，保证上个月到后两个月的分区存在；超过「流量明细保留天数」（系统设置 → 安全，默认 400 天）的**整月**汇总进月表后直接删除整个分区，不产生数据库膨胀。因此日明细至少保留设定的天数，最多再多保留不到一个月。
 
-### 门户 v2 预览（`AKARI_PORTAL_V2`，中文）
+### 用户门户（v2.0.0 起为新版，中文）
 
-新版用户门户（Svelte 重写 + 新设计）正在逐步迁移，已随面板一起编进二进制，但**默认不启用**：面板照旧下发现在的门户。
-想预览时，给面板进程加环境变量 `AKARI_PORTAL_V2=1` 并重启（systemd：`systemctl edit akari-panel` 在 `[Service]` 下加 `Environment=AKARI_PORTAL_V2=1`；
-Docker：compose 的 `environment` 里加），日志里会有一条 WARN。去掉变量再重启即恢复。
-预览阶段大部分页面还是占位页（「此页面迁移中」），**登录页也还没迁移**——不要在生产站点上打开。迁移完成后由正式版本切换，届时不再需要这个变量。
+v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），地址、功能、接口都不变，不需要任何配置。
+测试过预览版、给面板加过环境变量 `AKARI_PORTAL_V2` 的，可以删掉它（已不再读取）。
 
 ## 2c. Mail, registration and password reset (optional, W15)（邮件、注册与找回密码，可选）
 

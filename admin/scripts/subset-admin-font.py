@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 后台字体（2026-10 改版，裁决 admin-redesign-1012 ②：全平台 Inter + Noto Sans SC）。
-照门户 spa/scripts/subset-akari-font.py 的做法裁成网页用的小文件（两个应用不共享源码，R23；这里是照抄改写的一份）：
+照门户 portal/scripts/subset-akari-font.py 的做法裁成网页用的小文件（两个应用不共享源码，R23；这里是照抄改写的一份）：
 
   src/assets/fonts/fonts.css            @font-face 声明（index.css 引入；地址相对它自己，Vite 构建时加哈希）
   src/assets/fonts/inter/latin.*.woff2  Inter 可变字体（字重 300–700、光学尺寸 opsz）拉丁子集：英文、数字、常用符号
@@ -9,7 +9,7 @@
 
 原件：
   Inter     node_modules/@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2（npm 依赖，SIL OFL）
-  Noto      ../spa/fonts-src/noto/NotoSansSC-VF.woff2（门户仓库里的同一个原件，只读；可用 NOTO_SRC 指定别处）
+  Noto      ../portal/fonts-src/noto/NotoSansSC-VF.woff2（门户仓库里的同一个原件，只读；可用 NOTO_SRC 指定别处）
   常用字    fonts-src/chars.txt（常用 3500 字，从门户拷贝）；切法 scripts/cjk-slices/sc.txt（同上）
 
 收字：界面用字（scripts/collect-text.mjs 从源码字符串统计）+ 常用 3500 字（用户邮箱以外的内容：套餐名、工单、公告）
@@ -30,7 +30,7 @@ from fontTools.varLib import instancer
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / 'fonts-src'
-NOTO = pathlib.Path(os.environ.get('NOTO_SRC', ROOT.parent / 'spa/fonts-src/noto/NotoSansSC-VF.woff2'))
+NOTO = pathlib.Path(os.environ.get('NOTO_SRC', ROOT.parent / 'portal/fonts-src/noto/NotoSansSC-VF.woff2'))
 INTER = ROOT / 'node_modules/@fontsource-variable/inter/files/inter-latin-opsz-normal.woff2'
 SLICES = ROOT / 'scripts/cjk-slices/sc.txt'
 OUT = ROOT / 'src/assets/fonts'

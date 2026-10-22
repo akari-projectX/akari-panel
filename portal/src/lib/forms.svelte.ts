@@ -2,7 +2,7 @@ import { tick } from 'svelte';
 import { ApiError } from '@/api';
 
 /**
- * 表单的内联错误（components/TextField 画出来；与 React 门户 spa/src/lib/form-errors.ts 相同的规则）。
+ * 表单的内联错误（components/TextField 画出来）。
  *
  *   const f = new FieldErrors(['email', 'password'] as const);
  *   if (!f.check({ email: !isEmail(email) && t('请输入有效的邮箱地址'), password: … })) return;  // 有错：显示并聚焦第一个

@@ -1,7 +1,7 @@
 # Every API error code (W21). Codes are API: never rename or reuse one.
 # src/auth.rs test `error_codes_are_registered` keeps this list equal to the
-# codes in the source; spa/scripts/check-error-codes.mjs requires a SPA
-# mapping for each.
+# codes in the source; portal/scripts/check-error-codes.mjs requires portal
+# text for each user-visible one (admin/ checks the rest).
 account.banned
 account.bind_no_code
 account.delete_confirm_required

@@ -82,7 +82,7 @@ impl Entry {
 /// The portal's pages (first path segment; `/` is the dashboard): every
 /// client-side route answers the portal's index. Other paths are the
 /// canonical rejection, as before D11. Keep in step with the portal's route
-/// table (spa/src/lib/routes.ts; `routes_match_the_portal` checks it).
+/// table (portal/src/lib/routes.ts; `routes_match_the_portal` checks it).
 pub const PORTAL_PAGES: &[&str] = &[
     "shop",
     "nodes",

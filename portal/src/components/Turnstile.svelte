@@ -1,6 +1,6 @@
 <script lang="ts" module>
   /**
-   * Cloudflare Turnstile 人机验证组件（与 React 门户 spa/src/components/turnstile.tsx 相同）。
+   * Cloudflare Turnstile 人机验证组件。
    *
    * 只有站长在后台为这张表单打开了 Turnstile 时才会挂上；这时才去 challenges.cloudflare.com 动态加载它的脚本——不开就一个外部请求都没有。
    * 面板的 CSP 也只在开启 Turnstile 时放行这个来源（script-src、frame-src）。

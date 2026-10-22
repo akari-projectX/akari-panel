@@ -143,12 +143,12 @@
   .help { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 20px; font-size: 13px; color: var(--muted); }
   .help a { color: var(--body); }
   .help a:hover { color: var(--brand); }
-  .lead { display: inline-flex; align-items: center; gap: 6px; }
+  /* 引导语单独一行、平台链接在下面一行：左栏约 620px 放不下引导语 + 七个平台，同一行里会把最后一个（路由器）单独挤到下一行 */
+  .lead { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; }
 
   @media (max-width: 720px) {
     .access { grid-template-columns: 1fr; }
     .qr { display: none; }
     .clients { grid-template-columns: 1fr; }
-    .lead { flex-basis: 100%; }
   }
 </style>

@@ -2,15 +2,15 @@
 """Third-party licences of the panel binary (`make third-party`, release.yml).
 
 The `akari` binary statically links Rust crates and embeds the built
-frontends (spa/dist, the portal; portal/dist, portal v2; and admin/dist, the admin app: the npm
-packages bundled into them). This writes one text file:
+frontends (portal/dist, the user portal, and admin/dist, the admin app: the
+npm packages bundled into them). This writes one text file:
 a table of every such component with its declared licence, then the
 licence/notice files those packages ship, verbatim (identical texts once).
 
 Rust: `cargo metadata --locked` for the release targets (linux musl amd64 +
 arm64), walking normal dependencies from akari-panel (build/dev deps and
 proc-macro crates do not end up in the binary); licence files come from the
-crate sources (`cargo fetch --locked` first). npm: spa/ and admin/
+crate sources (`cargo fetch --locked` first). npm: portal/ and admin/
 package-lock.json packages that are not dev-only (each name@version once);
 licence files from node_modules when installed (`npm ci`), else only the
 declared licence is listed.
@@ -72,7 +72,7 @@ def cargo_components():
 
 def npm_components():
     out, seen = [], set()
-    for app in ("spa", "portal", "admin"):
+    for app in ("portal", "admin"):
         out += npm_app(app, seen)
     return out
 
@@ -104,9 +104,9 @@ def data_components():
     return [
         ("data", "v2fly/domain-list-community", version, "MIT", [os.path.join(lists, "LICENSE.v2fly")]),
         ("data", "Noto Sans SC (portal subset)", "variable", "OFL-1.1",
-         [os.path.join(ROOT, "spa", "fonts-src", "noto", "OFL.txt")]),
+         [os.path.join(ROOT, "portal", "fonts-src", "noto", "OFL.txt")]),
         ("data", "Inter (portal latin subset)", "variable", "OFL-1.1",
-         [os.path.join(ROOT, "spa", "fonts-src", "inter", "OFL.txt")]),
+         [os.path.join(ROOT, "portal", "fonts-src", "inter", "OFL.txt")]),
     ]
 
 

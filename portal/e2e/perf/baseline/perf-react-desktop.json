@@ -1,0 +1,20 @@
+{
+  "portal": "react",
+  "profile": "desktop",
+  "runs": 5,
+  "result": {
+    "login.fcp": 188,
+    "login.lcp": 204,
+    "login.tti": 188,
+    "login.ready": 533,
+    "dashboard.fcp": 236,
+    "dashboard.lcp": 576,
+    "dashboard.tti": 236,
+    "dashboard.ready": 658,
+    "switch./nodes": 127,
+    "switch./orders": 116,
+    "switch./shop": 141,
+    "switch./traffic": 237,
+    "switch./": 161
+  }
+}

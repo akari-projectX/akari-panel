@@ -127,7 +127,7 @@ src/spa.rs             embedded user portal (rust-embed)
 src/console.rs         embedded admin app (rust-embed): sign-in page, session-gated console
 src/access.rs          D4/D11 URL layout: admin prefix + allowlist, subscription path
 src/web.rs + reject.rs front door + uniform rejection
-spa/                   React 19 + Vite 8 + Tailwind 4 user portal
+portal/                Svelte 5 + Vite 8 + Tailwind 4 user portal
 admin/                 the admin app (W33-b): sign-in page + console, own build and e2e
 migrations/            sqlx migrations (run at startup)
 smoke.sh               cross-repo end-to-end check (needs ../akari-agent)
@@ -138,9 +138,9 @@ agent 位于兄弟仓库 `akari-agent`（Go：`agent.go` 流生命周期与重�
 
 ## Frontend
 
-两个独立构建的前端（R23、W33-b），基于 React 19、Vite 8（Rolldown）和 Tailwind 4，数据层用 TanStack Query：
+两个独立构建的前端（R23、W33-b），都基于 Vite 8（Rolldown）和 Tailwind 4：用户门户是 Svelte 5（2026-10 重写，v2.0.0 起），管理端是 React 19 + TanStack Query：
 
-- **用户门户**（`spa/`）位于主域名的 `/`（D11）：登录页，以及每个 URL 一个视图（仪表盘、商店、节点、订单、钱包、工单、账号），中文/英文。入口只提供它认识的页面（`access::PORTAL_PAGES`；须与门户路由保持一致）。
+- **用户门户**（`portal/`）位于主域名的 `/`（D11）：登录页，以及每个 URL 一个视图（仪表盘、商店、节点、订单、钱包、工单、账号），中文/英文。入口只提供它认识的页面（`access::PORTAL_PAGES`；须与门户路由保持一致）。
 - **管理端应用**（`admin/`，W33-b）：
   - 独立的**登录页**位于 `/{admin prefix}/app`（邮箱 + 密码、passkey、登录策略，启用时含 Turnstile/蜜罐；非管理员账号会被重新登出）。
   - **控制台**位于 `/{admin prefix}/admin`：仪表盘、状态、用户、订单、优惠券、财务、工单、内容、节点、套餐、告警、更新、审计、设置、账号；中文/英文，手机可用。
@@ -152,7 +152,7 @@ agent 位于兄弟仓库 `akari-agent`（Go：`agent.go` 流生命周期与重�
 CSP 仅允许 `'self'`。缺失的资源返回统一的空 404，开发目录永不对外提供。
 
 ```bash
-make spa               # npm install + vite build (updates spa/dist)
+make portal            # npm ci + vite build (updates portal/dist)
 make admin             # the admin app: checks + both builds (updates admin/dist)
 make panel             # rebuild the binary to embed the new bundle
 ```
@@ -161,7 +161,7 @@ make panel             # rebuild the binary to embed the new bundle
 
 ```bash
 make dev-up            # PG 18 + Valkey 9 (docker compose)
-make spa               # frontend build (first run installs npm deps)
+make portal admin      # frontend builds (first run installs npm deps)
 make panel             # cargo build --release
 make agent-build       # go build of ../akari-agent
 # contract change: edit proto/agent.proto, then in ../akari-agent:

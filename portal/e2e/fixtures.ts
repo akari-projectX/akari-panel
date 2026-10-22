@@ -1,11 +1,11 @@
 /*
  * 门户 v2 端到端测试的公共部分：每个用例都收集 CSP 违规与页面异常（必须为空），登录（走接口，或经登录页）、退出、
- * 管理员接口与虚拟认证器（与 React 门户 spa/e2e 的同名工具相同；面板客户端直接用 spa/e2e/panel.ts），截图。
- * 数据来自 React 门户的 spa/e2e/seed.ts（E2E_SEED），面板由 ../scripts/e2e-portal.sh 起好。
+ * 管理员接口（面板客户端 support/panel.ts）与虚拟认证器，截图。
+ * 数据来自 support/seed.ts（E2E_SEED），面板由 ../scripts/e2e-portal.sh 起好。
  */
 import { readFileSync } from 'node:fs';
 import { expect, request, test as base, type CDPSession, type Page, type TestInfo } from '@playwright/test';
-import { Client } from '../../spa/e2e/panel.ts';
+import { Client } from './support/panel.ts';
 
 export const seed = JSON.parse(readFileSync(process.env.E2E_SEED ?? '', 'utf8')) as {
   password: string;
@@ -34,7 +34,7 @@ export const test = base.extend<{ problems: string[] }>({
 export { expect };
 
 /**
- * 登录（接口，与 spa/e2e/panel.ts 的 Client.login 一样：带表单令牌、等过最短提交时间）。
+ * 登录（接口，与 support/panel.ts 的 Client.login 一样：带表单令牌、等过最短提交时间）。
  * 接口请求在 Node 里发，浏览器的域名映射管不到它：直连面板（E2E_API），再把会话 cookie 放进浏览器上下文（门户的域名）。
  */
 export async function signIn(page: Page, email: string, password = seed.password) {
@@ -116,7 +116,7 @@ export async function dark(page: Page) {
 
 /**
  * 付款结果（components/shop/PayResult）：等它出现，核对标题与小结里的套餐名（可选截图），再从右上角关掉。
- * 对话框开着时页面其余部分对无障碍树是隐藏的，所以先处理它（同 spa/e2e/fixtures.ts 的 payResult）。
+ * 对话框开着时页面其余部分对无障碍树是隐藏的，所以先处理它。
  */
 export async function payResult(page: Page, title: string, plan?: string, timeout = 10_000, screen?: { info: TestInfo; name: string }) {
   const dialog = page.getByRole('dialog');

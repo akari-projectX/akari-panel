@@ -1,6 +1,6 @@
 # admin/ — 管理后台（W33-b）
 
-独立的 Vite 8 + React 19 + TypeScript + Tailwind 4 应用（2026-10 改版：Radix、lucide、sonner、cmdk、react-router 7、react-query、@tanstack/react-virtual、recharts、CodeMirror 6；视觉见 `design/admin-redesign-2026-10/`），与门户 `spa/` **不共享任何代码、路由或产物**。功能清单（验收基准）是 `INVENTORY.md`：每一行都有 Playwright 用例（测试标题里写清单编号）。
+独立的 Vite 8 + React 19 + TypeScript + Tailwind 4 应用（2026-10 改版：Radix、lucide、sonner、cmdk、react-router 7、react-query、@tanstack/react-virtual、recharts、CodeMirror 6；视觉见 `design/admin-redesign-2026-10/`），与门户 `portal/` **不共享任何代码、路由或产物**。功能清单（验收基准）是 `INVENTORY.md`：每一行都有 Playwright 用例（测试标题里写清单编号）。
 
 ## 两个包
 
@@ -13,8 +13,8 @@
 - `loginGuard`：登录页的依赖图里不得出现 `src/console/`，也不得出现控制台专用库（recharts、cmdk、react-router、react-query、react-virtual、CodeMirror、d3）——登录页保持单个小包。登录页只带自己的小错误表（`src/login/app.tsx` 的 `LOGIN_ERRORS`，`check-error-codes.mjs` 校验其中的码都已登记）。
 - `scripts/check-bundles.mjs`（`npm run build` 末尾，smoke 对实际下发的文件再跑一次）：控制台标记必须出现在控制台包、不得出现在登录页包与门户包；门户标记不得出现在后台包；JS/CSS 里不得出现绝对的 `"/admin/assets/`、`"/app/assets/`；每个被引用的分包/字体文件都必须存在；登录页恰好 1 个 JS chunk，控制台 ≥2 个。smoke 在真实前缀下逐个取回控制台的全部分包与字体（都必须 200），并断言无会话时分包是规范拒绝；e2e `SH-19` 逐页打开、断言无 404/CSP 报告。
 - `scripts/bundle-report.mjs`（`npm run build` 末尾）：各分包 gzip 大小写入 `dist/bundle-report.json` 与 GitHub Step Summary（CI 工件 `admin-bundle-report`）。**体积只报告、不设门槛**（用户裁决 2026-10-07）。
-- 字体：Inter（拉丁子集）+ Noto Sans SC（按 unicode-range 分片），随产物发布（`src/assets/fonts/`，许可在 `public/assets/licenses/`）。子集由 `scripts/subset-admin-font.py` 生成（`scripts/collect-text.mjs` 收集源码里的中文 + `scripts/cjk-slices/sc.txt`；Noto 源文件在构建时读取门户的 `../spa/fonts-src/noto/NotoSansSC-VF.woff2`，可用 `NOTO_SRC` 覆盖——只读输入，不共享代码或产物，符合 R23）。**新增中文文案后重新生成子集**（需要 fonttools）。
-- `scripts/check-tokens.mjs`（`npm run check`）：后台 `src/shared/index.css` 的动效变量（`--ease-*`、`--dur-*`）必须与门户 `../spa/src/index.css` 的**数值**一致（只比对，不共享源码）。
+- 字体：Inter（拉丁子集）+ Noto Sans SC（按 unicode-range 分片），随产物发布（`src/assets/fonts/`，许可在 `public/assets/licenses/`）。子集由 `scripts/subset-admin-font.py` 生成（`scripts/collect-text.mjs` 收集源码里的中文 + `scripts/cjk-slices/sc.txt`；Noto 源文件在构建时读取门户的 `../portal/fonts-src/noto/NotoSansSC-VF.woff2`，可用 `NOTO_SRC` 覆盖——只读输入，不共享代码或产物，符合 R23）。**新增中文文案后重新生成子集**（需要 fonttools）。
+- `scripts/check-tokens.mjs`（`npm run check`）：后台 `src/shared/index.css` 的动效变量（`--ease-*`、`--dur-*`）必须与门户 `../portal/src/app.css` 的**数值**一致（只比对，不共享源码）。
 - CSP 一律 `default-src 'self'; style-src 'self' 'unsafe-inline'`：不得有内联脚本。Turnstile 只在登录页、只在开启时由面板放宽 CSP。
 
 ## 目录

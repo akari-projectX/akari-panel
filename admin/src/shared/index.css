@@ -3,10 +3,10 @@
 
 /*
  * 后台设计令牌（2026-10 改版，SPRINT admin-redesign-1012：类 macOS、Inter + Noto Sans SC、主色门户蓝 #2563eb）。
- * 色名沿用门户 spa/src/index.css 的 shadcn 命名；后台另有窗口底（--window）、细分隔线（--separator）、
+ * 色名沿用 shadcn 命名；后台另有窗口底（--window）、细分隔线（--separator）、
  * 材质（--glass-*）、遮罩（--scrim）、同心圆角、四级阴影与 macOS 字号层级（text-caption … text-title1）。
  *
- * 动效变量（--ease-* / --dur-*）的名字和数值与门户 spa/src/index.css 完全一致：scripts/check-tokens.mjs
+ * 动效变量（--ease-* / --dur-*）的名字和数值与门户 portal/src/app.css 完全一致：scripts/check-tokens.mjs
  * 在 `npm run check` 时逐个比对数值（只比对、不共享源码，R23），门户改了这里跟着改。
  *
  * 深色：<html> 上的 `.dark`（顶栏切换，存 localStorage，初始值跟随系统）。
@@ -101,7 +101,7 @@
 }
 
 :root {
-  /* 动效：与门户 spa/src/index.css 同名同值（scripts/check-tokens.mjs） */
+  /* 动效：与门户 portal/src/app.css 同名同值（scripts/check-tokens.mjs） */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --dur-press: 0.1s;

@@ -489,7 +489,7 @@ pub fn notify_url(state: &AppState, method: Uuid) -> Option<String> {
 }
 
 /// Where a provider sends the payer back (EPay `return_url`): the portal's
-/// page of the order (`spa/src/lib/routes.ts` `R.order`). It only shows
+/// page of the order (`portal/src/lib/routes.ts` `R.order`). It only shows
 /// the order, which polls its status; nothing is marked paid there.
 pub fn return_url(state: &AppState, order: Uuid) -> Option<String> {
     let origin = state.settings().get().public_origin()?;

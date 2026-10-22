@@ -1,5 +1,5 @@
 /*
- * 门户 v2 · PR 3：仪表盘。覆盖 React 门户 spa/e2e 里仪表盘的全部场景（support #60、polish #60、subscription #27–#30 / B1、
+ * 门户 v2 · PR 3：仪表盘。覆盖切换前 React 门户 e2e 里仪表盘的全部场景（support #60、polish #60、subscription #27–#30 / B1、
  * account #17 的验证邮箱、#18 封禁、#19 续费范围、support #14 的客户端下载），外加新设计的：流量图（平滑面积图、7 / 30 天、
  * 悬停 / 键盘提示）、提醒细行（待付款、工单回复、流量快用完、邮箱未验证）、最新公告横幅与详情、线路与文档预览、#subscribe 直达，
  * 以及设计评审截图（默认 / 提醒 / 仅自研客户端 / 续费范围 / 封禁 × 桌面 / 手机 × 浅 / 深）。
@@ -7,7 +7,7 @@
  * 改站点设置的用例在 finally 里恢复（整个套件 workers = 1，顺序执行）。
  */
 import type { Page, TestInfo } from '@playwright/test';
-import { FIELDS, latestMail, psql } from '../../spa/e2e/panel.ts';
+import { FIELDS, latestMail, psql } from './support/panel.ts';
 import { admin, dark, expect, mine, ready, shot, signIn, test } from './fixtures';
 
 const isDesktop = (info: TestInfo) => info.project.name === 'desktop';

@@ -1,5 +1,5 @@
 /*
- * 门户 v2 · PR 4：商店、确认订单、订单、订单详情、付款。覆盖 React 门户 spa/e2e 的 shop.spec（#35–#49：服务端报价、折算与作废、
+ * 门户 v2 · PR 4：商店、确认订单、订单、订单详情、付款。覆盖切换前 React 门户 e2e 的 shop.spec（#35–#49：服务端报价、折算与作废、
  * 拒绝原因、优惠码、余额、支付方式、二维码付款与轮询、取消、订单类型、三种退款去向、售罄）、
  * account.spec #19 的商店部分（续费范围），外加新设计的：待付款提醒挡住下单、
  * 订单列表筛选与窄屏行、付款结果只弹一次，以及设计评审截图（商店、确认订单 × 支付方式、订单列表、订单详情各状态
@@ -9,7 +9,7 @@
  */
 import { readFileSync } from 'node:fs';
 import type { Locator, Page, TestInfo } from '@playwright/test';
-import { Client, payAtGateway, psql } from '../../spa/e2e/panel.ts';
+import { Client, payAtGateway, psql } from './support/panel.ts';
 import { admin, dark, expect, mine, payResult, ready, seed, shot, signIn, test } from './fixtures';
 
 const isMobile = (info: TestInfo) => info.project.name === 'mobile';

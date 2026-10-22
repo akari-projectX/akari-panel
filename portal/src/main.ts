@@ -7,12 +7,14 @@ import { mount } from 'svelte';
 import App from './App.svelte';
 import { startAuth } from '$lib/auth.svelte';
 import { loadFonts } from '$lib/fonts';
+import { startInputModality } from '$lib/input-modality';
 import { startI18n } from '$lib/i18n.svelte';
 import { watchPreloadErrors } from '$lib/lazy';
 import { startRouter } from '$lib/router.svelte';
 import { startTheme } from '$lib/theme.svelte';
 
 startTheme();
+startInputModality();
 startI18n();
 startRouter();
 watchPreloadErrors();

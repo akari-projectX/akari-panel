@@ -162,7 +162,7 @@ akari-panel/
 ├── src/                   Rust 后端（crate akari_panel，全部模块在 lib.rs；main.rs = CLI 与启动）
 ├── proto/                 控制协议正本 agent.proto + 协议能力清单 protocols.toml
 ├── migrations/            sqlx 迁移（启动时自动执行；v0.4 基线 1000_baseline.sql）
-├── spa/                   用户门户（React 19 + Vite + Tailwind 4 + shadcn/Radix，Playwright e2e）
+├── portal/                用户门户（Svelte 5 + Vite + Tailwind 4 + bits-ui，Playwright e2e）
 ├── admin/                 管理后台（独立应用：登录页包 + 控制台包，中英双语）
 ├── deploy/                docker-compose、systemd 单元、Caddy / nginx、Prometheus 告警、Grafana 面板
 ├── scripts/               install.sh（= akari-ctl）、backup / restore、发布打包、e2e / 安装器测试
@@ -171,7 +171,7 @@ akari-panel/
 ├── fuzz/                  cargo-fuzz 目标（独立 crate）
 ├── testdata/              黄金文件（模板、凭据、订阅格式、校验信息）
 ├── smoke.sh               跨仓端到端验收（需 ../akari-agent）
-├── Dockerfile             spa → musl 静态二进制 → distroless 镜像
+├── Dockerfile             portal + admin → musl 静态二进制 → distroless 镜像
 └── build.rs               编译 proto；缺前端产物时写占位页
 ```
 

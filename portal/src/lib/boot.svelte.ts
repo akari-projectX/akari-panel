@@ -1,5 +1,5 @@
 /**
- * 启动画面（index.html 的 #boot）什么时候收起（与 React 门户 spa/src/lib/boot.ts 同一套规则）。
+ * 启动画面（index.html 的 #boot）什么时候收起。
  *
  * 「占位还在就不收」：
  *   · hard —— 登录状态、页面分包、英文词典还没到：页面结构都还没有，必须等；

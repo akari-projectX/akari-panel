@@ -3,8 +3,8 @@ import { CODE_KEYS, ERRORS, type ErrorKey } from '@/i18n/errors';
 import { t } from './i18n.svelte';
 
 /**
- * 失败请求给用户看的一句话（与 React 门户 spa/src/lib/errors.ts 相同）。全站的提示条、区块报错都经过这里，不直接显示 e.message。
- *   · 面板错误：按 code 查 `errors.*` 文案（共用 spa/src/i18n/errors.ts），用 params 填占位符；
+ * 失败请求给用户看的一句话。全站的提示条、区块报错都经过这里，不直接显示 e.message。
+ *   · 面板错误：按 code 查 `errors.*` 文案（src/shared/i18n/errors.ts），用 params 填占位符；
  *   · 没有 code 的：按状态码给通用说法（401 登录失效、429 太频繁、5xx 服务器出错……）；
  *   · fetch 本身失败（断网）：TypeError。
  */

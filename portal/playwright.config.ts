@@ -1,13 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /*
- * 门户 v2 的端到端测试：跑在真实面板上（../scripts/e2e-portal.sh 在 React 门户的用例之后，
- * 以 AKARI_PORTAL_V2=1 重启同一个面板、同一份数据，设 E2E_BASE）。浏览器参数与 React 门户相同
- * （TLS 前端：测试域名指到本机，只信任那一把临时密钥）。
+ * 门户的端到端测试：跑在真实面板上（../scripts/e2e-portal.sh 起面板、种子数据（e2e/support/seed.ts）、
+ * TLS 前端（测试域名指到本机，只信任那一把临时密钥），设 E2E_BASE）。性能报告是另一份配置（playwright.perf.config.ts）。
  * 桌面 1440×900 与手机 390×844 各跑一遍；一律「减少动效」。
  */
 export default defineConfig({
   testDir: 'e2e',
+  testIgnore: ['perf/**'],
   outputDir: 'test-results/run',
   fullyParallel: false,
   workers: 1,

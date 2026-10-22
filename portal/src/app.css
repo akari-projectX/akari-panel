@@ -37,7 +37,7 @@
 }
 
 /*
- * 动效令牌（与 React 门户 spa/src/index.css 同一套口径）：
+ * 动效令牌（后台 admin/src/shared/index.css 同名同值，admin/scripts/check-tokens.mjs 检查）：
  *   --ease-out 进场与位移 · --ease-in 退场 · --dur-hover 悬停与弹出层打开 · --dur-fast 切页淡入 · --dur-exit 离开
  */
 :root {
@@ -380,6 +380,11 @@
 @keyframes pulse { 50% { opacity: .5; } }
 @keyframes pop-up { from { opacity: 0; transform: translateY(6px); } }
 @keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } }
+
+/* 焦点环只给键盘（lib/input-modality.ts）：最近一次输入是指针时焦点环令牌为空（全站的环都是 var(--focus)），
+   确认订单的单选项用的是轮廓线，单独去掉。文本框（.input）的聚焦边框照旧：那是「正在输入」的提示，不是键盘焦点环 */
+:root[data-input='pointer'] { --focus: none; }
+:root[data-input='pointer'] .opt:has(input:focus-visible) { outline: none; }
 
 /* ========== 响应式（样稿：1080 / 960 / 720） ========== */
 @media (max-width: 1080px) {
