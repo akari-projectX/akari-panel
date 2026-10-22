@@ -24,11 +24,11 @@ const legal = () => import('../pages/Legal.svelte');
 
 export const PAGES: Page[] = [
   dash(R.dashboard, '仪表盘', () => import('../pages/Dashboard.svelte')),
-  dash(R.shop, '商店'),
+  dash(R.shop, '商店', () => import('../pages/Shop.svelte')),
   dash(R.nodes, '线路'),
   dash(R.traffic, '用量'),
-  dash(R.orders, '订单'),
-  dash('/orders/:id', '订单详情'),
+  dash(R.orders, '订单', () => import('../pages/Orders.svelte')),
+  dash('/orders/:id', '订单详情', () => import('../pages/OrderDetail.svelte')),
   dash(R.wallet, '钱包'),
   dash(R.tickets, '工单'),
   dash(R.help, '文档'),

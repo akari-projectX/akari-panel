@@ -1218,4 +1218,15 @@ export const EN: Record<string, string> = {
   '登录或注册': 'Sign in or sign up',
   '密码要求': 'Password requirements',
   '通知': 'Notifications',
+  /* ── 门户 v2：商店、订单 ── */
+  '省 {n}%': 'Save {n}%',
+  '扫码付款': 'Scan to pay',
+  '跳转到收银台': 'Pay on the checkout page',
+  'USDT 链上转账': 'USDT on-chain transfer',
+  '订单进度': 'Order progress',
+  '付款二维码': 'Payment QR code',
+  '订单概况': 'Order overview',
+  '按状态筛选': 'Filter by status',
+  '还剩 {n} 天': '{n} days left',
+  '余额 {v}。开启后下单时先扣余额，不足部分再用所选方式支付。': 'Balance {v}. When on, orders use your balance first and the rest is paid with the method you choose.',
 };

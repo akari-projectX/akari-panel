@@ -7,14 +7,15 @@
   /*
    * 对话框（bits-ui Dialog：焦点困在框里、Esc、点遮罩、锁滚动、关闭后焦点还给触发它的元素、aria-modal / 标题 / 说明）。
    * 版式是样稿 shop.html#confirm 的 .dlg：标题 + 一行说明、正文、底部右对齐的按钮；窄屏（≤ 720px）变成底部抽屉，按钮等宽。
-   * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。
+   * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。wide：520px（确认订单，样稿同宽）。
    */
   let {
-    open = $bindable(false), onOpenChange, dismissible = true, title, description, icon, children, footer,
+    open = $bindable(false), onOpenChange, dismissible = true, wide = false, title, description, icon, children, footer,
   }: {
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     dismissible?: boolean;
+    wide?: boolean;
     title: string;
     description?: string;
     icon?: Snippet;
@@ -27,7 +28,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="dlg-overlay" />
     <Dialog.Content
-      class="dlg"
+      class={wide ? 'dlg wide' : 'dlg'}
       escapeKeydownBehavior={dismissible ? 'close' : 'ignore'}
       interactOutsideBehavior={dismissible ? 'close' : 'ignore'}
     >

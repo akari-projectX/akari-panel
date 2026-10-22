@@ -12,7 +12,13 @@ import { holdBoot } from './boot.svelte';
  *   const nodes = resource(() => ({ key: K.nodes, fetch: () => meApi.nodes(), enabled: full }));
  *   nodes.data / nodes.error / nodes.loading / nodes.reload() / nodes.set(v)
  */
-export type Spec<T> = { key: string; fetch: () => Promise<T>; enabled?: boolean };
+export type Spec<T> = {
+  key: string;
+  fetch: () => Promise<T>;
+  enabled?: boolean;
+  /** 键变了而新键没有缓存时先留着上一个键的数据（= React useApi 的 keepPrevious：商店换优惠码 / 余额抵扣重新报价时不闪空） */
+  keep?: boolean;
+};
 
 export type Resource<T> = {
   readonly data: T | undefined;
@@ -43,7 +49,8 @@ export function resource<T>(spec: () => Spec<T>): Resource<T> {
   function run(o: Spec<T>): (() => void) | undefined {
     if (o.key !== s.key) {
       s.key = o.key;
-      s.data = readCache<T>(o.key);
+      const cached = readCache<T>(o.key);
+      if (cached !== undefined || !o.keep) s.data = cached;
       s.error = undefined;
     }
     if (!(o.enabled ?? true)) {
