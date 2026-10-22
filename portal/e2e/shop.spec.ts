@@ -113,6 +113,17 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await page.keyboard.press('Escape');
 });
 
+test('#31 the current plan: quota, reset period and next reset, expiry, speed', async ({ page }) => {
+  await signIn(page, 'user@e2e.test');
+  await shop(page);
+  const cur = page.getByRole('region', { name: '当前套餐' });
+  await expect(cur.getByRole('heading', { name: /E2E 标准/ })).toBeVisible();
+  await expect(cur).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
+  await expect(cur).toContainText('300 Mbps');
+  await expect(cur).toContainText(/\/ 100 GB/);
+  await expect(cur).toContainText(/\d{4}-\d{2}-\d{2} 重置流量，剩余 [\d.]+ GB/);
+});
+
 test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 #44 a switch with proration is paid by QR; #46 types', async ({ page }, info) => {
   const email = mine(info, 'v2-shop');
   await signIn(page, email);
