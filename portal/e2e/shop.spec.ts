@@ -356,15 +356,16 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
   await expect(list).toHaveCount(3);
 });
 
-test('#19 renewal scope: an expired account can subscribe again; a used-up quota preselects the traffic reset pack', async ({ page }) => {
+test('#19 renewal scope (expired): the shop still works and the plan can be subscribed again', async ({ page }) => {
   await signIn(page, 'expired@e2e.test');
   await shop(page);
   await expect(page.getByRole('heading', { name: '商店' })).toBeVisible();
   /* 账户提醒只在仪表盘 */
   await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
   await expect(card(page, seed.plan).getByRole('button', { name: '立即订阅' })).toBeVisible();
+});
 
-  await page.context().clearCookies();
+test('#19 renewal scope (quota used up): the dashboard leads to the shop, which preselects the traffic reset pack', async ({ page }) => {
   await signIn(page, 'quota@e2e.test');
   await page.goto('/');
   await ready(page);
