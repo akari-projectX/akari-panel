@@ -1,7 +1,8 @@
 <script lang="ts">
   import { holdBoot } from '$lib/boot.svelte';
   import { chunkLoaded, loadPage, loadedPage } from '$lib/lazy';
-  import type { Page, PageModule } from '$lib/pages';
+  import type { Component } from 'svelte';
+  import type { Page, PageModule, PageProps } from '$lib/pages';
   import ErrorScreen from './ErrorScreen.svelte';
 
   /*
@@ -13,6 +14,7 @@
   // svelte-ignore state_referenced_locally
   let mod = $state<PageModule | undefined>(loadedPage(page.load));
   let failed = $state(false);
+  const View = $derived(mod?.default as Component<PageProps> | undefined);
 
   $effect(() => {
     if (mod) { chunkLoaded(); return; }
@@ -24,9 +26,9 @@
   });
 </script>
 
-{#if mod}
+{#if View}
   <div class="page">
-    <mod.default title={page.title} {params} />
+    <View title={page.title} {params} />
   </div>
 {:else if failed}
   <ErrorScreen kind="chunk" />

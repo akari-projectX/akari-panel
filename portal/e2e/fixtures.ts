@@ -1,11 +1,13 @@
 /*
- * 门户 v2 端到端测试的公共部分：每个用例都收集 CSP 违规与页面异常（必须为空），登录（走接口：登录页在 PR 2 迁移），截图。
+ * 门户 v2 端到端测试的公共部分：每个用例都收集 CSP 违规与页面异常（必须为空），登录（走接口，或经登录页）、退出、
+ * 管理员接口与虚拟认证器（与 React 门户 spa/e2e 的同名工具相同；面板客户端直接用 spa/e2e/panel.ts），截图。
  * 数据来自 React 门户的 spa/e2e/seed.ts（E2E_SEED），面板由 ../scripts/e2e-portal.sh 起好。
  */
 import { readFileSync } from 'node:fs';
-import { expect, request, test as base, type Page, type TestInfo } from '@playwright/test';
+import { expect, request, test as base, type CDPSession, type Page, type TestInfo } from '@playwright/test';
+import { Client } from '../../spa/e2e/panel.ts';
 
-export const seed = JSON.parse(readFileSync(process.env.E2E_SEED ?? '', 'utf8')) as { password: string };
+export const seed = JSON.parse(readFileSync(process.env.E2E_SEED ?? '', 'utf8')) as { password: string; plan: string };
 
 /** 每个视口（desktop / mobile）各用一个账户的用例：`logout` → `logout-desktop@e2e.test` */
 export const mine = (info: TestInfo, name: string) => `${name}-${info.project.name}@e2e.test`;
@@ -54,4 +56,52 @@ export async function ready(page: Page, title?: string) {
 /** 设计评审截图：test-results/screens/<视口>-<名字>.png（CI 工件 portal-v2-screens） */
 export async function shot(page: Page, info: TestInfo, name: string) {
   await page.screenshot({ path: `test-results/screens/${info.project.name}-${name}.png`, fullPage: true });
+}
+
+/** 经登录页登录（不等结果） */
+export async function login(page: Page, email: string, password = seed.password) {
+  await page.goto('/login');
+  await page.getByLabel('邮箱', { exact: true }).fill(email);
+  await page.getByLabel('密码', { exact: true }).fill(password);
+  await page.getByRole('button', { name: '登录', exact: true }).click();
+}
+
+/** 经登录页登录，等到离开登录页 */
+export async function signInUI(page: Page, email: string, password = seed.password) {
+  await login(page, email, password);
+  await page.waitForURL((u) => !u.pathname.endsWith('/login'));
+}
+
+/** 从页头退出：桌面是邮箱下拉，窄屏是全屏菜单 */
+export async function signOut(page: Page, info: TestInfo) {
+  if (info.project.name === 'desktop') {
+    await page.locator('header button[aria-haspopup="menu"]').click();
+    await page.getByRole('menuitem', { name: '退出登录' }).click();
+  } else {
+    await page.getByRole('button', { name: '菜单' }).click();
+    await page.getByRole('dialog', { name: '菜单' }).getByRole('button', { name: '退出登录' }).click();
+  }
+}
+
+/** 管理员接口（每个文件一个会话） */
+let adminClient: Promise<Client> | null = null;
+export const admin = (): Promise<Client> => (adminClient ??= Client.admin());
+
+/** Chromium 的虚拟认证器（WebAuthn）：平台认证器、可发现凭据、已验证用户 */
+export async function authenticator(page: Page): Promise<CDPSession> {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: {
+      protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true,
+      isUserVerified: true, automaticPresenceSimulation: true,
+    },
+  });
+  return cdp;
+}
+
+/** 截图前切到深色（跟随系统的默认主题下，模拟系统深色） */
+export async function dark(page: Page) {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveClass(/dark/);
 }

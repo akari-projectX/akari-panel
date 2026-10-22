@@ -16,7 +16,8 @@ function sync() {
   loc.hash = location.hash;
 }
 
-export function navigate(to: string, opts: { replace?: boolean } = {}) {
+/** state：随这一条历史记录存下的数据（注销结果页读 `history.state.anonymized`） */
+export function navigate(to: string, opts: { replace?: boolean; state?: Record<string, unknown> } = {}) {
   const url = new URL(to, location.href);
   if (url.origin !== location.origin) {
     location.assign(url.href);
@@ -24,8 +25,8 @@ export function navigate(to: string, opts: { replace?: boolean } = {}) {
   }
   const next = url.pathname + url.search + url.hash;
   const same = next === location.pathname + location.search + location.hash;
-  if (opts.replace || same) history.replaceState(history.state, '', next);
-  else history.pushState({}, '', next);
+  if (opts.replace || same) history.replaceState(opts.state ?? history.state, '', next);
+  else history.pushState(opts.state ?? {}, '', next);
   sync();
   if (!same && !url.hash) window.scrollTo(0, 0);
 }
@@ -47,7 +48,8 @@ function onClick(e: MouseEvent) {
   /* 同一页内的锚点（「跳到主要内容」）交给浏览器：它会滚动并移动焦点 */
   if (url.hash && url.pathname === location.pathname && url.search === location.search) return;
   e.preventDefault();
-  navigate(url.pathname + url.search + url.hash);
+  /* <a data-replace>：替换当前这条历史记录（注销结果页「返回登录页」，后退不再回到结果页） */
+  navigate(url.pathname + url.search + url.hash, { replace: a.dataset.replace !== undefined });
 }
 
 let started = false;

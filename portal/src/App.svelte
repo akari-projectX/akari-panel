@@ -57,7 +57,8 @@
   });
 
   /* 导航上的提醒数字：启动画面收起之后再取，换了账户（范围）重新取 */
-  const who = $derived(auth.me ? `${auth.me.id}:${scope()}` : '');
+  /* 待绑定邮箱的账户除了 /me 什么都取不到：不取 */
+  const who = $derived(auth.me && !auth.me.email_pending ? `${auth.me.id}:${scope()}` : '');
   $effect(() => {
     if (boot.out && who) loadAttention(scope());
   });
@@ -84,5 +85,5 @@
 {:else if dash && auth.me}
   <DashLayout>{@render content()}</DashLayout>
 {:else}
-  <GuestLayout>{@render content()}</GuestLayout>
+  <GuestLayout wide={!!found?.page.wide}>{@render content()}</GuestLayout>
 {/if}

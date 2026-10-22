@@ -19,7 +19,9 @@
     "node": ">=22.18"
   },
   "dependencies": {
-    "@lucide/svelte": "^1.61.0"
+    "@internationalized/date": "^3.12.4",
+    "@lucide/svelte": "^1.61.0",
+    "bits-ui": "^2.20.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
