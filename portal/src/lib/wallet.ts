@@ -1,4 +1,4 @@
-import { portalUrl, type CommissionStatus, type InviteCodes, type LedgerKind, type MyInvite, type UsdtChain, type WithdrawalStatus } from '@/api';
+import { portalUrl, type Commission, type CommissionStatus, type InviteCodes, type LedgerKind, type MyInvite, type UsdtChain, type WithdrawalStatus } from '@/api';
 import { R } from './routes';
 
 /*
@@ -60,6 +60,14 @@ export const C_STATUS: Record<CommissionStatus, { text: string; tone: Tone }> = 
   credited: { text: '已入账', tone: 'ok' },
   reversed: { text: '已追回', tone: '' },
 };
+
+/** 一条返佣的状态：入账后被退款追回的（面板里仍是 credited，带 clawback_cents）也显示「已追回」 */
+export const commissionStatus = (x: Pick<Commission, 'status' | 'clawback_cents'>) =>
+  C_STATUS[x.status === 'credited' && x.clawback_cents ? 'reversed' : x.status];
+
+/** 有没有被追回的佣金（入账前撤销的 reversed，或入账后被退款追回的） */
+export const anyClawback = (i: Pick<MyInvite, 'reversed_cents' | 'commissions'>) =>
+  i.reversed_cents > 0 || i.commissions.some((x) => !!x.clawback_cents);
 
 /** 长地址 / 交易哈希：中间省略 */
 export const shorten = (v: string) => (v.length > 20 ? `${v.slice(0, 8)}…${v.slice(-8)}` : v);

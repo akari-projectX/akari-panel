@@ -437,6 +437,8 @@ export type Commission = {
   available_at: string;
   credited_at: string | null;
   reversed_at: string | null;
+  /** 中-4：入账后因订单退款被追回的金额（状态仍是 credited）；没追回 = null */
+  clawback_cents?: number | null;
   created_at: string;
 };
 
