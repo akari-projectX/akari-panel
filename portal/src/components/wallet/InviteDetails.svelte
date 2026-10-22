@@ -10,7 +10,7 @@
   import { t, tp } from '$lib/i18n.svelte';
   import type { Resource } from '$lib/resource.svelte';
   import { toast } from '$lib/toast.svelte';
-  import { C_STATUS, inviteLink } from '$lib/wallet';
+  import { anyClawback, commissionStatus, inviteLink } from '$lib/wallet';
 
   /*
    * 「邀请返佣」分页（同 React 门户 wallet-invite.tsx 的 InviteDetails）：收益四个数（不放大）、我的邀请码（每个账户一个，
@@ -43,7 +43,7 @@
         <div><dt>{t('已入账')}</dt><dd>{formatMoney(i.credited_cents)}</dd></div>
         <div><dt>{t('已追回')}</dt><dd>{formatMoney(i.reversed_cents)}</dd></div>
       </dl>
-      {#if i.reversed_cents > 0}
+      {#if anyClawback(i)}
         <p class="note-l">{t('被追回的佣金因订单退款从余额里扣回，余额不够时差额记为欠款，从之后入账的佣金里抵扣（余额不会变成负数）。')}</p>
       {/if}
     </div>
@@ -100,7 +100,7 @@
             </div>
             <span class="right">
               <b class="num">{formatMoney(x.amount_cents)}</b>
-              <span class="st {C_STATUS[x.status].tone}">{t(C_STATUS[x.status].text)}</span>
+              <span class="st {commissionStatus(x).tone}">{t(commissionStatus(x).text)}</span>
             </span>
           </div>
         {/each}
@@ -125,7 +125,7 @@
                 <td class="n q">{formatMoney(x.base_cents)}</td>
                 <td class="n"><span class="strong">{formatMoney(x.amount_cents)}</span> <span class="rate">({x.rate_percent}%)</span></td>
                 <td>
-                  <span class="st {C_STATUS[x.status].tone}">{t(C_STATUS[x.status].text)}</span>
+                  <span class="st {commissionStatus(x).tone}">{t(commissionStatus(x).text)}</span>
                   {#if x.status === 'pending'}<span class="when-l">{tp('{d} 入账', { d: formatDate(x.available_at) })}</span>{/if}
                 </td>
               </tr>

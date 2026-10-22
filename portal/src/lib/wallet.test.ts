@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InviteCodes, MyInvite } from '@/api';
-import { chainName, inviteLink, shorten, spent, terms, usdtEstimate } from './wallet';
+import { anyClawback, chainName, commissionStatus, inviteLink, shorten, spent, terms, usdtEstimate } from './wallet';
 
 const t = (s: string) => s;
 const tp = (s: string, v: Record<string, string | number>) => s.replace(/\{(\w+)\}/g, (_, k: string) => String(v[k]));
@@ -16,6 +16,15 @@ describe('wallet helpers', () => {
     expect(chainName('trc20')).toBe('TRC20 (Tron)');
     expect(chainName('ton')).toBe('TON');
     expect(chainName('newnet')).toBe('newnet');
+  });
+
+  it('a credited commission clawed back by a refund reads as clawed back', () => {
+    expect(commissionStatus({ status: 'credited', clawback_cents: 200 }).text).toBe('已追回');
+    expect(commissionStatus({ status: 'credited', clawback_cents: null }).text).toBe('已入账');
+    expect(commissionStatus({ status: 'pending' }).text).toBe('冻结中');
+    const c = { status: 'credited' as const, clawback_cents: 200 };
+    expect(anyClawback({ reversed_cents: 0, commissions: [c] as MyInvite['commissions'] })).toBe(true);
+    expect(anyClawback({ reversed_cents: 0, commissions: [] })).toBe(false);
   });
 
   it('shortens long addresses in the middle', () => {
