@@ -19,6 +19,46 @@ async function settings(page: Page, path = '/account', title = '设置') {
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
 }
 
+/** 去一页：桌面 = 顶栏导航 / 账户菜单；手机 = 全屏菜单里的链接（客户端切页） */
+async function go(page: Page, info: TestInfo, name: '仪表盘' | '账户设置') {
+  if (isDesktop(info) && name === '仪表盘') {
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name }).click();
+  } else if (isDesktop(info)) {
+    await page.locator('header button[aria-haspopup="menu"]').click();
+    await page.getByRole('menu', { name: '账户菜单' }).getByRole('menuitem', { name: /^账户设置/ }).click();
+  } else {
+    await page.getByRole('button', { name: '菜单' }).click();
+    await page.getByRole('dialog', { name: '菜单' }).getByRole('link', { name: new RegExp(`^${name}`) }).click();
+  }
+}
+
+test('page transition: a page whose chunk is still downloading never renders over the next one; what is typed at once is kept', async ({ page }, info) => {
+  /* 仪表盘分包慢：切过去时还在下载，马上又切到设置——下载完的仪表盘不能盖住设置页，也不能把刚打开的弹窗冲掉 */
+  let slow = 0;
+  await page.route(/\/assets\/Dashboard-[^/]+\.js$/, async (r) => {
+    slow++;
+    await new Promise((ok) => setTimeout(ok, 3000));
+    await r.continue();
+  });
+  const email = `transition-${info.project.name}-${Date.now()}@e2e.test`;
+  await (await admin()).call('POST', '/api/v1/users', { email, password: seed.password });
+  await signIn(page, email);
+  await page.goto('/orders');
+  await ready(page, '我的订单');
+  await go(page, info, '仪表盘');
+  await go(page, info, '账户设置');
+  /* 不等仪表盘：马上打开「更换邮箱」并填 */
+  await page.locator('#account').getByRole('button', { name: '更换', exact: true }).click();
+  const change = page.getByRole('dialog', { name: '更换邮箱' });
+  await change.getByLabel('新邮箱地址').fill(`next-${email}`);
+  await page.waitForTimeout(3500);
+  expect(slow).toBeGreaterThan(0);
+  await expect(page).toHaveURL(/\/account$/);
+  await expect(page.locator('main h1')).toHaveText('设置');
+  await expect(page.locator('main [aria-busy]')).toHaveCount(0);
+  await expect(change.getByLabel('新邮箱地址')).toHaveValue(`next-${email}`);
+});
+
 test('#17 #21 #20 #22 #23 settings: verify the address, change it in two steps, change the password, mail language follows an explicit switch only', async ({ page }, info) => {
   const email = mine(info, 'v2-account');
   psql(`UPDATE users SET email_verified_at = NULL WHERE email = '${email}';`);

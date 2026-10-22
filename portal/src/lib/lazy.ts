@@ -68,6 +68,15 @@ export function loadPage<T>(load: () => Promise<T>): Promise<T> {
   return p;
 }
 
+/**
+ * 预载一个页面模块（lib/prefetch 用）：成功后 loadedPage 同步取得到；失败静默——真正进页面时 loadPage 照常重试 / 重新加载。
+ * 浏览器对同一个模块地址只发一次请求，预载在途时进页面的 import() 复用它。
+ */
+export function preloadPage<T>(load: () => Promise<T>): Promise<void> {
+  if (done.has(load)) return Promise.resolve();
+  return (cache.get(load) ?? load()).then((m) => { done.set(load, m); }, () => {});
+}
+
 /** Vite 的模块预加载失败：同样重新加载一次（之后照常抛出，交给页面） */
 export function watchPreloadErrors() {
   addEventListener('vite:preloadError', (e) => {
