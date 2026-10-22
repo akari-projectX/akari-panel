@@ -189,7 +189,7 @@ test('settings: sign out of every device from the security section', async ({ pa
   await signIn(elsewhere, email);
   await settings(page, '/account#security');
   await page.locator('#security').getByRole('button', { name: '全部退出' }).click();
-  const confirm = page.getByRole('dialog', { name: '退出所有设备？' });
+  const confirm = page.getByRole('alertdialog', { name: '退出所有设备？' });
   await expect(confirm.getByText('订阅链接不受影响，客户端照常连接')).toBeVisible();
   await confirm.getByRole('button', { name: '全部退出' }).click();
   await expect(page).toHaveURL(/\/login/);
@@ -209,7 +209,7 @@ test('settings: an old-format link (no stored copy) can still be reset from sett
   await expect(sub.getByText('旧格式链接，重置后可查看')).toBeVisible();
   await expect(sub.getByRole('link', { name: '去导入' })).toHaveCount(0);
   await sub.getByRole('button', { name: '重置', exact: true }).click();
-  const confirm = page.getByRole('dialog', { name: '重置订阅？' });
+  const confirm = page.getByRole('alertdialog', { name: '重置订阅？' });
   await expect(confirm.getByText('链接泄露时重置。所有设备都会断开，需要重新导入。')).toBeVisible();
   await confirm.getByRole('button', { name: '确认重置' }).click();
   await expect(confirm).toHaveCount(0);

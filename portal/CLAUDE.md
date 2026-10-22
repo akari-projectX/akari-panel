@@ -21,7 +21,7 @@
   Esc 还焦点、Tab 关闭、点外面关闭；全屏菜单是模态对话框：焦点困在「关闭按钮 + 菜单」、Esc、锁滚动、切页 / 变宽自动收起；
   aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
   不为外壳引入 bits-ui，首屏更小。
-- **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；
+- **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
   窄屏是底部抽屉）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
   所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
 - 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）与 React 门户
@@ -123,7 +123,7 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
 - `e2e/`（Playwright，自己的 Playwright 版本与 Chromium（CI 单独安装））：`../scripts/e2e-portal.sh` 跑完 React 门户的用例后，以 `AKARI_PORTAL_V2=1`
   重启同一个面板（同一份种子数据），跑这里的用例：桌面 1440×900、手机 390×844，减少动效；每个用例收集 CSP 违规与页面异常。
   `fixtures.ts`：`signIn`（走接口）、`login` / `signInUI`（经登录页）、`signOut`（桌面邮箱下拉 / 窄屏菜单）、`admin()`（spa/e2e/panel.ts 的 Client）、
-  `authenticator`（虚拟 WebAuthn）、`dark`。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`；会改密码 / 改登录方式的用例用
+  `authenticator`（虚拟 WebAuthn；服务端带 excludeCredentials，同一账户再添加一个要先换一台虚拟认证器）、`dark`。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`；会改密码 / 改登录方式的用例用
   `v2-reset-<视口>`、`v2-passkey-<视口>`（spa/e2e/seed.ts 里给门户 v2 单独建的，React 套件先跑、会改它自己的那几个账户）。
   `auth.spec.ts` 覆盖 React `spa/e2e/auth.spec.ts` 的全部场景，外加通行密钥注册 + 绑定邮箱、站点设置取不到、条款 / 隐私、注销结果页。
 - 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-v2-screens`；每个 PR 的终版截图另存到工作区

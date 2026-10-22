@@ -80,11 +80,11 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
 
   /* 关闭不能撤销：先确认 */
   await thread.getByRole('button', { name: '问题已解决，关闭工单' }).click();
-  const confirm = page.getByRole('dialog', { name: '关闭这张工单？' });
+  const confirm = page.getByRole('alertdialog', { name: '关闭这张工单？' });
   await expect(confirm.getByText('关闭后不能再回复')).toBeVisible();
   await confirm.getByRole('button', { name: '关闭工单' }).click();
   await expect(page.getByText('工单已关闭').first()).toBeVisible();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('dialog').or(page.getByRole('alertdialog'))).toHaveCount(0);
 
   /* ?id= 直达（仪表盘「客服回复了」的链接）：打开那一张，参数去掉；已关闭的只说明请新开一张 */
   await page.goto(`/tickets?id=${id}`);
@@ -198,7 +198,8 @@ test('#59 docs: categories wrap (none cut off), the device line, search, an arti
   await expect(first.locator('.unread-dot')).toHaveCount(0);
 });
 
-test('docs: a long article (code, quote, nested headings), copy the subscription link, no sideways scroll; screens', async ({ page }, info) => {
+test('docs: a long article (code, quote, nested headings), copy the subscription link, no sideways scroll; screens', async ({ page, context }, info) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await signIn(page, 'user@e2e.test');
   await open(page, '/help?cat=' + encodeURIComponent('iOS 与 iPadOS 教程'), '使用手册');
   await page.getByText(/在 iPhone 上用 Shadowrocket/).first().click();
@@ -208,6 +209,7 @@ test('docs: a long article (code, quote, nested headings), copy the subscription
   /* 复制订阅链接（有订阅的账户） */
   await page.getByRole('button', { name: '复制订阅链接' }).click();
   await expect(page.getByText('订阅链接已复制').first()).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^https?:\/\//);
   if (!isDesktop(info)) await noSideways(page);
   await shot(page, info, 'help-article-light');
   await dark(page);

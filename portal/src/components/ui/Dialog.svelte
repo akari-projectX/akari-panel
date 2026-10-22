@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Dialog } from 'bits-ui';
+  import { AlertDialog, Dialog } from 'bits-ui';
   import X from '@lucide/svelte/icons/x';
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n.svelte';
@@ -7,27 +7,32 @@
   /*
    * 对话框（bits-ui Dialog：焦点困在框里、Esc、点遮罩、锁滚动、关闭后焦点还给触发它的元素、aria-modal / 标题 / 说明）。
    * 版式是样稿 shop.html#confirm 的 .dlg：标题 + 一行说明、正文、底部右对齐的按钮；窄屏（≤ 720px）变成底部抽屉，按钮等宽。
+   * alert：确认 / 破坏性操作用 role="alertdialog"（bits-ui AlertDialog，同 React 门户），aria-labelledby / aria-describedby 指向标题和说明。
    * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。wide：520px（确认订单，样稿同宽）。
    */
   let {
-    open = $bindable(false), onOpenChange, dismissible = true, wide = false, title, description, icon, children, footer,
+    open = $bindable(false), onOpenChange, dismissible = true, wide = false, alert = false, title, description, icon, children, footer,
   }: {
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     dismissible?: boolean;
     wide?: boolean;
+    alert?: boolean;
     title: string;
     description?: string;
     icon?: Snippet;
     children?: Snippet;
     footer?: Snippet;
   } = $props();
+
+  /* AlertDialog 与 Dialog 共用同一份根状态（Title / Description / Close 通用），只换 Root 与 Content 的角色 */
+  const D = $derived(alert ? AlertDialog : Dialog);
 </script>
 
-<Dialog.Root bind:open {onOpenChange}>
+<D.Root bind:open {onOpenChange}>
   <Dialog.Portal>
     <Dialog.Overlay class="dlg-overlay" />
-    <Dialog.Content
+    <D.Content
       class={wide ? 'dlg wide' : 'dlg'}
       escapeKeydownBehavior={dismissible ? 'close' : 'ignore'}
       interactOutsideBehavior={dismissible ? 'close' : 'ignore'}
@@ -46,6 +51,6 @@
       </header>
       {#if children}<div class="bd">{@render children()}</div>{/if}
       {#if footer}<footer>{@render footer()}</footer>{/if}
-    </Dialog.Content>
+    </D.Content>
   </Dialog.Portal>
-</Dialog.Root>
+</D.Root>

@@ -7,7 +7,7 @@
    * 确认对话框（与 React 门户 components/ui/panels 的 ConfirmDialog 相同的用法）：标题、可选说明、「会发生什么」的清单、
    * 取消 + 确认。确认按钮等 onconfirm 完成：调用方在成功时把 open 关掉，失败的原因经 error 留在框里。
    * tone：warn（琥珀实底，退出所有设备、只用通行密钥）/ danger（红色实底，删除）/ brand（关闭工单这类普通确认）。
-   * 进行中（pending）时不能关掉。
+   * 进行中（pending）时不能关掉。role="alertdialog"（同 React 门户）。
    */
   let {
     open = $bindable(false), title, description, consequences = [], confirmLabel, tone = 'brand', pending = false, error = null, onconfirm, icon,
@@ -30,7 +30,7 @@
   }
 </script>
 
-<Dialog bind:open onOpenChange={change} {title} {description} {icon}>
+<Dialog alert bind:open onOpenChange={change} {title} {description} {icon}>
   {#if consequences.length || error}
     {#if consequences.length}
       <ul class="cons">
