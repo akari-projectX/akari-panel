@@ -164,7 +164,8 @@
   main.wrap { padding-top: 40px; padding-bottom: 24px; min-height: calc(100vh - 61px - 24px - 65px); }
   .ph { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 28px; }
   .ph h1 { font-size: 28px; line-height: 36px; font-weight: 700; color: var(--fg); letter-spacing: -.01em; }
-  .ph p { color: var(--muted); margin-top: 4px; }
+  .ph > div { min-width: 0; }
+  .ph p { color: var(--muted); margin-top: 4px; overflow-wrap: anywhere; }
   .sec { padding: 32px 0; border-top: 1px solid var(--line); }
   .quiet { color: var(--faint); font-size: 13px; }
   .link { color: var(--brand); font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }

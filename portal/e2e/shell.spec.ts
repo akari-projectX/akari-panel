@@ -260,7 +260,7 @@ test('old and unknown addresses', async ({ page }) => {
 test('sign out ends the session', async ({ page }, info) => {
   await signIn(page, mine(info, 'logout'));
   await page.goto('/orders');
-  await ready(page, '订单');
+  await ready(page, '我的订单');
   if (desktop(info.project.name)) {
     await page.locator('header button[aria-haspopup="menu"]').click();
     await page.getByRole('menuitem', { name: '退出登录' }).click();
