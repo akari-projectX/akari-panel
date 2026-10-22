@@ -1,11 +1,11 @@
 /*
- * 门户 v2 · PR 6：工单、公告、文档（知识库）。覆盖 React 门户 spa/e2e/support.spec.ts #57–#59 与 polish.spec.ts #57 的全部场景，
+ * 门户 v2 · PR 6：工单、公告、文档（知识库）。覆盖切换前 React 门户 support.spec.ts #57–#59 与 polish.spec.ts #57 的全部场景，
  * 外加：工单 ?id= 直达、封禁账户的工单（没有「关联订单」）、关闭后的说明、文档的设备捷径 / 未读点 / 上一篇下一篇 / 窄屏目录，
  * 以及设计评审截图（桌面 / 手机 × 浅 / 深）。
  * 账户：refund@e2e.test（有订单，工单可以关联）、user@e2e.test（公告、文档）、banned@e2e.test。
  */
 import type { Page, TestInfo } from '@playwright/test';
-import { psql } from '../../spa/e2e/panel.ts';
+import { psql } from './support/panel.ts';
 import { admin, dark, expect, ready, shot, signIn, test } from './fixtures';
 
 test.describe.configure({ mode: 'serial' });
