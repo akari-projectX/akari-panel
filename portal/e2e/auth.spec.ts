@@ -196,6 +196,8 @@ test('#11 Turnstile: its origin is allowed only while on; the widget token goes 
   const a = await admin();
   const off = await page.goto('/login');
   expect(off?.headers()['content-security-policy']).not.toContain('challenges.cloudflare.com');
+  /* 离开这一页再开 Turnstile：否则这一页的 FormGuard 取到新设置会自己重新加载（见 form-guard），和下面的 goto 抢 */
+  await page.goto('about:blank');
   const before = await a.patch('auth', FIELDS.auth, { turnstile_site_key: 'e2e-site-key', turnstile_secret: 'e2e-secret', turnstile_login: true });
   try {
     await page.route('https://challenges.cloudflare.com/**', (route) => route.fulfill({
