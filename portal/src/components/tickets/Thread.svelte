@@ -46,11 +46,11 @@
   const closing = new Pending();
   let asking = $state(false);
 
-  /* 详情到了：列表跟着去掉未读 */
-  let seen = '';
+  /* 这一次打开的详情取回来了（面板此时已标为已读）：列表跟着去掉未读，每次打开一回 */
+  let reported = false;
   $effect(() => {
-    const id = detail.data?.id;
-    if (id && id !== seen) { seen = id; onchanged(); }
+    if (!ticket) { reported = false; return; }
+    if (!reported && !detail.loading && detail.data?.id === ticket.id) { reported = true; onchanged(); }
   });
 
   /* 打开、发出回复后滚到最新一条 */
