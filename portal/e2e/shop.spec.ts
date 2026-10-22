@@ -1,15 +1,15 @@
 /*
  * 门户 v2 · PR 4：商店、确认订单、订单、订单详情、付款。覆盖 React 门户 spa/e2e 的 shop.spec（#35–#49：服务端报价、折算与作废、
- * 拒绝原因、优惠码、余额、支付方式、二维码付款与轮询、取消、订单类型、三种退款去向、售罄）、usdt.spec（链上收款：唯一金额、
- * 确认数、付款结果、取消后的说明）、account.spec #19 的商店部分（续费范围），外加新设计的：待付款提醒挡住下单、
- * 订单列表筛选与窄屏行、付款结果只弹一次，以及设计评审截图（商店、确认订单 × 支付方式、USDT 付款页、订单列表、订单详情各状态
+ * 拒绝原因、优惠码、余额、支付方式、二维码付款与轮询、取消、订单类型、三种退款去向、售罄）、
+ * account.spec #19 的商店部分（续费范围），外加新设计的：待付款提醒挡住下单、
+ * 订单列表筛选与窄屏行、付款结果只弹一次，以及设计评审截图（商店、确认订单 × 支付方式、订单列表、订单详情各状态
  * × 桌面 / 手机 × 浅 / 深）。
  * 账户：v2-shop-<视口>（余额 200 元、标准套餐；本文件按顺序改它）、user@e2e.test（只看报价，不下单）、plain@e2e.test（无套餐）、
- * refund@e2e.test（三笔已退款订单）、expired / quota、v2-usdt-<视口>（用例里建）。整个套件 workers = 1，顺序执行。
+ * refund@e2e.test（三笔已退款订单）、expired / quota。整个套件 workers = 1，顺序执行。
  */
 import { readFileSync } from 'node:fs';
 import type { Locator, Page, TestInfo } from '@playwright/test';
-import { Client, payAtGateway, psql, until } from '../../spa/e2e/panel.ts';
+import { Client, payAtGateway, psql } from '../../spa/e2e/panel.ts';
 import { admin, dark, expect, mine, payResult, ready, seed, shot, signIn, test } from './fixtures';
 
 const isMobile = (info: TestInfo) => info.project.name === 'mobile';
@@ -375,90 +375,4 @@ test('#19 renewal scope (quota used up): the dashboard leads to the shop, which 
   await expect(page.locator('.plan').first()).toHaveClass(/current/);
   await expect(page.locator('.plan.current').getByRole('button', { name: '购买重置包' })).toBeVisible();
   await expect(page.getByRole('region', { name: '当前套餐' })).toContainText('流量已用完');
-});
-
-/* ── USDT 链上收款（React 门户 usdt.spec）：每个视口一个收款地址（同链同地址只能属于一个支付方式；React 套件用了 a / b） ── */
-const address = (project: string) => `0x${(project === 'mobile' ? 'd' : 'c').repeat(40)}`;
-
-async function rpc(path: string): Promise<void> {
-  const r = await fetch(`${process.env.E2E_MOCK_RPC}${path}`, { method: 'POST' });
-  if (!r.ok) throw new Error(`mock RPC: ${r.status}`);
-}
-
-test('USDT on-chain: unique exact amount on the shared address, the transfer confirmed, the order paid', async ({ page }, info) => {
-  const a = await admin();
-  const addr = address(info.project.name);
-  const method = await a.call<{ id: string }>('POST', '/api/v1/settings/payments', {
-    kind: 'usdt_chain', display_name: 'USDT（Polygon）', enabled: true,
-    config: { chain: 'polygon', address: addr, rpc_urls: process.env.E2E_MOCK_RPC, rate_cents: 720, confirmations: 3 },
-  });
-  const email = mine(info, 'v2-usdt');
-  await a.call('POST', '/api/v1/users', { email, password: seed.password });
-  try {
-    await signIn(page, email);
-    const order = async (screens = false) => {
-      await shop(page);
-      await card(page, seed.plan).getByRole('button', { name: '立即订阅' }).click();
-      const dialog = page.getByRole('dialog');
-      await option(dialog, 'USDT（Polygon）').click();
-      await expect(option(dialog, 'USDT（Polygon）')).toContainText('USDT 链上转账');
-      if (screens) {
-        await shot(page, info, 'confirm-usdt-light');
-        await dark(page);
-        await shot(page, info, 'confirm-usdt-dark');
-        await page.emulateMedia({ colorScheme: 'light' });
-      }
-      await dialog.getByRole('button', { name: /^支付 ¥/ }).click();
-      await expect(page.getByRole('heading', { name: 'USDT 转账付款' })).toBeVisible();
-    };
-
-    /* 先下一单再取消：页面说明保留期内到账仍会开通、没转的不要再转这个金额 */
-    await order(true);
-    await page.getByRole('button', { name: '取消订单' }).click();
-    await expect(page.getByTestId('chain-late')).toContainText('前到账的仍会自动开通');
-    await expect(page.getByTestId('chain-late')).toContainText('请不要再转这个金额');
-    await shot(page, info, 'usdt-cancelled-light');
-
-    await order();
-    /* 订单页：网络提醒、精确金额（¥15.00 ÷ 7.20 = 2.083… → 2.09，加 4 位识别尾数）、共用地址、二维码、倒计时 */
-    await ready(page, '订单详情');
-    await expect(page.getByText(/只能通过 Polygon \(PoS\) 网络转 USDT/)).toBeVisible();
-    const amount = (await page.getByTestId('chain-amount').textContent())?.trim() ?? '';
-    expect(amount).toMatch(/^2\.09\d{4}$/);
-    expect(amount.endsWith('0000')).toBe(false);
-    await expect(page.getByTestId('chain-amount').locator('span')).toHaveText(amount.slice(-4));
-    await expect(page.getByTestId('chain-address')).toHaveText(new RegExp(`^${addr}$`, 'i'));
-    await expect(page.getByText('这是本站共用的收款地址，订单按上面的精确金额识别。')).toBeVisible();
-    await expect(page.getByRole('img', { name: '收款地址二维码' })).toBeVisible();
-    await expect(page.getByTestId('chain-status')).toContainText('等待转账');
-    await expect(page.getByTestId('chain-countdown')).toHaveText(/^\d{2}:\d{2}$/);
-    await expect(page.getByText(/前到账的这笔金额仍会自动开通/)).toBeVisible();
-    await shot(page, info, 'usdt-order-light');
-    await dark(page);
-    await shot(page, info, 'usdt-order-dark');
-    await page.emulateMedia({ colorScheme: 'light' });
-
-    /* 转账：精确金额（含尾数）。先看到「已收到，确认中 1/3」，再出两个块达到 3 个确认即入账 */
-    await rpc(`/control/pay?to=${addr}&units=${Number(amount.replace('.', ''))}`);
-    await expect(page.getByTestId('chain-status')).toContainText(/已收到转账，确认中 [12]\/3/, { timeout: 30_000 });
-    await shot(page, info, 'usdt-confirming-light');
-    await rpc('/control/mine?n=2');
-    await payResult(page, '支付成功', seed.plan, 45_000);
-    await expect(page.locator('.bill-head')).toContainText('已付款');
-
-    /* 面板侧：链上入账 */
-    const c = await Client.user(email, seed.password);
-    type Row = { status: string; chain: { transfer: { status: string } | null } | null };
-    await until('the USDT order credited', async () => {
-      const [o] = await c.call<Row[]>('GET', '/api/v1/me/orders');
-      return o?.status === 'paid' && o.chain?.transfer?.status === 'credited';
-    });
-  } finally {
-    const m = await a.call<{ methods: { id: string; version: number }[] }>('GET', '/api/v1/settings/payments');
-    const cur = m.methods.find((x) => x.id === method.id)!;
-    await a.call('PUT', `/api/v1/settings/payments/${method.id}`, {
-      version: cur.version, display_name: 'USDT（Polygon）', enabled: false,
-      config: { chain: 'polygon', address: addr, rate_cents: 720, confirmations: 3 },
-    });
-  }
 });

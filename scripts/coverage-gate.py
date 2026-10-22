@@ -65,12 +65,7 @@ MODULES = {
     "src/billing/usdt.rs": 90.0,
     # C1: 易支付 (EPay) provider (MD5 signing, notify, query, configuration).
     "src/billing/epay.rs": 90.0,
-    # C2: USDT on-chain payments (kind + unique amounts, RPC parsers,
-    # watcher, unmatched-transfer admin) and the shared SSRF guard.
-    "src/billing/chain/mod.rs": 90.0,
-    "src/billing/chain/rpc.rs": 90.0,
-    "src/billing/chain/watch.rs": 90.0,
-    "src/billing/chain/admin.rs": 90.0,
+    # The shared SSRF guard of operator-supplied URLs (remote rule-sets).
     "src/outbound.rs": 90.0,
 }
 

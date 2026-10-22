@@ -46,7 +46,6 @@
 - **`src/console/components/inputs.tsx`**：`numErr(raw, tr, {min,max,int,money,allowEmpty})`、`intErr`/`intError`/`intOf`/`numText`、`AffixInput`（¥ 前缀 / GB 后缀）、`UnitInput`、`RadioCards`、`ChoiceChip`、`LangTabs`（中 / EN + 填写状态点）、`GroupChips`（`groups` 来自 `servers.ts` 的 `useGroups`）、`PasswordField`（生成 / 显示 / 强度条）。
 - **`src/console/components/status.tsx`**：`OrdStatus`（含 未开通 / 退款中 / 部分退款 / 已过期；`orderState(row)`）、`UserStatus`（含 已注销；`userState(row)`）、`CouponStatus`（`couponState(row)`）、`ServerStatus`（`serverStateOf(row)`）；都可传 `state` 或行。
 - **`src/console/components/settings-kit.tsx`**（原 `pages/settings-kit.tsx`）：`useDraft`（服务器值 + 补丁；保存成功后调 `saved()` 而不是 `reset()`：只去掉发出去的修改，保存进行中又改的留在保存栏）、`useSavePart` + **`SectionForm`**（唯一保存栏的作用域：汇总、⌘S、离开保护；系统设置每个分区一个）+ `SaveBar`（展示组件）、`FieldRow`/`SwitchRow`（加 `changed` 蓝条）、`InfoRow`、`SRow`（v2：多控件行，`changed`/`locked`/`error`/`wide`）、`DangerZone`/`DangerRow`、`useOwner`/`OwnerNotice`/`OwnerBadge`、`ReadValue`、`Panel`、`Loaded`、`Warnings`、`TimeZonePicker`、校验 `intError`/`intErr`/`domainError`/`urlError`。
-- **USDT 链上收款（C2b）**：`components/payments-chain.tsx`（网络表 = 面板 `billing::chain::CHAINS` 的镜像：链 ID、官方 USDT 合约、默认确认数、区块浏览器；`usdt()` 最小单位 → 文本、`TxLink`、测试连接结果 `ChainTestResult`）供 系统设置 → 支付方式 与 `components/finance-chain.tsx`（资金 → 链上收款，FIN-06）共用；面板加网络时两边一起改。
 - **路由**：`router.tsx` 的 `useQS()` → `[query, patch(obj, replace?)]`，一次改多个查询参数（`null`/"" 删除；默认 push，搜索框打字时传 `replace`）。
 - **截图集**：`e2e/screens/<区域>.ts`，格式见 `e2e/screens/README.md`。
 

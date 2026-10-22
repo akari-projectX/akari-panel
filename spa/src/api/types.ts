@@ -336,37 +336,6 @@ export type MyOrder = {
   refund_pending: boolean;
   /** 退款对套餐的影响：none 只退钱、cancel 套餐已结束、rollback 到期时间已回退、restore 已恢复换套餐前的套餐 */
   refund_effect: RefundEffect | null;
-  /** USDT 链上收款的订单才有：转到哪、转多少（精确到 6 位小数）、看到的转账与确认数 */
-  chain: ChainPay | null;
-};
-
-export type ChainNetwork = 'polygon' | 'plasma';
-
-/**
- * 链上付款（面板 billing::chain）。收款地址是这个支付方式共用的，订单靠精确金额识别：
- * amount 的最后 4 位小数是这一单的识别尾数。
- */
-export type ChainPay = {
-  chain: ChainNetwork;
-  /** USDT 代币合约 */
-  token: string;
-  /** 收款地址（EIP-55） */
-  address: string;
-  /** 最小单位（6 位小数） */
-  amount_units: number;
-  /** 精确金额，6 位小数，如 "4.173815" */
-  amount: string;
-  /** 1 USDT 折合多少分 */
-  rate_cents: number;
-  confirmations_required: number;
-  /** 这个金额保留到何时（订单到期 + 宽限）：在此之前到账的转账仍会自动开通 */
-  reserved_until: string;
-  transfer: {
-    tx_hash: string;
-    status: 'pending' | 'credited' | 'assigned';
-    block_number: number;
-    confirmations: number;
-  } | null;
 };
 
 export type RefundRoute = 'original' | 'balance' | 'manual';

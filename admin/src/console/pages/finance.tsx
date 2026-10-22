@@ -3,9 +3,8 @@
 // commissions; each cell opens its sub-page) + page tabs: 提现审核 (the
 // review queue, components/people-finance.tsx), 余额 (find anyone, last
 // movement, ledger dialog with manual adjustment), 返利 (a day-grouped
-// ledger), 链上收款 (USDT on-chain transfers: unmatched ones to assign or
-// ignore, components/finance-chain.tsx). Routes /finance/withdrawals
-// (default), /finance/balances, /finance/commissions, /finance/chain; the old /finance/settings goes to 系统设置 → 邀请返利.
+// ledger). Routes /finance/withdrawals (default), /finance/balances,
+// /finance/commissions; the old /finance/settings goes to 系统设置 → 邀请返利.
 // The list endpoints take only a `limit` (≤ 500, no cursor): lists grow by
 // "load more" up to the cap and say so when they reach it.
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -35,11 +34,10 @@ import {
   waited,
 } from "../components/people-finance";
 import { WEEKDAYS } from "../components/ops-bits";
-import { ChainTransfers } from "../components/finance-chain";
 import { navigate, useQS, useRoute } from "../router";
 import { AdjustBalanceDialog } from "./user-detail";
 
-const SUBS = ["withdrawals", "balances", "commissions", "chain"] as const;
+const SUBS = ["withdrawals", "balances", "commissions"] as const;
 type Sub = (typeof SUBS)[number];
 const STEP = 50;
 
@@ -61,10 +59,7 @@ export function FinancePage() {
     <>
       <PageHeader
         title={tr("资金", "Finance")}
-        description={tr(
-          "提现审核、用户余额、邀请返利与链上收款",
-          "Withdrawals, balances, invite commissions and on-chain payments",
-        )}
+        description={tr("提现审核、用户余额与邀请返利", "Withdrawals, balances and invite commissions")}
         actions={
           <Button variant="ghost" asChild>
             <Link to="/settings/commission">
@@ -114,13 +109,11 @@ export function FinancePage() {
           { to: "/finance/withdrawals", label: tr("提现审核", "Withdrawals"), count: pending || undefined },
           { to: "/finance/balances", label: tr("余额", "Balances") },
           { to: "/finance/commissions", label: tr("返利", "Commissions") },
-          { to: "/finance/chain", label: tr("链上收款", "On-chain") },
         ]}
       />
       {tab === "withdrawals" && <WithdrawalsQueue summary={s} />}
       {tab === "balances" && <Balances />}
       {tab === "commissions" && <Commissions />}
-      {tab === "chain" && <ChainTransfers />}
     </>
   );
 }

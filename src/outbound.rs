@@ -1,6 +1,5 @@
 //! The SSRF guard of every panel request to an operator-supplied URL
-//! (remote rule-sets, `sub::rulesets::fetch`; the JSON-RPC endpoints of
-//! on-chain payment methods, `billing::chain::rpc`):
+//! (remote rule-sets, `sub::rulesets::fetch`):
 //!
 //! * https only (plain http only to 127.0.0.1 when a test switch allows
 //!   it — `Policy::loopback_http`); no user info, no fragment;
@@ -12,14 +11,12 @@
 //!   no DNS rebinding), TLS is verified for the host name (webpki roots);
 //! * compressed bodies are refused (none is asked for) and bodies are
 //!   capped by the caller (`read_capped`); deadlines and redirects are the
-//!   caller's (the rule-set GET follows a few, re-checked one by one; the
-//!   JSON-RPC POST follows none).
+//!   caller's (the rule-set GET follows a few, re-checked one by one).
 //!
 //! Errors are short English details for the admin; they never carry the
-//! URL (an RPC URL may hold an API key) nor the response body.
+//! URL (it may hold a token) nor the response body.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::{Bytes, Incoming};
@@ -31,23 +28,6 @@ use hyper_util::rt::TokioIo;
 pub struct Policy {
     /// Plain http to 127.0.0.1 (the address guard is skipped for it).
     pub loopback_http: bool,
-}
-
-/// `AKARI_TEST_LIMITS` `chain_rpc_loopback=1`: payment-method RPC calls
-/// may use plain http to 127.0.0.1 (smoke's and the tests' mock nodes).
-/// Process-wide because provider clients are built without the state;
-/// only ever switched on (never in production).
-static CHAIN_RPC_LOOPBACK: AtomicBool = AtomicBool::new(false);
-
-pub fn allow_chain_rpc_loopback() {
-    CHAIN_RPC_LOOPBACK.store(true, Ordering::Relaxed);
-}
-
-/// The policy of payment-method RPC calls in this process.
-pub fn chain_rpc_policy() -> Policy {
-    Policy {
-        loopback_http: CHAIN_RPC_LOOPBACK.load(Ordering::Relaxed),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,39 +276,36 @@ pub async fn read_capped(res: hyper::Response<Incoming>, max: usize) -> Result<B
     }
 }
 
-/// POST a JSON `body` to `url` (no redirects: a 3xx is an error), bounded
-/// by `timeout` in total; returns (status, body ≤ `max`).
-pub async fn post_json(
-    url: &str,
-    policy: Policy,
-    body: Vec<u8>,
-    timeout: std::time::Duration,
-    max: usize,
-) -> Result<(u16, Bytes), FetchError> {
-    let call = async {
-        let t = target(url, policy)?;
-        let res = send(
-            &t,
-            hyper::Method::POST,
-            &[
-                (header::CONTENT_TYPE, "application/json".to_string()),
-                (header::ACCEPT, "application/json".to_string()),
-            ],
-            Bytes::from(body),
-        )
-        .await?;
-        let status = res.status().as_u16();
-        Ok((status, read_capped(res, max).await?))
-    };
-    match tokio::time::timeout(timeout, call).await {
-        Ok(r) => r,
-        Err(_) => Err(failed("timed out")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// POST a JSON `body` to `url` through the guard (no redirects),
+    /// bounded by `timeout`; returns (status, body ≤ `max`).
+    async fn post_json(
+        url: &str,
+        policy: Policy,
+        body: Vec<u8>,
+        timeout: std::time::Duration,
+        max: usize,
+    ) -> Result<(u16, Bytes), FetchError> {
+        let call = async {
+            let t = target(url, policy)?;
+            let res = send(
+                &t,
+                hyper::Method::POST,
+                &[(header::CONTENT_TYPE, "application/json".to_string())],
+                Bytes::from(body),
+            )
+            .await?;
+            let status = res.status().as_u16();
+            Ok((status, read_capped(res, max).await?))
+        };
+        match tokio::time::timeout(timeout, call).await {
+            Ok(r) => r,
+            Err(_) => Err(failed("timed out")),
+        }
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()

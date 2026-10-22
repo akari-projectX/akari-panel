@@ -59,15 +59,10 @@ pub enum Via {
     Balance,
     /// W16: an amount-0 order a coupon covers (no credit, no balance).
     Coupon,
-    /// C2: an on-chain transfer (the watcher, or an admin assigning an
-    /// unmatched transfer).
-    Chain,
 }
 
 /// Every `paid_via` value (the admin filters accept exactly these).
-pub const VIAS: [&str; 7] = [
-    "notify", "query", "manual", "credit", "balance", "coupon", "chain",
-];
+pub const VIAS: [&str; 6] = ["notify", "query", "manual", "credit", "balance", "coupon"];
 
 impl Via {
     fn as_str(self) -> &'static str {
@@ -78,7 +73,6 @@ impl Via {
             Via::Credit => "credit",
             Via::Balance => "balance",
             Via::Coupon => "coupon",
-            Via::Chain => "chain",
         }
     }
 }

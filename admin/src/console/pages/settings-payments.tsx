@@ -47,7 +47,6 @@ import { EmptyState } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
 import { RadioCards, UnitInput } from "../components/inputs";
 import { CopyText } from "../components/kit";
-import { ChainTestResult, chainOf, chainTestSummary, type TestResult } from "../components/payments-chain";
 import {
   DangerRow,
   DangerZone,
@@ -121,14 +120,6 @@ const FIELD_EN: Record<string, string> = {
   channel: "Channel",
   api_mode: "Order mode",
   product_name: "Product name (optional, default “Akari - plan name”)",
-  chain: "Network",
-  address: "Receiving address (0x…, fixed once saved)",
-  token_contract: "Token contract (empty = the network's official USDT)",
-  rpc_urls: "RPC endpoints (https, up to 4, separated by spaces or commas; stored like a key, never shown)",
-  rate_cents: "Rate (CNY fen per 1 USDT, e.g. 720 = ¥7.20)",
-  confirmations: "Confirmations (empty = default: Polygon 32, Plasma 10)",
-  grace_hours: "Keep the amount after the order ends (hours, 1–168)",
-  log_range: "Blocks per query (1–10000; lower it for strict RPC limits)",
 };
 const OPTION_EN: Record<string, string> = {
   production: "Production",
@@ -139,14 +130,8 @@ const OPTION_EN: Record<string, string> = {
   qqpay: "QQ Wallet",
   mapi: "API (mapi.php; the payment page when refused)",
   submit: "Payment page (submit.php)",
-  polygon: "Polygon PoS (USDT)",
-  plasma: "Plasma (USDT0)",
 };
-const KIND_EN: Record<string, string> = {
-  alipay_f2f: "Alipay face-to-face",
-  epay: "EPay",
-  usdt_chain: "USDT on-chain",
-};
+const KIND_EN: Record<string, string> = { alipay_f2f: "Alipay face-to-face", epay: "EPay" };
 const KIND_DESC = (id: string, tr: Tr) =>
   ({
     alipay_f2f: tr(
@@ -157,97 +142,8 @@ const KIND_DESC = (id: string, tr: Tr) =>
       "易支付（MD5 接口）：一个支付方式对应一个商户的一个渠道；不支持原路退款",
       "EPay (MD5 interface): one method = one merchant's channel; no refunds to the original payment",
     ),
-    usdt_chain: tr(
-      "USDT 链上收款（Polygon / Plasma）：一个方式 = 一条链上的一个收款地址，按每单唯一的精确金额自动入账；面板不持有私钥，不支持原路退款",
-      "USDT on-chain (Polygon / Plasma): one method = one receiving address on one network, paid automatically by each order's unique exact amount; no private key in the panel, no refunds to the original payment",
-    ),
   })[id];
 /** The portal name an EPay method suggests for its channel (until the admin edits the name). */
-/** USDT on-chain: the hint / placeholder of a field (the token default, the RPC count, the rate in yuan). */
-function chainFieldHint(
-  name: string,
-  values: Record<string, string>,
-  cfg: Record<string, unknown>,
-  isSet: boolean,
-  tr: Tr,
-): { hint?: string; placeholder?: string } | undefined {
-  const c = chainOf(values.chain);
-  switch (name) {
-    case "token_contract":
-      if (cfg.address) return undefined;
-      return {
-        hint:
-          c && values.token_contract.toLowerCase() === c.usdt.toLowerCase()
-            ? tr(
-                `${c.name} 的官方 USDT 合约（默认）；只有官方合约迁移时才需要改`,
-                `The official USDT contract on ${c.name} (default); change it only if the official contract moves`,
-              )
-            : tr(
-                "不是该网络的官方 USDT 合约：保存后不能再改，请核对",
-                "Not the network's official USDT contract: it cannot change once saved, check it",
-              ),
-        placeholder: c?.usdt,
-      };
-    case "rpc_urls": {
-      const n = typeof cfg.rpc_count === "number" ? cfg.rpc_count : 0;
-      return isSet
-        ? {
-            hint: tr(
-              `已设置 ${n || ""} 个（不显示）；填写 = 全部替换，留空 = 不修改`,
-              `${n || "Some"} set (never shown); typing replaces them all, empty keeps them`,
-            ),
-            placeholder: tr("•••• 已设置", "•••• set"),
-          }
-        : {
-            hint: tr(
-              "你自己的 JSON-RPC 地址；常带 API key，按密钥保存",
-              "Your own JSON-RPC URLs; they often carry an API key, so they are stored like a key",
-            ),
-            placeholder: "https://…",
-          };
-    }
-    case "rate_cents": {
-      const r = Number(values.rate_cents);
-      return Number.isInteger(r) && r > 0
-        ? {
-            hint: tr(
-              `1 USDT = ${yuan(r)}；下单时按它把人民币金额换成 USDT（向上取整到 0.01）`,
-              `1 USDT = ${yuan(r)}; orders convert their CNY amount with it (rounded up to 0.01)`,
-            ),
-          }
-        : { placeholder: "720" };
-    }
-    case "confirmations":
-      return c
-        ? {
-            placeholder: String(c.confirmations),
-            hint: tr(`留空 = ${c.name} 默认 ${c.confirmations}`, `Empty = the ${c.name} default, ${c.confirmations}`),
-          }
-        : undefined;
-    case "order_timeout_minutes":
-      return {
-        hint: tr(
-          "超时后订单关闭，但金额继续保留（见下一项）",
-          "The order closes after this, its amount stays reserved (next field)",
-        ),
-      };
-    case "grace_hours":
-      return {
-        hint: tr(
-          "订单结束后这段时间内到账的转账仍会开通订单",
-          "Transfers arriving this long after the order ended still pay it",
-        ),
-      };
-    default:
-      return undefined;
-  }
-}
-
-/** The portal name a USDT method suggests for its network. */
-const CHAIN_NAME: Record<string, [string, string]> = {
-  polygon: ["USDT（Polygon）", "USDT (Polygon)"],
-  plasma: ["USDT（Plasma）", "USDT (Plasma)"],
-};
 const EPAY_NAME: Record<string, [string, string]> = {
   alipay: ["支付宝（易支付）", "Alipay (EPay)"],
   wxpay: ["微信支付（易支付）", "WeChat Pay (EPay)"],
@@ -597,15 +493,13 @@ function PaymentCard({
   const test = async () => {
     setTesting(true);
     try {
-      const r = await post<TestResult>(`/settings/payments/${m.id}/test`);
+      const r = await post<{ ok: boolean; message: string; sub_code: string | null }>(
+        `/settings/payments/${m.id}/test`,
+      );
       toast({
         tone: r.ok ? "success" : "error",
         title: r.ok ? tr("连接正常", "Connection works") : tr("连接测试失败", "The connection test failed"),
-        description: r.details
-          ? chainTestSummary(r, tr)
-          : r.sub_code
-            ? `${r.message}${tr(`（${r.sub_code}）`, ` (${r.sub_code})`)}`
-            : r.message,
+        description: r.sub_code ? `${r.message}${tr(`（${r.sub_code}）`, ` (${r.sub_code})`)}` : r.message,
       });
     } catch (e) {
       toast({ tone: "error", title: errText(e) });
@@ -822,25 +716,14 @@ function MethodDialog({
     const n = EPAY_NAME[channel];
     return n ? tr(n[0], n[1]) : kindLabel(kind.id, kind.label, tr);
   };
-  const chainName = (chain: string) => {
-    const n = CHAIN_NAME[chain];
-    return n ? tr(n[0], n[1]) : kindLabel(kind.id, kind.label, tr);
-  };
   const [name, setName] = useState(
-    method?.display_name ??
-      (kind.id === "epay"
-        ? epayName("alipay")
-        : kind.id === "usdt_chain"
-          ? chainName("polygon")
-          : kindLabel(kind.id, kind.label, tr)),
+    method?.display_name ?? (kind.id === "epay" ? epayName("alipay") : kindLabel(kind.id, kind.label, tr)),
   );
-  // A new EPay / USDT method's name follows its channel / network until the admin types one.
+  // A new EPay method's name follows its channel until the admin types one.
   const [nameEdited, setNameEdited] = useState(!!method);
   const [enabled, setEnabled] = useState(method?.enabled ?? false);
   const [shown, setShown] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const isChain = kind.id === "usdt_chain";
   const [values, setValues] = useState<Record<string, string>>(() => {
     const v: Record<string, string> = {};
     for (const f of kind.schema) {
@@ -857,12 +740,6 @@ function MethodDialog({
             : String(cur);
       }
     }
-    // USDT on-chain: the token field shows the contract in use (the network's official USDT unless overridden).
-    if (isChain && !v.token_contract)
-      v.token_contract =
-        typeof method?.config.token_effective === "string"
-          ? method.config.token_effective
-          : (chainOf(v.chain)?.usdt ?? "");
     return v;
   });
   const [run, busy] = useAction();
@@ -870,16 +747,6 @@ function MethodDialog({
   const set = (k: string, v: string) => {
     setValues((s) => ({ ...s, [k]: v }));
     if (kind.id === "epay" && k === "channel" && !nameEdited) setName(epayName(v));
-    if (isChain && k === "chain") {
-      if (!nameEdited) setName(chainName(v));
-      // The token follows the network while it is still the previous network's official contract.
-      const prev = chainOf(values.chain)?.usdt.toLowerCase();
-      setValues((s) =>
-        !s.token_contract || s.token_contract.toLowerCase() === prev
-          ? { ...s, token_contract: chainOf(v)?.usdt ?? "" }
-          : s,
-      );
-    }
   };
   // Number errors show while typing; missing required values once a save was tried.
   const errors: Record<string, string> = {};
@@ -919,14 +786,6 @@ function MethodDialog({
                 : raw;
       }
     else if (method) config = keptConfig(kind, method);
-    // The network's official contract is stored as "default" (null), so it follows docs/PAYMENTS.md.
-    if (
-      isChain &&
-      owner &&
-      typeof config.token_contract === "string" &&
-      config.token_contract.toLowerCase() === chainOf(values.chain)?.usdt.toLowerCase()
-    )
-      config.token_contract = null;
     const body = { display_name: name.trim(), sort: method?.sort ?? nextSort, enabled, config };
     const r = await run(
       () =>
@@ -941,11 +800,9 @@ function MethodDialog({
     if (!method) return;
     setTesting(true);
     try {
-      const r = await post<TestResult>(`/settings/payments/${method.id}/test`);
-      if (r.details) {
-        setTestResult(r);
-        return;
-      }
+      const r = await post<{ ok: boolean; message: string; sub_code: string | null }>(
+        `/settings/payments/${method.id}/test`,
+      );
       toast({
         tone: r.ok ? "success" : "error",
         title: r.ok ? tr("连接正常", "Connection works") : tr("连接测试失败", "The connection test failed"),
@@ -1024,13 +881,6 @@ function MethodDialog({
                 : (cfg[`${f.name}_fingerprint`] as string | undefined);
             const isSet = !!cfg[`${f.name}_set`];
             const err = errors[f.name];
-            // USDT on-chain: the network, address and token stay as first saved (payments.chain_fixed).
-            const fixed =
-              kind.id === "usdt_chain" && !!cfg.address && ["chain", "address", "token_contract"].includes(f.name);
-            const fixedHint = fixed
-              ? tr("保存后不能修改；换地址请新增支付方式", "Fixed once saved; add a new method for another address")
-              : undefined;
-            const extra = isChain ? chainFieldHint(f.name, values, cfg, isSet, tr) : undefined;
             if (!owner) {
               const shownValue =
                 f.secret || f.type === "key"
@@ -1071,8 +921,8 @@ function MethodDialog({
               );
             if (f.type === "select")
               return (
-                <Field key={f.name} label={fieldLabel(f, tr)} error={err} hint={fixedHint}>
-                  <Select value={values[f.name]} disabled={fixed} onChange={(e) => set(f.name, e.target.value)}>
+                <Field key={f.name} label={fieldLabel(f, tr)} error={err}>
+                  <Select value={values[f.name]} onChange={(e) => set(f.name, e.target.value)}>
                     {f.options?.map((o) => (
                       <option key={o.value} value={o.value}>
                         {tr(o.label, OPTION_EN[o.value] ?? o.label)}
@@ -1124,11 +974,9 @@ function MethodDialog({
                 key={f.name}
                 label={fieldLabel(f, tr)}
                 error={err}
-                hint={extra?.hint ?? (f.secret && isSet ? tr("已设置；留空 = 不修改", "Set; empty = keep") : fixedHint)}
+                hint={f.secret && isSet ? tr("已设置；留空 = 不修改", "Set; empty = keep") : undefined}
               >
                 <Input
-                  readOnly={fixed}
-                  placeholder={extra?.placeholder}
                   {...(f.secret ? secretInputProps : { type: "text", autoComplete: "off" })}
                   inputMode={f.type === "number" ? "numeric" : undefined}
                   className={cn(f.type === "number" && "tnum", f.type === "text" && "font-mono text-footnote")}
@@ -1149,19 +997,7 @@ function MethodDialog({
             </Field>
           </div>
         )}
-        {testResult && <ChainTestResult r={testResult} />}
-        {kind.id === "usdt_chain" && method && (
-          <p className="text-footnote text-muted-foreground">
-            {tr(
-              "没有异步通知：面板读取链上转账，达到确认数后自动入账；未匹配的转账在 资金 → 链上收款 处理。",
-              "No notifications: the panel reads the chain and pays orders once confirmed; unmatched transfers are handled in Finance → On-chain.",
-            )}{" "}
-            <Link to="/finance/chain" className="text-primary hover:underline">
-              {tr("查看链上收款", "Open On-chain")}
-            </Link>
-          </p>
-        )}
-        {method?.notify_url && kind.id !== "usdt_chain" && (
+        {method?.notify_url && (
           <div className="grid gap-1 text-body">
             <span className="text-footnote font-medium text-muted-foreground">{tr("异步通知地址", "Notify URL")}</span>
             <CopyText value={method.notify_url} label={tr("通知地址", "the notify URL")} />

@@ -13,7 +13,6 @@
 // A failed poll keeps the data on screen and turns the freshness pill amber.
 import { useQuery } from "@tanstack/react-query";
 import {
-  Coins,
   ArrowDownRight,
   ArrowRight,
   ArrowUpRight,
@@ -48,7 +47,6 @@ import { errorText } from "../../shared/errors";
 import { useAction } from "../data";
 import { AsyncButton, Fresh, IconBadge } from "../components/kit";
 import { alertKindName, mailReason, waitText } from "../components/ops-bits";
-import { usdt } from "../components/payments-chain";
 import { OrdStatus, orderState } from "../components/status";
 import { useQS } from "../router";
 import { useServers } from "../servers";
@@ -89,7 +87,6 @@ export type Dashboard = {
     mail_failed: number;
     orders_unfulfilled: number;
     alerts_firing: number;
-    chain_unmatched: number;
   };
   pending_detail: {
     alert_oldest_at: string | null;
@@ -102,7 +99,6 @@ export type Dashboard = {
     withdrawals_cents: number;
     ticket_oldest_at: string | null;
     mail_last_error: string | null;
-    chain_unmatched_units: number;
   };
   latest_orders: {
     id: string;
@@ -330,16 +326,6 @@ function useQueueItems(d: Dashboard): Item[] {
       detail: tr(`合计 ${yuan(x.withdrawals_cents)}`, `${yuan(x.withdrawals_cents)} in total`),
       to: "/finance?status=pending",
       cta: tr("去审核", "Review"),
-    },
-    {
-      key: "chain",
-      icon: Coins,
-      tone: "warning",
-      count: p.chain_unmatched,
-      what: tr("笔链上转账未匹配订单", "on-chain transfers matched no order"),
-      detail: tr(`合计 ${usdt(x.chain_unmatched_units)} USDT`, `${usdt(x.chain_unmatched_units)} USDT in total`),
-      to: "/finance/chain",
-      cta: tr("去处理", "Handle"),
     },
     {
       key: "tickets",

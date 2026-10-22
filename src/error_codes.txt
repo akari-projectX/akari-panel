@@ -111,11 +111,6 @@ branding.too_many_downloads
 branding.too_many_links
 branding.url_invalid
 branding.version_conflict
-chain.assign_confirm_required
-chain.order_mismatch
-chain.order_paid
-chain.order_unknown
-chain.transfer_not_open
 cleanup.after_days_range
 cleanup.warn_days_range
 coupon.below_minimum
@@ -238,7 +233,6 @@ node.template_and_inbound
 node.tls_domain_invalid
 node.too_many_tags
 node.view_invalid
-order.chain_busy
 order.gateway_unavailable
 order.in_progress
 order.method_required
@@ -265,13 +259,6 @@ order_admin.superseded
 order_admin.user_gone
 order_admin.user_has_pending
 payments.app_id_invalid
-payments.chain_address_in_use
-payments.chain_address_invalid
-payments.chain_fixed
-payments.chain_invalid
-payments.chain_number_invalid
-payments.chain_rpc_invalid
-payments.chain_token_invalid
 payments.config_invalid
 payments.config_unknown_field
 payments.environment_invalid
