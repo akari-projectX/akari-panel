@@ -159,14 +159,14 @@ test('#27 #30 D11: the link is the panel\'s random subscription path, it works, 
 
   /* 重置：区块头的「重置订阅」→ 确认对话框（后果清单）→ 新链接，旧链接立即失效 */
   await page.locator('#subscribe').getByRole('button', { name: '重置订阅' }).click();
-  const dialog = page.getByRole('dialog', { name: '重置订阅？' });
+  const dialog = page.getByRole('alertdialog', { name: '重置订阅？' });
   await expect(dialog).toContainText('旧的订阅链接立即失效');
   await dialog.getByRole('button', { name: '取消' }).click();
   await expect(dialog).toHaveCount(0);
   await page.locator('#subscribe').getByRole('button', { name: '重置订阅' }).click();
-  await page.getByRole('dialog', { name: '重置订阅？' }).getByRole('button', { name: '确认重置' }).click();
+  await page.getByRole('alertdialog', { name: '重置订阅？' }).getByRole('button', { name: '确认重置' }).click();
   await expect(page.getByText('订阅已重置').first()).toBeVisible();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
   const next = await copiedLink(page);
   expect(next).not.toBe(link);
   expect((await fetch(`${process.env.E2E_API}${url.pathname}`)).status).toBe(404);

@@ -7,7 +7,7 @@
 import type { Page } from '@playwright/test';
 import { FIELDS, latestMail } from '../../spa/e2e/panel.ts';
 import {
-  admin, authenticator, dark, expect, login, mine, ready, seed, shot, signIn, signInUI, signOut, test,
+  admin, AUTHENTICATOR, authenticator, dark, expect, login, mine, ready, seed, shot, signIn, signInUI, signOut, test,
 } from './fixtures';
 
 test.describe.configure({ mode: 'serial' });
@@ -426,7 +426,7 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
   const a = await admin();
   const before = await a.patch('auth', FIELDS.auth, { passkey_prompt: true });
   try {
-    await authenticator(page);
+    const auth1 = await authenticator(page);
     const email = mine(info, 'v2-passkey');
     await signInUI(page, email);
     /* 密码登录后引导绑定（对话框），打开「以后只用通行密钥登录」 */
@@ -487,7 +487,7 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
       await row.getByRole('button', { name: 'E2E 钥匙 的操作' }).click();
       await page.getByRole('menuitem', { name: '删除' }).click();
     }
-    const del = page.getByRole('dialog', { name: '删除通行密钥「E2E 钥匙」？' });
+    const del = page.getByRole('alertdialog', { name: '删除通行密钥「E2E 钥匙」？' });
     await expect(del.getByText('设备里保存的那一份需要在设备上自行删除')).toBeVisible();
     await expect(del.getByText(/这是最后一个可用的通行密钥/)).toBeVisible();
     await shot(page, info, 'account-passkey-delete');
@@ -498,7 +498,7 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
     await expect(page.getByText('已恢复密码登录').first()).toBeVisible();
     await expect(onlySwitch).toHaveAttribute('aria-checked', 'false');
     await onlySwitch.click();
-    const ask = page.getByRole('dialog', { name: '只用通行密钥登录？' });
+    const ask = page.getByRole('alertdialog', { name: '只用通行密钥登录？' });
     await expect(ask.getByText('通行密钥全部丢失时，需要联系管理员恢复')).toBeVisible();
     await ask.getByRole('button', { name: '取消' }).click();
     await expect(onlySwitch).toHaveAttribute('aria-checked', 'false');
@@ -508,7 +508,9 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
     await expect(onlySwitch).toHaveAttribute('aria-checked', 'true');
     await onlySwitch.click();
     await expect(page.getByText('已恢复密码登录').first()).toBeVisible();
-    /* 设置页上再添加一个（虚拟认证器） */
+    /* 设置页上再添加一个：服务端带 excludeCredentials，同一个认证器会拒绝，换一台（新的虚拟认证器） */
+    await auth1.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId: auth1.authenticatorId });
+    await auth1.send('WebAuthn.addVirtualAuthenticator', { options: AUTHENTICATOR });
     await security.getByRole('button', { name: '添加通行密钥' }).click();
     await expect(page.getByText('通行密钥已添加').first()).toBeVisible();
     await expect(security.locator('li')).toHaveCount(2);

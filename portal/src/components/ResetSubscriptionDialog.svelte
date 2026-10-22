@@ -43,7 +43,7 @@
   const consequences = ['旧的订阅链接立即失效', '所有设备会立即断线，节点上的旧凭据同时作废', '所有设备都要重新导入订阅', '此操作不可撤销'];
 </script>
 
-<Dialog bind:open onOpenChange={change} title={t('重置订阅？')} description={t('链接泄露时重置。所有设备都会断开，需要重新导入。')}>
+<Dialog alert bind:open onOpenChange={change} title={t('重置订阅？')} description={t('链接泄露时重置。所有设备都会断开，需要重新导入。')}>
   {#snippet icon()}<TriangleAlert class="dlg-icon warn-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <ul class="cons">
     {#each consequences as c (c)}<li>{t(c)}</li>{/each}

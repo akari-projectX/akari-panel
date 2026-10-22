@@ -95,16 +95,17 @@ let adminClient: Promise<Client> | null = null;
 export const admin = (): Promise<Client> => (adminClient ??= Client.admin());
 
 /** Chromium 的虚拟认证器（WebAuthn）：平台认证器、可发现凭据、已验证用户 */
-export async function authenticator(page: Page): Promise<CDPSession> {
+export const AUTHENTICATOR = {
+  protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true,
+  isUserVerified: true, automaticPresenceSimulation: true,
+} as const;
+
+/** 开启虚拟认证器；返回的会话带 authenticatorId（换一台设备时先移除它） */
+export async function authenticator(page: Page): Promise<CDPSession & { authenticatorId: string }> {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send('WebAuthn.enable');
-  await cdp.send('WebAuthn.addVirtualAuthenticator', {
-    options: {
-      protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true,
-      isUserVerified: true, automaticPresenceSimulation: true,
-    },
-  });
-  return cdp;
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: AUTHENTICATOR });
+  return Object.assign(cdp, { authenticatorId });
 }
 
 /** 截图前切到深色（跟随系统的默认主题下，模拟系统深色） */

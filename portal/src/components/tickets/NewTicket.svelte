@@ -141,7 +141,9 @@
   .left { margin-right: auto; align-self: center; font-size: 12.5px; color: var(--muted); }
   @media (max-width: 720px) {
     .two { grid-template-columns: 1fr; }
-    .left { display: none; }
+    /* 手机上字数单独占一行（在等宽按钮上方），footer 换行 */
+    :global(.dlg footer:has(> .left)) { flex-wrap: wrap; row-gap: 6px; }
+    .left { flex: 1 0 100%; margin: 0; text-align: right; }
   }
   @media (prefers-reduced-motion: reduce) {
     .opts label { transition: none; }
