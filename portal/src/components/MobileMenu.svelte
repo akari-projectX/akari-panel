@@ -27,11 +27,16 @@
   const services = $derived(navGroups().flat());
   const account = $derived(scope() === 'banned' ? [] : accountItems());
 
-  async function show() {
+  /*
+   * 打开后焦点进菜单。键盘打开（回车 / 空格：click 的 detail 为 0）→ 第一项，带焦点环；
+   * 指针 / 触摸打开 → 菜单容器本身（tabindex=-1，不画焦点环），焦点仍困在里面，Tab 从第一项开始。
+   */
+  async function show(byKeyboard: boolean) {
     open = true;
     loadSheetFacts(scope());
     await tick();
-    sheet?.querySelector<HTMLElement>('a, button')?.focus();
+    if (byKeyboard) sheet?.querySelector<HTMLElement>('a, button')?.focus();
+    else sheet?.focus();
   }
 
   function hide(returnFocus = true) {
@@ -47,7 +52,9 @@
     if (e.key !== 'Tab' || !sheet || !button) return;
     const list = [button, ...sheet.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')];
     const i = list.indexOf(document.activeElement as HTMLElement);
-    const next = e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i === -1 || i === list.length - 1 ? 0 : i + 1);
+    /* 焦点在容器上（指针打开）：Tab → 第一项，Shift+Tab → 关闭按钮 */
+    const next = document.activeElement === sheet ? (e.shiftKey ? 0 : 1)
+      : e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i === -1 || i === list.length - 1 ? 0 : i + 1);
     e.preventDefault();
     list[next]?.focus();
   }
@@ -80,14 +87,14 @@
   aria-haspopup="dialog"
   aria-expanded={open}
   aria-controls="sheet"
-  onclick={() => (open ? hide() : show())}
+  onclick={(e) => (open ? hide() : show(e.detail === 0))}
 >
   {#if open}<X class="i" size={16} strokeWidth={1.75} aria-hidden="true" /><span>{t('关闭')}</span>
   {:else}<Menu class="i" size={16} strokeWidth={1.75} aria-hidden="true" /><span>{t('菜单')}</span>{/if}
 </button>
 
 {#if open}
-  <div bind:this={sheet} id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label={t('菜单')}>
+  <div bind:this={sheet} id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label={t('菜单')} tabindex="-1">
     <div class="who"><b>{auth.me?.email}</b><span class="num">{sheetLine()}</span></div>
 
     <h2>{t('服务')}</h2>

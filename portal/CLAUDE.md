@@ -19,7 +19,21 @@
 - 默认 Logo = L3 小写 akari 字标（`src/components/Wordmark.svelte`、`index.html` 启动画面里同形的 SVG，颜色 `--logo-ink` / `--logo-dot`；favicon `src/assets/favicon.svg`、`apple-touch-icon.png`；源文件 `design/portal-v2-2026-10/logo/`）；站长上传了 Logo / favicon 时用站长的。
 - 外壳（`src/components/`、`src/layouts/`）：顶栏导航、邮箱下拉、窄屏全屏菜单都是手写的、完整无障碍（menu button 模式：↑↓ Home End、
   Esc 还焦点、Tab 关闭、点外面关闭；全屏菜单是模态对话框：焦点困在「关闭按钮 + 菜单」、Esc、锁滚动、切页 / 变宽自动收起；
-  aria-expanded / aria-controls；减少动效）。不为外壳引入 bits-ui，首屏更小；**PR 2 起对话框、表单用 bits-ui / shadcn-svelte**。
+  aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
+  不为外壳引入 bits-ui，首屏更小。
+- **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；
+  窄屏是底部抽屉）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
+  所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
+- 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）与 React 门户
+  `pages/auth.tsx`、`legal.tsx` 行为相同。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、
+  `isEmail` / `isCode` / `digits` / `fieldOf`）、`lib/form-guard.svelte.ts`（`FormGuard`：蜜罐、Turnstile、表单令牌、每 30 秒 / 回到前台 / 提交后
+  重新取 `/auth/options`、开了 Turnstile 而 CSP 没放行就重新加载一次；构造函数里挂 `$effect`，只能在组件初始化时 new）、
+  `components/Turnstile.svelte`、`GuardFields.svelte`、`lib/errors.ts`（面板错误码 → 一句话，同 React 的 `errorText`）、`lib/site.ts`（`/auth/options` 的开关）。
+  站点配置在 `lib/auth.svelte.ts`：`site.options`（只有表单令牌以外变了才替换）、`site.turnstileAllowed`（第一次取到时定下）、`refreshOptions()`；
+  `signIn(result)`（登录答复之后取账户，记下 `passkey_prompt`）。用通行密钥注册的账户（`me.email_pending`）在 DashLayout 里只有不可关闭的「绑定邮箱」。
+- 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
+- 面板下发的 HTML（条款、之后的公告 / 文章）只经 `components/RichHtml.svelte` 的 `{@html}`（全站唯一一处，约定同 React 的 server-html）。
+- 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。
 - 启动画面（`index.html` 的 `#boot`、`src/boot/boot.css`、`src/lib/boot.svelte.ts`）、启动守护（`src/boot/boot.js`，经典脚本，带哈希输出到
   `assets/`）、按需加载与新版本自动重新加载（`src/lib/lazy.ts`：重试一次 → 整页重新加载一次（sessionStorage `akari.chunk-reload`）→
   「这一页没能下载完」；`vite:preloadError` 同样处理），规则与 React 门户相同。
@@ -71,7 +85,10 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
 
 - `e2e/`（Playwright，自己的 Playwright 版本与 Chromium（CI 单独安装））：`../scripts/e2e-portal.sh` 跑完 React 门户的用例后，以 `AKARI_PORTAL_V2=1`
   重启同一个面板（同一份种子数据），跑这里的用例：桌面 1440×900、手机 390×844，减少动效；每个用例收集 CSP 违规与页面异常。
-  登录走接口（PR 2 才有登录页）。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`。
+  `fixtures.ts`：`signIn`（走接口）、`login` / `signInUI`（经登录页）、`signOut`（桌面邮箱下拉 / 窄屏菜单）、`admin()`（spa/e2e/panel.ts 的 Client）、
+  `authenticator`（虚拟 WebAuthn）、`dark`。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`；会改密码 / 改登录方式的用例用
+  `v2-reset-<视口>`、`v2-passkey-<视口>`（spa/e2e/seed.ts 里给门户 v2 单独建的，React 套件先跑、会改它自己的那几个账户）。
+  `auth.spec.ts` 覆盖 React `spa/e2e/auth.spec.ts` 的全部场景，外加通行密钥注册 + 绑定邮箱、站点设置取不到、条款 / 隐私、注销结果页。
 - 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-v2-screens`；每个 PR 的终版截图另存到工作区
   `design/portal-v2-2026-10/impl/<pr>/`。
 - 性能：同一份 `spa/e2e/perf/perf.spec.ts` 对两个门户各跑一遍（`E2E_PERF_LABEL=react|svelte`），加上两边的体积

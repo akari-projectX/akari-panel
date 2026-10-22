@@ -1187,4 +1187,8 @@ export const EN: Record<string, string> = {
   '{n} 笔待付款': '{n} awaiting payment',
   '返利 {n}%': '{n}% commission',
   '此页面迁移中': 'This page is being moved to the new portal',
+  /* ── 门户 v2：登录、注册 ── */
+  '登录或注册': 'Sign in or sign up',
+  '密码要求': 'Password requirements',
+  '通知': 'Notifications',
 };

@@ -144,6 +144,10 @@ test('mobile menu: groups, focus trap, Esc, scroll lock', async ({ page }, info)
   await expect(close).toHaveAttribute('aria-expanded', 'true');
   await shot(page, info, 'menu-light');
 
+  /* 点开（指针）：焦点在菜单容器上，第一项不画焦点环；Tab 从第一项开始 */
+  await expect(sheet).toBeFocused();
+  expect(await sheet.getByRole('link').first().evaluate((el) => el.matches(':focus-visible'))).toBe(false);
+  await page.keyboard.press('Tab');
   /* 焦点困在「关闭按钮 + 菜单」里：Shift+Tab 从第一项回到关闭按钮，再 Shift+Tab 到最后一项（退出登录） */
   await expect(sheet.getByRole('link').first()).toBeFocused();
   await page.keyboard.press('Shift+Tab');
@@ -157,6 +161,13 @@ test('mobile menu: groups, focus trap, Esc, scroll lock', async ({ page }, info)
   await expect(sheet).toHaveCount(0);
   await expect(page.getByRole('button', { name: '菜单' })).toBeFocused();
   await expect(page.locator('html')).not.toHaveClass(/menu-open/);
+
+  /* 键盘打开（回车）：焦点直接在第一项上，带焦点环 */
+  await page.keyboard.press('Enter');
+  await expect(sheet.getByRole('link').first()).toBeFocused();
+  expect(await sheet.getByRole('link').first().evaluate((el) => el.matches(':focus-visible'))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(sheet).toHaveCount(0);
 
   await setTheme(page, false, '深色');
   await page.getByRole('button', { name: '菜单' }).click();

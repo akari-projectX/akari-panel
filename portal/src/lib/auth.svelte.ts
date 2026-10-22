@@ -1,9 +1,12 @@
 import {
-  ApiError, authApi, brandUrl, meApi, onSessionEvent, type AuthOptions, type Me, type MyPlan,
+  ApiError, authApi, brandUrl, meApi, onSessionEvent, type AuthOptions, type LoginResult, type Me, type MyPlan,
 } from '@/api';
+import { sameSiteOptions, turnstileOn } from '@/api/guard';
 import { K, clearCache, readCache, writeCache } from '@/lib/cache';
 import { setSiteTimeZone } from '@/lib/format';
 import { holdBoot } from './boot.svelte';
+import { t } from './i18n.svelte';
+import { toast } from './toast.svelte';
 import { navigate } from './router.svelte';
 import { R, scopeOf, type Scope } from './routes';
 
@@ -23,6 +26,8 @@ type State = {
   booting: boolean;
   /** 第一次取 /me 出了网络 / 服务器错误、又没有缓存：登录状态未知（门禁显示重试，不送去登录页） */
   failed: boolean;
+  /** 登录答复里带了 passkey_prompt：进用户中心后引导绑定通行密钥（一次） */
+  passkeyPrompt: boolean;
 };
 
 const cached = readCache<Me>(K.me);
@@ -31,6 +36,7 @@ export const auth = $state<State>({
   plan: readCache<MyPlan>(K.plan),
   booting: cached === undefined,
   failed: false,
+  passkeyPrompt: false,
 });
 
 /** 当前账户范围（没登录为 undefined） */
@@ -44,6 +50,7 @@ function drop() {
   clearCache();
   auth.me = undefined;
   auth.plan = undefined;
+  auth.passkeyPrompt = false;
 }
 
 /** 取账户与套餐；401 / 404 = 没登录，返回 null */
@@ -77,10 +84,25 @@ export async function refresh() {
   );
 }
 
+/** 登录、注册成功后调用（拿到登录答复之后）：丢掉旧缓存，取一遍账户数据 */
+export async function signIn(result: LoginResult) {
+  clearCache();
+  auth.passkeyPrompt = !!result.passkey_prompt;
+  apply(await fetchAccount());
+  auth.failed = false;
+}
+
+export function dismissPasskeyPrompt() {
+  auth.passkeyPrompt = false;
+}
+
 /** 退出（面板结束这个账户的所有会话），回登录页 */
 export async function signOut() {
   try {
     await authApi.logout();
+    toast.success(t('已退出'), { description: t('所有设备上的登录都已结束') });
+  } catch (e) {
+    void import('./errors').then((m) => toast.error(m.errorText(e)));
   } finally {
     drop();
     navigate(R.login, { replace: true });
@@ -102,23 +124,32 @@ export function setMailLocale(l: 'zh' | 'en') {
 
 /* ───────────── 站点公开配置（/auth/options） ───────────── */
 
-export const site = $state<{ options?: AuthOptions; error: boolean }>({ error: false });
+/**
+ * error：第一次就没取到（之后再失败保留旧的）。turnstileAllowed：这一页的 CSP 是否放行 Turnstile——面板在打开页面那一刻
+ * 有表单开了 Turnstile 才放行（web::CSP_TURNSTILE），所以按第一次取到的设置定下来，之后不变（见 form-guard）。
+ */
+export const site = $state<{ options?: AuthOptions; error: boolean; turnstileAllowed?: boolean }>({ error: false });
 
 /** 站点名（没取到之前是 Akari） */
 export function siteName(): string {
   return site.options?.site_name?.trim() || 'Akari';
 }
 
-function loadOptions() {
-  authApi.options().then(
+/**
+ * 取一遍 /auth/options（每次都带新的表单令牌，记在 api/guard 里）。站长随时可能在后台改防护设置：公开表单挂着、
+ * 提交之后、窗口回到前台时都会再取（lib/form-guard）。只有表单令牌以外的内容变了才换 options，免得整页重渲染。
+ */
+export function refreshOptions(): Promise<void> {
+  return authApi.options().then(
     (o) => {
-      site.options = o;
+      site.turnstileAllowed ??= turnstileOn(o);
+      if (!site.options || !sameSiteOptions(site.options, o)) site.options = o;
       site.error = false;
       setSiteTimeZone(o.timezone);
       /* 站长配的 favicon：换掉 index.html 里的默认图标 */
       const fav = o.branding?.favicon_url;
       const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-      if (fav && link) {
+      if (fav && link && link.getAttribute('href') !== brandUrl(fav)) {
         link.href = brandUrl(fav);
         link.removeAttribute('type');
       }
@@ -140,7 +171,7 @@ export function startAuth() {
       auth.booting = false;
       release();
     });
-  loadOptions();
+  void refreshOptions();
   /* 会话中途失效（任何接口 401）→ 丢掉会话（门禁送去登录页）；被封禁（403 account.banned）→ 重新取 /me，换成封禁范围 */
   onSessionEvent((err) => {
     if (err.status === 401) drop();
