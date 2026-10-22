@@ -7,6 +7,7 @@
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
   import { t, tp } from '$lib/i18n.svelte';
+  import { multClass, stClass } from '$lib/lines';
   import type { Resource } from '$lib/resource.svelte';
   import { R } from '$lib/routes';
 
@@ -29,9 +30,6 @@
   const pages = $derived(Math.max(1, Math.ceil(list.length / PAGE)));
   const cur = $derived(Math.min(page, pages));
   const paged = $derived(list.slice((cur - 1) * PAGE, cur * PAGE));
-
-  const stClass = (n: MyNode) => (n.status === 'online' ? 'ok' : n.status === 'maintenance' ? 'warn' : 'off');
-  const multClass = (r: number) => (r <= 0.5 ? 'lo' : r > 1 ? 'hi' : '');
 </script>
 
 <section class="sec" aria-labelledby="h-lines">

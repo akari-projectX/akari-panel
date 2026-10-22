@@ -76,7 +76,7 @@ test('navigation: order, current page, client-side switches', async ({ page }, i
     await page.getByRole('button', { name: '菜单' }).click();
     await page.getByRole('dialog', { name: '菜单' }).getByRole('link', { name: /^线路/ }).click();
     await expect(page).toHaveURL(/\/nodes$/);
-    await expect(page.locator('main h1')).toHaveText('线路');
+    await expect(page.locator('main h1')).toHaveText('节点状态');
     await expect(page.getByRole('dialog', { name: '菜单' })).toHaveCount(0);
     await expect(page.locator('html')).not.toHaveClass(/menu-open/);
   }
@@ -247,7 +247,7 @@ test('old and unknown addresses', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await page.goto('/invite');
   await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
-  await ready(page, '钱包');
+  await ready(page, '邀请');
   /* 面板只对门户的顶层路径返回页面（其余是统一的拒绝），所以 404 页只会在站内跳转时出现 */
   await page.evaluate(() => {
     history.pushState({}, '', '/wallet/no-such-page');

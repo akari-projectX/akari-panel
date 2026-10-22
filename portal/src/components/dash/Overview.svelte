@@ -231,33 +231,4 @@
 
 <style>
   .ph .link { margin-bottom: 4px; }
-  .kpis { display: grid; grid-template-columns: 1.25fr 1fr 1fr 1fr; padding: 4px 0 36px; }
-  .kpi { min-width: 0; padding: 0 32px; border-left: 1px solid var(--line); }
-  .kpi:first-child { padding-left: 0; border-left: 0; }
-  .lb { font-size: 13px; color: var(--muted); }
-  .v {
-    display: flex; align-items: baseline; gap: 4px; margin-top: 6px; color: var(--fg); font-size: 34px; line-height: 40px; font-weight: 600;
-    letter-spacing: -.02em; font-variant-numeric: tabular-nums; white-space: nowrap;
-  }
-  .v small { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
-  .v .ccy { font-size: 20px; font-weight: 600; margin-right: 1px; }
-  .sub { margin-top: 8px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-  .meter { height: 3px; margin-top: 12px; border-radius: 2px; overflow: hidden; background: var(--secondary); }
-  .meter i { display: block; height: 100%; border-radius: 2px; background: var(--brand); }
-  .meter.warn i { background: var(--warn); }
-
-  @media (max-width: 1080px) {
-    .kpi { padding: 0 20px; }
-  }
-  @media (max-width: 720px) {
-    .kpis { grid-template-columns: auto auto auto; gap: 24px 0; padding-bottom: 28px; }
-    .kpi { margin-left: 14px; padding: 0 0 0 14px; }
-    .kpi:nth-child(-n + 2) { margin-left: 0; padding-left: 0; border-left: 0; }
-    .kpi:first-child { grid-column: 1 / -1; }
-    .kpi:first-child .v { font-size: 40px; line-height: 44px; }
-    .v { margin-top: 4px; font-size: 24px; line-height: 30px; }
-    .v small { font-size: 13px; }
-    .v .ccy { font-size: 16px; }
-    .sub { margin-top: 4px; font-size: 12px; }
-  }
 </style>

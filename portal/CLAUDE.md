@@ -48,6 +48,16 @@
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
   余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop / usdt 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）、`v2-usdt-<视口>`（用例里建，收款地址 c… / d…）。
+- **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
+  窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的上色规则 `lib/lines.ts`，仪表盘的线路预览共用）、
+  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；图是仪表盘的 `TrafficChart`；React 的环形图与
+  每日计费柱图按设计去掉：线路分布并进「按线路」表（原始、占比细条、计费、此刻倍率与时段规则），每日计费在明细表与图的提示里）、
+  `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
+  `WithdrawDialog` 第一次点「申请提现」才下载（含 bits-ui）；USDT 网络是原生 `<select>`）。分页是 WAI-ARIA tabs（← → Home End），
+  地址 `?tab=`，换分页 `navigate(…, { replace: true, keepScroll: true })`。文案表与纯函数 `lib/wallet.ts`（`wallet.test.ts`），
+  复制 `lib/copy.svelte.ts`（`Copied`）。content.css 新增共用的关键数字 `.kpis`、范围切换 `.rng`、页内分页 `.ptabs`、表格 `.tbl`、
+  小数字 `.mini`、占比细条 `.share`、`.copy-row` / `.mono`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
+  seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
 - 面板下发的 HTML（条款、之后的公告 / 文章）只经 `components/RichHtml.svelte` 的 `{@html}`（全站唯一一处，约定同 React 的 server-html）。
 - 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。

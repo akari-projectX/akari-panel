@@ -62,6 +62,80 @@
     font-size: 11px; font-weight: 500; color: var(--muted); white-space: nowrap;
   }
 
+  /* ── 关键数字（仪表盘、线路、用量、钱包）：大号 tabular 数字 + 小一号灰色单位 + 下一行解释，竖细线分隔 ── */
+  .kpis { display: grid; grid-template-columns: 1.25fr 1fr 1fr 1fr; padding: 4px 0 36px; }
+  .kpi { min-width: 0; padding: 0 32px; border-left: 1px solid var(--line); }
+  .kpi:first-child { padding-left: 0; border-left: 0; }
+  .kpi .lb { font-size: 13px; color: var(--muted); }
+  .kpi .v {
+    display: flex; align-items: baseline; gap: 4px; margin-top: 6px; color: var(--fg); font-size: 34px; line-height: 40px; font-weight: 600;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .kpi .v small { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  .kpi .v .ccy { font-size: 20px; font-weight: 600; margin-right: 1px; }
+  .kpi .sub { margin-top: 8px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .meter { height: 3px; margin-top: 12px; border-radius: 2px; overflow: hidden; background: var(--secondary); }
+  .meter i { display: block; height: 100%; border-radius: 2px; background: var(--brand); }
+  .meter.warn i { background: var(--warn); }
+
+  /* ── 小数字一排（钱包的可提现 / 审核中、邀请收益）：标签在上、数字在下，竖细线分隔，不放大 ── */
+  .mini { display: flex; flex-wrap: wrap; row-gap: 12px; }
+  .mini > div { min-width: 0; padding: 0 24px; border-left: 1px solid var(--line); }
+  .mini > div:first-child { padding-left: 0; border-left: 0; }
+  .mini dt { font-size: 12.5px; color: var(--muted); }
+  .mini dd { margin-top: 2px; font-size: 16px; font-weight: 500; color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ── 范围切换（7 天 / 30 天）：灰底小分段，选中的白底 ── */
+  .rng { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 8px; background: var(--chart-switch-bg); font-size: 12.5px; }
+  .rng button { border: 0; background: none; padding: 2px 10px; border-radius: 6px; color: var(--muted); font: inherit; white-space: nowrap; }
+  .rng button:hover { color: var(--fg); }
+  .rng button[aria-pressed='true'] { background: var(--chart-switch-on); color: var(--fg); box-shadow: var(--chart-switch-shadow); }
+
+  /* ── 页内分页（role=tablist）：文字 + 当前项 2px 品牌色下划线，与顶栏同一语言 ── */
+  .ptabs { display: flex; gap: 28px; margin-bottom: 8px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  .ptabs button {
+    position: relative; flex: none; padding: 0 0 11px; border: 0; border-radius: 0; background: none; color: var(--muted);
+    font: inherit; font-size: 14px; white-space: nowrap; cursor: pointer; transition: color var(--dur-hover) var(--ease-out);
+  }
+  .ptabs button:hover { color: var(--fg); }
+  .ptabs button[aria-selected='true'] { color: var(--fg); font-weight: 600; }
+  .ptabs button[aria-selected='true']::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--brand); }
+
+  /* ── 表格：表头小号灰字 + 1px 细线分行，数字右对齐 tabular；窄屏改用 .li 行式列表 ── */
+  .tbl-wrap { overflow-x: auto; }
+  .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tbl th {
+    padding: 0 20px 10px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12.5px; font-weight: 400; color: var(--muted); white-space: nowrap;
+  }
+  .tbl td { padding: 13px 20px 13px 0; border-bottom: 1px solid var(--line); color: var(--body); vertical-align: top; }
+  .tbl th:last-child, .tbl td:last-child { padding-right: 0; }
+  .tbl .n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tbl .q { color: var(--muted); }
+  .tbl .when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .tbl .strong { color: var(--fg); font-weight: 500; }
+  .tbl tr.dim td { color: var(--muted); }
+  .tbl .sub-l { margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+  th button.sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+  th button.sort:hover { color: var(--fg); }
+
+  /* 金额的正负：只用文字颜色 */
+  .pos { color: var(--ok); }
+  .neg { color: var(--danger); }
+
+  /* ── 占比细条（用量明细）：3px 灰轨 + 品牌色，后面跟百分比 ── */
+  .share { display: inline-flex; align-items: center; justify-content: flex-end; gap: 10px; }
+  .share .track { display: block; width: 120px; height: 3px; border-radius: 2px; overflow: hidden; background: var(--secondary); }
+  .share .track i { display: block; height: 100%; border-radius: 2px; background: var(--brand); }
+
+  /* ── 只读输入 + 复制（邀请链接）、等宽长串 + 小复制按钮（地址、交易哈希） ── */
+  .copy-row { display: flex; gap: 8px; }
+  .copy-row .input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 13px; }
+  .copy-row .btn { flex: none; height: 40px; }
+  .mono { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; font-family: var(--font-mono); font-size: 12.5px; }
+  .mono > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mono button { display: inline-flex; flex: none; padding: 2px; border: 0; border-radius: 4px; background: none; color: var(--faint); cursor: pointer; }
+  .mono button:hover { color: var(--fg); }
+
   /* ── 页面提醒：插在关键数字上方的细行（不是彩色卡片），图标单色，警告类琥珀 ── */
   .notes { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: -8px 0 32px; }
   .note { display: flex; align-items: center; gap: 12px; padding: 12px 0; font-size: 13.5px; color: var(--body); }
@@ -100,6 +174,9 @@
   .pager div { display: flex; gap: 4px; }
 }
 
+@media (max-width: 1080px) {
+  .kpi { padding: 0 20px; }
+}
 @media (max-width: 960px) {
   .cols { grid-template-columns: 1fr; }
 }
@@ -116,4 +193,17 @@
   .note .gap { display: none; }
   .note .acts { margin-left: 28px; }
   .d-only { display: none; }
+  .kpis { grid-template-columns: auto auto auto; gap: 24px 0; padding-bottom: 28px; }
+  .kpi { margin-left: 14px; padding: 0 0 0 14px; }
+  .kpi:nth-child(-n + 2) { margin-left: 0; padding-left: 0; border-left: 0; }
+  .kpi:first-child { grid-column: 1 / -1; }
+  .kpi:first-child .v { font-size: 40px; line-height: 44px; }
+  .kpi .v { margin-top: 4px; font-size: 24px; line-height: 30px; }
+  .kpi .v small { font-size: 13px; }
+  .kpi .v .ccy { font-size: 16px; }
+  .kpi .sub { margin-top: 4px; font-size: 12px; }
+  .ptabs { gap: 22px; }
+  .mini > div { padding: 0 16px; }
+  .mini > div:first-child { padding-left: 0; }
+  .copy-row { flex-direction: column; }
 }

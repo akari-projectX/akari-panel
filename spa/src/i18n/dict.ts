@@ -122,6 +122,10 @@ export const EN: Record<string, string> = {
   /* ── 补齐 ── */
   '简体中文': '简体中文',
   '近 7 日流量趋势': 'Traffic over the last 7 days',
+  /* 门户 v2：线路、用量、钱包 */
+  '线路概况': 'Lines at a glance',
+  '分钟一次': 'min interval',
+  '用量概况': 'Usage at a glance',
   /* 门户 v2 仪表盘 */
   '近 7 日流量': 'Last 7 days',
   '近 30 日流量': 'Last 30 days',

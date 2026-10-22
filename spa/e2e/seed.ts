@@ -135,17 +135,20 @@ psql(`INSERT INTO traffic_daily (user_id, day, node_id, entrance_id, up_bytes, d
       ('${main.id}', akari_site_day(now()), '${hk.id}', '${relay.id}', 0, 1073741824, 2147483648),
       ('${main.id}', akari_site_day(now()), '${jp.id}', '${direct(jp)}', 0, 536870912, 268435456);`);
 
-/* ── 返佣与提现：邀请人 + 被邀请人（邀请关系只在注册时写，这里直接写库），被邀请人经支付宝付款 → 佣金入账 ── */
+/* ── 返佣与提现：邀请人 + 被邀请人（邀请关系只在注册时写，这里直接写库），被邀请人经支付宝付款 → 佣金入账。
+      门户 v2 的钱包用例（PR 5）用自己的一对 v2-inviter / v2-invitee（React 套件先跑，会提现、追回它那一对的佣金） ── */
 for (const p of PROJECTS) {
-  const inviter = await user(`inviter-${p}@e2e.test`, false);
-  const invitee = await user(`invitee-${p}@e2e.test`, false);
-  psql(`UPDATE users SET inviter_id = '${inviter.id}' WHERE id = '${invitee.id}';`);
-  const c = await Client.user(`invitee-${p}@e2e.test`, PW);
-  const o = await c.call<{ id: string; out_trade_no: string }>('POST', '/api/v1/me/orders', { plan_id: premium.id, period: 'month' });
-  await payAtGateway(o.out_trade_no);
-  await until('the invitee\'s order paid', async () => (await c.call<{ status: string }>('GET', `/api/v1/me/orders/${o.id}`)).status === 'paid');
-  const inv = await Client.user(`inviter-${p}@e2e.test`, PW);
-  await until('the commission credited', async () => (await inv.call<{ withdrawable_cents: number }>('GET', '/api/v1/me/balance')).withdrawable_cents > 0);
+  for (const pre of ['', 'v2-']) {
+    const inviter = await user(`${pre}inviter-${p}@e2e.test`, false);
+    const invitee = await user(`${pre}invitee-${p}@e2e.test`, false);
+    psql(`UPDATE users SET inviter_id = '${inviter.id}' WHERE id = '${invitee.id}';`);
+    const c = await Client.user(`${pre}invitee-${p}@e2e.test`, PW);
+    const o = await c.call<{ id: string; out_trade_no: string }>('POST', '/api/v1/me/orders', { plan_id: premium.id, period: 'month' });
+    await payAtGateway(o.out_trade_no);
+    await until('the invitee\'s order paid', async () => (await c.call<{ status: string }>('GET', `/api/v1/me/orders/${o.id}`)).status === 'paid');
+    const inv = await Client.user(`${pre}inviter-${p}@e2e.test`, PW);
+    await until('the commission credited', async () => (await inv.call<{ withdrawable_cents: number }>('GET', '/api/v1/me/balance')).withdrawable_cents > 0);
+  }
 }
 
 /* ── 三种退款去向：原路退回、退到余额、在支付渠道后台退款后登记（P1：套餐效果同时撤销） ── */
