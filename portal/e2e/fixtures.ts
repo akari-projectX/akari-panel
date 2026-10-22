@@ -55,6 +55,8 @@ export async function ready(page: Page, title?: string) {
 
 /** 设计评审截图：test-results/screens/<视口>-<名字>.png（CI 工件 portal-v2-screens） */
 export async function shot(page: Page, info: TestInfo, name: string) {
+  /* 启动画面淡出前不拍（否则会盖在页面上） */
+  await expect(page.locator('#boot')).toHaveCount(0, { timeout: 15_000 });
   await page.screenshot({ path: `test-results/screens/${info.project.name}-${name}.png`, fullPage: true });
 }
 
