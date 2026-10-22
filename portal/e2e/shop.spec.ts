@@ -63,14 +63,14 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   /* 后台标了「推荐」：实底小标签 */
   await expect(prem.locator('.tag')).toHaveText('推荐');
   await expect(prem.locator('.tag')).toHaveClass(/tg/);
-  /* 当前套餐：品牌色边框 + 文字 + 主按钮「续费」+ 一行说明；别的套餐：换套餐 + 折算说明 */
+  /* 当前套餐：品牌色边框 + 文字 + 主按钮「续费」+ 一行说明；别的套餐：换套餐 + 折算说明；「推荐」卡也用主按钮 */
   const cur = page.locator('.plan.current');
   await expect(cur).toHaveCount(1);
   await expect(cur.locator('.tag')).toHaveText('当前套餐');
   await expect(cur.getByRole('button', { name: '续费' })).toHaveClass(/pri/);
   await expect(cur.getByText('从到期日顺延')).toBeVisible();
   await expect(prem.getByText('旧套餐剩余价值自动抵扣')).toBeVisible();
-  await expect(prem.getByRole('button', { name: '更换到此套餐' })).not.toHaveClass(/pri/);
+  await expect(prem.getByRole('button', { name: '更换到此套餐' })).toHaveClass(/pri/);
   /* 当前套餐区：名称 + 生效中、到期与剩余天数、流量用量 */
   await expect(page.getByRole('region', { name: '当前套餐' })).toContainText('生效中');
   await expect(page.getByRole('region', { name: '当前套餐' })).toContainText(/到期 \d{4}-\d{2}-\d{2}/);

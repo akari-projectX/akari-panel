@@ -41,7 +41,7 @@
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/content.css`（main.ts 在 app.css 之后引入）。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
-  `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；只有当前套餐卡用主按钮）、`ConfirmOrder`（确认订单对话框，
+  `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `ChainPayment` / `ChainStatus` / `ChainLateNote`（USDT 链上：唯一金额、共用地址 + 二维码、倒计时、确认数、超时后的说明）、`PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑用 React 门户的 `@/lib/shop`；
