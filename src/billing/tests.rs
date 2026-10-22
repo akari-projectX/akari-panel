@@ -2916,7 +2916,6 @@ async fn period_months_mirror_sql() {
     );
     db.drop().await;
 }
-mod chain;
 mod epay;
 mod lifecycle;
 mod money;

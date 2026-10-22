@@ -76,7 +76,7 @@ export type Order = {
   action: string;
 };
 
-export const VIAS = ["notify", "query", "chain", "balance", "coupon", "credit", "manual"] as const;
+export const VIAS = ["notify", "query", "balance", "coupon", "credit", "manual"] as const;
 
 export function viaText(v: string | null, tr: Tr): string {
   switch (v) {
@@ -86,8 +86,6 @@ export function viaText(v: string | null, tr: Tr): string {
       return tr("在线支付", "Online");
     case "query":
       return tr("在线支付（查询确认）", "Online (by query)");
-    case "chain":
-      return tr("链上 USDT", "On-chain USDT");
     case "balance":
       return tr("余额", "Balance");
     case "coupon":
@@ -147,7 +145,7 @@ export function MethodTag({ o }: { o: Order }) {
       </Badge>
     );
   const text =
-    o.paid_via === "notify" || o.paid_via === "query" || o.paid_via === "chain"
+    o.paid_via === "notify" || o.paid_via === "query"
       ? (o.payment_method_name ?? viaText(o.paid_via, tr))
       : o.paid_via
         ? viaText(o.paid_via, tr)

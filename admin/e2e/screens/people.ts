@@ -5,11 +5,9 @@
 // users-detail-loading / -error, finance-withdrawals-cap / -empty / -error,
 // finance-balances-error, finance-commissions-error, finance-withdrawals-memo
 // (needs a TON withdrawal with a memo).
-import { randomBytes } from "node:crypto";
-
 import { expect, type Page } from "@playwright/test";
 
-import { apiJson, sql } from "../helpers";
+import { apiJson } from "../helpers";
 import { goDialog, goto, need, type Ctx, type Device, type Shot } from "./shared";
 
 // ---- users list, batch, jobs, bulk delete ---------------------------------
@@ -345,66 +343,9 @@ const financeShots: Shot[] = [
     name: "finance-commissions-nomatch",
     open: async (page) => goto(page, "/finance/commissions?email=nobody%40nowhere.example"),
   },
-  // C2b (new, no v2 design): USDT on-chain transfers and the assign dialog.
-  { name: "finance-chain-default", open: async (page) => goto(page, "/finance/chain") },
-  {
-    name: "finance-chain-assign",
-    open: async (page, c) => {
-      await goto(page, "/finance/chain");
-      const r = page.locator("[data-transfer]").filter({ hasText: "4.170000" }).first();
-      await r.getByRole("button", { name: "指派" }).click();
-      const d = page.getByRole("dialog");
-      await d.locator(`[data-candidate="${need(c.extra.chainOrder, "on-chain order")}"]`).click();
-      await expect(d.getByTestId("assign-compare")).toBeVisible();
-    },
-  },
 ];
 
-/**
- * C2b: a (disabled) USDT method on the mock RPC node, a customer's unpaid
- * order of it with its exact amount reserved, and two transfers no order took.
- */
-async function financeSetup(c: Ctx): Promise<void> {
-  const rpc = process.env.E2E_MOCK_RPC;
-  if (!rpc || !c.planId) return;
-  const tag = randomBytes(4).toString("hex");
-  const addr = `0x${tag.repeat(5)}`;
-  const name = `USDT（Polygon）${tag.slice(0, 4)}`;
-  const m = await apiJson<{ id: string }>("POST", "/settings/payments", {
-    kind: "usdt_chain",
-    display_name: name,
-    enabled: false,
-    config: { chain: "polygon", address: addr, rpc_urls: rpc, rate_cents: 720 },
-  });
-  const u = await apiJson<{ id: string }>("POST", "/users", {
-    email: `usdt-${tag}@shots.test`,
-    password: `shots-${tag}-pw`,
-  });
-  const no = `SHOT${Date.now()}`;
-  sql(
-    `INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, amount_cents, period, list_price_cents, ` +
-      `credit_cents, discount_cents, balance_cents, balance_state, subject, expires_at, action, payment_method_id) ` +
-      `SELECT gen_random_uuid(), '${no}', '${u.id}', 'shots', id, name, 3000, 'month', 3000, 0, 0, 0, 'none', 'shots', ` +
-      `now() + interval '25 minutes', 'new', '${m.id}' FROM plans WHERE id = '${c.planId}'`,
-  );
-  sql(
-    `INSERT INTO chain_payments (order_id, method_id, chain, token, address, amount_units, rate_cents, confirmations, created_at, reserved_until) ` +
-      `SELECT id, '${m.id}', 'polygon', '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', '${addr}', 4170123, 720, 32, ` +
-      `now() - interval '5 minutes', now() + interval '1 day' FROM orders WHERE out_trade_no = '${no}'`,
-  );
-  for (const [units, reason] of [
-    [4170000, "no_order"],
-    [12500000, "order_paid"],
-  ] as const)
-    sql(
-      `INSERT INTO chain_transfers (method_id, chain, tx_hash, log_index, block_number, block_hash, from_address, amount_units, ` +
-        `status, reason, confirmed_at, block_time) VALUES ('${m.id}', 'polygon', '0x' || md5(random()::text) || md5(random()::text), 0, ` +
-        `78123456, '0x' || md5(random()::text) || md5(random()::text), '0x' || substr(md5(random()::text) || md5(random()::text), 1, 40), ` +
-        `${units}, 'unmatched', '${reason}', now(), now() - interval '20 minutes')`,
-    );
-  c.extra.chainOrder = no;
-  c.extra.chainMethod = name;
-}
+async function financeSetup(_ctx: Ctx): Promise<void> {}
 
 // ---------------------------------------------------------------------------
 

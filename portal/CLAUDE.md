@@ -43,11 +43,11 @@
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
-  `ChainPayment` / `ChainStatus` / `ChainLateNote`（USDT 链上：唯一金额、共用地址 + 二维码、倒计时、确认数、超时后的说明）、`PayResult`（付款结果，
+  `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑用 React 门户的 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
   余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
-  e2e `e2e/shop.spec.ts`（React shop / usdt 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）、`v2-usdt-<视口>`（用例里建，收款地址 c… / d…）。
+  e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
   窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的上色规则 `lib/lines.ts`，仪表盘的线路预览共用）、
   `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；图是仪表盘的 `TrafficChart`；React 的环形图与

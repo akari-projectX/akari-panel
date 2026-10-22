@@ -89,9 +89,6 @@ impl AppState {
         let traffic = TrafficBuffer::new();
         traffic.set_departed_grace(cfg.limits.traffic_departed_grace_secs);
         let settings = crate::settings::Live::new(&cfg, &install);
-        if cfg.limits.chain_rpc_loopback {
-            crate::outbound::allow_chain_rpc_loopback();
-        }
         Self(Arc::new(Inner {
             cfg,
             route_prefix,

@@ -13,9 +13,10 @@
 //! `api::handle_notify`). A provider only talks to its gateway: create a
 //! trade, query it, close it, verify a notify, test the configuration.
 //!
-//! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`), EPay / 易支付
-//! (`epay.rs`, `epay`, C1) and USDT on-chain (`chain/`, `usdt_chain`, C2). Adding a kind = implement both traits, add it to `KINDS`, extend the
-//! `payment_methods.kind` CHECK (new migration) and the SPA's form.
+//! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`) and EPay / 易支付
+//! (`epay.rs`, `epay`, C1). Adding a kind = implement both traits, add it
+//! to `KINDS`, extend the `payment_methods.kind` CHECK (new migration) and
+//! the admin form.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -162,10 +163,6 @@ pub struct TestOutcome {
     pub message: String,
     pub code: Option<String>,
     pub sub_code: Option<String>,
-    /// Kind-specific facts the console shows next to the message (USDT
-    /// on-chain: `chain_id`, `expected_chain_id`, `head`, `decimals`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
 }
 
 /// One configured payment method's gateway client.
@@ -205,11 +202,6 @@ pub trait PaymentProvider: Send + Sync + std::fmt::Debug {
         _out_request_no: &'a str,
     ) -> BoxFut<'a, Result<RefundState, CallError>> {
         Box::pin(async { Err(CallError::Unsupported) })
-    }
-    /// C2: an on-chain method — order creation reserves a unique exact
-    /// token amount (`chain::reserve`) in the order's transaction.
-    fn chain(&self) -> Option<&super::chain::Params> {
-        None
     }
     /// 测试连接: one harmless authenticated call.
     fn test_connection(&self) -> BoxFut<'_, TestOutcome>;
@@ -260,11 +252,7 @@ pub trait ProviderKind: Sync {
 }
 
 /// Every provider kind.
-pub static KINDS: &[&dyn ProviderKind] = &[
-    &super::alipay::AlipayKind,
-    &super::epay::EpayKind,
-    &super::chain::UsdtChainKind,
-];
+pub static KINDS: &[&dyn ProviderKind] = &[&super::alipay::AlipayKind, &super::epay::EpayKind];
 
 pub fn kind(id: &str) -> Option<&'static dyn ProviderKind> {
     KINDS.iter().copied().find(|k| k.id() == id)
@@ -357,7 +345,6 @@ pub mod mock {
                     message: "ok".into(),
                     code: None,
                     sub_code: None,
-                    details: None,
                 }
             })
         }
@@ -409,8 +396,7 @@ pub mod mock {
         // The registry knows Alipay F2F and EPay, and nothing unknown.
         assert_eq!(kind("alipay_f2f").map(|k| k.id()), Some("alipay_f2f"));
         assert_eq!(kind("epay").map(|k| k.id()), Some("epay"));
-        assert_eq!(kind("usdt_chain").map(|k| k.id()), Some("usdt_chain"));
-        assert!(m.chain().is_none());
+        assert!(kind("usdt_chain").is_none());
         assert_eq!(
             super::super::alipay::AlipayKind.default_icon(&Value::Null),
             None

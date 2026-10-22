@@ -50,13 +50,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "chain_rpc"
-path = "fuzz_targets/chain_rpc.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "alipay_response"
 path = "fuzz_targets/alipay_response.rs"
 test = false

@@ -112,11 +112,9 @@ TOML
 # variable (logged at startup) shortens them: 8 subscription fetches per
 # token and window, a 5 s "立即测速" cooldown, node alerts every 5 s, rule-set
 # downloads from the loopback list host.
-# chain_rpc_loopback=1: on-chain payment methods may call the local mock
-# JSON-RPC node (C2).
 # rule_set_fetch_loopback=1: remote rule-sets may come from the local list
 # host below (plain http to 127.0.0.1; refused in production).
-SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1,chain_rpc_loopback=1"
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -2643,95 +2641,6 @@ EVER=$(last_json "[m['version'] for m in d['methods'] if m['id']=='$EMETHOD'][0]
     -d "{\"version\":$EVER,\"display_name\":\"支付宝（易支付）\",\"enabled\":false,\"config\":{\"api_url\":\"http://127.0.0.1:18090/epay/\",\"pid\":\"1001\",\"channel\":\"alipay\",\"api_mode\":\"submit\"}}")" = "200" ] \
   || { echo "FAIL: disable EPay method"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(fp "$ENOTIFY?$EGOOD")" = "$REJ" ] || { echo "FAIL: disabled EPay method's notify not the canonical rejection"; exit 1; }
-# C2: USDT on-chain (Polygon) against a mock JSON-RPC node on 127.0.0.1
-# (AKARI_TEST_LIMITS chain_rpc_loopback=1): the method (RPC URL sealed,
-# never shown), 测试连接, an order's unique exact amount, the transfer seen
-# and credited at the confirmation depth by the watcher (paid_via chain,
-# trade number = tx hash, exactly once), a stray transfer left unmatched
-# and ignored by the admin; no notify route; disabled at the end (the mock
-# node lives on, tied to this script, while the paid order's amount stays
-# reserved and watched).
-echo "== C2 USDT on-chain: method (RPC sealed) -> unique amount -> transfer -> credited at the depth; unmatched -> ignored =="
-CADDR="0x52908400098527886E0F7030069857D2E4169EE7"
-# The mock node: scripts/mock-chain-rpc.py (shared with the portal e2e).
-python3 -c "$TIE_PY"'
-import runpy, sys
-sys.argv = sys.argv[1:]
-runpy.run_path(sys.argv[0], run_name="__main__")
-' scripts/mock-chain-rpc.py 18091 >"$LOG/mock-rpc.log" 2>&1 &
-for _ in $(seq 1 20); do curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/mine?n=0" >/dev/null && break; sleep 0.2; done
-RPC_URL="http://127.0.0.1:18091/"
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
-    -d "{\"kind\":\"usdt_chain\",\"display_name\":\"USDT（Polygon）\",\"enabled\":true,\"config\":{\"chain\":\"polygon\",\"address\":\"$CADDR\",\"rpc_urls\":\"$RPC_URL\",\"rate_cents\":720,\"confirmations\":2}}")" = "201" ] \
-  || { echo "FAIL: add USDT on-chain method"; cat /tmp/akari-smoke/last; exit 1; }
-CMETHOD=$(last_json "d['id']")
-matches -F "18091" /tmp/akari-smoke/last && { echo "FAIL: RPC URL in the method view"; exit 1; }
-last_json "d['config']['rpc_urls_set'] and d['config']['address']=='$CADDR' and d['config']['chain_id']==137 and d['config']['confirmations_effective']==2" | matches True \
-  || { echo "FAIL: USDT method view"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(psql_q "SELECT position(convert_to('$RPC_URL', 'UTF8') IN secrets_enc) FROM payment_methods WHERE id = '$CMETHOD'")" = "0" ] \
-  || { echo "FAIL: RPC URL not sealed"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
-    -d "{\"kind\":\"usdt_chain\",\"display_name\":\"dup\",\"config\":{\"chain\":\"polygon\",\"address\":\"$CADDR\"}}")" = "409" ] \
-  && last_json "d['code']" | matches '^payments.chain_address_in_use$' || { echo "FAIL: second method on the same address"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments/$CMETHOD/test" -H "$J" -d '{}')" = "200" ] \
-  && last_json "d['ok'] and d['result']=='rpc_ok' and d['details']['chain_id']==137 and d['details']['decimals']==6" | matches True || { echo "FAIL: USDT 测试连接"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H "$J" \
-    -d '{"email":"smoke-usdt@smoke.test","password":"usdt-password-123"}')" = "201" ] || { echo "FAIL: create USDT buyer"; exit 1; }
-UJAR="$LOG/usdt-cookies"
-[ "$(code -c "$UJAR" -X POST "$BASE/auth/login" -H "$J" \
-    -d '{"email":"smoke-usdt@smoke.test","password":"usdt-password-123"}')" = "200" ] || { echo "FAIL: USDT buyer login"; exit 1; }
-[ "$(code -b "$UJAR" -X POST "$BASE/api/v1/me/orders" -H "$J" \
-    -d "{\"plan_id\":\"$EPLAN\",\"period\":\"days\",\"method_id\":\"$CMETHOD\"}")" = "201" ] \
-  || { echo "FAIL: USDT order"; cat /tmp/akari-smoke/last; exit 1; }
-CORDER=$(last_json "d['id']")
-# ¥9.90 at ¥7.20/USDT = 1.375 → 1.38 USDT + a 4-digit suffix.
-last_json "d['chain']['address']=='$CADDR' and d['qr_code']=='$CADDR' and d['chain']['amount'].startswith('1.38') and len(d['chain']['amount'])==8 and d['chain']['confirmations_required']==2" | matches True \
-  || { echo "FAIL: USDT order view"; cat /tmp/akari-smoke/last; exit 1; }
-CUNITS=$(last_json "d['chain']['amount_units']")
-[ "$(fp "$ROOT/pay/$CMETHOD/notify")" = "$REJ" ] || { echo "FAIL: on-chain method notify not the canonical rejection"; exit 1; }
-CTX=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/pay?to=$CADDR&units=$CUNITS" | python3 -c "import json,sys; print(json.load(sys.stdin)['tx'])")
-curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/mine?n=2" >/dev/null
-for _ in $(seq 1 30); do
-  code -b "$UJAR" "$BASE/api/v1/me/orders/$CORDER" >/dev/null
-  [ "$(last_json "d['status']")" = "paid" ] && break; sleep 1
-done
-last_json "d['status']=='paid' and d['fulfilled'] and d['chain']['transfer']['status']=='credited' and d['chain']['transfer']['tx_hash']=='$CTX'" | matches True \
-  || { echo "FAIL: USDT transfer not credited"; cat /tmp/akari-smoke/last; tail -5 "$LOG/panel.log"; exit 1; }
-[ "$(psql_q "SELECT paid_via || '/' || trade_no FROM orders WHERE id='$CORDER'")" = "chain/$CTX" ] || { echo "FAIL: USDT paid_via / trade_no"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$CORDER' AND actor_label='chain'")" = "1" ] \
-  || { echo "FAIL: USDT order paid not exactly once"; exit 1; }
-# A stray 1.00 USDT: unmatched, listed for the admin, ignored (audited).
-curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/pay?to=$CADDR&units=1000000" >/dev/null
-curl -s --noproxy '*' -X POST "http://127.0.0.1:18091/control/mine?n=2" >/dev/null
-for _ in $(seq 1 30); do
-  code -b "$JAR" "$BASE/api/v1/payments/chain-transfers?status=unmatched" >/dev/null
-  [ "$(last_json "len(d['transfers'])")" = "1" ] && break; sleep 1
-done
-last_json "d['transfers'][0]['amount']=='1.000000' and d['transfers'][0]['reason']=='no_order' and d['watchers'][0]['method_id']=='$CMETHOD' and d['watchers'][0]['last_error'] is None" | matches True \
-  || { echo "FAIL: unmatched transfer list"; cat /tmp/akari-smoke/last; exit 1; }
-CSTRAY=$(last_json "d['transfers'][0]['id']")
-# C2b: the assign dialog's candidates (unpaid orders of the method; the paid one is not one) and the
-# dashboard's 需要你处理 count.
-[ "$(code -b "$JAR" "$BASE/api/v1/payments/chain-transfers/$CSTRAY/candidates")" = "200" ] \
-  && last_json "'$CORDER' not in [o['id'] for o in d['orders']]" | matches True \
-  || { echo "FAIL: assign candidates"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$UJAR" "$BASE/api/v1/payments/chain-transfers/$CSTRAY/candidates")" = "403" ] || { echo "FAIL: candidates for a user"; exit 1; }
-[ "$(code -b "$JAR" "$BASE/api/v1/dashboard")" = "200" ] \
-  && last_json "d['pending']['chain_unmatched'] >= 1 and d['pending_detail']['chain_unmatched_units'] >= 1000000" | matches True \
-  || { echo "FAIL: dashboard unmatched on-chain transfers"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/payments/chain-transfers/$CSTRAY/assign" -H "$J" -d "{\"order_id\":\"$CORDER\",\"reason\":\"smoke\"}")" = "409" ] \
-  && last_json "d['code']" | matches '^chain.order_paid$' || { echo "FAIL: assign to a paid order"; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/payments/chain-transfers/$CSTRAY/ignore" -H "$J" -d '{"reason":"smoke: refunded by hand"}')" = "204" ] \
-  || { echo "FAIL: ignore unmatched transfer"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action IN ('chain_transfer.unmatched', 'chain_transfer.ignore') AND target_id='$CSTRAY'")" = "2" ] \
-  || { echo "FAIL: unmatched transfer audit"; exit 1; }
-[ "$(code -b "$UJAR" "$BASE/api/v1/payments/chain-transfers")" = "403" ] || { echo "FAIL: transfers list for a user"; exit 1; }
-# Disabled (later sections order without method_id = exactly one enabled method).
-[ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] || { echo "FAIL: payment methods"; exit 1; }
-CVER=$(last_json "[m['version'] for m in d['methods'] if m['id']=='$CMETHOD'][0]")
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/payments/$CMETHOD" -H "$J" \
-    -d "{\"version\":$CVER,\"display_name\":\"USDT（Polygon）\",\"enabled\":false,\"config\":{\"chain\":\"polygon\",\"address\":\"$CADDR\",\"rate_cents\":720,\"confirmations\":2}}")" = "200" ] \
-  || { echo "FAIL: disable USDT method"; cat /tmp/akari-smoke/last; exit 1; }
 # Renewal through the active query (no notify reaches the panel): +30 days.
 EXP1=$(psql_q "SELECT extract(epoch FROM expires_at)::bigint FROM user_plans WHERE user_id='$BUYER' AND status='active'")
 [ "$(code -b "$BJAR" -X POST "$BASE/api/v1/me/orders" -H 'Content-Type: application/json' \
@@ -3207,7 +3116,7 @@ echo "== W21: dashboard, user search + total, coded errors, plan + prices in one
 
 echo "== W31: system status =="
 [ "$(code -b "$JAR" "$BASE/api/v1/system/status")" = "200" ] \
-  && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts','rule_sets','chain_payments'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
+  && [ "$(last_json "d['postgres']['ok'] and d['valkey']['ok'] and any(i['this'] and i['alive'] for i in d['instances']) and [j['job'] for j in d['jobs']] == ['settlement','reconciliation','mail','alerts','rule_sets'] and next(j for j in d['jobs'] if j['job'] == 'settlement')['lag_secs'] is not None")" = "True" ] \
   || { echo "FAIL: system status"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/system/status")" = "403" ] || { echo "FAIL: user reached the system status"; exit 1; }
 # The mail queue's 全部 view: every status, newest first.

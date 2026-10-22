@@ -10,7 +10,6 @@ import { LoadError } from '@/components/data-state';
 import { DashSkeleton } from '@/components/loading';
 import StatusTag from '@/components/status-tag';
 import PayResult from '@/components/pay-result';
-import ChainPayment, { ChainLateNote, ChainStatus } from '@/components/chain-payment';
 import { outcomeOf, type PayOutcome } from '@/lib/shop';
 import { useCopy } from '@/hooks/use-copy';
 import { orderApi, type MyOrder, type RefundEffect, type RefundRoute } from '@/api';
@@ -51,9 +50,7 @@ export default function OrderDetail() {
   const order = useApi(() => orderApi.get(id), [id], { key: K.order(id) });
   const data = order.data;
   const pending = data?.status === 'pending';
-  /* USDT 链上：付款区是转账说明，不是普通二维码 */
-  const chain = data?.chain ?? null;
-  const qr = pending && !chain ? data?.qr_code ?? null : null;
+  const qr = pending ? data?.qr_code ?? null : null;
   const payUrl = pending && data?.pay_url && safeUrl(data.pay_url) ? data.pay_url : null;
   const alipayJump = !!qr && IS_MOBILE && isAlipayQr(qr);
   const [cancelling, runCancel] = usePending();
@@ -76,15 +73,12 @@ export default function OrderDetail() {
     return () => clearInterval(t);
   }, [pending]);
 
-  /* 订单已结束、但链上转账已经看到、还在等确认：照样盯着，确认后会开通（迟到付款） */
-  const chainWaiting = !pending && data?.status !== 'paid' && chain?.transfer?.status === 'pending';
-
   /*
    * 待支付就盯着状态：用户是在支付宝 App / 另一个标签页里付的，付完不会有人回来告诉这一页。
    * 「不再待支付」不等于付成功了：超时没付面板会关掉订单（expired）。上一次没回来就不发下一次。
    */
   useEffect(() => {
-    if (!(pending || chainWaiting) || !id) return;
+    if (!pending || !id) return;
     let alive = true;
     let busy = false;
     const timer = setInterval(async () => {
@@ -92,13 +86,7 @@ export default function OrderDetail() {
       busy = true;
       try {
         const o = await orderApi.get(id);
-        if (!alive) return;
-        /* 链上订单每次都换数据：确认数在涨 */
-        const still = o.status === 'pending' || (o.status !== 'paid' && o.chain?.transfer?.status === 'pending');
-        if (still) {
-          if (o.chain) order.setData(o);
-          return;
-        }
+        if (!alive || o.status === 'pending') return;
         clearInterval(timer);
         /* 先弹结果再换数据：setData 让 pending 变 false，这个 effect 随即被清理（alive = false）。
            到期时间读的是 useAuth 的套餐，刷新回来弹窗里自己就更新 */
@@ -111,7 +99,7 @@ export default function OrderDetail() {
     }, 3000);
     return () => { alive = false; clearInterval(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, chainWaiting, id]);
+  }, [pending, id]);
 
   const cancel = () => runCancel(async () => {
     try {
@@ -285,11 +273,9 @@ export default function OrderDetail() {
               <>
                 <p className="mt-4 flex items-start gap-1.5 text-[12px] leading-[1.7] text-muted-foreground">
                   <Clock className="mt-0.5 size-3.5 shrink-0" />
-                  {chain
-                    ? tp('请在 {t} 前转账（还剩 {m} 分钟）。超时后订单关闭，但保留期内到账的这笔金额仍会开通', { t: formatTime(data.expires_at), m: minutesLeft })
-                    : minutesLeft > 0
-                      ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: minutesLeft })
-                      : tr('订单即将超时关闭，请尽快完成支付')}
+                  {minutesLeft > 0
+                    ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: minutesLeft })
+                    : tr('订单即将超时关闭，请尽快完成支付')}
                 </p>
                 <Button variant="ghost" className="mt-4 h-9 w-full text-muted-foreground" disabled={cancelling} onClick={cancel}>
                   <XCircle className="size-3.5" />{tr('取消订单')}
@@ -368,19 +354,7 @@ export default function OrderDetail() {
               </div>
             </Section>
           )}
-          {/* ── 待支付：USDT 链上转账 ── */}
-          {pending && chain && (
-            <Section title={tr('USDT 转账付款')} desc={tr('到账并达到确认数后本页会自动更新，无需手动刷新')}>
-              <ChainPayment pay={chain} expiresAt={data.expires_at} />
-              <p className="mt-5 text-[12px] text-muted-foreground">{tr('想换一种支付方式：取消这一单，回商店重新下单。')}</p>
-            </Section>
-          )}
-          {!pending && chain && data.status !== 'paid' && (
-            <Section title={tr('USDT 转账')}>
-              {chain.transfer ? <ChainStatus pay={chain} /> : <ChainLateNote pay={chain} />}
-            </Section>
-          )}
-          {pending && !chain && !qr && !payUrl && (
+          {pending && !qr && !payUrl && (
             <Section title={tr('等待付款')}>
               <p className="text-[13px] text-muted-foreground">{tr('这笔订单没有在线付款方式，请提交工单联系客服完成付款。')}</p>
             </Section>

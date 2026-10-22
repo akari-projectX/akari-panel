@@ -15,8 +15,6 @@
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
   import Qr from '../components/dash/Qr.svelte';
-  import ChainLateNote from '../components/shop/ChainLateNote.svelte';
-  import ChainStatus from '../components/shop/ChainStatus.svelte';
   import { refresh } from '$lib/auth.svelte';
   import { Copied } from '$lib/copy.svelte';
   import { errorText } from '$lib/errors';
@@ -30,9 +28,9 @@
 
   /*
    * 订单详情与付款（行为同 React 门户 pages/dash/order-detail.tsx；也是易支付 return_url 回来的页面）。
-   * 待支付：支付宝二维码（手机上是「打开支付宝付款」+ 给另一台设备扫的码）、跳转类支付的收银台按钮，或 USDT 链上转账说明；
+   * 待支付：支付宝二维码（手机上是「打开支付宝付款」+ 给另一台设备扫的码）或跳转类支付的收银台按钮；
    * 每 3 秒查一次状态（面板查订单时会主动去渠道问），变了就弹付款结果（components/shop/PayResult）。
-   * 订单结束了但链上转账已经看到、还在等确认：照样盯着（迟到付款会开通）。想换支付方式：取消这一单，回商店重新下单。
+   * 想换支付方式：取消这一单，回商店重新下单。
    * 版式：页头 → 三步进度 → 退款 / 未开通说明 → 宽屏两栏（左：付款区 + 订单信息；右：金额单，跟着滚），窄屏金额单在最前。
    */
   let { params }: { title: string; params?: Record<string, string> } = $props();
@@ -41,9 +39,7 @@
   const order = resource(() => ({ key: K.order(id), fetch: () => orderApi.get(id) }));
   const data = $derived(order.data);
   const pending = $derived(data?.status === 'pending');
-  /* USDT 链上：付款区是转账说明，不是普通二维码 */
-  const chain = $derived(data?.chain ?? null);
-  const qr = $derived(pending && !chain ? data?.qr_code ?? null : null);
+  const qr = $derived(pending ? data?.qr_code ?? null : null);
   const payUrl = $derived(pending && data?.pay_url && safeUrl(data.pay_url) ? data.pay_url : null);
   const alipayJump = $derived(!!qr && IS_MOBILE && isAlipayQr(qr));
   const cancelling = new Pending();
@@ -71,15 +67,12 @@
     return () => clearInterval(timer);
   });
 
-  /* 订单已结束、但链上转账已经看到、还在等确认：照样盯着，确认后会开通（迟到付款） */
-  const chainWaiting = $derived(!pending && data?.status !== 'paid' && chain?.transfer?.status === 'pending');
-
   /*
    * 待支付就盯着状态：用户是在支付宝 App / 另一个标签页里付的，付完不会有人回来告诉这一页。
    * 「不再待支付」不等于付成功了：超时没付面板会关掉订单（expired）。上一次没回来就不发下一次。
    */
   $effect(() => {
-    if (!(pending || chainWaiting) || !id) return;
+    if (!pending || !id) return;
     let alive = true;
     let busy = false;
     const timer = setInterval(async () => {
@@ -88,12 +81,7 @@
       try {
         const o = await orderApi.get(id);
         if (!alive) return;
-        /* 链上订单每次都换数据：确认数在涨 */
-        const still = o.status === 'pending' || (o.status !== 'paid' && o.chain?.transfer?.status === 'pending');
-        if (still) {
-          if (o.chain) order.set(o);
-          return;
-        }
+        if (o.status === 'pending') return;
         clearInterval(timer);
         show(outcomeOf(o));
         order.set(o);
@@ -253,9 +241,7 @@
           <p class="bill-note">
             <Clock size={14} strokeWidth={1.75} aria-hidden="true" />
             <span>
-              {chain
-                ? tp('请在 {t} 前转账（还剩 {m} 分钟）。超时后订单关闭，但保留期内到账的这笔金额仍会开通', { t: formatTime(data.expires_at), m: view.minutesLeft })
-                : view.minutesLeft > 0
+              {view.minutesLeft > 0
                   ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: view.minutesLeft })
                   : t('订单即将超时关闭，请尽快完成支付')}
             </span>
@@ -315,27 +301,7 @@
           </div>
         </section>
       {/if}
-      {#if pending && chain}
-        <section class="sec" aria-labelledby="h-chain">
-          <div class="sh">
-            <div>
-              <h2 id="h-chain">{t('USDT 转账付款')}</h2>
-              <p>{t('到账并达到确认数后本页会自动更新，无需手动刷新')}</p>
-            </div>
-          </div>
-          {#await import('../components/shop/ChainPayment.svelte') then m}
-            <m.default pay={chain} expiresAt={data.expires_at} />
-          {/await}
-          <p class="hint left">{t('想换一种支付方式：取消这一单，回商店重新下单。')}</p>
-        </section>
-      {/if}
-      {#if !pending && chain && data.status !== 'paid'}
-        <section class="sec" aria-labelledby="h-chain-late">
-          <div class="sh"><div><h2 id="h-chain-late">{t('USDT 转账')}</h2></div></div>
-          {#if chain.transfer}<ChainStatus pay={chain} />{:else}<ChainLateNote pay={chain} />{/if}
-        </section>
-      {/if}
-      {#if pending && !chain && !qr && !payUrl}
+      {#if pending && !qr && !payUrl}
         <section class="sec" aria-labelledby="h-wait">
           <div class="sh"><div><h2 id="h-wait">{t('等待付款')}</h2></div></div>
           <p class="hint left">{t('这笔订单没有在线付款方式，请提交工单联系客服完成付款。')}</p>

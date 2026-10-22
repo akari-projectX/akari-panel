@@ -129,7 +129,6 @@ function jobName(j: string, tr: Tr) {
         mail: tr("邮件发件箱", "Mail outbox"),
         alerts: tr("告警评估", "Alert evaluation"),
         rule_sets: tr("远程规则集刷新", "Remote rule-set refresh"),
-        chain_payments: tr("链上收款", "On-chain payments"),
       } as Record<string, string>
     )[j] ?? j
   );
@@ -145,10 +144,6 @@ function jobDesc(j: string, tr: Tr) {
         rule_sets: tr(
           "每天重新下载订阅分流里的远程规则集，失败时保留上一份",
           "Re-downloads the routing's remote rule-sets daily, keeping the last good copy on failure",
-        ),
-        chain_payments: tr(
-          "读取 USDT 收款地址的链上转账，达到确认数后为对应订单付款",
-          "Reads the USDT transfers to the receiving addresses and pays the orders once confirmed",
         ),
       } as Record<string, string>
     )[j] ?? ""

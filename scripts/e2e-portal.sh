@@ -9,7 +9,7 @@
 # Isolated from smoke and the dev panel: own database ($E2E_DB, dropped and
 # recreated), own Valkey index ($E2E_VALKEY_DB, flushed), own data dir
 # ($E2E_DIR), own ports (web 8090, TLS 8493, gRPC 8453, Mailpit
-# 11026/18026, mock Alipay 18489, mock JSON-RPC node 18491). Needs `make dev-up`, a panel binary with
+# 11026/18026, mock Alipay 18489). Needs `make dev-up`, a panel binary with
 # the current portal (`make spa panel`, or `make e2e`; PANEL_BIN overrides)
 # and `npx playwright install chromium` once.
 #
@@ -29,7 +29,6 @@ E2E_VALKEY_DB=${E2E_VALKEY_DB:-15}
 PORT=${E2E_PORT:-8090}
 GRPC_PORT=${E2E_GRPC_PORT:-8453}
 PAY_PORT=${E2E_PAY_PORT:-18489}
-RPC_PORT=${E2E_RPC_PORT:-18491}
 TLS_PORT=${E2E_TLS_PORT:-8493}
 HOST=portal.e2e.test
 DIR=${E2E_DIR:-/tmp/akari-e2e-portal}
@@ -78,12 +77,6 @@ python3 spa/e2e/mock-alipay.py "$PAY" "$PAY_PORT" >"$DIR/mock-alipay.log" 2>&1 &
 PAY_PID=$!
 PIDS+=("$PAY_PID")
 
-# A mock EVM JSON-RPC node for the USDT on-chain method (spa/e2e/usdt.spec.ts);
-# the panel may call it over loopback http only with chain_rpc_loopback=1.
-python3 scripts/mock-chain-rpc.py "$RPC_PORT" >"$DIR/mock-rpc.log" 2>&1 &
-RPC_PID=$!
-PIDS+=("$RPC_PID")
-
 # The TLS front: a throwaway certificate for $HOST; Chromium trusts exactly
 # its key (--ignore-certificate-errors-spki-list, playwright.config.ts).
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=$HOST" \
@@ -105,7 +98,7 @@ PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/admin prefix/{sub(/^\//,"",$
 # start_panel [ENV=VALUE…]: the panel in the background (extra environment
 # for this run), then wait for healthz.
 start_panel() {
-  env AKARI_TEST_LIMITS=chain_rpc_loopback=1 "$@" "$PANEL" -c "$DIR/panel.toml" serve >>"$DIR/panel.log" 2>&1 &
+  env "$@" "$PANEL" -c "$DIR/panel.toml" serve >>"$DIR/panel.log" 2>&1 &
   PANEL_PID=$!
   PIDS+=("$PANEL_PID")
   for _ in $(seq 1 120); do
@@ -123,7 +116,7 @@ AKARI_ADMIN_PASSWORD="$ADMIN_PW" "$PANEL" -c "$DIR/panel.toml" admin add admin@e
 export E2E_ORIGIN="https://$HOST:$TLS_PORT" E2E_API="http://127.0.0.1:$PORT"
 export E2E_ADMIN_BASE="$E2E_API/$PREFIX"
 export E2E_ADMIN_EMAIL=admin@e2e.test E2E_ADMIN_PASSWORD="$ADMIN_PW"
-export E2E_MOCK_ALIPAY="http://127.0.0.1:$PAY_PORT" E2E_PAY_DIR="$PAY" E2E_MOCK_RPC="http://127.0.0.1:$RPC_PORT"
+export E2E_MOCK_ALIPAY="http://127.0.0.1:$PAY_PORT" E2E_PAY_DIR="$PAY"
 export E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026
 export E2E_PSQL="docker compose -f $PWD/docker-compose.yml exec -T postgres psql -U akari -d $E2E_DB"
 export E2E_SEED="$DIR/seed.json" NO_PROXY='*' no_proxy='*'

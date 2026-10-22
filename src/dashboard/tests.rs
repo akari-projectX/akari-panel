@@ -380,7 +380,6 @@ async fn aggregates_every_source() {
             mail_failed: 2,
             orders_unfulfilled: 1,
             alerts_firing: 3,
-            chain_unmatched: 0,
         }
     );
     let offline_name: String = sqlx::query_scalar("SELECT name FROM servers WHERE id = $1")
