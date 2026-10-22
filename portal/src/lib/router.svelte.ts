@@ -16,8 +16,11 @@ function sync() {
   loc.hash = location.hash;
 }
 
-/** state：随这一条历史记录存下的数据（注销结果页读 `history.state.anonymized`） */
-export function navigate(to: string, opts: { replace?: boolean; state?: Record<string, unknown> } = {}) {
+/**
+ * state：随这一条历史记录存下的数据（注销结果页读 `history.state.anonymized`）；
+ * keepScroll：不回到顶部（页内分页 `?tab=` 换的是同一页的一块）
+ */
+export function navigate(to: string, opts: { replace?: boolean; state?: Record<string, unknown>; keepScroll?: boolean } = {}) {
   const url = new URL(to, location.href);
   if (url.origin !== location.origin) {
     location.assign(url.href);
@@ -28,7 +31,7 @@ export function navigate(to: string, opts: { replace?: boolean; state?: Record<s
   if (opts.replace || same) history.replaceState(opts.state ?? history.state, '', next);
   else history.pushState(opts.state ?? {}, '', next);
   sync();
-  if (!same && !url.hash) window.scrollTo(0, 0);
+  if (!same && !url.hash && !opts.keepScroll) window.scrollTo(0, 0);
 }
 
 /** 查询串里的一个参数 */

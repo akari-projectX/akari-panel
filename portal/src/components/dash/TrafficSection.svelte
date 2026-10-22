@@ -61,10 +61,6 @@
 </section>
 
 <style>
-  .rng { display: inline-flex; flex: none; gap: 2px; padding: 2px; border-radius: 8px; background: var(--chart-switch-bg); font-size: 12.5px; }
-  .rng button { border: 0; background: none; padding: 2px 10px; border-radius: 6px; color: var(--muted); font: inherit; }
-  .rng button:hover { color: var(--fg); }
-  .rng button[aria-pressed='true'] { background: var(--chart-switch-on); color: var(--fg); box-shadow: var(--chart-switch-shadow); }
   .foot { margin-top: 20px; font-size: 12.5px; color: var(--faint); }
   .foot b { color: var(--body); font-weight: 500; }
   .foot .link { font-size: 12.5px; }
