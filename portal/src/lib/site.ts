@@ -1,7 +1,7 @@
 import type { AuthOptions } from '@/api';
 
 /**
- * 站点公开配置（/auth/options）里登录、注册页要看的开关（与 React 门户 spa/src/lib/site.ts 的 siteFrom 同一套口径）。
+ * 站点公开配置（/auth/options）里登录、注册页要看的开关。
  * 没取到之前（或取失败）一律按「关」处理：表单不会被提交到一个关着的接口。
  * 组件里：`const s = $derived(siteFlags(site.options))`。
  */

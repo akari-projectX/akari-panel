@@ -3,7 +3,6 @@
 # minor+patch, majors in their own PR so breaking changes are reviewed alone.
 # A 3-day cooldown skips releases younger than that (supply-chain hygiene).
 # Security updates are separate (repo setting) and are not delayed.
-# portal/ (Svelte portal v2) gets its own npm entry once it lands on main.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -18,19 +17,17 @@ updates:
       admin-major:
         update-types: [major]
 
-  # spa/ is being replaced by portal/; minor/patch only, no majors.
   - package-ecosystem: npm
-    directory: /spa
+    directory: /portal
     schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
-    open-pull-requests-limit: 2
-    commit-message: { prefix: "deps(spa)" }
-    ignore:
-      - dependency-name: "*"
-        update-types: [version-update:semver-major]
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "deps(portal)" }
     groups:
-      spa-minor:
+      portal-minor:
         update-types: [minor, patch]
+      portal-major:
+        update-types: [major]
 
   # Root crate, bench/ and fuzz/ (separate lockfiles) move together.
   - package-ecosystem: cargo

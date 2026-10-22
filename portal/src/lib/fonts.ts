@@ -4,7 +4,7 @@ import INTER_CSS from '@/assets/fonts/inter.css?url';
 import { sourceOf } from './i18n.svelte';
 
 /*
- * 正文字体（与 React 门户同一套自托管子集，同一份文件）：Noto Sans SC（akari.css，按 unicode-range 分片）
+ * 正文字体（自托管子集，src/shared/assets/fonts/）：Noto Sans SC（akari.css，按 unicode-range 分片）
  * 与显示拉丁字母、数字的 Inter（inter.css）。单独的样式表、不挡首帧：应用挂载时插入，切片用到才下载。
  * 英文界面在空闲时预热「切到中文时这一页要用的字」，切过去不闪系统字体。
  */

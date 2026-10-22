@@ -10,8 +10,8 @@ R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式
 - 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`（均已并入 `1000_baseline.sql`）、
   `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）；C2 的 USDT 链上收款（`1111`）已由
   `1114_drop_usdt_chain.sql` 整体移除（2026-10-23 用户裁决；USDT **提现**不受影响，见「Withdrawals」）
-- SPA：`spa/src/pages/purchase.tsx`、`orders.tsx`、`admin-orders.tsx`、`admin-plans.tsx`（价格）、
-  `admin-payments.tsx`（系统设置 → 支付）。
+- 门户：`portal/src/pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`、`portal/src/components/shop/`；
+  后台：`admin/src/console/`（订单、套餐价格、系统设置 → 支付）。
 
 ## How it works（工作流程）
 

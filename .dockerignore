@@ -1,8 +1,6 @@
 target
 .git
 data
-spa/node_modules
-spa/dist
 portal/node_modules
 portal/dist
 portal/test-results

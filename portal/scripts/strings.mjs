@@ -1,6 +1,5 @@
 /*
- * 门户 v2 源码里的字符串（无依赖：React 门户的 scripts/check-i18n.mjs、collect-text.mjs 也导入它，
- * 那时 portal/node_modules 不一定装了）。
+ * 门户源码（src/，含 src/shared）里的字符串，给 check-i18n.mjs 与 collect-text.mjs 用（无依赖，不用装 node_modules）。
  *
  *   · .ts：字符串字面量、模板字符串的静态部分（注释、正则不算）；
  *   · .svelte：<script> 里同上；标记里 {…} 表达式同上；<style> 跳过；
@@ -185,7 +184,7 @@ export function portalFiles(root = PORTAL) {
   });
 }
 
-/** portal/src 用到的全部字符串（React 门户的 check-i18n 把它们算作「有人用」） */
+/** portal/src 用到的全部字符串 */
 export function portalStrings(root = PORTAL) {
   return new Set(portalFiles(root).flatMap((f) => f.strings));
 }

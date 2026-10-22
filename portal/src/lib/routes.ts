@@ -1,5 +1,5 @@
 /**
- * 门户 v2 的路由表（与 React 门户 spa/src/lib/routes.ts 相同的地址；切换时那一份随 spa/ 删除）。
+ * 门户的路由表（面板测试 access::tests::routes_match_the_portal 读它，与 access::PORTAL_PAGES 一起改）。
  *
  * 路由名与面板邮件里的链接一致（到期提醒 `/shop`、重置密码 `/reset#token=…`、邀请 `/register?invite=…`）。
  * 面板只对这里的顶层路径返回 index.html（akari-panel `access::PORTAL_PAGES`；面板测试

@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/check-dist.mjs && node ../spa/scripts/check-bundles.mjs dist/app",
+    "build": "vite build && node scripts/check-dist.mjs && node scripts/check-bundles.mjs dist/app",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings --tsgo",
     "lint": "oxlint --deny-warnings src scripts e2e",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "check:errors": "node scripts/check-error-codes.mjs",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:i18n && npm run test",
-    "report:size": "node ../spa/scripts/bundle-report.mjs dist/app",
-    "e2e": "playwright test",
+    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:i18n && npm run check:errors && npm run test",
+    "report:size": "node scripts/bundle-report.mjs dist/app",
+    "e2e": "../scripts/e2e-portal.sh",
     "check:colors": "node scripts/check-colors.mjs"
   },
   "engines": {

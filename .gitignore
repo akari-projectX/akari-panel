@@ -1,11 +1,7 @@
 /target
-spa/node_modules
-spa/dist
 /data/
 *-bootstrap.toml
 /bench/data
 /bench/target
-spa/test-results
-spa/playwright-report
 __pycache__/
 dump.rdb

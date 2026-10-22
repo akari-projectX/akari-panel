@@ -4753,9 +4753,9 @@ curl -s --noproxy '*' -D - -o /dev/null -H 'X-Request-Id: smoke-req-1' "$BASE/no
 [ "$(fp -H 'X-Request-Id: smoke-req-1' "$BASE/nope")" = "$REJ" ] || { echo "FAIL: rejection differs with a request id"; exit 1; }
 echo "m1a: ok"
 
-echo "== SPA (the portal at /, D11) =="
+echo "== the portal at / (D11) =="
 [ "$(code "$ROOT/")" = "200" ] || { echo "FAIL: portal / not 200"; exit 1; }
-grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: portal index has no root div"; exit 1; }
+grep -q 'id="app"' /tmp/akari-smoke/last || { echo "FAIL: portal index has no app div"; exit 1; }
 grep -q "$PREFIX" /tmp/akari-smoke/last && { echo "FAIL: portal index carries the admin prefix"; exit 1; }
 JS=$(grep -o '"/assets/[^"]*\.js"' /tmp/akari-smoke/last | tr -d '"' | grep -v '/assets/boot-' | sed -n 1p)
 [ -n "$JS" ] || { echo "FAIL: portal index references no /assets/ script"; exit 1; }
@@ -4772,7 +4772,7 @@ for r in shop orders orders/x wallet invite nodes traffic tickets help announcem
 done
 [ "$(fp "$ROOT/dashboard")" = "$REJ" ] || { echo "FAIL: an unknown portal path is not the rejection"; exit 1; }
 [ "$(code "$ROOT/assets/missing.js")" = "404" ] || { echo "FAIL: missing asset not 404"; exit 1; }
-# (Request paths: spa/src/api/adapter.test.ts runs the real API layer.)
+# (Request paths: portal/src/shared/api/adapter.test.ts runs the real API layer.)
 # The portal as served carries no console code (R23, D4): every file the
 # index loads, and every chunk those import, through the build-time guard.
 SERVED_PORTAL="$LOG/served-portal"; rm -rf "$SERVED_PORTAL" && mkdir -p "$SERVED_PORTAL"
@@ -4793,7 +4793,7 @@ while [ -n "$todo" ]; do
   todo="$next"
 done
 [ "$(ls "$SERVED_PORTAL"/*.js | wc -l)" -gt 10 ] || { echo "FAIL: portal chunks not found"; exit 1; }
-node spa/scripts/check-bundles.mjs "$SERVED_PORTAL" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
+node portal/scripts/check-bundles.mjs "$SERVED_PORTAL" || { echo "FAIL: served portal bundle carries admin code"; exit 1; }
 # W33-b: the admin sign-in page under the prefix (its own bundle).
 [ "$(code "$BASE/app")" = "200" ] || { echo "FAIL: /app not 200"; exit 1; }
 grep -q 'id="root"' /tmp/akari-smoke/last || { echo "FAIL: sign-in page has no root div"; exit 1; }

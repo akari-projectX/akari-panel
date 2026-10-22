@@ -1,0 +1,20 @@
+{
+  "portal": "react",
+  "profile": "mobile-mid",
+  "runs": 5,
+  "result": {
+    "login.fcp": 3744,
+    "login.lcp": 4100,
+    "login.tti": 3748,
+    "login.ready": 5820,
+    "dashboard.fcp": 4296,
+    "dashboard.lcp": 6636,
+    "dashboard.tti": 8005,
+    "dashboard.ready": 8234,
+    "switch./nodes": 224,
+    "switch./orders": 162,
+    "switch./shop": 367,
+    "switch./traffic": 990,
+    "switch./": 263
+  }
+}

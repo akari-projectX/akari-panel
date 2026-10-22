@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * 统计后台界面上会显示的字，给 scripts/subset-admin-font.py 裁字体用（照门户 spa/scripts/collect-text.mjs 的做法，
+ * 统计后台界面上会显示的字，给 scripts/subset-admin-font.py 裁字体用（照门户 portal/scripts/collect-text.mjs 的做法，
  * 两个应用不共享源码，R23）。只收源码里的字符串字面量、模板字符串和 JSX 文本——注释里的字不会出现在页面上。
  * fonts-src/extra-chars.txt（可选）：想用网页字体显示、却不在源码与常用字表里的字。
  * 输出一行 JSON：{"sc": "…"}，只含非 ASCII 字符。

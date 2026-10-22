@@ -2,7 +2,7 @@
 // W33-b bundle guard (R23): the admin app and the user portal share
 // nothing; and (2026-10 redesign) the console's per-page chunks must load
 // under the secret admin prefix.
-//   node scripts/check-bundles.mjs [adminDist=dist] [portalDist=../spa/dist/app]
+//   node scripts/check-bundles.mjs [adminDist=dist] [portalDist=../portal/dist/app]
 // - the console bundle carries the console markers (else the check below
 //   would pass vacuously);
 // - the public sign-in page (dist/login) carries none of them, and is one
@@ -20,7 +20,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 
-const [adminDist = "dist", portalDist = "../spa/dist/app"] = process.argv.slice(2);
+const [adminDist = "dist", portalDist = "../portal/dist/app"] = process.argv.slice(2);
 
 /** API paths and texts only the console has. */
 const CONSOLE = [

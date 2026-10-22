@@ -1,11 +1,12 @@
 /*
  * 门户 v2 · PR 1：外壳。门禁、导航（桌面顶栏 / 邮箱下拉 / 窄屏菜单）、明暗、语言、账户范围、旧地址、退出，
  * 以及设计评审截图（桌面 1440 / 手机 390 × 浅 / 深）。
- * 账户来自 spa/e2e/seed.ts：user@e2e.test（正常）、expired@e2e.test（续费范围）、banned@e2e.test（封禁）；
+ * 账户来自 e2e/support/seed.ts：user@e2e.test（正常）、expired@e2e.test（续费范围）、banned@e2e.test（封禁）；
  * 退出用 logout-<视口>@e2e.test——user@e2e.test 永远不退出（退出会结束这个账户的所有会话）。
  */
 import type { Page } from '@playwright/test';
-import { expect, mine, ready, shot, signIn, test } from './fixtures';
+import { FIELDS } from './support/panel.ts';
+import { admin, expect, mine, ready, shot, signIn, test } from './fixtures';
 
 const NAV = ['仪表盘', '商店', '线路', '用量', '公告', '文档', '工单'];
 
@@ -271,4 +272,55 @@ test('sign out ends the session', async ({ page }, info) => {
   await expect(page).toHaveURL(/\/login$/);
   await page.goto('/orders');
   await expect(page).toHaveURL(/\/login\?redirect=%2Forders$/);
+});
+
+test('the portal\'s edges: unknown paths are the canonical rejection, the portal never calls the console', async ({ page }) => {
+  const prefix = new URL(process.env.E2E_ADMIN_BASE ?? '').pathname;
+  const calls: string[] = [];
+  page.on('request', (r) => calls.push(new URL(r.url()).pathname));
+  await signIn(page, 'user@e2e.test');
+  for (const p of ['/', '/shop', '/orders', '/wallet', '/invite', '/nodes', '/traffic', '/tickets', '/help', '/announcements', '/account']) {
+    await page.goto(p);
+    await ready(page);
+  }
+  expect(calls.filter((c) => c.startsWith(prefix) || c.startsWith('/admin'))).toEqual([]);
+  for (const p of ['/admin', '/app', '/dashboard', '/faq', '/nope']) {
+    const r = await page.goto(p);
+    expect(r?.status(), p).toBe(404);
+    expect(await r?.body(), p).toHaveLength(0);
+  }
+});
+
+test('#17 a panel error on /me does not send a signed-in user to the login page', async ({ page }) => {
+  await signIn(page, 'user@e2e.test');
+  /* 新标签页（没有 sessionStorage 缓存）打开时 /me 出错：说清楚、给「重试」，不送去登录页 */
+  const tab = await page.context().newPage();
+  await tab.route(/\/api\/v1\/me$/, (r) => r.fulfill({ status: 502, body: '' }));
+  await tab.goto('/');
+  await expect(tab.getByRole('heading', { name: '这一块没能加载出来' })).toBeVisible();
+  expect(new URL(tab.url()).pathname).toBe('/');
+  await tab.unroute(/\/api\/v1\/me$/);
+  await tab.getByRole('button', { name: '重试' }).click();
+  await expect(tab.locator('main h1')).toHaveText('仪表盘');
+  await tab.close();
+});
+
+test('#15 branding: footer text and links, an external terms link', async ({ page }) => {
+  const a = await admin();
+  const before = await a.patch('branding', FIELDS.branding, {
+    footer_text: 'E2E 页脚文字', footer_links: [{ label: 'E2E 状态页', url: 'https://status.example.com' }],
+    tos_url: 'https://example.com/tos',
+  });
+  try {
+    await signIn(page, 'user@e2e.test');
+    await page.goto('/');
+    await ready(page, '仪表盘');
+    const footer = page.locator('footer.site');
+    await expect(footer.getByText('E2E 页脚文字')).toBeVisible();
+    await expect(footer.getByRole('link', { name: 'E2E 状态页' })).toHaveAttribute('href', 'https://status.example.com');
+    await expect(footer.getByRole('link', { name: '服务条款' })).toHaveAttribute('href', 'https://example.com/tos');
+    await expect(footer.getByRole('link', { name: '隐私政策' })).toHaveAttribute('href', '/privacy');
+  } finally {
+    await a.patch('branding', FIELDS.branding, before);
+  }
 });

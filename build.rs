@@ -8,12 +8,11 @@ mod manifest_def;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rust-embed requires the bundle folders to exist at compile time, but
-    // spa/dist and admin/dist are gitignored (build artifacts). Drop in
-    // placeholders on fresh clones; `make spa admin` replaces them with the
-    // real bundles (R23 / W33-b: the user portal in spa/dist/app, the admin
+    // portal/dist and admin/dist are gitignored (build artifacts). Drop in
+    // placeholders on fresh clones; `make portal admin` replaces them with the
+    // real bundles (R23 / W33-b: the user portal in portal/dist/app, the admin
     // sign-in page in admin/dist/login, the console in admin/dist/console).
     for (dir, file) in [
-        ("spa/dist/app", "index.html"),
         ("portal/dist/app", "index.html"),
         ("admin/dist/login", "login.html"),
         ("admin/dist/console", "index.html"),
@@ -25,13 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::write(
                 &index,
                 format!(
-                    "<!doctype html><html><body>akari panel: {} not built yet — run `make spa portal admin`.</body></html>",
+                    "<!doctype html><html><body>akari panel: {} not built yet — run `make portal admin`.</body></html>",
                     dir.display()
                 ),
             )?;
         }
     }
-    println!("cargo:rerun-if-changed=spa/dist");
     println!("cargo:rerun-if-changed=portal/dist");
     println!("cargo:rerun-if-changed=admin/dist");
     emit_git_sha();

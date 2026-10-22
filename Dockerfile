@@ -1,10 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # akari panel image (M1-1). Multi-stage:
-#   spa        builds the user portal (embedded into the binary)
-#   portal     builds portal v2 (Svelte; embedded too, served only with
-#              AKARI_PORTAL_V2=1 until the cutover; shares framework-free
-#              modules and the bundle scripts with spa/)
+#   portal     builds the user portal (Svelte; embedded into the binary)
 #   admin      builds the admin app (embedded into the binary)
 #   chef       rust:alpine + build tools + cargo-chef (pinned)
 #   planner    `cargo chef prepare`: the dependency recipe (manifests and
@@ -39,20 +36,10 @@ ARG NODE_IMAGE=node:24-alpine
 ARG RUST_IMAGE=rust:1.99-alpine
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian13:nonroot
 
-FROM ${NODE_IMAGE} AS spa
-WORKDIR /src/spa
-COPY spa/package.json spa/package-lock.json ./
-RUN npm ci
-COPY spa/ ./
-RUN npm run build
-
 FROM ${NODE_IMAGE} AS portal
 WORKDIR /src/portal
 COPY portal/package.json portal/package-lock.json ./
 RUN npm ci
-COPY spa/src /src/spa/src
-COPY spa/public /src/spa/public
-COPY spa/scripts /src/spa/scripts
 COPY portal/ ./
 RUN npm run build
 
@@ -102,7 +89,6 @@ COPY proto proto
 COPY migrations migrations
 COPY src src
 COPY deploy/systemd deploy/systemd
-COPY --from=spa /src/spa/dist spa/dist
 COPY --from=portal /src/portal/dist portal/dist
 COPY --from=admin /src/admin/dist admin/dist
 RUN cargo build --profile "$CARGO_PROFILE" --locked \
