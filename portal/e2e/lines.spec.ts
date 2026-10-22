@@ -111,7 +111,8 @@ test('traffic chart: the dashboard\'s smooth area, today\'s value, a tooltip wit
   await expect(page.getByText(/至 .*，按天统计/)).toBeVisible();
   const chart = page.getByRole('slider', { name: '流量走势，用左右方向键逐日查看' });
   await expect(chart.locator('path.curve')).toHaveCount(1);
-  await expect(chart.locator('text.x.now')).toHaveText('今天');
+  /* 7 天：桌面是「今天 10-22」，手机只有「今天」 */
+  await expect(chart.locator('text.x.now')).toHaveText(info.project.name === 'mobile' ? '今天' : /^今天 \d\d-\d\d$/);
   await chart.focus();
   const tip = chart.getByRole('status');
   await expect(tip).toBeVisible();

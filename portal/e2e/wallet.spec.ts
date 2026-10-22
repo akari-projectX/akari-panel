@@ -10,7 +10,7 @@ import type { Page, TestInfo } from '@playwright/test';
 import { FIELDS, psql } from '../../spa/e2e/panel.ts';
 import { admin, dark, expect, mine, ready, shot, signIn, test } from './fixtures';
 
-test.describe.configure({ mode: 'serial' });
+/* 不用 serial：workers = 1 本来就按文件顺序跑；一条失败不该让后面的都跳过。#56 的退款依赖它前面的邀请用例先看过「已入账」，顺序保留。 */
 
 const TRON = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const TON = 'UQCD39VS5jcptHL8vMjEXrzGaRcCVYto7HUn4bpAOg8xqEBI';
@@ -119,7 +119,7 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await expect(page.getByRole('button', { name: /生成邀请码|再生成一个/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '删除' })).toHaveCount(0);
   /* 邀请链接用面板给的 link_base（主域名 + /register?invite=）+ 这个码 */
-  await expect(page.getByLabel('邀请链接')).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=${code}$`));
+  await expect(page.getByRole('textbox', { name: '邀请链接' })).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=${code}$`));
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: '复制邀请码' }).click();
   await expect(page.getByText('邀请码已复制').first()).toBeVisible();
@@ -234,7 +234,7 @@ test('invites: the "allow user invites" switch off explains it on both panes; a 
     await expect(page.getByTestId('invites-closed')).toHaveText('本站已关闭用户邀请，暂时不能邀请新用户。已邀请的用户与返佣不受影响。');
     await expect(page.getByText('邀请已关闭')).toBeVisible();
     await expect(page.getByTestId('invite-code')).toHaveCount(0);
-    await expect(page.getByLabel('邀请链接')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: '邀请链接' })).toHaveCount(0);
     await shot(page, info, 'wallet-invites-closed-light');
   } finally {
     await a.patch('signup', SIGNUP, before);
