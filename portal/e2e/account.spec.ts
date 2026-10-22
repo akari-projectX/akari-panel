@@ -1,12 +1,12 @@
 /*
- * 门户 v2 · PR 6：设置页（账户、登录与安全、订阅链接、偏好、危险操作）。覆盖 React 门户 spa/e2e/account.spec.ts 的全部设置场景
+ * 门户 v2 · PR 6：设置页（账户、登录与安全、订阅链接、偏好、危险操作）。覆盖切换前 React 门户 account.spec.ts 的全部设置场景
  * （#17 #20–#23 验证 / 更换邮箱、改密码、邮件语言；分区锚点与旧 ?tab=security；明暗三档；站点没开发信；退出所有设备；
  * 旧格式订阅链接的重置；#26 自助注销与它的阻止状态），通行密钥的管理在 auth.spec.ts 的 #3–#5 里（同一个账户接着做）。
  * #18 / #19 的账户范围在 dashboard.spec.ts / shell.spec.ts / shop.spec.ts。
- * 账户（spa/e2e/seed.ts，每个视口一个）：v2-account-、v2-settings-、v2-legacy-、v2-delete-；退出所有设备的账户在用例里建。
+ * 账户（e2e/support/seed.ts，每个视口一个）：v2-account-、v2-settings-、v2-legacy-、v2-delete-；退出所有设备的账户在用例里建。
  */
 import type { Page, TestInfo } from '@playwright/test';
-import { Client, latestMail, psql } from '../../spa/e2e/panel.ts';
+import { Client, latestMail, psql } from './support/panel.ts';
 import { admin, dark, expect, login, mine, ready, seed, shot, signIn, test } from './fixtures';
 
 test.describe.configure({ mode: 'serial' });
