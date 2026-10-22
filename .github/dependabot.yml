@@ -11,6 +11,12 @@ updates:
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(admin)" }
+    # TypeScript 7 (the Go compiler) ships no compiler API: typescript-eslint
+    # (admin) and svelte-check (portal) still require TypeScript < 7. Remove
+    # this once they support it (user rule: deps on latest, blockers documented).
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       admin-minor:
         update-types: [minor, patch]
@@ -23,6 +29,12 @@ updates:
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(portal)" }
+    # TypeScript 7 (the Go compiler) ships no compiler API: typescript-eslint
+    # (admin) and svelte-check (portal) still require TypeScript < 7. Remove
+    # this once they support it (user rule: deps on latest, blockers documented).
+    ignore:
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       portal-minor:
         update-types: [minor, patch]
