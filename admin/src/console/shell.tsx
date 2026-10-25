@@ -41,7 +41,7 @@ import { loadPage, signedOutUrl } from "../shared/base";
 import { cn } from "../shared/cn";
 import { useLang, useSetLang, useTr, type Tr } from "../shared/i18n";
 import { setTheme, useTheme } from "../shared/theme";
-import { BrandMark } from "../shared/ui/brand";
+import { BrandMark, isDefaultBrand, Wordmark } from "../shared/ui/brand";
 import { Kbd, MOD_KEY } from "../shared/ui/form";
 import { Menu, MenuItem, MenuSeparator, Popover } from "../shared/ui/menu";
 import { useToast } from "../shared/ui/toast";
@@ -85,7 +85,7 @@ function count(it: NavItem, b: Badges | undefined): number {
   return 0;
 }
 
-/** The site mark: the uploaded logo, else the Akari seal (shared/ui/brand). */
+/** The site mark: the uploaded logo, else the Akari icon (shared/ui/brand). */
 export function AppMark({ size = 28 }: { size?: number }) {
   const site = useSite();
   return <BrandMark name={site.siteName} logoUrl={site.logoUrl} size={size} />;
@@ -395,7 +395,14 @@ function Sidebar({
           <AppMark />
           {!collapsed && (
             <div className="min-w-0 flex-1 leading-tight">
-              <div className="truncate text-headline font-semibold tracking-[-0.01em]">{site.siteName}</div>
+              {isDefaultBrand(site.siteName, site.logoUrl) ? (
+                <div className="flex h-[1.25em] items-center text-headline">
+                  <Wordmark height={20} className="-ml-[3px]" />
+                  <span className="sr-only">{site.siteName}</span>
+                </div>
+              ) : (
+                <div className="truncate text-headline font-semibold tracking-[-0.01em]">{site.siteName}</div>
+              )}
               <div className="truncate text-caption text-muted-foreground">
                 {tr("管理后台", "Admin console")}
                 {__PANEL_VERSION__ && ` · v${__PANEL_VERSION__}`}

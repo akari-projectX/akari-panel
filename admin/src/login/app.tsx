@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "../shared/cn";
-import { BrandMark } from "../shared/ui/brand";
+import { BrandMark, isDefaultBrand, Wordmark } from "../shared/ui/brand";
 import { Button } from "../shared/ui/button";
 import { Checkbox, Field, Input } from "../shared/ui/form";
 
@@ -552,7 +552,14 @@ export function LoginApp() {
       <main className="relative w-full max-w-[380px]">
         <div className="mb-6 flex flex-col items-center text-center">
           <BrandMark name={name} logoUrl={logo ? `${prefixBase}/${logo}` : null} size={48} />
-          <div className="mt-3 text-title3 font-semibold tracking-[-0.015em]">{name}</div>
+          {isDefaultBrand(name, logo) ? (
+            <div className="mt-3 mb-1.5">
+              <Wordmark height={30} />
+              <span className="sr-only">{name}</span>
+            </div>
+          ) : (
+            <div className="mt-3 text-title3 font-semibold tracking-[-0.015em]">{name}</div>
+          )}
           <div className="text-body text-muted-foreground">{tr("管理后台", "Admin console")}</div>
         </div>
         <div className={card}>
