@@ -26,6 +26,12 @@ ignore = [
     # only (auth.rs), so no RSA operation runs. Revisit: switch jsonwebtoken
     # to its `aws_lc_rs` feature (drops rsa) and delete this entry.
     { id = "RUSTSEC-2023-0071", reason = "rsa linked via jsonwebtoken but unused (HS256 only)" },
+    # crypto-bigint 0.5 timing variability (fixed only in 0.7.6). Reached
+    # only through jsonwebtoken 11's `rust_crypto` feature (elliptic-curve via
+    # p256/p384 for ES256/ES384); the panel signs/verifies HS256 only, so no
+    # elliptic-curve operation runs. Revisit: jsonwebtoken on elliptic-curve
+    # 0.14 / crypto-bigint 0.7, or its `aws_lc_rs` feature; then delete.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5 linked via jsonwebtoken but unused (HS256 only)" },
 ]
 
 [licenses]
