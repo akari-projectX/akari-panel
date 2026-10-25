@@ -52,7 +52,8 @@ export function prefetchDash(scope: Scope) {
   if (!fastNetwork()) return;
   const dash = PAGES.filter((p) => p.layout === 'dash' && allowed(p.path, scope));
   const rank = (p: string) => { const i = ORDER.indexOf(p); return i < 0 ? ORDER.length : i; };
-  const todo: (() => Promise<unknown>)[] = [];
+  /* 页头的账号卡片（含图标）：第一个，点开账号菜单时已经在了 */
+  const todo: (() => Promise<unknown>)[] = [() => import('../components/AccountCard.svelte')];
   for (const page of [...dash].sort((a, b) => rank(a.path) - rank(b.path))) {
     if (loadedPage(page.load) === undefined) todo.push(() => preloadPage(page.load));
     const data = dataJob(page.path);

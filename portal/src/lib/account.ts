@@ -1,87 +1,120 @@
-import { formatBytes, formatMoney } from '@/lib/format';
-import { att, nodesUp, pendingOrders, repliedTickets, unreadAnnouncements } from './attention.svelte';
+import { daysLeft, trafficUsage } from '@/lib/format';
+import { openTickets, pendingOrders, repliedTickets } from './attention.svelte';
 import { auth, scope } from './auth.svelte';
-import { t, tp } from './i18n.svelte';
+import { tp } from './i18n.svelte';
 import { R, allowed } from './routes';
 
 /*
- * 导航（桌面顶栏、账户菜单、窄屏菜单）共用的条目与右侧的提示文字。都是函数：在模板里调用时读 $state，跟着变。
+ * 导航（桌面顶栏、「更多」下拉、账号卡片、窄屏菜单）共用的条目与账号那根线的数据（v1.4.0 的 layouts/dash-layout + lib/account-line）。
+ * 都是函数：在模板里调用时读 $state，跟着变。
  */
 
-export type NavItem = { to: string; label: string; meta?: string; dot?: string };
+/** icon = 菜单卡片里图标的键（components/menu-icons.ts；图标只随卡片一起加载，不进首屏） */
+export type IconKey = 'dashboard' | 'shop' | 'docs' | 'invite' | 'tickets' | 'nodes' | 'traffic' | 'news' | 'orders' | 'settings';
 
-/** 套餐名（没有套餐时「暂无套餐」） */
-export function planName(): string {
-  return auth.plan?.plan?.name ?? t('暂无套餐');
+export type NavLink = { to: string; label: string; icon: IconKey; desc?: string; meta?: string; attention?: boolean };
+
+/**
+ * 顶部五项（2026-10-13 用户：仪表盘 · 商店 · 文档 · 邀请 · 工单 · 更多）。
+ * 「邀请」是合并后的钱包与邀请页（/wallet）；过期 / 流量用完的账户没有邀请，同一项显示为「钱包」。
+ * 每一项按账户范围显示（routes.ts 的 PAGE_SCOPES）：过期 / 流量用完的看不到节点、流量，被封禁的只剩仪表盘和工单。
+ */
+const PRIMARY: NavLink[] = [
+  { to: R.dashboard, label: '仪表盘', icon: 'dashboard' },
+  { to: R.shop, label: '商店', icon: 'shop' },
+  { to: R.help, label: '文档', icon: 'docs' },
+  { to: R.wallet, label: '邀请', icon: 'invite' },
+  { to: R.tickets, label: '工单', icon: 'tickets' },
+];
+
+/** 折起来的几项（顺序按「离服务由近到远」）；desc 是「更多」里每项的一句说明 */
+const MORE: NavLink[] = [
+  { to: R.nodes, label: '节点状态', desc: '当前可用线路与倍率', icon: 'nodes' },
+  { to: R.traffic, label: '使用明细', desc: '上下行走势与每日用量', icon: 'traffic' },
+  { to: R.announcements, label: '公告与动态', desc: '节点变更与维护计划', icon: 'news' },
+  { to: R.orders, label: '我的订单', desc: '消费记录与支付状态', icon: 'orders' },
+  { to: R.account, label: '设置', desc: '账号、邮箱、密码与通行密钥', icon: 'settings' },
+];
+
+/** 「更多」里的编号从主导航之后接着数 */
+export const MORE_START = 5;
+
+/** 账号那根线：剩余流量占总量的比例（不限流量、没有套餐时不画） */
+export function accountLine() {
+  const { me, plan } = auth;
+  const usage = trafficUsage(plan?.traffic_used_bytes ?? me?.traffic_used_bytes, plan?.traffic_limit_bytes ?? me?.traffic_limit_bytes ?? null);
+  const has = !!plan?.plan && !usage.unlimited && usage.total > 0;
+  return {
+    email: me?.email ?? '',
+    plan: plan?.plan?.name,
+    days: daysLeft(plan?.expires_at ?? me?.expires_at),
+    usage,
+    has,
+    value: has ? Math.round(usage.leftPct) : 0,
+    tone: has && usage.leftPct < 10 ? ('warn' as const) : undefined,
+  };
 }
 
-/** 账户菜单抬头的第二行：套餐 · 余额 */
-export function menuLine(): string {
-  if (scope() === 'banned') return t('账户已被封禁');
-  const bal = att.balance ? tp('余额 {v}', { v: formatMoney(att.balance.balance_cents) }) : '';
-  return bal ? `${planName()} · ${bal}` : planName();
-}
+const hasWallet = (s: string | undefined) => s === 'full';
 
-/** 窄屏菜单抬头的第二行：套餐 · 剩余流量 */
-export function sheetLine(): string {
-  if (scope() === 'banned') return t('账户已被封禁');
-  const me = auth.me;
-  if (!me || me.traffic_limit_bytes === null || !auth.plan?.plan) return planName();
-  const left = Math.max(0, me.traffic_limit_bytes - me.traffic_used_bytes);
-  return `${planName()} · ${tp('剩 {v}', { v: formatBytes(left) })}`;
-}
-
-/** 顶栏左组（用服务）与右组（看信息 / 求助），按账户范围过滤 */
-export function navGroups(): NavItem[][] {
+/** 顶部导航（桌面）：meta 不显示，只有工单上的「新回复」点 */
+export function primaryItems(): NavLink[] {
   const s = scope();
-  const unread = unreadAnnouncements();
-  const replied = repliedTickets();
-  const up = nodesUp();
-  const service: NavItem[] = [
-    { to: R.dashboard, label: t('仪表盘') },
-    { to: R.shop, label: t('商店') },
-    { to: R.nodes, label: t('线路'), meta: up ? tp('{a} / {b} 可用', { a: up.up, b: up.all }) : undefined },
-    { to: R.traffic, label: t('用量') },
-  ];
-  const info: NavItem[] = [
-    {
-      to: R.announcements, label: t('公告'),
-      meta: unread ? tp('{n} 条未读', { n: unread }) : undefined,
-      dot: unread ? tp('{n} 条未读', { n: unread }) : undefined,
-    },
-    { to: R.help, label: t('文档') },
-    {
-      to: R.tickets, label: t('工单'),
-      meta: replied ? tp('{n} 张工单有新回复', { n: replied }) : undefined,
-      dot: replied ? tp('{n} 张工单有新回复', { n: replied }) : undefined,
-    },
-  ];
-  return [service, info].map((g) => g.filter((n) => allowed(n.to, s))).filter((g) => g.length > 0);
+  return PRIMARY.filter((n) => allowed(n.to, s)).map((n) => ({
+    ...n,
+    label: n.to === R.wallet && !hasWallet(s) ? '钱包' : n.label,
+    attention: n.to === R.tickets && repliedTickets() > 0,
+  }));
 }
 
-/** 账户菜单 / 窄屏菜单「账户」组：订单 · 钱包 · 邀请 · 账户设置（banned 没有） */
-export function accountItems(): NavItem[] {
-  const s = scope();
-  const pending = pendingOrders();
-  const items: NavItem[] = [
-    { to: R.orders, label: t('订单'), meta: pending ? tp('{n} 笔待付款', { n: pending }) : undefined },
-    { to: R.wallet, label: t('钱包'), meta: att.balance ? formatMoney(att.balance.balance_cents) : undefined },
-  ];
-  if (s === 'full') {
-    items.push({
-      to: R.walletTab('invite'), label: t('邀请'),
-      meta: att.invite?.enabled ? tp('返利 {n}%', { n: att.invite.rate_percent }) : undefined,
-    });
+/** meta 带单位（笔 / 张 / GB），语序随语言变，所以在这里用 tp 组装 */
+function moreMeta(to: string): string | undefined {
+  if (to === R.traffic) {
+    const a = accountLine();
+    return a.has ? tp('{a} / {b} GB', { a: a.usage.used.toFixed(1), b: Math.round(a.usage.total) }) : undefined;
   }
-  items.push({ to: R.account, label: t('账户设置') });
-  return items.filter((n) => allowed(n.to.split('?')[0], s));
+  if (to === R.orders) return pendingOrders() ? tp('{n} 笔待支付', { n: pendingOrders() }) : undefined;
+  return undefined;
 }
 
-/** 当前页：同一路径或它下面的子路径（/orders/x 算「订单」）；带 ?tab= 的条目（邀请）还要分页对得上 */
-export function isCurrent(to: string, path: string, search = ''): boolean {
-  const [base, query] = to.split('?');
-  const tab = new URLSearchParams(search).get('tab');
-  if (query) return path === base && tab === new URLSearchParams(query).get('tab');
-  if (base === R.wallet && tab === 'invite') return false;
-  return base === '/' ? path === '/' : path === base || path.startsWith(`${base}/`);
+/** 折起来的几项（「更多」下拉与窄屏卡片的第二组） */
+export function moreItems(): NavLink[] {
+  const s = scope();
+  return MORE.filter((n) => allowed(n.to, s)).map((n) => ({
+    ...n,
+    meta: moreMeta(n.to),
+    attention: n.to === R.orders && pendingOrders() > 0,
+  }));
+}
+
+/** 窄屏卡片的两组（全部带图标；需要你处理的数字前面加一个圆点） */
+export function menuGroups(): NavLink[][] {
+  const first = primaryItems().map((p) => p.to === R.tickets
+    ? { ...p, meta: openTickets() ? tp('{n} 张未关闭', { n: openTickets() }) : undefined }
+    : p);
+  return [first, moreItems()].filter((g) => g.length > 0);
+}
+
+/** 宽屏账号卡片里的导航：订单与设置（只有能买东西的账户有） */
+export function accountItems(): NavLink[] {
+  return moreItems().filter((n) => n.to === R.orders || n.to === R.account);
+}
+
+/** 「有事等你」：工单有客服的新回复、或者有待支付的订单 */
+export function attentionDot(): boolean {
+  return repliedTickets() > 0 || pendingOrders() > 0;
+}
+
+/** 菜单按钮的读屏名字：说出那根线、那个圆点是什么意思 */
+export function linesLabel(t: (s: string) => string): string {
+  const replied = repliedTickets();
+  if (replied > 0) return tp('菜单，{n} 张工单有新回复', { n: replied });
+  if (pendingOrders() > 0) return t('菜单，有待支付的订单');
+  const a = accountLine();
+  return a.has ? tp('菜单，剩余流量 {n}%', { n: a.value }) : t('打开菜单');
+}
+
+/** 当前页：同一路径或它下面的子路径（/orders/x 算「我的订单」） */
+export function isCurrent(to: string, path: string): boolean {
+  return to === '/' ? path === '/' : path === to || path.startsWith(`${to}/`);
 }

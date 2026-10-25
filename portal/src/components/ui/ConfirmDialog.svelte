@@ -30,7 +30,7 @@
   }
 </script>
 
-<Dialog alert bind:open onOpenChange={change} {title} {description} {icon}>
+<Dialog alert {tone} bind:open onOpenChange={change} {title} {description} {icon}>
   {#if consequences.length || error}
     {#if consequences.length}
       <ul class="cons">
@@ -46,9 +46,13 @@
 </Dialog>
 
 <style>
-  .cons { display: flex; flex-direction: column; gap: 6px; padding-left: 18px; list-style: disc; font-size: 13.5px; color: var(--body); }
-  .cons li::marker { color: var(--faint); }
-  .err-line { margin-top: 14px; font-size: 13px; color: var(--danger); }
+  /* 「会发生什么」：浅底的清单，每条前面一个语气色的小圆点 */
+  .cons { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; padding: 14px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--hover) 60%, transparent); font-size: 13px; line-height: 1.6; color: var(--body); }
+  .cons li { position: relative; padding-left: 16px; }
+  .cons li::before { content: ''; position: absolute; left: 0; top: .6em; width: 6px; height: 6px; border-radius: 9999px; background: var(--brand); }
+  :global(.dlg[data-tone='warn']) .cons li::before { background: var(--warn); }
+  :global(.dlg[data-tone='danger']) .cons li::before { background: var(--danger); }
+  .err-line { margin-top: 16px; font-size: 13px; color: var(--danger); }
   .ok-brand { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
   .ok-warn { background: var(--warn); border-color: var(--warn); color: var(--on-solid); }
   .ok-danger { background: var(--danger); border-color: var(--danger); color: var(--on-solid); }

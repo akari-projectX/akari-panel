@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { webauthnSupported } from '@/api/webauthn';
+  import DashSkeleton from '../components/DashSkeleton.svelte';
   import SiteFooter from '../components/SiteFooter.svelte';
   import TopBar from '../components/TopBar.svelte';
   import { auth } from '$lib/auth.svelte';
@@ -17,16 +18,18 @@
   const pending = $derived(!!auth.me?.email_pending);
 </script>
 
-<a class="skip" href="#main">{t('跳到主要内容')}</a>
-<TopBar />
-<main id="main" class="wrap" tabindex="-1">
-  {#if pending}
-    <div class="lines" aria-busy="true" aria-label={t('加载中')}><i></i><i></i><i></i></div>
-  {:else}
-    {@render children()}
-  {/if}
-</main>
-<SiteFooter />
+<div class="shell">
+  <a class="skip" href="#main">{t('跳到主要内容')}</a>
+  <TopBar />
+  <main id="main" class="wrap" tabindex="-1">
+    {#if pending}
+      <DashSkeleton />
+    {:else}
+      {@render children()}
+    {/if}
+  </main>
+  <SiteFooter />
+</div>
 {#if pending}
   {#await import('../components/BindEmailDialog.svelte') then m}<m.default />{/await}
 {:else if auth.passkeyPrompt && webauthnSupported()}
