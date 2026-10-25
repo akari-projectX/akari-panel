@@ -565,7 +565,7 @@
 
 /* 减少动效：入场、弹出层的位移与淡入全部关闭；加载指示器只放慢（冻住的指示器等于告诉用户「卡死了」） */
 @media (prefers-reduced-motion: reduce) {
-  .page, .menu-card, .toast, .dlg, .dlg-overlay, .lines i, .sk, .load-in, .state-in, .card-line > b, .menu-lines[data-intro] > i > b { animation: none; }
+  .page, .menu-card, .toast, .dlg, .dlg-overlay, .lines i, .sk, .load-in, .state-in, .menu-lines[data-intro] > i > b { animation: none; }
   .load-hint { opacity: 1; animation: none; }
   .spinner i { animation-duration: 1.4s; }
   .menu-lines > i, .menu-lines > s { transition: none; }
