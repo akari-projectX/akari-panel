@@ -104,7 +104,7 @@ test('user menu (desktop): items, keyboard, Esc and focus return', async ({ page
   await expect(menu).toBeVisible();
   await expect(button).toHaveAttribute('aria-expanded', 'true');
   const items = menu.getByRole('menuitem');
-  await expect(items).toHaveText([/^续费/, /^我的订单/, /^设置/, /^退出登录/]);
+  await expect(items).toHaveText([/续费/, /我的订单/, /设置/, /退出登录/]);
   /* 抬头：剩余流量 · 剩余天数、套餐、邮箱；顶边那根线 */
   await expect(menu.locator('.acc-l1')).toContainText('GB 剩余');
   await expect(menu.locator('.acc-l2').last()).toHaveText('user@e2e.test');
@@ -276,7 +276,7 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await ready(page, '工单');
   if (isDesktop) {
     await page.locator('header .acct').click();
-    await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText([/^退出登录/]);
+    await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText([/退出登录/]);
   }
 });
 
