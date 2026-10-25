@@ -1,4 +1,5 @@
 import { holdBoot } from './boot.svelte';
+import { crossfade } from './motion';
 
 /**
  * 界面语言：简体中文 / English。词典 src/shared/i18n/dict.ts（键 = 简体原文），
@@ -66,9 +67,11 @@ function applyLang() {
 /** 切换语言：先等英文词典（下载失败也放行，回落中文），再换 */
 export async function setLocale(next: Locale) {
   if (next === 'en') await loadEN().catch(() => {});
-  i18n.locale = next;
-  try { localStorage.setItem(KEY, next); } catch { /* 隐私模式 */ }
-  applyLang();
+  crossfade(() => {
+    i18n.locale = next;
+    try { localStorage.setItem(KEY, next); } catch { /* 隐私模式 */ }
+    applyLang();
+  });
 }
 
 /** 启动：设 <html lang>；首屏是英文就拖住启动画面等词典，不先闪一版中文 */

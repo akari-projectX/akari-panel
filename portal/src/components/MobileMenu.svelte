@@ -1,131 +1,75 @@
 <script lang="ts">
-  import Menu from '@lucide/svelte/icons/menu';
-  import X from '@lucide/svelte/icons/x';
-  import { tick } from 'svelte';
-  import { accountItems, isCurrent, navGroups, sheetLine } from '$lib/account';
+  import { accountLine, attentionDot, linesLabel, menuGroups } from '$lib/account';
   import { loadSheetFacts } from '$lib/attention.svelte';
-  import { auth, scope, signOut } from '$lib/auth.svelte';
-  import { i18n, preloadEN, t } from '$lib/i18n.svelte';
-  import { changeLocale } from '$lib/prefs';
-  import { loc } from '$lib/router.svelte';
-  import { setTheme, theme, type ThemeMode } from '$lib/theme.svelte';
-
+  import { scope, signOut } from '$lib/auth.svelte';
+  import { t } from '$lib/i18n.svelte';
+  import { Pop } from '$lib/pop.svelte';
+  
   /*
-   * 窄屏（< 960px）菜单：顶栏下方铺满全屏的文字列表（样稿 dashboard.html#menu）。
-   * 模态对话框：打开时锁住页面滚动、焦点进入列表并困在「列表 + 顶栏的关闭按钮」里，Esc 或再点按钮关闭并把焦点还给按钮；
-   * 切页、窗口变宽到桌面布局时自动收起。
+   * 窄屏（< 1024px）的页头菜单（v1.4.0）：一个按钮（两根线），一张卡片（AccountCard）。
+   * 两根线：上面那根就是菜单；下面那根是剩余流量（灰轨加一截蓝，不足一成换成琥珀色）；末尾的小圆点 = 有事等你
+   * （工单有新回复、有待支付的订单）。打开时两根线旋成 ×，卡片顶边那根细线接着把这个值画出来。
+   * 卡片挂在按钮右下方：按钮 44px 高、居中在 64px 的页头里，所以离页头底边 8px。
    */
-  let open = $state(false);
-  let button: HTMLButtonElement | undefined = $state();
-  let sheet: HTMLDivElement | undefined = $state();
-
-  const THEMES: { id: ThemeMode; label: string }[] = [
-    { id: 'light', label: '浅色' },
-    { id: 'dark', label: '深色' },
-    { id: 'system', label: '跟随系统' },
-  ];
-  const services = $derived(navGroups().flat());
-  const account = $derived(scope() === 'banned' ? [] : accountItems());
-
-  /*
-   * 打开后焦点进菜单。键盘打开（回车 / 空格：click 的 detail 为 0）→ 第一项，带焦点环；
-   * 指针 / 触摸打开 → 菜单容器本身（tabindex=-1，不画焦点环），焦点仍困在里面，Tab 从第一项开始。
-   */
-  async function show(byKeyboard: boolean) {
-    open = true;
+  /* 卡片（含十来个图标）按需加载：不进首屏；指针移上来 / 聚焦时就预取，点开时通常已经到了 */
+  let Card = $state<typeof import('./AccountCard.svelte').default | undefined>();
+  const loadCard = () => import('./AccountCard.svelte').then((m) => { Card = m.default; });
+  const pop = new Pop(() => {
     loadSheetFacts(scope());
-    await tick();
-    if (byKeyboard) sheet?.querySelector<HTMLElement>('a, button')?.focus();
-    else sheet?.focus();
-  }
-
-  function hide(returnFocus = true) {
-    if (!open) return;
-    open = false;
-    if (returnFocus) button?.focus();
-  }
-
-  /* 焦点困在「顶栏的关闭按钮 + 菜单」里 */
-  function onKey(e: KeyboardEvent) {
-    if (!open) return;
-    if (e.key === 'Escape') { e.preventDefault(); hide(); return; }
-    if (e.key !== 'Tab' || !sheet || !button) return;
-    const list = [button, ...sheet.querySelectorAll<HTMLElement>('a[href], button:not([disabled])')];
-    const i = list.indexOf(document.activeElement as HTMLElement);
-    /* 焦点在容器上（指针打开）：Tab → 第一项，Shift+Tab → 关闭按钮 */
-    const next = document.activeElement === sheet ? (e.shiftKey ? 0 : 1)
-      : e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i === -1 || i === list.length - 1 ? 0 : i + 1);
-    e.preventDefault();
-    list[next]?.focus();
-  }
-
-  $effect(() => {
-    document.documentElement.classList.toggle('menu-open', open);
-    return () => document.documentElement.classList.remove('menu-open');
+    return loadCard();
   });
+  const a = $derived(accountLine());
+  const dot = $derived(attentionDot());
 
+  /* 本次访问第一次出现：下面那根从 0 画到当前值（同一次访问只画一次） */
+  let intro = $state(false);
   $effect(() => {
-    void loc.path;
-    void loc.search;
-    open = false;
-  });
-
-  $effect(() => {
-    const wide = matchMedia('(min-width: 961px)');
-    const close = () => { if (wide.matches) open = false; };
-    wide.addEventListener('change', close);
-    return () => wide.removeEventListener('change', close);
+    if (intro || a.value <= 0) return;
+    try {
+      if (sessionStorage.getItem('akari.line-drawn')) return;
+      sessionStorage.setItem('akari.line-drawn', '1');
+    } catch { return; }
+    intro = true;
   });
 </script>
 
-<svelte:document onkeydown={onKey} />
-
-<button
-  bind:this={button}
-  type="button"
-  class="iconbtn menu-btn"
-  aria-haspopup="dialog"
-  aria-expanded={open}
-  aria-controls="sheet"
-  onclick={(e) => (open ? hide() : show(e.detail === 0))}
->
-  {#if open}<X class="i" size={16} strokeWidth={1.75} aria-hidden="true" /><span>{t('关闭')}</span>
-  {:else}<Menu class="i" size={16} strokeWidth={1.75} aria-hidden="true" /><span>{t('菜单')}</span>{/if}
-</button>
-
-{#if open}
-  <div bind:this={sheet} id="sheet" class="sheet" role="dialog" aria-modal="true" aria-label={t('菜单')} tabindex="-1">
-    <div class="who"><b>{auth.me?.email}</b><span class="num">{sheetLine()}</span></div>
-
-    <h2>{t('服务')}</h2>
-    {#each services as it (it.to)}
-      <a class="it" href={it.to} aria-current={isCurrent(it.to, loc.path, loc.search) ? 'page' : undefined}>{it.label}{#if it.meta}<em class="num">{it.meta}</em>{/if}</a>
-    {/each}
-
-    {#if account.length}
-      <h2>{t('账户')}</h2>
-      {#each account as it (it.to)}
-        <a class="it" href={it.to} aria-current={isCurrent(it.to, loc.path, loc.search) ? 'page' : undefined}>{it.label}{#if it.meta}<em class="num">{it.meta}</em>{/if}</a>
-      {/each}
-    {/if}
-
-    <h2>{t('偏好')}</h2>
-    <div class="prefs" role="group" aria-label={t('主题')}>
-      <span aria-hidden="true">{t('主题')}</span>
-      <div>
-        {#each THEMES as o (o.id)}
-          <button type="button" aria-pressed={theme.mode === o.id} onclick={() => setTheme(o.id)}>{t(o.label)}</button>
-        {/each}
-      </div>
+<div class="menu-host lines-host">
+  <button
+    bind:this={pop.button}
+    type="button"
+    class="menu-lines"
+    aria-label={linesLabel(t)}
+    aria-haspopup="menu"
+    aria-expanded={pop.state === 'open'}
+    aria-controls="mobile-menu"
+    data-state={pop.state}
+    data-tone={a.tone}
+    data-intro={intro || undefined}
+    style:--v="{a.value}%"
+    onpointerenter={loadCard}
+    onfocus={loadCard}
+    onclick={pop.toggle}
+    onkeydown={pop.onButtonKey}
+  >
+    <i aria-hidden="true"></i>
+    <i aria-hidden="true"><b></b></i>
+    {#if dot}<s aria-hidden="true"></s>{/if}
+  </button>
+  {#if pop.open}
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <div
+      bind:this={pop.menu}
+      id="mobile-menu"
+      class="menu-card"
+      data-state={pop.state}
+      role="menu"
+      tabindex="-1"
+      aria-label={t('菜单')}
+      onkeydown={pop.onMenuKey}
+    >
+      {#if Card}
+        <Card groups={menuGroups()} prefs onsignout={() => { pop.close(); void signOut(); }} />
+      {/if}
     </div>
-    <div class="prefs" role="group" aria-label={t('语言')}>
-      <span aria-hidden="true">{t('语言')}</span>
-      <div>
-        <button type="button" lang="zh-CN" aria-pressed={i18n.locale === 'zh-CN'} onclick={() => changeLocale('zh-CN')}>{'中文'}</button>
-        <button type="button" lang="en" aria-pressed={i18n.locale === 'en'} onpointerenter={preloadEN} onfocus={preloadEN} onclick={() => changeLocale('en')}>English</button>
-      </div>
-    </div>
-
-    <button type="button" class="out" onclick={() => { open = false; void signOut(); }}>{t('退出登录')}</button>
-  </div>
-{/if}
+  {/if}
+</div>

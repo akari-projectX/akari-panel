@@ -15,15 +15,20 @@
 </script>
 
 <footer class="site">
-  <div class="wrap">
-    <span>© {year} {siteName()}{#if b?.footer_text} · {b.footer_text}{/if}</span>
+  <div class="wrap"><div class="rule" aria-hidden="true"></div></div>
+  <div class="wrap row2">
+    <!-- 版权署站点名称（后台系统设置）。不显示后端版本号：等于告诉别人后端是什么 -->
+    <span class="copy"><span>© {year} {siteName()}</span>{#if b?.footer_text}<span class="extra">{b.footer_text}</span>{/if}</span>
     <nav aria-label={t('页脚')}>
-      {#each links as l (l.url + l.label)}
-        {#if external(l.url)}
-          <a href={l.url} target="_blank" rel="noopener noreferrer">{l.label}</a>
-        {:else}
-          <a href={l.url}>{l.label}</a>
-        {/if}
+      {#each links as l, i (l.url + l.label)}
+        <span>
+          {#if i > 0}<i aria-hidden="true"></i>{/if}
+          {#if external(l.url)}
+            <a href={l.url} target="_blank" rel="noopener noreferrer">{l.label}</a>
+          {:else}
+            <a href={l.url}>{l.label}</a>
+          {/if}
+        </span>
       {/each}
     </nav>
   </div>

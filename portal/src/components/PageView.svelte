@@ -3,7 +3,9 @@
   import { chunkLoaded, loadPage, loadedPage } from '$lib/lazy';
   import type { Component } from 'svelte';
   import type { Page, PageModule, PageProps } from '$lib/pages';
+  import DashSkeleton from './DashSkeleton.svelte';
   import ErrorScreen from './ErrorScreen.svelte';
+  import PageLoading from './PageLoading.svelte';
 
   /*
    * 一页：按需下载页面分包（重试 / 新版本自动重新加载见 lib/lazy.ts），下载期间拖住启动画面。
@@ -32,6 +34,8 @@
   </div>
 {:else if failed}
   <ErrorScreen kind="chunk" />
+{:else if page.layout === 'dash'}
+  <DashSkeleton />
 {:else}
-  <div class="loading" aria-busy="true"></div>
+  <PageLoading />
 {/if}

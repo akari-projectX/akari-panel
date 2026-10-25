@@ -6,6 +6,8 @@
  * 键名与 React 门户相同（同一个源，偏好互通）。
  */
 
+import { crossfade } from './motion';
+
 export type ThemeMode = 'light' | 'dark' | 'system';
 
 const KEY = 'theme';
@@ -38,15 +40,23 @@ function apply() {
   meta.content = getComputedStyle(root).getPropertyValue('--bg').trim();
 }
 
-export function setTheme(next: ThemeMode) {
+function commit(next: ThemeMode) {
   theme.mode = next;
   try { localStorage.setItem(KEY, next); } catch { /* 存不下也照样切换 */ }
   apply();
 }
 
-/** 顶栏的主题按钮：浅色 → 深色 → 跟随系统 → 浅色 */
-export function cycleTheme() {
-  setTheme(theme.mode === 'light' ? 'dark' : theme.mode === 'dark' ? 'system' : 'light');
+/** 选一个模式；明暗真的变了才交叉淡化（跟随系统且系统恰好就是这一边：不变，不必淡化） */
+export function setTheme(next: ThemeMode) {
+  if (next === theme.mode) return;
+  const dark = next === 'dark' || (next === 'system' && media.matches);
+  if (dark === theme.dark) commit(next);
+  else crossfade(() => commit(next));
+}
+
+/** 顶栏的主题按钮（v1.4.0）：明 ↔ 暗互换，按当前实际看到的那一边算 */
+export function toggleTheme() {
+  setTheme(theme.dark ? 'light' : 'dark');
 }
 
 export function startTheme() {

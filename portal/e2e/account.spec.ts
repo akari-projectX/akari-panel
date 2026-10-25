@@ -19,16 +19,16 @@ async function settings(page: Page, path = '/account', title = '设置') {
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
 }
 
-/** 去一页：桌面 = 顶栏导航 / 账户菜单；手机 = 全屏菜单里的链接（客户端切页） */
-async function go(page: Page, info: TestInfo, name: '仪表盘' | '账户设置') {
+/** 去一页：桌面 = 顶栏导航 / 账户菜单；手机 = 菜单卡片里的链接（客户端切页） */
+async function go(page: Page, info: TestInfo, name: '仪表盘' | '设置') {
   if (isDesktop(info) && name === '仪表盘') {
     await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name }).click();
   } else if (isDesktop(info)) {
-    await page.locator('header button[aria-haspopup="menu"]').click();
-    await page.getByRole('menu', { name: '账户菜单' }).getByRole('menuitem', { name: /^账户设置/ }).click();
+    await page.locator('header .acct').click();
+    await page.getByRole('menu', { name: '账户菜单' }).getByRole('menuitem', { name: /^设置/ }).click();
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
-    await page.getByRole('dialog', { name: '菜单' }).getByRole('link', { name: new RegExp(`^${name}`) }).click();
+    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: new RegExp(`^${name}`) }).click();
   }
 }
 
@@ -46,7 +46,7 @@ test('page transition: a page whose chunk is still downloading never renders ove
   await page.goto('/orders');
   await ready(page, '我的订单');
   await go(page, info, '仪表盘');
-  await go(page, info, '账户设置');
+  await go(page, info, '设置');
   /* 不等仪表盘：马上打开「更换邮箱」并填 */
   await page.locator('#account').getByRole('button', { name: '更换', exact: true }).click();
   const change = page.getByRole('dialog', { name: '更换邮箱' });

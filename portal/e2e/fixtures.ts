@@ -79,14 +79,14 @@ export async function signInUI(page: Page, email: string, password = seed.passwo
   await page.waitForURL((u) => !u.pathname.endsWith('/login'));
 }
 
-/** 从页头退出：桌面是邮箱下拉，窄屏是全屏菜单 */
+/** 从页头退出：桌面是账号名下拉，窄屏是两根线的菜单（同一张卡片） */
 export async function signOut(page: Page, info: TestInfo) {
   if (info.project.name === 'desktop') {
-    await page.locator('header button[aria-haspopup="menu"]').click();
-    await page.getByRole('menuitem', { name: '退出登录' }).click();
+    await page.locator('header .acct').click();
+    await page.getByRole('menuitem', { name: /^退出登录/ }).click();
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
-    await page.getByRole('dialog', { name: '菜单' }).getByRole('button', { name: '退出登录' }).click();
+    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: /^退出登录/ }).click();
   }
 }
 

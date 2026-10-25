@@ -7,7 +7,7 @@
 
   /*
    * 提示条（lib/toast.svelte.ts）：桌面在右下角（右上角会压住账户菜单），窄屏在顶部居中；
-   * 一条 = 单色线性图标（成功绿 / 失败红，配文字）+ 标题 + 可选说明 + 关闭。读屏经 aria-live 读出来。
+   * 一条 = 圆底线性图标（成功绿 / 失败红，配文字）+ 标题 + 可选说明（v1.4.0 的 sonner 样子；关闭钮悬停 / 聚焦时才出现）。读屏经 aria-live 读出来。
    */
 </script>
 
@@ -22,11 +22,13 @@
       onfocusin={() => hold(x.id, true)}
       onfocusout={() => hold(x.id, false)}
     >
-      {#if x.kind === 'success'}
-        <CircleCheck class="toast-i" size={16} strokeWidth={1.75} aria-hidden="true" />
-      {:else}
-        <OctagonX class="toast-i" size={16} strokeWidth={1.75} aria-hidden="true" />
-      {/if}
+      <span class="toast-i">
+        {#if x.kind === 'success'}
+          <CircleCheck size={16} strokeWidth={1.75} aria-hidden="true" />
+        {:else}
+          <OctagonX size={16} strokeWidth={1.75} aria-hidden="true" />
+        {/if}
+      </span>
       <div class="toast-tx">
         <b>{x.title}</b>
         {#if x.description}<span>{x.description}</span>{/if}

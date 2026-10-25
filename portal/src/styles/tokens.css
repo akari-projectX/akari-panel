@@ -1,5 +1,6 @@
 /*
- * 门户 v2 的全部颜色（palette A，2026-10-22 用户选定 = 样稿 design/portal-v2-2026-10/styles.css 的令牌）。
+ * 门户的全部颜色。2026-10-23 起数值 = v1.4.0 React 门户（spa/src/index.css）的令牌：用户决定恢复上个版本的门户外观。
+ * 名字仍是 v2 的（--bg / --surface / --fg …），对应关系：--bg=background、--surface=card、--popover=popover、--hover=muted（底色）、--faint=faint-foreground。
  *
  * **颜色只在这个文件里**：组件、app.css、boot.css、Tailwind 类、SVG 一律用 var(--…) 或 @theme 映射出来的名字，
  * 不写十六进制 / rgb() / hsl()（scripts/check-colors.mjs 在 npm run check 里检查）。换配色 = 只改这个文件。
@@ -12,24 +13,26 @@
   /* 底与文字 */
   --bg: #f7f8fa;
   --surface: #fff;
+  --popover: #fff;
   --fg: #12151c;
   --body: #3a404c;
   --muted: #5c6473;
-  --faint: #6b7280;
-  --line: rgba(17, 24, 39, .08);
-  --line2: rgba(17, 24, 39, .14);
+  --faint: #737b8a;
+  --line: rgb(18 21 28 / .09);
+  --line2: rgb(18 21 28 / .16);
   --secondary: #e9ebf0;
-  --hover: rgba(17, 24, 39, .04);
+  --hover: #eef0f4;
   /* 品牌蓝：唯一的强调色 */
   --brand: #2563eb;
-  --brand-hover: #1d4ed8;
+  --brand-hover: color-mix(in srgb, var(--brand) 90%, var(--bg));
   --on-brand: #fff;
-  --brand-soft: rgba(37, 99, 235, .07);
-  --brand-2: #a9c1f5;
-  /* 状态（总配文字） */
+  --brand-soft: color-mix(in srgb, var(--brand) 10%, transparent);
+  --brand-2: color-mix(in srgb, var(--brand) 38%, var(--bg));
+  /* 状态（总配文字）；amber = 流量见底的那一档（账号线、卡片顶线） */
   --ok: #15803d;
   --warn: #b45309;
   --danger: #dc2626;
+  --amber: #f59e0b;
   /* 公告标签（实底，design/announcement-tags-2026-10） */
   --t-red: #dc2626;
   --t-orange: #c2410c;
@@ -43,37 +46,51 @@
   --t-pink: #be185d;
   --t-slate: #475569;
   --on-solid: #fff;
-  /* 弹出层与焦点 */
-  --overlay: rgba(15, 18, 25, .32);
-  --pop-shadow: 0 8px 28px rgba(16, 24, 40, .10), 0 1px 3px rgba(16, 24, 40, .06);
-  --focus-ring: rgba(37, 99, 235, .55);
+  /* 弹出层：遮罩、各类投影（v1.4.0：账号卡片 / 弹窗 / 提示条各有一套）、焦点 */
+  --overlay: rgb(0 0 0 / .35);
+  --pop-shadow: 0 4px 6px -1px rgb(0 0 0 / .1), 0 2px 4px -2px rgb(0 0 0 / .1);
+  --shadow-card: 0 24px 48px -20px rgb(13 21 38 / .35);
+  --shadow-dialog: 0 24px 64px -24px rgb(13 21 38 / .35);
+  --shadow-toast: 0 12px 32px -12px rgb(13 21 38 / .18), 0 1px 3px rgb(13 21 38 / .06);
+  --shadow-notice: 0 1px 3px 0 rgb(15 23 42 / .03), 0 1px 2px -1px rgb(15 23 42 / .03);
+  --shadow-plan: 0 1px 2px rgb(16 24 40 / .04), 0 1px 3px rgb(16 24 40 / .06);
+  --focus-ring: color-mix(in srgb, var(--brand) 55%, transparent);
   /* 默认 Logo（akari 字标，没上传品牌 Logo 时）：字的颜色与品牌蓝的 i 点 */
   --logo-ink: #12151c;
   --logo-dot: #2563eb;
-  /* 流量图（PR 3：平滑面积图 design/portal-v2-2026-10/chart.js） */
+  /* 流量图 */
   --chart-area-opacity: .16;
-  --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+  --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .08);
   /* 订阅二维码：明暗两套主题下都是白底深色码（扫码器只认得这种） */
   --qr-ink: #111317;
   --qr-paper: #fff;
+  /* 页头那根账号线、卡片顶边线的灰轨（v1.4.0） */
+  --line-track: rgb(10 10 10 / .16);
+  --card-track: rgb(10 10 10 / .08);
+  /* 次要按钮（v1.4.0 outline）：浅色白底细边 + 一道很淡的投影；深色是 input/30 的半透明底 */
+  --btn-bg: var(--surface);
+  --btn-line: var(--line);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / .05);
+  /* 启动画面（v1.4.0：纯白 / 夜蓝，不跟页面底色） */
+  --boot-bg: #fff;
+  --boot-fg: #12100c;
+  --boot-link: #1677ff;
 }
 
 :root.dark {
-  --bg: #141518;
-  --surface: #1c1d21;
-  --fg: #eceef2;
-  --body: #c9cdd5;
-  --muted: #9aa1ad;
-  --faint: #8a919d;
-  --line: rgba(255, 255, 255, .07);
-  --line2: rgba(255, 255, 255, .13);
-  --secondary: #26282d;
-  --hover: rgba(255, 255, 255, .04);
+  --bg: #0b0c10;
+  --surface: #1a1b21;
+  --popover: #202128;
+  --fg: #eef0f5;
+  --body: #b8beca;
+  --muted: #9aa1ae;
+  --faint: #7d8492;
+  --line: rgb(255 255 255 / .08);
+  --line2: rgb(255 255 255 / .15);
+  --secondary: #272a32;
+  --hover: #22242b;
   --brand: #4a9dff;
-  --brand-hover: #69afff;
-  --on-brand: #0b1526;
-  --brand-soft: rgba(74, 157, 255, .10);
-  --brand-2: #2c4f7c;
+  --on-brand: #06101f;
   --ok: #4ade80;
   --warn: #fbbf24;
   --danger: #f87171;
@@ -89,32 +106,35 @@
   --t-pink: #f472b6;
   --t-slate: #94a3b8;
   --on-solid: #111317;
-  --overlay: rgba(0, 0, 0, .55);
-  --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
-  --focus-ring: rgba(74, 157, 255, .6);
-  --logo-ink: #eceef2;
+  --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
+  --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
+  --logo-ink: #eef0f5;
   --logo-dot: #4a9dff;
-  --chart-area-opacity: .16;
-  --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+  --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
+  --line-track: rgb(255 255 255 / .2);
+  --card-track: rgb(255 255 255 / .12);
+  --btn-bg: rgb(255 255 255 / .045);
+  --btn-line: var(--line2);
+  --shadow-xs: none;
+  --boot-bg: #1b1f27;
+  --boot-fg: #e8eaf0;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
-    --bg: #141518;
-    --surface: #1c1d21;
-    --fg: #eceef2;
-    --body: #c9cdd5;
-    --muted: #9aa1ad;
-    --faint: #8a919d;
-    --line: rgba(255, 255, 255, .07);
-    --line2: rgba(255, 255, 255, .13);
-    --secondary: #26282d;
-    --hover: rgba(255, 255, 255, .04);
+    --bg: #0b0c10;
+    --surface: #1a1b21;
+    --popover: #202128;
+    --fg: #eef0f5;
+    --body: #b8beca;
+    --muted: #9aa1ae;
+    --faint: #7d8492;
+    --line: rgb(255 255 255 / .08);
+    --line2: rgb(255 255 255 / .15);
+    --secondary: #272a32;
+    --hover: #22242b;
     --brand: #4a9dff;
-    --brand-hover: #69afff;
-    --on-brand: #0b1526;
-    --brand-soft: rgba(74, 157, 255, .10);
-    --brand-2: #2c4f7c;
+    --on-brand: #06101f;
     --ok: #4ade80;
     --warn: #fbbf24;
     --danger: #f87171;
@@ -130,21 +150,23 @@
     --t-pink: #f472b6;
     --t-slate: #94a3b8;
     --on-solid: #111317;
-    --overlay: rgba(0, 0, 0, .55);
-    --pop-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255, 255, 255, .06);
-    --focus-ring: rgba(74, 157, 255, .6);
-    --logo-ink: #eceef2;
+    --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
+    --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
+    --logo-ink: #eef0f5;
     --logo-dot: #4a9dff;
-    --chart-area-opacity: .16;
-    --chart-switch-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
+    --line-track: rgb(255 255 255 / .2);
+    --card-track: rgb(255 255 255 / .12);
+    --btn-bg: rgb(255 255 255 / .045);
+    --btn-line: var(--line2);
+    --shadow-xs: none;
+    --boot-bg: #1b1f27;
+    --boot-fg: #e8eaf0;
   }
 }
 
-/* 由上面派生的用途名（不新增颜色）：启动画面、流量图、焦点环 */
+/* 由上面派生的用途名（不新增颜色）：流量图、焦点环 */
 :root {
-  --boot-bg: var(--bg);
-  --boot-fg: var(--fg);
-  --boot-link: var(--brand);
   --chart-line: var(--brand);
   --chart-area: var(--brand);
   --chart-up: var(--brand-2);

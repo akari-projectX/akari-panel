@@ -10,7 +10,7 @@
 
 <button
   type="button"
-  class="iconbtn {cls}"
+  class="lbtn {cls}"
   lang={toEn ? 'en' : 'zh-CN'}
   aria-label={toEn ? 'Switch to English' : t('切换到中文')}
   onpointerenter={preloadEN}

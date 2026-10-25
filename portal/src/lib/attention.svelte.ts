@@ -71,3 +71,5 @@ export const repliedTickets = () => (att.tickets ?? []).filter((t) => t.unread &
 export const unreadAnnouncements = () => att.announcements?.unread ?? 0;
 /** 线路：在线 / 全部 */
 export const nodesUp = () => (att.nodes ? { up: att.nodes.filter((n) => n.status === 'online').length, all: att.nodes.length } : undefined);
+/** 未关闭的工单数 */
+export const openTickets = () => (att.tickets ?? []).filter((t) => t.status !== 'closed').length;
