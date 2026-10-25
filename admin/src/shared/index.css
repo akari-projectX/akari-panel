@@ -60,6 +60,7 @@
   --color-chart-8: var(--chart-8);
   --color-brand-mark: var(--brand-mark);
   --color-brand-mark-foreground: var(--brand-mark-foreground);
+  --color-brand-mark-dot: var(--brand-mark-dot);
   --color-segment-active: var(--segment-active);
 
   /* 同心圆角：外层 = 内层 + 内边距 */
@@ -160,9 +161,11 @@
   --glass-edge: rgb(255 255 255 / 0.7);
   --scrim: rgb(15 18 25 / 0.28);
 
-  /* 品牌印章（未上传 Logo 时的应用图标：夜色方块 + 金色「灯」，深浅色同值）与分段控件选中块 */
-  --brand-mark: #12100c;
-  --brand-mark-foreground: #d8a43c;
+  /* 品牌图标（未上传 Logo 时的应用图标：L3 akari 的「a」，夜色方块 + 白色笔画 + 品牌蓝的点，深浅色同值；
+     design/brand-backup-2026-10/akari-l3-logo/akari-icon.svg）与分段控件选中块 */
+  --brand-mark: #12151c;
+  --brand-mark-foreground: #ffffff;
+  --brand-mark-dot: #4a9dff;
   --segment-active: var(--card);
 
   --shadow-card-v: 0 0 0 0.5px rgb(18 21 28 / 0.07), 0 1px 2px rgb(18 21 28 / 0.04);
