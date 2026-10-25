@@ -120,4 +120,5 @@
 .seg-b[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
 
 .soft { font-weight: 400; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .card-line > b { animation: none; } }
 </style>
