@@ -248,7 +248,9 @@ pub fn parse_query(body: &[u8], pid: &str, out_trade_no: &str) -> Result<Query, 
         }
         return Err(refusal(&obj));
     }
-    if text_of(obj.get("out_trade_no")).is_some_and(|o| o != out_trade_no) {
+    // The answer must name the order it is about: a missing field would let
+    // any `status=1` answer settle it (as the Alipay query requires too).
+    if text_of(obj.get("out_trade_no")).is_none_or(|o| o != out_trade_no) {
         return Err(CallError::Malformed("query answered another order"));
     }
     if text_of(obj.get("pid")).is_some_and(|p| p != pid) {
@@ -1119,9 +1121,19 @@ pub(crate) mod tests {
             Err(CallError::Malformed("query answered another order"))
         ));
         assert!(matches!(
-            q(r#"{"code":1,"pid":"9","status":1}"#),
+            q(r#"{"code":1,"out_trade_no":"AK1","pid":"9","status":1}"#),
             Err(CallError::Malformed("query answered another merchant"))
         ));
+        // A paid answer that does not name the order is not trusted.
+        for body in [
+            r#"{"code":1,"pid":1001,"money":"9.90","status":1}"#,
+            r#"{"code":1,"out_trade_no":null,"money":"9.90","status":1}"#,
+        ] {
+            assert!(matches!(
+                q(body),
+                Err(CallError::Malformed("query answered another order"))
+            ));
+        }
         assert!(matches!(q("nope"), Err(CallError::Malformed(_))));
         assert!(matches!(q("1"), Err(CallError::Malformed(_))));
     }
