@@ -445,3 +445,22 @@ Flush（D9 / Q1 开销）：`ef` 对 5000 行块中的每个入口调用两次 p
 - Flush 余量（W22）：5 万行 0.58 s，对照 1 s 预算（W11：0.49 s）；在更慢的磁盘或更繁忙的 PostgreSQL 上，flush 仍会平滑降级（分块把锁持有限制在一块之内），只是积压排空所需的时间会变长。
 - 如果数据库停顿的时间超过突发窗口，而 agent 仍在上报，则按节点的上限会钳制延迟到达的流量（少计费，绝不多计费）。在这台机器上观察到过一次：宿主机磁盘使 PostgreSQL 在 200 万行重启风暴期间停顿了数秒；这是文档中已有的界限（R13），不是缺陷，但积压排空缓慢会扩大它。
 - `LISTEN/NOTIFY` 需要直连 PostgreSQL（不能用事务模式的连接池）。
+
+## xray-core v26.10.21 升级（agent Go 基准）
+
+同一台 4 vCPU 机器，之前 = akari-agent main（c227ebd，xray 26.3.27），之后 = 分支 `xray-26.10.21`；用预编译的两个测试二进制交替运行 6 次，取中位数（`go test -c`，`-test.bench`）：
+
+| 基准 | 之前 | 之后 | 变化 |
+|---|---|---|---|
+| ConnectEcho（新建连接 + 往返） | 513 µs | 457 µs | −10.9% |
+| ConnectEchoBlockOn | 620 µs | 540 µs | −12.8% |
+| GateAdmitRelease | 1077 ns | 1130 ns | +4.9%（gate.go 未改，噪声） |
+| Connections5kLive | 0.887 ns | 0.766 ns | −13.7% |
+| PickRouteOnHit / OnMiss | 233 / 316 ns | 185 / 293 ns | −20% / −7% |
+| TrafficChanges10kIdle / TenPct | 371 / 522 µs | 335 / 535 µs | −9.7% / +2.5% |
+| **BlockPolicyHeap**（最大策略的常驻堆） | 311 KB | 833 KB | **+168%** |
+| **BlockPolicySwap**（编译 + 切换） | 11.5 ms | 24.8 ms | **+115%** |
+
+全量基准（3 次，未交替，之前一栏与另一个构建同时运行因而偏慢）：Rebuild10k 245 → 158 ms，InstanceHeap10k 堆 22.39 → 22.31 MB（−0.4%），DeltaRotate1of10k −9%，StateHash10k −15%，上报字节（BlockStatsSize 421 B/心跳、TrafficChanges B/op）完全相同。测试二进制 52.7 → 51.7 MB。
+
+唯一超过 5% 的是「最大规则集 + 节点开关打开」：上游的 geodata 注册表把 `DomainRule`/`IPRule` 编译成匹配器并保留源规则用于重载，常驻多约 0.5 MB（约占 10k 用户实例堆的 2%），策略切换（很少发生）的编译时间翻倍；热路径 `PickRoute` 反而更快。
