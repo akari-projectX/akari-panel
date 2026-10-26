@@ -113,7 +113,14 @@ pub fn parse_release_keys(lines: &[String]) -> Result<Vec<ReleaseKey>, String> {
     Ok(out)
 }
 
-/// A release manifest (schema 1).
+/// Longest life of a signed rollback manifest (`expires_at` − `created_at`).
+pub const MAX_ROLLBACK_LIFETIME_DAYS: i64 = 30;
+
+/// A release manifest. Schema 1 = a normal forward release; schema 2 = a
+/// signed rollback bound to the version it replaces (`rollback_from`) and
+/// to an expiry (`expires_at`), so a leaked rollback cannot be replayed
+/// later or against another version (agent audit P2-2). Schema-1 rollback
+/// manifests are refused.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -127,6 +134,23 @@ pub struct Manifest {
     pub created_at: String,
     #[serde(default)]
     pub rollback: bool,
+    /// Schema 2 rollback only: the exact version this rollback replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_from: Option<String>,
+    /// Schema 2 rollback only (RFC 3339): not valid at or after this time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+impl Manifest {
+    /// Whether a rollback manifest's `expires_at` has passed (a manifest
+    /// without one never expires; only rollbacks carry one).
+    pub fn expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at
+            .as_deref()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .is_some_and(|t| now >= t)
+    }
 }
 
 fn platform_ok(s: &str) -> bool {
@@ -141,7 +165,7 @@ pub fn parse_manifest(b: &[u8]) -> Result<Manifest, String> {
         return Err(format!("manifest size {} out of range", b.len()));
     }
     let m: Manifest = serde_json::from_slice(b).map_err(|e| format!("manifest: {e}"))?;
-    if m.schema != 1 {
+    if m.schema != 1 && m.schema != 2 {
         return Err(format!("unsupported manifest schema {}", m.schema));
     }
     if parse_version(&m.version).is_none() {
@@ -161,10 +185,59 @@ pub fn parse_manifest(b: &[u8]) -> Result<Manifest, String> {
     if m.size <= 0 || m.size > MAX_ARTIFACT {
         return Err(format!("size {} out of range", m.size));
     }
-    if DateTime::parse_from_rfc3339(&m.created_at).is_err() {
+    let Ok(created) = DateTime::parse_from_rfc3339(&m.created_at) else {
         return Err("created_at is not RFC 3339".into());
-    }
+    };
+    check_rollback_binding(&m, created.with_timezone(&Utc))?;
     Ok(m)
+}
+
+/// The rollback rules of the manifest format (same as the agent's
+/// `release` package): a rollback is schema 2 and names the version it
+/// replaces and an expiry within 30 days of signing; nothing else may
+/// carry those fields.
+fn check_rollback_binding(m: &Manifest, created: DateTime<Utc>) -> Result<(), String> {
+    if !m.rollback {
+        if m.schema != 1 {
+            return Err("schema 2 is for rollback manifests only".into());
+        }
+        if m.rollback_from.is_some() || m.expires_at.is_some() {
+            return Err("rollback_from / expires_at belong to rollback manifests".into());
+        }
+        return Ok(());
+    }
+    if m.schema != 2 {
+        return Err(
+            "rollback manifests need schema 2 (rollback_from, expires_at); schema-1 rollbacks are refused"
+                .into(),
+        );
+    }
+    let from = m
+        .rollback_from
+        .as_deref()
+        .ok_or("rollback manifest lacks rollback_from")?;
+    if compare_versions(from, &m.version) != Some(Ordering::Greater) {
+        return Err(format!(
+            "rollback_from {from:?} must be a version newer than {}",
+            m.version
+        ));
+    }
+    let exp = m
+        .expires_at
+        .as_deref()
+        .ok_or("rollback manifest lacks expires_at")?;
+    let exp = DateTime::parse_from_rfc3339(exp)
+        .map_err(|_| "expires_at is not RFC 3339".to_string())?
+        .with_timezone(&Utc);
+    if exp <= created {
+        return Err("expires_at is not after created_at".into());
+    }
+    if exp - created > chrono::Duration::days(MAX_ROLLBACK_LIFETIME_DAYS) {
+        return Err(format!(
+            "expires_at is more than {MAX_ROLLBACK_LIFETIME_DAYS} days after created_at"
+        ));
+    }
+    Ok(())
 }
 
 /// One signature as in the agent's `.manifest.sig` file.
@@ -321,13 +394,20 @@ pub struct ReleaseView {
     key_id: String,
     min_panel_protocol: i32,
     rollback: bool,
+    /// Rollback releases only (read from the stored manifest): the version
+    /// it replaces and when the signature stops being valid.
+    rollback_from: Option<String>,
+    expires_at: Option<DateTime<Utc>>,
     complete: bool,
     created_at: DateTime<Utc>,
     complete_at: Option<DateTime<Utc>>,
 }
 
 const RELEASE_VIEW_SQL: &str = "SELECT id, version, os, arch, sha256, size, key_id, \
-     min_panel_protocol, rollback, complete_at IS NOT NULL AS complete, created_at, complete_at \
+     min_panel_protocol, rollback, \
+     convert_from(manifest, 'UTF8')::jsonb ->> 'rollback_from' AS rollback_from, \
+     (convert_from(manifest, 'UTF8')::jsonb ->> 'expires_at')::timestamptz AS expires_at, \
+     complete_at IS NOT NULL AS complete, created_at, complete_at \
      FROM agent_releases";
 
 pub async fn list_releases(
@@ -367,6 +447,13 @@ pub async fn apply_create_release(
     let raw = req.manifest.as_bytes();
     let m = parse_manifest(raw)
         .map_err(|e| bad_request!("release.manifest_invalid", "{detail}", detail = e))?;
+    if m.rollback && m.expired(Utc::now()) {
+        return Err(bad_request!(
+            "release.rollback_expired",
+            "this signed rollback has expired ({expires_at}): sign a new one",
+            expires_at = m.expires_at.clone().unwrap_or_default()
+        ));
+    }
     if keys.is_empty() {
         return Err(conflict!(
             "release.no_keys",
@@ -779,18 +866,38 @@ pub(crate) mod testkit {
             bin: &[u8],
             rollback: bool,
         ) -> CreateReleaseReq {
+            let now = Utc::now();
+            let (schema, created_at, rollback_from, expires_at) = if rollback {
+                (
+                    2,
+                    now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    Some("v999.0.0".to_string()),
+                    Some(
+                        (now + chrono::Duration::days(7))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    ),
+                )
+            } else {
+                (1, "2026-10-02T00:00:00Z".to_string(), None, None)
+            };
             let m = Manifest {
-                schema: 1,
+                schema,
                 version: version.into(),
                 os: "linux".into(),
                 arch: arch.into(),
                 sha256: hex::encode(Sha256::digest(bin)),
                 size: bin.len() as i64,
                 min_panel_protocol: 3,
-                created_at: "2026-10-02T00:00:00Z".into(),
+                created_at,
                 rollback,
+                rollback_from,
+                expires_at,
             };
-            let manifest = serde_json::to_string(&m).unwrap_or_default();
+            self.sign_manifest(serde_json::to_string(&m).unwrap_or_default())
+        }
+
+        /// The request for an arbitrary manifest text, signed by this key.
+        pub fn sign_manifest(&self, manifest: String) -> CreateReleaseReq {
             let sig = tests::sign(&self.kp, &self.key.id, manifest.as_bytes());
             CreateReleaseReq {
                 manifest,
@@ -904,6 +1011,45 @@ mod tests {
     }
 
     #[test]
+    fn rollback_manifests_are_bound() {
+        let rb = |from: &str, expires: &str| {
+            format!(
+                r#"{{"schema":2,"version":"v1.2.3","os":"linux","arch":"amd64","sha256":"{}","size":5,"min_panel_protocol":3,"created_at":"2026-10-20T00:00:00Z","rollback":true,"rollback_from":"{from}","expires_at":"{expires}"}}"#,
+                "ab".repeat(32)
+            )
+        };
+        let good = parse_manifest(rb("v1.3.0", "2026-10-27T00:00:00Z").as_bytes()).unwrap();
+        let at = |t: &str| DateTime::parse_from_rfc3339(t).unwrap().with_timezone(&Utc);
+        assert!(!good.expired(at("2026-10-26T23:59:59Z")));
+        assert!(good.expired(at("2026-10-27T00:00:00Z")));
+        // The bytes re-serialize to what was signed (they are stored
+        // verbatim anyway; this keeps the test signer honest).
+        assert_eq!(
+            serde_json::to_string(&good).unwrap(),
+            rb("v1.3.0", "2026-10-27T00:00:00Z")
+        );
+        for bad in [
+            rb("v1.2.3", "2026-10-27T00:00:00Z"),
+            rb("v1.1.0", "2026-10-27T00:00:00Z"),
+            rb("1.3.0", "2026-10-27T00:00:00Z"),
+            rb("v1.3.0", "2026-10-20T00:00:00Z"),
+            rb("v1.3.0", "2026-11-19T00:00:01Z"),
+            rb("v1.3.0", "tomorrow"),
+            rb("v1.3.0", "2026-10-27T00:00:00Z").replace("\"schema\":2", "\"schema\":1"),
+            rb("v1.3.0", "2026-10-27T00:00:00Z")
+                .replace(",\"expires_at\":\"2026-10-27T00:00:00Z\"", ""),
+            M.replace("\"rollback\":false", "\"rollback\":true"),
+            M.replace(
+                "\"rollback\":false",
+                "\"rollback\":false,\"rollback_from\":\"v1.3.0\"",
+            ),
+        ] {
+            assert!(parse_manifest(bad.as_bytes()).is_err(), "{bad}");
+        }
+        assert!(parse_manifest(rb("v1.3.0", "2026-11-19T00:00:00Z").as_bytes()).is_ok());
+    }
+
+    #[test]
     fn semver_order_matches_the_agent() {
         let order = [
             "v1.0.0-alpha",
@@ -949,5 +1095,33 @@ mod tests {
         assert!(verify(manifest.as_bytes(), &sigs.signatures, &keys).is_ok());
         let tampered = manifest.replace("\"rollback\":false", "\"rollback\":true");
         assert!(verify(tampered.as_bytes(), &sigs.signatures, &keys).is_err());
+
+        // Schema-2 rollback binding (agent audit P2-2): every case verifies
+        // under the same signature rules, parses (or not) like the agent,
+        // and is due only for the node and time the agent accepts.
+        let cases = v["rollback_cases"].as_array().cloned().unwrap_or_default();
+        assert!(cases.len() >= 10, "vector lost its rollback cases");
+        for c in cases {
+            let name = c["name"].as_str().unwrap_or("?");
+            let manifest = c["manifest"].as_str().unwrap_or("");
+            let sigs: SigFile =
+                serde_json::from_value(c["sig"].clone()).unwrap_or(SigFile { signatures: vec![] });
+            assert!(
+                verify(manifest.as_bytes(), &sigs.signatures, &keys).is_ok(),
+                "{name}: signature"
+            );
+            let parsed = parse_manifest(manifest.as_bytes());
+            assert_eq!(parsed.is_ok(), c["parse_ok"] == true, "{name}: {parsed:?}");
+            let Ok(m) = parsed else { continue };
+            let now = DateTime::parse_from_rfc3339(c["now"].as_str().unwrap_or(""))
+                .unwrap_or_default()
+                .with_timezone(&Utc);
+            let running = c["running"].as_str().unwrap_or("");
+            let due = crate::rollout::update_due(running, &m.version, m.rollback_from.as_deref())
+                && !m.expired(now);
+            // `unknown_target` is the agent's own history check.
+            let want = matches!(c["verdict"].as_str(), Some("ok" | "unknown_target"));
+            assert_eq!(due, want, "{name}");
+        }
     }
 }
