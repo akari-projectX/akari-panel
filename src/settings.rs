@@ -442,6 +442,8 @@ pub const BOOT_NAMES: &[&str] = &["127.0.0.1", "localhost"];
 
 /// W25: built-in defaults of the database settings.
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 = 365;
+/// The shortest audit retention (0 = forever); migration 1115 enforces it.
+pub const MIN_AUDIT_RETENTION_DAYS: u32 = 90;
 
 #[derive(Debug, Clone)]
 pub struct Effective {
@@ -1324,6 +1326,7 @@ pub async fn apply_update(
     expected_version: i64,
     new: &Values,
 ) -> Result<Stored, ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
         return Err(conflict!(
@@ -1634,6 +1637,7 @@ pub async fn apply_update_passkey_domain(
     expected_version: i64,
     domain: Option<String>,
 ) -> Result<Stored, ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur = read_stored(&mut *conn, true).await?;
     if cur.version != expected_version {
         return Err(conflict!(
@@ -2210,6 +2214,7 @@ pub async fn apply_update_security(
     expected_version: i64,
     new: &SecurityValues,
 ) -> Result<Stored, ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur = read_stored(&mut *conn, true).await?;
     check_version(&cur, expected_version)?;
     let before = SecurityValues::of(&cur);
@@ -2356,6 +2361,52 @@ pub struct SecurityReq {
 pub const MAX_CLOUDFLARE_RANGES: usize = 256;
 pub const MAX_EXTRA_RELEASE_KEYS: usize = 16;
 
+/// Non-public blocks a trusted Cloudflare range may not touch (the ranges
+/// decide whose `CF-Connecting-IP` is believed: a wide or private range
+/// lets any client forge its address).
+const NON_PUBLIC_BLOCKS: &[&str] = &[
+    "0.0.0.0/8",
+    "10.0.0.0/8",
+    "100.64.0.0/10",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "172.16.0.0/12",
+    "192.0.0.0/24",
+    "192.0.2.0/24",
+    "192.88.99.0/24",
+    "192.168.0.0/16",
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
+    "::/96",
+    "64:ff9b::/32",
+    "100::/64",
+    "2001::/32",
+    "2001:10::/28",
+    "2001:20::/28",
+    "2001:db8::/32",
+    "2002::/16",
+    "3fff::/20",
+    "5f00::/16",
+    "fc00::/7",
+    "fe80::/10",
+    "fec0::/10",
+    "ff00::/8",
+];
+
+/// A Cloudflare range must be a public prefix, not wide (IPv4 ≥ /8, IPv6 ≥ /16).
+pub fn cloudflare_range_public(c: &Cidr) -> bool {
+    let (net, prefix) = c.parts();
+    let min = if net.is_ipv4() { 8 } else { 16 };
+    prefix >= min
+        && !NON_PUBLIC_BLOCKS
+            .iter()
+            .filter_map(|b| Cidr::parse(b).ok())
+            .any(|b| b.overlaps(c))
+}
+
 /// Validate a 安全 form (pure).
 pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
     if let Some(d) = req.audit_retention_days
@@ -2363,7 +2414,19 @@ pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
     {
         return Err(bad_request!(
             "settings.audit_retention_invalid",
-            "审计日志保留天数：0（永久）到 36500"
+            "审计日志保留天数：0（永久）或 90 到 36500"
+        ));
+    }
+    // A floor: a short window would let the audit trail of a bad change
+    // expire before anyone looks (the owner may keep it forever).
+    if let Some(d) = req.audit_retention_days
+        && d != 0
+        && d < MIN_AUDIT_RETENTION_DAYS
+    {
+        return Err(bad_request!(
+            "settings.audit_retention_too_short",
+            "审计日志保留天数：0（永久）或至少 {min} 天",
+            min = MIN_AUDIT_RETENTION_DAYS
         ));
     }
     if let Some(d) = req.traffic_daily_retention_days
@@ -2394,6 +2457,13 @@ pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
                         range = c
                     )
                 })?;
+                if !cloudflare_range_public(&parsed) {
+                    return Err(bad_request!(
+                        "settings.cloudflare_range_not_public",
+                        "Cloudflare 网段：{range:?} 不是公网网段（私有、回环、链路本地、保留地址，或范围过大：IPv4 前缀至少 /8，IPv6 至少 /16）",
+                        range = c
+                    ));
+                }
                 let canon = parsed.to_string();
                 if !out.contains(&canon) {
                     out.push(canon);
@@ -2544,6 +2614,7 @@ pub async fn apply_remove_server_name(
     cfg: &PanelConfig,
     name: &str,
 ) -> Result<Vec<AffectedNode>, ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur = read_stored(&mut *conn, true).await?;
     let eff = compute(cfg, cur, Vec::new());
     let source: Option<String> =
@@ -3386,6 +3457,7 @@ pub async fn put_settings(
     ApiJson(req): ApiJson<UpdateReq>,
 ) -> Result<Json<SettingsView>, ApiError> {
     user.require_admin()?;
+    crate::owner::require_user(&state, &user).await?;
     let new = request_values(
         &req.main_domains,
         &req.sub_domains,
@@ -4131,6 +4203,12 @@ fn legacy_value(
             if v > 36_500 {
                 return Err("above 36500".into());
             }
+            // The floor (1115): a shorter old value is raised to it.
+            let v = if v == 0 {
+                0
+            } else {
+                v.max(MIN_AUDIT_RETENTION_DAYS)
+            };
             put(&mut new.audit_retention_days, v as i32)
         }
         "traffic.daily_retention_days" => {

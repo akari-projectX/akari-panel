@@ -690,3 +690,59 @@ async fn own_client_only_mode() {
     assert!(me["sub_url"].is_string());
     db.drop().await;
 }
+
+/// Audit batch 2, P3-1: resetting a subscription is an admin mutator on an
+/// account — another admin's account is the owner's business (403 for a
+/// plain admin) and has no subscription (400 for the owner too); a deleted
+/// (anonymised) account is 409; nothing is written for the refusals.
+#[tokio::test]
+async fn admin_subscription_reset_guards_its_target() {
+    use crate::testdb::http::client_for;
+    let Some(db) = crate::testdb::TestDb::new().await else {
+        return;
+    };
+    let state = crate::state::AppState::for_test(db.pool.clone()).await;
+    let owner = client_for(&state, db.owner().await).await;
+    let plain_id = db.admin().await;
+    let plain = client_for(&state, plain_id).await;
+    let other_admin = db.admin().await;
+    let erased = db.user().await;
+    sqlx::query("UPDATE users SET erased_at = now(), enabled = false, disabled_reason = 'admin' WHERE id = $1")
+        .bind(erased)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let url = |id: uuid::Uuid| format!("/test/api/v1/users/{id}/sub-token");
+    // A plain admin on another admin: the owner's business.
+    let r = plain.post(&url(other_admin), json!({})).await;
+    assert_eq!(
+        (r.status.as_u16(), r.json()["code"].clone()),
+        (403, json!("user.owner_only"))
+    );
+    // Even the owner: an admin has no subscription.
+    let r = owner.post(&url(other_admin), json!({})).await;
+    assert_eq!(
+        (r.status.as_u16(), r.json()["code"].clone()),
+        (400, json!("user.admin_no_subscription"))
+    );
+    let r = owner.post(&url(erased), json!({})).await;
+    assert_eq!(
+        (r.status.as_u16(), r.json()["code"].clone()),
+        (409, json!("user.erased"))
+    );
+    let r = owner.post(&url(uuid::Uuid::new_v4()), json!({})).await;
+    assert_eq!(r.status.as_u16(), 404);
+    let written: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM users WHERE id = ANY($1) AND sub_token_hash IS NOT NULL",
+    )
+    .bind(vec![other_admin, erased, plain_id])
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(written, 0, "the refusals wrote nothing");
+    // An ordinary user still works, for a plain admin too.
+    let user = db.user().await;
+    let r = plain.post(&url(user), json!({})).await;
+    assert_eq!(r.status.as_u16(), 200, "{:?}", r.json());
+    db.drop().await;
+}

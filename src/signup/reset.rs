@@ -184,6 +184,22 @@ async fn send_link(state: &AppState, addr: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether `token` would be accepted right now (read-only twin of the
+/// conditional UPDATE in `apply_reset`).
+pub async fn token_usable(pg: &sqlx::PgPool, token: &str) -> sqlx::Result<bool> {
+    if !plausible_token(token) {
+        return Ok(false);
+    }
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT EXISTS (SELECT 1 FROM password_resets r JOIN users u ON u.id = r.user_id \
+         WHERE r.token_hash = $1 AND r.used_at IS NULL AND r.expires_at > now() \
+         AND u.email = r.email AND {MAY_RESET})"
+    )))
+    .bind(token_hash(token))
+    .fetch_one(pg)
+    .await
+}
+
 /// Consume `token` and set the new password hash, in the caller's
 /// transaction. The 0009 trigger bumps session_ver (every session ends).
 /// None = invalid/expired/used token.
@@ -250,14 +266,27 @@ pub async fn reset_password(
     if !plausible_token(&req.token) {
         return Err(invalid_link());
     }
-    let hash = auth::hash_password_async(&req.password).await?;
-    let mut tx = state.pg().begin().await?;
-    if apply_reset(&mut tx, &req.token, &hash, Some(client))
-        .await?
-        .is_none()
-    {
+    // Audit batch 2: an unknown / expired / used link is refused before the
+    // password is hashed; `apply_reset` below stays the authoritative,
+    // single-use check.
+    if !token_usable(state.pg(), &req.token).await? {
         return Err(invalid_link());
     }
+    let hash = auth::hash_password_async(&req.password).await?;
+    let mut tx = state.pg().begin().await?;
+    let Some(user) = apply_reset(&mut tx, &req.token, &hash, Some(client)).await? else {
+        return Err(invalid_link());
+    };
+    let portal = crate::mail::portal_url(&state);
+    crate::mailhook::security_notice(
+        &mut tx,
+        user,
+        crate::mail::templates::SecurityEvent::PasswordChanged,
+        Some(client),
+        portal.as_deref(),
+        None,
+    )
+    .await;
     tx.commit().await?;
     Ok(super::ok_json(json!({ "ok": true })))
 }

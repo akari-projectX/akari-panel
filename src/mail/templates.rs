@@ -138,6 +138,65 @@ pub enum Template {
         plan: RefundPlan,
         portal_url: Option<String>,
     },
+    /// Audit batch 2, P2-1: the account's sign-in security changed (to the
+    /// account's verified address). `ip` = the client address of the
+    /// change; None for an administrator's action (their address is not
+    /// the user's business).
+    SecurityNotice {
+        event: SecurityEvent,
+        at: DateTime<Utc>,
+        ip: Option<String>,
+        portal_url: Option<String>,
+    },
+}
+
+/// What changed about an account's sign-in security (audit batch 2, P2-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityEvent {
+    PasskeyAdded,
+    PasskeyDeleted,
+    PasswordLoginDisabled,
+    PasswordLoginEnabled,
+    /// Sent to the OLD verified address.
+    EmailChanged,
+    PasswordChanged,
+    /// An administrator (or the server's operator) deleted every passkey
+    /// and switched the password login back on.
+    LoginMethodReset,
+}
+
+impl SecurityEvent {
+    /// The one-sentence description in the mail.
+    pub fn text(self, zh: bool) -> &'static str {
+        match (self, zh) {
+            (Self::PasskeyAdded, true) => "你的账号添加了一个通行密钥。",
+            (Self::PasskeyAdded, false) => "A passkey was added to your account.",
+            (Self::PasskeyDeleted, true) => "你的账号删除了一个通行密钥。",
+            (Self::PasskeyDeleted, false) => "A passkey was removed from your account.",
+            (Self::PasswordLoginDisabled, true) => "你的账号已关闭密码登录（仅限通行密钥）。",
+            (Self::PasswordLoginDisabled, false) => {
+                "Password sign-in was switched off for your account (passkeys only)."
+            }
+            (Self::PasswordLoginEnabled, true) => "你的账号已重新开启密码登录。",
+            (Self::PasswordLoginEnabled, false) => {
+                "Password sign-in was switched back on for your account."
+            }
+            (Self::EmailChanged, true) => {
+                "你的账号登录邮箱已更换为另一个地址（本邮件发给旧地址）。"
+            }
+            (Self::EmailChanged, false) => {
+                "The sign-in email of your account was changed to another address (this notice goes to the old one)."
+            }
+            (Self::PasswordChanged, true) => "你的账号密码已被修改。",
+            (Self::PasswordChanged, false) => "The password of your account was changed.",
+            (Self::LoginMethodReset, true) => {
+                "管理员重置了你的登录方式：所有通行密钥已删除，密码登录已重新开启。"
+            }
+            (Self::LoginMethodReset, false) => {
+                "An administrator reset your sign-in method: every passkey was removed and password sign-in is on again."
+            }
+        }
+    }
 }
 
 /// What a refund did to the subscription (the mail's plan line).
@@ -159,7 +218,7 @@ pub enum RefundPlan {
 }
 
 /// Every template kind (= `mail_outbox.kind` / `mail_templates.kind`).
-pub const KINDS: [&str; 16] = [
+pub const KINDS: [&str; 17] = [
     "register_code",
     "register_exists",
     "email_code",
@@ -176,6 +235,7 @@ pub const KINDS: [&str; 16] = [
     "announcement",
     "admin_notice",
     "refund",
+    "security_notice",
 ];
 
 impl Template {
@@ -197,6 +257,7 @@ impl Template {
             Template::AdminNotice { .. } => "admin_notice",
             Template::Announcement { .. } => "announcement",
             Template::Refund { .. } => "refund",
+            Template::SecurityNotice { .. } => "security_notice",
         }
     }
 
@@ -287,6 +348,12 @@ impl Template {
                 to_balance_cents: 266,
                 external_cents: 1234,
                 plan: RefundPlan::Cancelled,
+                portal_url: portal,
+            },
+            "security_notice" => Template::SecurityNotice {
+                event: SecurityEvent::PasskeyAdded,
+                at: t,
+                ip: Some("203.0.113.7".into()),
                 portal_url: portal,
             },
             _ => return None,
@@ -413,6 +480,12 @@ const REFUND_PH: [Placeholder; 6] = [
     ),
     ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
 ];
+const SECURITY_PH: [Placeholder; 4] = [
+    ph("event", "发生了什么（一句话）"),
+    ph("time", "发生时间（UTC）"),
+    ph("ip", "操作来源 IP（管理员代为操作时为空）"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
 const ANNOUNCEMENT_PH: [Placeholder; 3] = [
     ph("title", "公告标题"),
     ph("body", "公告正文（已渲染）"),
@@ -436,6 +509,7 @@ pub fn spec(kind: &str) -> Option<(&'static [Placeholder], &'static [&'static st
         "announcement" => (&ANNOUNCEMENT_PH, &["body"]),
         "admin_notice" => (&ADMIN_NOTICE_PH, &["body"]),
         "refund" => (&REFUND_PH, &["order_no"]),
+        "security_notice" => (&SECURITY_PH, &["event"]),
         _ => return None,
     })
 }
@@ -459,6 +533,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "announcement" => "公告",
         "admin_notice" => "管理员群发邮件",
         "refund" => "订单退款通知",
+        "security_notice" => "账号安全通知",
         _ => "",
     }
 }
@@ -771,6 +846,32 @@ impl Template {
                     ),
                 ]
             }
+            Template::SecurityNotice {
+                event,
+                at,
+                ip,
+                portal_url,
+            } => vec![
+                text("event", event.text(zh).to_string()),
+                text("time", when(at)),
+                text(
+                    "ip",
+                    match ip {
+                        Some(ip) => ip.clone(),
+                        None if zh => "（管理员操作）".to_string(),
+                        None => "(done by an administrator)".to_string(),
+                    },
+                ),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh {
+                        "检查账号安全"
+                    } else {
+                        "Review account security"
+                    },
+                ),
+            ],
             Template::Announcement {
                 title,
                 body_md,
@@ -907,6 +1008,14 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ("refund", false) => (
             "{site}: your order was refunded",
             "Your order has been refunded:\n\nOrder: {order_no}\n\nPlan: {plan_name}\n\nRefund: {refund}\n\n{refund_lines}\n\n{plan_line}\n\n{portal_url}",
+        ),
+        ("security_notice", true) => (
+            "{site}：账号安全提醒",
+            "{event}\n\n时间：{time}\n\n来源 IP：{ip}\n\n如果这不是你本人操作，请立即重置密码、检查并删除不认识的通行密钥，然后联系站长。\n\n{portal_url}",
+        ),
+        ("security_notice", false) => (
+            "{site}: security alert for your account",
+            "{event}\n\nTime: {time}\n\nFrom IP: {ip}\n\nIf this was not you, reset your password right away, remove any passkey you do not recognise, and contact the site owner.\n\n{portal_url}",
         ),
         _ => return None,
     })

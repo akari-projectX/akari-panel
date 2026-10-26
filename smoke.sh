@@ -575,9 +575,14 @@ done
 "$PANEL" admin reset-login ROOT@smoke.test | matches '0 passkey' || { echo "FAIL: akari admin reset-login"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'user.login_method.reset' AND actor_label = 'cli'")" = "1" ] \
   || { echo "FAIL: reset-login not audited"; exit 1; }
+# Audit batch 2: a login-method reset ends every session of the account.
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: the CLI login-method reset left the session alive"; exit 1; }
+[ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: login after the CLI reset"; exit 1; }
 ROOT_ID=$(psql_q "SELECT id FROM users WHERE email = 'root@smoke.test'")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/login-method/reset")" = "200" ] && last_json "d['deleted_passkeys']" | matches '^0$' \
   || { echo "FAIL: admin login-method reset"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: the admin login-method reset left the session alive"; exit 1; }
 echo "passkeys: ok"
 
 echo "== login (wrong password x3, then ok) =="
@@ -3591,7 +3596,7 @@ echo "branding: ok"
 
 # Editable mail templates: whitelist enforced, stored version used by the
 # outbox (the registration code mail rendered for the next enqueue).
-[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] && last_json "len(d)" | matches -x 32 || { echo "FAIL: template list"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/mail-templates")" = "200" ] && last_json "len(d)" | matches -x 34 || { echo "FAIL: template list"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"no link {nope}"}')" = "400" ] \
   && last_json "d['code']" | matches -x 'mail_template.placeholder_unknown' || { echo "FAIL: unknown placeholder accepted"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/settings/mail-templates/password_reset/zh" '{"version":0,"subject":"x","body":"没有链接"}')" = "400" ] \
@@ -3678,6 +3683,14 @@ ALERT_BODY='{"version":'"$AV"',"enabled":true,"offline_secs":30,"cpu_percent":95
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "200" ] || { echo "FAIL: save alert settings"; cat /tmp/akari-smoke/last; exit 1; }
 last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches -Fx '(True, False)' || { echo "FAIL: alert settings view"; exit 1; }
 [ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$ALERT_BODY")" = "409" ] || { echo "FAIL: stale alert settings version accepted"; exit 1; }
+# Audit batch 2 (P2-2): a webhook on a literal private / metadata address is
+# refused when saved (a name is checked when it is sent).
+for PRIV_URL in https://10.0.0.1/hook https://169.254.169.254/latest https://127.0.0.1/hook; do
+  PRIV_BODY=$(printf '%s' "$ALERT_BODY" | sed "s#http://127.0.0.1:18206/hook#$PRIV_URL#")
+  [ "$(api_json "$JAR" PUT "$BASE/api/v1/alerts/settings" "$PRIV_BODY")" = "400" ] \
+    && last_json "d['code']" | matches '^alert.webhook_url_invalid$' \
+    || { echo "FAIL: webhook to $PRIV_URL accepted: $(cat /tmp/akari-smoke/last)"; exit 1; }
+done
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='alerts.settings.update' AND after::text LIKE '%$HOOK_SECRET%'")" = "0" ] \
   || { echo "FAIL: webhook secret in the audit log"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/alerts/test" '{"channel":"webhook"}')" = "200" ] && last_json "d['ok']" | matches True \
@@ -3866,20 +3879,51 @@ A2JAR="$LOG/admin2-cookies"
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 SV=$(last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
-    -d "{\"version\":$SV,\"audit_retention_days\":30,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
+    -d "{\"version\":$SV,\"audit_retention_days\":120,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
   || { echo "FAIL: save security settings: $(cat /tmp/akari-smoke/last)"; exit 1; }
 for _ in $(seq 1 20); do
   [ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/settings")" = "200" ] \
-    && last_json "d['security']['audit_retention_days']['effective']" | matches '^30$' && break
+    && last_json "d['security']['audit_retention_days']['effective']" | matches '^120$' && break
   sleep 0.25
 done
-last_json "d['security']['audit_retention_days']['effective']" | matches '^30$' \
+last_json "d['security']['audit_retention_days']['effective']" | matches '^120$' \
   || { echo "FAIL: a setting saved on A did not reach B"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.security.update'")" = "1" ] || { echo "FAIL: security settings not audited"; exit 1; }
 SV=$(psql_q "SELECT version FROM panel_settings")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
     -d "{\"version\":$SV,\"extra_release_keys\":[\"$TEST_RELEASE_PUB TEST-ONLY\"]}")" = "200" ] \
   || { echo "FAIL: default retention again: $(cat /tmp/akari-smoke/last)"; exit 1; }
+# Audit batch 2 (P1-1/P2-4): the audit retention has a floor (0 or >= 90),
+# and the Cloudflare ranges decide whose CF-Connecting-IP is believed, so
+# only public, narrow-enough prefixes are accepted.
+SV=$(psql_q "SELECT version FROM panel_settings")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
+    -d "{\"version\":$SV,\"audit_retention_days\":30}")" = "400" ] \
+  && last_json "d['code']" | matches '^settings.audit_retention_too_short$' || { echo "FAIL: a 30-day audit retention was accepted: $(cat /tmp/akari-smoke/last)"; exit 1; }
+for BAD_RANGE in 0.0.0.0/0 ::/0 10.0.0.0/8 127.0.0.1/32 169.254.0.0/16 fd00::/8 100.0.0.0/7; do
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/security" -H 'Content-Type: application/json' \
+      -d "{\"version\":$SV,\"cloudflare_ranges\":[\"$BAD_RANGE\"]}")" = "400" ] \
+    && last_json "d['code']" | matches '^settings.cloudflare_range_not_public$' \
+    || { echo "FAIL: Cloudflare range $BAD_RANGE was accepted: $(cat /tmp/akari-smoke/last)"; exit 1; }
+done
+[ "$(psql_q "SELECT cloudflare_ranges IS NULL FROM panel_settings")" = "t" ] || { echo "FAIL: a refused range was stored"; exit 1; }
+# R47 (audit batch 2): the settings that decide where mail goes, the names
+# the panel answers on, whose addresses are believed and how people sign in
+# are the owner's — a plain admin (admin2 on instance B) is refused.
+while IFS='|' read -r OO_METHOD OO_PATH OO_BODY; do
+  [ "$(code -b "$A2JAR" -X "$OO_METHOD" "http://127.0.0.1:8081/$PREFIX/api/v1/$OO_PATH" -H 'Content-Type: application/json' -d "$OO_BODY")" = "403" ] \
+    && last_json "d['code']" | matches '^user.owner_only$' \
+    || { echo "FAIL: a non-owner admin reached $OO_METHOD $OO_PATH: $(cat /tmp/akari-smoke/last)"; exit 1; }
+done <<'OWNER_ONLY'
+PUT|settings|{"version":0,"main_domains":[],"sub_domains":[],"node_domains":[]}
+PUT|settings/passkey-domain|{"version":0,"domain":null}
+PUT|settings/security|{"version":0}
+PUT|settings/mail|{"version":0,"enabled":false,"port":587,"security":"starttls","notify_order_paid":false,"notify_expiry_days":0,"notify_expired":false,"notify_quota":false}
+PUT|settings/auth|{"version":0,"turnstile_site_key":null,"turnstile_login":false,"turnstile_register":false,"turnstile_reset":false,"honeypot":true,"min_submit_secs":2,"passkey_only_admins":false,"passkey_only_users":false,"passkey_prompt":false}
+POST|settings/server-names/remove|{"name":"x.example.com","confirm":true}
+OWNER_ONLY
+# The read side stays open to every admin.
+[ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/settings/mail")" = "200" ] || { echo "FAIL: a non-owner admin cannot read the mail settings"; exit 1; }
 # R47: only the owner (root) manages admins; ownership is handed over and
 # back (admin2 on instance B).
 ROOT_UID=$(psql_q "SELECT id FROM users WHERE email = 'root@smoke.test'")

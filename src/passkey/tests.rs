@@ -569,6 +569,12 @@ async fn prompt_role_policy_and_reset() {
     };
     let st = state_with_domain(&db, RP).await;
     let (admin, admin_email) = account(&db, "admin", "admin-password-1").await;
+    // R47: the sign-in policies are the owner's.
+    sqlx::query("UPDATE users SET is_owner = true WHERE id = $1")
+        .bind(admin)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let mut a = Client::new(&st, rand_ip());
     a.login(&admin_email, "admin-password-1").await;
     let v = a.get("/test/api/v1/settings/auth").await.json();
@@ -698,6 +704,12 @@ async fn prompt_role_policy_and_reset() {
         )
         .await;
     assert_eq!(r.fingerprint(), canonical.fingerprint());
+    // The admin's reset ended the account's sessions (audit batch 2).
+    assert_eq!(
+        u.get("/test/api/v1/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let u = client_for(&st, uid).await;
     assert_eq!(
         u.get(&format!("/test/api/v1/users/{uid}/passkeys"))
             .await
@@ -1657,5 +1669,123 @@ async fn passkey_signup_gates_and_purge() {
             .unwrap(),
         0
     );
+    db.drop().await;
+}
+
+async fn notices(db: &TestDb, to: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT body_text FROM mail_outbox WHERE kind = 'security_notice' AND to_addr = $1 \
+         ORDER BY id",
+    )
+    .bind(to)
+    .fetch_all(&db.pool)
+    .await
+    .unwrap()
+}
+
+/// Audit batch 2, P2-1: no extra step, but the account's VERIFIED address is
+/// told (time and client address, no secrets) when a passkey is added or
+/// deleted, the password sign-in is switched off / on, the password
+/// changes, or an administrator resets the login method; an unverified
+/// address is told nothing.
+#[tokio::test]
+async fn sign_in_changes_are_mailed_to_the_verified_address() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
+         security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (pw1, pw2, pw3) = (random_pw(), random_pw(), random_pw());
+    let (id, email) = account(&db, "user", &pw1).await;
+    let (loose, loose_email) = account(&db, "user", &pw2).await;
+    sqlx::query("UPDATE users SET email_verified_at = now(), locale = 'en' WHERE id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut c = Client::new(&st, rand_ip());
+    assert_eq!(c.login(&email, &pw1).await.status, StatusCode::OK);
+    let mut key = SoftKey::new();
+    let added = bind(&c, &mut key, "phone", true).await;
+    let got = notices(&db, &email).await;
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got[0].contains("passkey was added"), "{}", got[0]);
+    assert!(
+        got[1].contains("Password sign-in was switched off"),
+        "{}",
+        got[1]
+    );
+    let ip = c.ip.to_string();
+    for g in &got {
+        assert!(g.contains(&ip) && g.contains("UTC"), "{g}");
+        assert!(!g.contains(&pw1));
+    }
+    // Back on, delete the passkey, change the password.
+    let r = c
+        .put("/test/api/v1/me/password-login", json!({ "enabled": true }))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let r = c
+        .req(
+            axum::http::Method::DELETE,
+            &format!("/test/api/v1/me/passkeys/{}", added["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = c
+        .post(
+            "/test/api/v1/me/password",
+            json!({ "current_password": pw1, "new_password": pw3 }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{:?}", r.json());
+    let got = notices(&db, &email).await;
+    assert_eq!(got.len(), 5, "{got:?}");
+    assert!(got[2].contains("switched back on"));
+    assert!(got[3].contains("passkey was removed"));
+    assert!(got[4].contains("password of your account was changed"));
+    assert!(!got.iter().any(|g| g.contains(&pw3)));
+
+    // The administrator's reset: told too (no admin address in the mail),
+    // and every session of the account ends.
+    let before: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let mut tx = db.pool.begin().await.unwrap();
+    super::apply_reset_login(&mut tx, &Actor::cli(), id)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let after: i64 = sqlx::query_scalar("SELECT session_ver FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, before + 1, "login-method reset ends the sessions");
+    assert_eq!(
+        c.get("/test/api/v1/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let got = notices(&db, &email).await;
+    assert_eq!(got.len(), 6);
+    assert!(got[5].contains("administrator reset your sign-in method"));
+    assert!(got[5].contains("done by an administrator"));
+
+    // An address nobody verified gets nothing.
+    let mut u = Client::new(&st, rand_ip());
+    u.login(&loose_email, &pw2).await;
+    let mut k2 = SoftKey::new();
+    bind(&u, &mut k2, "tablet", false).await;
+    assert!(notices(&db, &loose_email).await.is_empty());
+    let _ = loose;
     db.drop().await;
 }

@@ -402,3 +402,96 @@ async fn ownership_is_transferred() {
     assert!(cli_set_owner(&db.pool, "nobody@example.com").await.is_err());
     db.drop().await;
 }
+
+/// Audit batch 2, P1-1: the settings that decide where mail goes, which
+/// names the panel answers on, whom to trust for client addresses, and how
+/// people log in are owner-only. A plain admin gets 403 `user.owner_only`
+/// (nothing is written), the owner succeeds (here with no-op bodies: the
+/// stored values do not change, but the answer is 200).
+#[tokio::test]
+async fn trust_settings_are_owner_only() {
+    let Some((db, state)) = setup().await else {
+        return;
+    };
+    let owner = client_for(&state, db.owner().await).await;
+    let plain = client_for(&state, db.admin().await).await;
+    let version = |view: serde_json::Value| view["version"].as_i64().unwrap();
+    let v_panel = version(owner.get("/test/api/v1/settings").await.json());
+    let v_mail = version(owner.get("/test/api/v1/settings/mail").await.json());
+    let v_auth = version(owner.get("/test/api/v1/settings/auth").await.json());
+    let calls: Vec<(Method, &str, serde_json::Value)> = vec![
+        (
+            Method::PUT,
+            "/test/api/v1/settings",
+            json!({"version": v_panel, "main_domains": [], "sub_domains": [], "node_domains": []}),
+        ),
+        (
+            Method::PUT,
+            "/test/api/v1/settings/passkey-domain",
+            json!({"version": v_panel, "domain": null}),
+        ),
+        (
+            Method::PUT,
+            "/test/api/v1/settings/security",
+            json!({"version": v_panel}),
+        ),
+        (
+            Method::PUT,
+            "/test/api/v1/settings/mail",
+            json!({"version": v_mail, "enabled": false, "port": 587, "security": "starttls",
+                   "notify_order_paid": false, "notify_expiry_days": 0,
+                   "notify_expired": false, "notify_quota": false}),
+        ),
+        (
+            Method::PUT,
+            "/test/api/v1/settings/auth",
+            json!({"version": v_auth, "turnstile_site_key": null, "turnstile_login": false,
+                   "turnstile_register": false, "turnstile_reset": false, "honeypot": true,
+                   "min_submit_secs": 2, "passkey_only_admins": false,
+                   "passkey_only_users": false, "passkey_prompt": false}),
+        ),
+    ];
+    for (method, path, body) in &calls {
+        let r = plain.req(method.clone(), path, Some(body.clone())).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {:?}", r.json());
+        assert_eq!(r.json()["code"], "user.owner_only", "{path}");
+        // The owner's write may bump the shared version: send the current one.
+        let view = match *path {
+            "/test/api/v1/settings/mail" => "/test/api/v1/settings/mail",
+            "/test/api/v1/settings/auth" => "/test/api/v1/settings/auth",
+            _ => "/test/api/v1/settings",
+        };
+        let mut body = body.clone();
+        body["version"] = owner.get(view).await.json()["version"].clone();
+        let r = owner.req(method.clone(), path, Some(body)).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}: {:?}", r.json());
+    }
+    // Removing a server name and a changing write: same answer, and the
+    // refusal comes before anything is written.
+    let r = plain
+        .post(
+            "/test/api/v1/settings/server-names/remove",
+            json!({"name": "x.example.com", "confirm": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    assert_eq!(r.json()["code"], "user.owner_only");
+    let v_panel = version(owner.get("/test/api/v1/settings").await.json());
+    let r = plain
+        .put(
+            "/test/api/v1/settings/security",
+            json!({"version": v_panel, "audit_retention_days": 0}),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "user.owner_only");
+    let kept: Option<i32> = sqlx::query_scalar("SELECT audit_retention_days FROM panel_settings")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, None, "the plain admin wrote nothing");
+    // Not owner-only: the read side and the diagnostics stay admin.
+    assert_eq!(
+        plain.get("/test/api/v1/settings/mail").await.status,
+        StatusCode::OK
+    );
+}

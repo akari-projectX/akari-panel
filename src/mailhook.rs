@@ -8,10 +8,11 @@
 //! (console mail is Chinese). Callers never depend on the result: the in-app
 //! markers (unread ticket, alert center) are the primary channel.
 
-use sqlx::PgConnection;
+use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::alerts::channels::SendError;
+use crate::mail::templates::SecurityEvent;
 use crate::mail::{self, Locale, Template};
 use crate::state::AppState;
 
@@ -149,4 +150,88 @@ pub async fn alert(
             .map_err(|_| SendError::Retry("email: could not queue the message".into()))?;
     }
     Ok(())
+}
+
+/// Audit batch 2, P2-1: tell an account that its sign-in security changed
+/// (passkey added / removed, password sign-in switched, email or password
+/// changed). Goes to the account's VERIFIED address — or, for an email
+/// change, to `old_address` (the verified address it had before) — in the
+/// account's locale, with the time and the client address `ip` (None for an
+/// administrator's action). Never a secret. Queued in the caller's
+/// transaction under a savepoint: a failure is logged and rolled back alone,
+/// the change itself always commits. Returns whether a mail was queued.
+pub async fn security_notice(
+    conn: &mut PgConnection,
+    user: Uuid,
+    event: SecurityEvent,
+    ip: Option<std::net::IpAddr>,
+    portal: Option<&str>,
+    old_address: Option<&str>,
+) -> bool {
+    let mut sp = match conn.begin().await {
+        Ok(sp) => sp,
+        Err(e) => {
+            tracing::warn!(error = %e, "security notice not queued");
+            return false;
+        }
+    };
+    match queue_security_notice(&mut sp, user, event, ip, portal, old_address).await {
+        Ok(queued) => sp.commit().await.is_ok() && queued,
+        Err(e) => {
+            tracing::warn!(error = %e, "security notice not queued");
+            let _ = sp.rollback().await;
+            false
+        }
+    }
+}
+
+async fn queue_security_notice(
+    conn: &mut PgConnection,
+    user: Uuid,
+    event: SecurityEvent,
+    ip: Option<std::net::IpAddr>,
+    portal: Option<&str>,
+    old_address: Option<&str>,
+) -> sqlx::Result<bool> {
+    let Some(s) = smtp(conn).await? else {
+        return Ok(false);
+    };
+    // The current address, only when verified (and not a passkey
+    // registration's placeholder).
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT email, locale FROM users WHERE id = $1 AND email_verified_at IS NOT NULL \
+         AND NOT email_pending",
+    )
+    .bind(user)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let (to, locale) = match (old_address, row) {
+        (Some(old), _) => {
+            let locale: Option<String> =
+                sqlx::query_scalar("SELECT locale FROM users WHERE id = $1")
+                    .bind(user)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            (old.to_string(), locale.unwrap_or_default())
+        }
+        (None, Some((email, locale))) => (email, locale),
+        (None, None) => return Ok(false),
+    };
+    let tpl = Template::SecurityNotice {
+        event,
+        at: chrono::Utc::now(),
+        ip: ip.map(|a| a.to_string()),
+        portal_url: portal.map(str::to_string),
+    };
+    mail::enqueue(
+        conn,
+        &s,
+        &tpl,
+        Locale::parse(&locale),
+        &to,
+        Some(user),
+        None,
+    )
+    .await?;
+    Ok(true)
 }
