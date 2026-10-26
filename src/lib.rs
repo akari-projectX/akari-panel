@@ -23,6 +23,7 @@ pub mod console;
 pub mod csvx;
 pub mod dashboard;
 pub mod db;
+pub mod dns;
 pub mod enforce;
 pub mod enroll;
 pub mod entitle;

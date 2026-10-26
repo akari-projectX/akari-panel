@@ -119,6 +119,7 @@ fn inner_router(state: AppState) -> Router {
         .merge(crate::access::routes())
         .merge(crate::billing::routes())
         .merge(crate::billing::methods::routes())
+        .merge(crate::dns::routes())
         // W15: registration / reset / invites / 系统设置 → 注册, 邮件.
         .merge(crate::signup::routes())
         .merge(crate::passkey::routes())
