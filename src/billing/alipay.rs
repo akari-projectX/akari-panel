@@ -746,8 +746,9 @@ impl Alipay {
 /// parameters"), an unrecognised code. An unknown outcome must stay pending
 /// and be asked about again with the same request number: marking it failed
 /// would let the admin refund by another route while the first refund may
-/// have gone through (a double payout). (`ACQ.DISCORDANT_REPEAT_REQUEST` is
-/// unknown on purpose: it says an earlier request with this number exists.)
+/// have gone through (a double payout). (`ACQ.DISCORDANT_REPEAT_REQUEST` and
+/// `ACQ.CONTEXT_INCONSISTENT` are unknown on purpose: both say an earlier
+/// request with this number exists, whose outcome is not known here.)
 pub fn refund_refused(code: &str, sub_code: &str) -> bool {
     // 40001 missing / 40002 invalid parameters, 40006 no permission: the
     // gateway rejected the call before any business processing.
@@ -769,7 +770,6 @@ pub fn refund_refused(code: &str, sub_code: &str) -> bool {
             | "ACQ.EXIST_FORBIDDEN_WORD"
             | "ACQ.INVALID_PARAMETER"
             | "ACQ.ACCESS_FORBIDDEN"
-            | "ACQ.CONTEXT_INCONSISTENT"
     )
 }
 

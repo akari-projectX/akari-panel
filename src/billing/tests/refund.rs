@@ -731,6 +731,7 @@ fn only_definite_alipay_refusals_fail_a_refund() {
         ("40004", "ACQ.SYSTEM_ERROR"),
         ("20000", "isp.unknow-error"),
         ("40004", "ACQ.DISCORDANT_REPEAT_REQUEST"),
+        ("40004", "ACQ.CONTEXT_INCONSISTENT"),
         ("40004", "ACQ.SOMETHING_NEW"),
         ("40004", ""),
         ("", ""),
