@@ -912,6 +912,24 @@ export function OwnerNotice({ what }: { what?: string }) {
   );
 }
 
+/**
+ * Owner-only section (R47): the owner edits it; another admin sees the same
+ * page read-only (a disabled fieldset disables every control inside) under
+ * the owner-only notice.
+ */
+export function OwnerOnly({ what, children }: { what?: string; children: ReactNode }) {
+  const owner = useOwner();
+  if (owner) return <>{children}</>;
+  return (
+    <>
+      <OwnerNotice what={what} />
+      <fieldset disabled className="contents">
+        {children}
+      </fieldset>
+    </>
+  );
+}
+
 /** A grey read-only value in place of a control (locked rows). */
 export function ReadValue({ children, mono }: { children: ReactNode; mono?: boolean }) {
   return (

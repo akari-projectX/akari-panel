@@ -549,6 +549,7 @@ pub async fn apply_update(
     actor: &Actor,
     req: &SettingsReq,
 ) -> Result<Settings, ApiError> {
+    crate::owner::require(conn, actor).await?;
     if !(0..=60).contains(&req.min_submit_secs) {
         return Err(bad_request!(
             "auth_admin.min_submit_range",

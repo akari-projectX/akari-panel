@@ -68,6 +68,21 @@ impl Cidr {
         Ok(Self { net, prefix })
     }
 
+    /// The network address and the prefix length (IPv4-mapped IPv6 blocks
+    /// are reported as the IPv4 block they map).
+    pub fn parts(&self) -> (IpAddr, u8) {
+        (self.net, self.prefix)
+    }
+
+    /// Does this block share any address with `other`?
+    pub fn overlaps(&self, other: &Cidr) -> bool {
+        if self.net.is_ipv4() != other.net.is_ipv4() {
+            return false;
+        }
+        let p = self.prefix.min(other.prefix);
+        mask(self.net, p) == mask(other.net, p)
+    }
+
     pub fn contains(&self, ip: IpAddr) -> bool {
         let ip = canonical(ip);
         match (self.net, ip) {

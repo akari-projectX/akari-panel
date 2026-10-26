@@ -6,6 +6,11 @@
 //! login method: any admin mutation whose target is an admin other than
 //! the actor, `guard_target`) or make an account an admin; change the
 //! admin prefix and its allowlist; write payment channels (their keys);
+//! change what decides whom the panel trusts and where it sends mail
+//! (audit batch 2): the mail settings, the domain settings (main / sub /
+//! node domains, server-name removal, the passkey centre), the security
+//! settings (retention, Cloudflare ranges, extra release keys) and the
+//! sign-in policies (Turnstile, honeypot, passkey-only);
 //! transfer the ownership (`apply_transfer`). The owner cannot be demoted,
 //! disabled, banned or deleted (`protect`, and the database: CHECK
 //! `users_owner_enabled_admin`, triggers `users_keep_owner` /
@@ -28,7 +33,7 @@ fn owner_only() -> ApiError {
     api_error!(
         FORBIDDEN,
         "user.owner_only",
-        "only the owner may do this (admin accounts, admin prefix, payment keys)"
+        "only the owner may do this (admin accounts, admin prefix, payment keys, mail / domain / security / sign-in settings)"
     )
 }
 
@@ -59,6 +64,13 @@ pub async fn require(conn: &mut PgConnection, actor: &Actor) -> Result<(), ApiEr
         Some(id) if is_owner(conn, id).await? => Ok(()),
         Some(_) => Err(owner_only()),
     }
+}
+
+/// `require` for a handler that has no transaction yet (before network I/O
+/// or heavy validation): the signed-in admin must be the owner.
+pub async fn require_user(state: &AppState, user: &AuthUser) -> Result<(), ApiError> {
+    let mut conn = state.pg().acquire().await?;
+    require(&mut conn, &Actor::of(user)).await
 }
 
 /// An admin mutation on `target`: when the target is an admin account

@@ -476,6 +476,7 @@ pub async fn apply_update_mail(
     version: i64,
     v: &MailValues,
 ) -> Result<(), ApiError> {
+    crate::owner::require(conn, actor).await?;
     let cur: MailSettings = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {MAIL_COLS} FROM mail_settings WHERE id = 1 FOR UPDATE"
     )))

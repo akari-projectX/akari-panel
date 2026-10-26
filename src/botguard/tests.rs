@@ -357,7 +357,7 @@ async fn turnstile_settings_and_login() {
     let (verifier, url) = Verifier::start().await;
     let st =
         AppState::for_test_with(db.pool.clone(), |c| c.limits.turnstile_verify_url = url).await;
-    let admin = client_for(&st, db.admin().await).await;
+    let admin = client_for(&st, db.owner().await).await;
     let (_, email) = account(&db, "right-password").await;
 
     let v = admin.get("/test/api/v1/settings/auth").await.json();
@@ -594,7 +594,7 @@ async fn turnstile_other_forms_fail_closed() {
         .await;
     assert_eq!(r.json()["code"], "auth.captcha_unavailable");
     // Saving a malformed secret is refused.
-    let admin = client_for(&st, db.admin().await).await;
+    let admin = client_for(&st, db.owner().await).await;
     let v = admin.get("/test/api/v1/settings/auth").await.json();
     let r = admin
         .put(
