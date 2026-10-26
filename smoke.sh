@@ -836,6 +836,8 @@ curl -s --noproxy '*' -A "clash-meta/1.19" "$SUB" | matches "^    type: vless" \
 INFO=$(curl -s --noproxy '*' -D - -o /dev/null "$SUB" | grep -i "^subscription-userinfo:")
 echo "$INFO" | matches "download=0" && echo "$INFO" | matches "total=107374182400" \
   || { echo "FAIL: subscription-userinfo header: $INFO"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null "$SUB" | matches -i "^cache-control: private, no-store" \
+  || { echo "FAIL: subscription response is cacheable"; exit 1; }
 SIZE=$(curl -s --noproxy '*' -o /tmp/akari-smoke/subbody "$SUB" && wc -c < /tmp/akari-smoke/subbody)
 [ "$SIZE" -ge 8192 ] || { echo "FAIL: body not padded ($SIZE bytes)"; exit 1; }
 # Wrong token: identical rejection (checked above), never quota headers.
