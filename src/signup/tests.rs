@@ -1237,6 +1237,23 @@ async fn email_change_needs_password_and_code() {
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     assert_eq!(r.json()["email"], new);
+    // Audit batch 2, P2-1: the OLD verified address is told (time and the
+    // client address, nothing secret); the new one only got the code.
+    let (_, notice) = wait_mail(&db, "security_notice", &first).await;
+    assert!(notice.contains("sign-in email"), "{notice}");
+    assert!(notice.contains(&c.ip.to_string()), "{notice}");
+    assert!(
+        !notice.contains(&code) && !notice.contains(&new),
+        "{notice}"
+    );
+    let to_new: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mail_outbox WHERE kind = 'security_notice' AND to_addr = $1",
+    )
+    .bind(&new)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(to_new, 0);
     assert_eq!(email_of(&db, id).await, new, "the login is the new address");
     let mut nc = Client::new(&st, rand_ip());
     assert_eq!(nc.login(&new, "password1").await.status, StatusCode::OK);

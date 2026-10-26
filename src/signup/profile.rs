@@ -230,6 +230,14 @@ pub async fn verify_email_change(
         .unwrap_or_else(|| "unknown".into());
     super::limit_complete(&state, &bucket).await?;
     let mut tx = state.pg().begin().await?;
+    // The verified address the account has now: it is told about the change.
+    let old: Option<String> = sqlx::query_scalar(
+        "SELECT email FROM users WHERE id = $1 AND email_verified_at IS NOT NULL \
+         AND NOT email_pending",
+    )
+    .bind(user.id)
+    .fetch_optional(&mut *tx)
+    .await?;
     let done = apply_verify(
         &mut tx,
         state.master_key(),
@@ -238,6 +246,20 @@ pub async fn verify_email_change(
         req.code.trim(),
     )
     .await?;
+    if let (Some(old), Some(new)) = (old.as_deref(), done.as_deref())
+        && old != new
+    {
+        let portal = crate::mail::portal_url(&state);
+        crate::mailhook::security_notice(
+            &mut tx,
+            user.id,
+            crate::mail::templates::SecurityEvent::EmailChanged,
+            user.ip,
+            portal.as_deref(),
+            Some(old),
+        )
+        .await;
+    }
     tx.commit().await?;
     match done {
         Some(addr) => Ok(Json(json!({ "email": addr, "email_verified": true }))),

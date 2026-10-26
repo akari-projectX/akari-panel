@@ -1606,6 +1606,19 @@ pub async fn update_user(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_update_user(&mut tx, &Actor::of(&user), id, &req).await?;
+    // Another account's password changed by an admin: its holder is told
+    // (verified address; the admin's own address stays out of the mail).
+    if id != user.id && matches!(req.password, Some(Some(_))) {
+        crate::mailhook::security_notice(
+            &mut tx,
+            id,
+            crate::mail::templates::SecurityEvent::PasswordChanged,
+            None,
+            crate::mail::portal_url(&state).as_deref(),
+            None,
+        )
+        .await;
+    }
     // An admin changing their own password (or role) revokes their own
     // sessions too; this one carries on with a fresh token. Read in the
     // same transaction, so the token matches exactly what was committed.
