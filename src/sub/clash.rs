@@ -33,7 +33,7 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
         out.push_str(&serde_json::to_string(&p.name).unwrap_or_else(|_| "\"proxy\"".into()));
         out.push('\n');
         out.push_str(&format!("    type: {kind}\n"));
-        out.push_str(&format!("    server: {}\n", p.server));
+        out.push_str(&format!("    server: {}\n", yaml_token(&p.server)));
         out.push_str(&format!("    port: {}\n", p.net.port));
         match p.protocol {
             "vless" => {
