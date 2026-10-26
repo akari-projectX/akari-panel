@@ -17,6 +17,7 @@
 # links point at it. API calls of the seed and the tests go straight to the
 # panel on 127.0.0.1 (IP literals pass the host gate).
 # Extra arguments go to `playwright test` (e.g. --project=mobile -g shop).
+# PANEL_BIN: the panel binary (CI builds it once and hands it to every job).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -121,14 +122,18 @@ node portal/e2e/support/seed.ts >"$E2E_SEED"
 echo "e2e: $E2E_ORIGIN/"
 cd portal
 status=0
-E2E_BASE="$E2E_ORIGIN" npx playwright test "$@" || status=$?
+# E2E_PERF_ONLY=1 (CI's perf job): only the performance report below, on a
+# panel that has run no other test.
+if [ -z "${E2E_PERF_ONLY:-}" ]; then
+  E2E_BASE="$E2E_ORIGIN" npx playwright test "$@" || status=$?
+fi
 
 # Performance report (report only, never fails the run; user ruling
 # 2026-10-07: real metrics instead of a bundle-size gate). Set
 # E2E_PERF_OUT=<dir> to measure cold load / LCP / TTI / route switches on
 # desktop and a throttled mid-range phone (portal/e2e/perf/) plus the bundle
 # sizes; the Markdown summary (next to the React portal's last numbers,
-# portal/e2e/perf/baseline/) lands in <dir>/summary.md (CI: the e2e job
+# portal/e2e/perf/baseline/) lands in <dir>/summary.md (CI: the e2e perf job
 # summary + artifact portal-perf).
 if [ -n "${E2E_PERF_OUT:-}" ]; then
   mkdir -p "$E2E_PERF_OUT"
