@@ -102,7 +102,7 @@ export const MANIFEST: ProtocolManifest = {
       ]
     }
   ],
-  "kernel_version": "v26.3.27",
+  "kernel_version": "v26.10.21",
   "protocols": [
     {
       "id": "vless",
