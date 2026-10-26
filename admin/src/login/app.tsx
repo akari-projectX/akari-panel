@@ -61,6 +61,7 @@ export const LOGIN_ERRORS: ErrorTable = {
     "Passkeys are not available on this site (needs an https main domain)",
   ],
   "request.rate_limited": ["尝试次数过多，请稍后再试", "Too many attempts. Please try again later."],
+  "request.busy": ["服务器繁忙，请稍后再试", "The server is busy. Please try again shortly."],
 };
 const errorText = (e: unknown, lang: "zh" | "en") => errorTextWith(LOGIN_ERRORS, e, lang);
 

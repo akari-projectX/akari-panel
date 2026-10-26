@@ -579,7 +579,18 @@ pub async fn register(
         super::limit_complete(&state, &bucket).await?;
         let (addr, invite) = admit(&state, &s, &req.email, req.invite_code.as_deref()).await?;
         let code = req.code.as_deref().unwrap_or_default().trim().to_string();
-        let hash = auth::hash_password_async(&req.password).await?;
+        // Audit batch 2: a wrong / expired / used code is refused before the
+        // password is hashed (an unauthenticated flood must not buy argon2
+        // runs). The transaction below checks the code for real; without a
+        // good code here no hash is made and a (racing) success is rolled
+        // back.
+        let code_ok =
+            super::peek_code(state.pg(), state.master_key(), PURPOSE, &addr, &code).await?;
+        let hash = if code_ok {
+            auth::hash_password_async(&req.password).await?
+        } else {
+            String::new()
+        };
         let mut tx = state.pg().begin().await?;
         let done = apply_register(
             &mut tx,
@@ -600,6 +611,12 @@ pub async fn register(
             tx.commit().await?;
             return Err(invalid_code());
         };
+        if !code_ok {
+            // The code turned valid between the peek and the check: no
+            // password was hashed, so nothing may be created.
+            tx.rollback().await?;
+            return Err(invalid_code());
+        }
         tx.commit().await?;
         r
     } else {

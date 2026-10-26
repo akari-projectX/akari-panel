@@ -791,6 +791,37 @@ pub async fn check_code(
     Ok(CodeCheck::Ok { email: row.email })
 }
 
+/// Whether the code of (purpose, subject) would be accepted right now:
+/// the same test as `check_code`, but read-only (no lock, nothing counted
+/// or consumed). The completing endpoints use it to refuse a wrong code
+/// BEFORE the password is hashed (argon2 is the expensive part); the
+/// authoritative check stays `check_code` in the transaction.
+pub async fn peek_code(
+    pg: &PgPool,
+    keys: &crate::masterkey::Keys,
+    purpose: &str,
+    subject: &str,
+    code: &str,
+) -> sqlx::Result<bool> {
+    let row: Option<CodeRow> = sqlx::query_as(
+        "SELECT email, code_hash, attempts, (used_at IS NULL AND expires_at > now()) AS live \
+         FROM email_codes WHERE purpose = $1 AND subject = $2",
+    )
+    .bind(purpose)
+    .bind(subject)
+    .fetch_optional(pg)
+    .await?;
+    let Some(row) = row else {
+        // Same HMAC work as a real check.
+        let _ = keys.mail_code_hash(purpose, subject, "", code);
+        return Ok(false);
+    };
+    let want = keys.mail_code_hash(purpose, subject, &row.email, code);
+    let matches =
+        plausible_code(code) && bool::from(want.as_bytes().ct_eq(row.code_hash.as_bytes()));
+    Ok(matches && row.live && row.attempts < CODE_MAX_ATTEMPTS)
+}
+
 /// Drop expired codes and reset links a day after expiry (mail sender's
 /// housekeeping).
 pub async fn prune(pg: &PgPool) -> sqlx::Result<()> {
