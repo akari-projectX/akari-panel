@@ -391,6 +391,16 @@ pub fn explain(f: &Fault) -> String {
             super::transport::XHTTP_MODES.join(", ")
         ),
         Fault::ServiceName => "grpc serviceName: letters, digits and -_./ only (<= 128)".into(),
+        Fault::ServerName => {
+            "TLS serverName / REALITY serverNames: host names only (letters, digits and -._*, <= 253)"
+                .into()
+        }
+        Fault::RealityPublicKey => {
+            "REALITY publicKey must be a 32-byte x25519 key in base64url (43 characters)".into()
+        }
+        Fault::RealityShortId => {
+            "REALITY shortId / shortIds: 0-16 hexadecimal digits, an even number of them".into()
+        }
         Fault::Encryption => {
             "vless settings.decryption must be \"none\" (VLESS encryption is not in subscriptions)"
                 .into()

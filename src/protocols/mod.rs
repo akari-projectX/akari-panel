@@ -75,14 +75,6 @@ pub fn new_ss_key(method: &str) -> Option<String> {
     ss_key_len(method).map(|n| STANDARD.encode(crate::entropy::bytes(n)))
 }
 
-/// The VLESS flow the inbound's users get: `settings.flow` ("" = none).
-pub fn vless_flow(inbound: &Value) -> &str {
-    inbound
-        .pointer("/settings/flow")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-}
-
 /// Does the panel issue credentials for this inbound? vless/vmess/trojan
 /// always (as before W8: stored configurations keep their users even if a
 /// newer check would flag them); the W8 protocols only in their managed
@@ -133,6 +125,56 @@ pub fn check_inbound(inbound: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Audit P2-1: the strings of the security layer end up in client
+    /// configurations, so only plain values are saved.
+    #[test]
+    fn security_strings_are_validated_at_save_time() {
+        let key = "A".repeat(43);
+        let reality = |rs: Value| {
+            json!({"tag": "r", "port": 443, "protocol": "vless",
+                   "streamSettings": {"network": "tcp", "security": "reality",
+                                      "realitySettings": rs}})
+        };
+        let good = json!({"serverNames": ["www.apple.com", "*.apple.com"],
+                          "publicKey": key, "shortId": "ab12", "shortIds": ["", "0123456789abcdef"]});
+        assert_eq!(check_inbound(&reality(good.clone())), Ok(()));
+        for (field, bad) in [
+            ("serverNames", json!(["a\n    udp: true"])),
+            ("serverNames", json!(["x: y"])),
+            ("serverNames", json!(["a b"])),
+            ("serverNames", json!(["a#b"])),
+            ("serverNames", json!(["a&flow=b"])),
+            ("publicKey", json!("x: y")),
+            ("publicKey", json!("short")),
+            ("publicKey", json!(format!("{}\n", "A".repeat(42)))),
+            ("shortId", json!("ab # c")),
+            ("shortId", json!("abc")),
+            ("shortId", json!("0123456789abcdef00")),
+            ("shortIds", json!(["zz"])),
+        ] {
+            let mut rs = good.clone();
+            rs[field] = bad.clone();
+            let e = check_inbound(&reality(rs)).unwrap_err();
+            assert!(
+                e.contains("serverName") || e.contains("publicKey") || e.contains("shortId"),
+                "{field}={bad}: {e}"
+            );
+        }
+        let tls = |name: &str| {
+            json!({"tag": "t", "port": 443, "protocol": "trojan",
+                   "streamSettings": {"network": "tcp", "security": "tls",
+                                      "tlsSettings": {"serverName": name}}})
+        };
+        assert_eq!(check_inbound(&tls("node1.example.com")), Ok(()));
+        assert_eq!(check_inbound(&tls("")), Ok(()));
+        for bad in ["a\nb: c", "a b", "a&sni=b", "a#b", "a:b", "\"x\""] {
+            assert!(
+                check_inbound(&tls(bad)).unwrap_err().contains("serverName"),
+                "{bad}"
+            );
+        }
+    }
 
     /// W14: keys equal under Go's case folding alias each other in xray,
     /// at any depth (the SS2022 `method`/`METHOD` downgrade W13 found on

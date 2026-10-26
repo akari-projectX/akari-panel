@@ -240,6 +240,12 @@ pub enum Fault {
     Host,
     Mode,
     ServiceName,
+    /// A TLS server name or REALITY server name that is not a host name.
+    ServerName,
+    /// The REALITY public key is not a 32-byte base64url key.
+    RealityPublicKey,
+    /// A REALITY short id is not 0-16 hex digits (even count).
+    RealityShortId,
     Encryption,
     FlowUnsupported(String),
     MethodUnsupported,
