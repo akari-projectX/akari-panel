@@ -15,6 +15,11 @@
 #
 # Configuration (environment):
 #   AGE_IDENTITY_FILE      age private key able to decrypt the backup   [.age backups]
+#   AKARI_BACKUP_VERIFY_KEY  PEM public key matching the backup's
+#                          AKARI_BACKUP_SIGN_KEY: when set, the backup must
+#                          carry a valid SHA256SUMS.sig, else the restore stops.
+#                          Without it the checksums prove integrity only (the
+#                          backup is not damaged), not who made it.
 #   DATABASE_URL           target PostgreSQL URL                         [required*]
 #   AKARI_PG_RESTORE_CMD   alternative command reading a custom-format dump
 #                          on stdin, e.g.
@@ -45,8 +50,19 @@ else
   die "$src holds no db.dump(.age): not a backup.sh directory"
 fi
 
+if [ -n "${AKARI_BACKUP_VERIFY_KEY:-}" ]; then
+  need openssl
+  [ -r "$AKARI_BACKUP_VERIFY_KEY" ] || die "cannot read AKARI_BACKUP_VERIFY_KEY"
+  [ -f "$src/SHA256SUMS.sig" ] || die "the backup carries no SHA256SUMS.sig but AKARI_BACKUP_VERIFY_KEY is set: refusing to restore an unsigned backup"
+  openssl dgst -sha256 -verify "$AKARI_BACKUP_VERIFY_KEY" -signature "$src/SHA256SUMS.sig" "$src/SHA256SUMS" >/dev/null 2>&1 \
+    || die "signature mismatch: SHA256SUMS was not signed by the holder of AKARI_BACKUP_VERIFY_KEY (not made by the backup host, or modified): refusing to restore"
+  echo "restore: signature verified"
+fi
 echo "restore: checking checksums"
-(cd "$src" && sha256sum --check --quiet SHA256SUMS) || die "checksum mismatch: the backup is damaged or tampered with"
+(cd "$src" && sha256sum --check --quiet SHA256SUMS) || die "checksum mismatch: the backup files differ from SHA256SUMS (damaged or modified)"
+if [ -z "${AKARI_BACKUP_VERIFY_KEY:-}" ]; then
+  echo "restore: NOTE: checksums give integrity only, not authenticity (the files are intact, nothing more): anyone who can write to the backup storage can rewrite them together with SHA256SUMS. Set AKARI_BACKUP_VERIFY_KEY to check the signature (docs/BACKUP.md)" >&2
+fi
 
 if [ -n "${AKARI_PG_RESTORE_CMD:-}" ]; then
   load() { bash -c "$AKARI_PG_RESTORE_CMD"; }

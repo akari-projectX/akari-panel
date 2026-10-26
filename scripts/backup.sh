@@ -7,7 +7,8 @@
 #   data.tar.age    tar of the data directory, age-encrypted
 #   config.tar.age  the files in AKARI_CONFIG_FILES (optional), age-encrypted
 #   MANIFEST        versions, timestamp, source host (no secrets)
-#   SHA256SUMS      of the .age files
+#   SHA256SUMS      of the data files and MANIFEST
+#   SHA256SUMS.sig  optional (AKARI_BACKUP_SIGN_KEY): ECDSA signature of SHA256SUMS
 # Nothing sensitive is ever written to disk unencrypted (every stream is
 # piped through age). Encryption is to PUBLIC age recipients, so the host
 # that runs backups never holds a key that can read them.
@@ -40,6 +41,13 @@
 #                          agent_release_chunks; tens of MB each). Default:
 #                          their rows are left out (the tables are restored
 #                          empty; upload the releases again or use 检查更新)
+#   AKARI_BACKUP_SIGN_KEY  optional PEM private key (EC prime256v1): SHA256SUMS
+#                          is signed with it (openssl) so that a restore holding
+#                          the public key (AKARI_BACKUP_VERIFY_KEY) can tell a
+#                          backup made here from one written by anybody who can
+#                          write to the backup storage and knows the age PUBLIC
+#                          key. Keep this key away from the backup storage;
+#                          docs/BACKUP.md "Authenticity".
 #   AKARI_VERIFY_IDENTITY  optional age identity file: when set, the fresh
 #                          backup is decrypted and checked (pg_restore --list,
 #                          tar -t) before success is reported
@@ -58,6 +66,11 @@ KEEP_MIN="${AKARI_KEEP_MIN:-3}"
 [ -d "$AKARI_DATA_DIR" ] || die "data dir $AKARI_DATA_DIR does not exist"
 
 need tar; need sha256sum
+sign_key="${AKARI_BACKUP_SIGN_KEY:-}"
+if [ -n "$sign_key" ]; then
+  need openssl
+  [ -r "$sign_key" ] || die "cannot read AKARI_BACKUP_SIGN_KEY $sign_key"
+fi
 age_args=()
 plain=0
 if [ -n "${AGE_RECIPIENTS_FILE:-}" ]; then
@@ -136,9 +149,15 @@ fi
     echo "format=1 (db.dump.age: pg_dump -Fc; data.tar.age: tar of data_dir; config.tar.age: config files; age-encrypted)"
   fi
   echo "agent_releases=$releases"
+  [ -z "$sign_key" ] || echo "signature=SHA256SUMS.sig (ecdsa-sha256)"
   [ -z "${AKARI_MANIFEST_EXTRA:-}" ] || echo "$AKARI_MANIFEST_EXTRA"
 } >"$tmp/MANIFEST"
-(cd "$tmp" && sha256sum "${files[@]}" >SHA256SUMS)
+# MANIFEST is covered too: the sums bind the files and their description.
+(cd "$tmp" && sha256sum "${files[@]}" MANIFEST >SHA256SUMS)
+if [ -n "$sign_key" ]; then
+  openssl dgst -sha256 -sign "$sign_key" -out "$tmp/SHA256SUMS.sig" "$tmp/SHA256SUMS" \
+    || die "signing SHA256SUMS failed"
+fi
 
 if [ "$plain" = 1 ]; then
   # Custom-format dumps start with "PGDMP" (the host's pg_restore may be

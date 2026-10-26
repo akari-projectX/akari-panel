@@ -40,6 +40,7 @@ shellcheck:
 	shellcheck -s sh src/nodeinstall-uninstall.sh
 	shellcheck -S warning smoke.sh
 	sh scripts/installer-test/validators.sh
+	bash scripts/installer-test/backup-auth.sh
 
 # W26: artifacts generated from proto/protocols.toml (docs/DEPLOY.md §3d
 # matrix, the admin form schema). `gen-protocols` rewrites them after a

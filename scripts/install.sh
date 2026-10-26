@@ -94,7 +94,7 @@ LOG_READY=0
 TMP=
 NL='
 '
-STATUS='' CUR_VERSION='' LANG_OPT='' tag='' ADOPT_DIR='' ADOPT_BARE='' CADDY_OURS='' AGE_RECIPIENT='' OLD_DOCKER_DIR=''
+STATUS='' CUR_VERSION='' LANG_OPT='' tag='' ADOPT_DIR='' ADOPT_BARE='' CADDY_OURS='' AGE_RECIPIENT='' BACKUP_SIGN_KEY='' OLD_DOCKER_DIR=''
 MODE_GIVEN='' DOMAIN_GIVEN='' EMAIL_GIVEN='' ADMIN_GIVEN='' PORTS_GIVEN=''
 
 msg() {
@@ -711,7 +711,7 @@ install_tools() {
 # --- settings of the installation ------------------------------------------------
 
 MODE='' DOMAIN='' PUBLIC_IP='' EMAIL='' ADMIN='' ADMIN_PW='' HTTP_PORT='' HTTPS_PORT='' GRPC_PORT=''
-VERSION_REQ='' DOCKER_DIR='' LOCAL_CERTS='' RESTORE_DIR='' AGE_IDENTITY='' AGE_RECIPIENT_OPT=''
+VERSION_REQ='' DOCKER_DIR='' LOCAL_CERTS='' RESTORE_DIR='' AGE_IDENTITY='' AGE_RECIPIENT_OPT='' VERIFY_KEY=''
 BACKUP_SH='' WITH_RELEASES='' NODE_ADDR='' PURGE=0 MIGRATE_TO='' BACKUP_OUT='' FORCE=0 CONFIRM_PURGE='' VALKEY_PORT=''
 
 load_state() {
@@ -729,6 +729,7 @@ load_state() {
 	LOCAL_CERTS=${LOCAL_CERTS:-$(kv_get "$STATE_ENV" LOCAL_CERTS)}
 	PUBLIC_IP=${PUBLIC_IP:-$(kv_get "$STATE_ENV" PUBLIC_IP)}
 	AGE_RECIPIENT=$(kv_get "$STATE_ENV" AGE_RECIPIENT)
+	BACKUP_SIGN_KEY=$(kv_get "$STATE_ENV" BACKUP_SIGN_KEY)
 	CADDY_OURS=$(kv_get "$STATE_ENV" CADDY_OURS)
 	STATUS=$(kv_get "$STATE_ENV" STATUS)
 	[ -n "$MODE" ]
@@ -756,6 +757,8 @@ save_state() {
 		echo "CADDY_OURS=${CADDY_OURS:-}"
 		echo "# Backups: an age public key (age1...) encrypts them; empty = plain files (0600)."
 		echo "AGE_RECIPIENT=${AGE_RECIPIENT:-}"
+		echo "# Backups: path of an EC (prime256v1) PEM private key; SHA256SUMS is signed with it (docs/BACKUP.md, Authenticity)."
+		echo "BACKUP_SIGN_KEY=${BACKUP_SIGN_KEY:-}"
 	} >"$STATE_ENV"
 }
 
@@ -1234,7 +1237,7 @@ do_backup() {
 		config_files="$DOCKER_DIR/.env $DOCKER_DIR/panel.toml $DOCKER_DIR/env/panel.env $DOCKER_DIR/env/postgres.env $DOCKER_DIR/env/valkey.env $STATE_ENV"
 		ver=$(kv_get "$DOCKER_DIR/.env" AKARI_IMAGE)
 	fi
-	out=$(env "$recip_env" "$plain_env" AKARI_BACKUP_AGENT_RELEASES="$releases" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
+	out=$(env "$recip_env" "$plain_env" AKARI_BACKUP_SIGN_KEY="${BACKUP_SIGN_KEY:-}" AKARI_BACKUP_AGENT_RELEASES="$releases" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
 		AKARI_BACKUP_DIR="$parent" AKARI_CONFIG_FILES="$config_files" AKARI_VERSION_STRING="$ver" \
 		AKARI_MANIFEST_EXTRA="mode=$MODE" bash "${BACKUP_SH:-$LIBDIR/backup.sh}" 2>>"$LOG") ||
 		die "备份失败（见 $LOG）" "backup failed (see $LOG)"
@@ -1246,8 +1249,20 @@ do_backup() {
 # check_restore_dir DIR: a backup.sh directory, readable with what we have.
 check_restore_dir() {
 	[ -d "$1" ] || die "备份目录不存在：$1" "no such backup directory: $1"
+	if [ -n "$VERIFY_KEY" ]; then
+		have openssl || die '验证签名需要 openssl' 'verifying the signature needs openssl'
+		[ -r "$VERIFY_KEY" ] || die "无法读取 $VERIFY_KEY" "cannot read $VERIFY_KEY"
+		[ -f "$1/SHA256SUMS.sig" ] || die "备份没有签名（SHA256SUMS.sig），但指定了 --backup-verify-key：拒绝恢复" \
+			"the backup has no SHA256SUMS.sig but --backup-verify-key was given: refusing to restore"
+		openssl dgst -sha256 -verify "$VERIFY_KEY" -signature "$1/SHA256SUMS.sig" "$1/SHA256SUMS" >/dev/null 2>&1 ||
+			die "备份签名不符：SHA256SUMS 不是该公钥对应的签名者所签（或已被修改）：拒绝恢复" \
+				"backup signature mismatch: SHA256SUMS was not signed by the holder of that key (or was modified): refusing to restore"
+	elif [ -z "$MIGRATE_TO" ]; then
+		warn '未指定 --backup-verify-key：校验和只能证明备份完好，不能证明它出自你的备份主机（docs/BACKUP.md「真实性」）' \
+			'no --backup-verify-key: the checksums prove the backup is intact, not that your backup host made it (docs/BACKUP.md, Authenticity)'
+	fi
 	(cd "$1" && sha256sum --check --quiet SHA256SUMS >/dev/null 2>&1) ||
-		die "备份校验失败：$1" "backup checksum mismatch: $1"
+		die "备份校验失败（文件与 SHA256SUMS 不符，已损坏或被改动）：$1" "backup checksum mismatch (damaged or modified): $1"
 	if [ -f "$1/db.dump.age" ]; then
 		[ -n "$AGE_IDENTITY" ] || die '备份已加密：用 --age-identity <私钥文件> 指定解密密钥' 'the backup is encrypted: pass --age-identity <key file>'
 		have age || {
@@ -1278,7 +1293,7 @@ CREATE DATABASE akari OWNER akari;'
 		data_dir=$(docker_volume_dir akari-data) owner=65532:65532
 		[ -n "$data_dir" ] || die '找不到数据卷 akari_akari-data' 'no akari_akari-data volume'
 	fi
-	run env AGE_IDENTITY_FILE="${AGE_IDENTITY:-}" AKARI_PG_RESTORE_CMD="$load_cmd" AKARI_DATA_DIR="$data_dir" \
+	run env AGE_IDENTITY_FILE="${AGE_IDENTITY:-}" AKARI_BACKUP_VERIFY_KEY="${VERIFY_KEY:-}" AKARI_PG_RESTORE_CMD="$load_cmd" AKARI_DATA_DIR="$data_dir" \
 		AKARI_OWNER="$owner" bash "$LIBDIR/restore.sh" --force "$RESTORE_DIR" ||
 		die "恢复失败（见 $LOG）" "restore failed (see $LOG)"
 	chmod 0700 "$data_dir"
@@ -1935,7 +1950,7 @@ cmd_migrate() {
 	from=$MODE
 	stop_mode "$from"
 	saved_domain=$DOMAIN saved_ip=$PUBLIC_IP saved_email=$EMAIL
-	MODE=$MIGRATE_TO RESTORE_DIR=$move AGE_IDENTITY=
+	MODE=$MIGRATE_TO RESTORE_DIR=$move VERIFY_KEY='' AGE_IDENTITY=
 	DOMAIN=$saved_domain PUBLIC_IP=$saved_ip EMAIL=$saved_email
 	[ "$MODE" != docker ] || DOCKER_DIR=${DOCKER_DIR:-$DEFAULT_DOCKER_DIR}
 	[ -n "$DOCKER_DIR" ] || DOCKER_DIR=$DEFAULT_DOCKER_DIR
@@ -2072,6 +2087,7 @@ Options (environment variable in brackets):
   --local-certs             Caddy's internal CA for every name (test / LAN names)
   --restore DIR             install from a backup made by `backup` (host moves)
   --age-identity FILE       age key to decrypt an encrypted backup (--restore)
+  --backup-verify-key FILE  public key (PEM) the backup's SHA256SUMS.sig must verify with (--restore)
   --lang zh|en              prompts/messages language (default: from the locale)
   --force                   reinstall / re-run the upgrade of the same version
 
@@ -2106,6 +2122,7 @@ parse_args() {
 		--local-certs) LOCAL_CERTS=1 ;;
 		--restore) RESTORE_DIR=$2 && shift ;;
 		--age-identity) AGE_IDENTITY=$2 && shift ;;
+		--backup-verify-key) VERIFY_KEY=$2 && shift ;;
 		--age-recipient) AGE_RECIPIENT_OPT=$2 && shift ;;
 		--with-agent-releases) WITH_RELEASES=1 ;;
 		--out) BACKUP_OUT=$2 && shift ;;
