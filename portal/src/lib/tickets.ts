@@ -20,7 +20,7 @@ export const PRIORITY: Record<TicketPriority, { text: string; hint: string; cls:
   urgent: { text: '紧急', hint: '完全不能用、涉及付款', cls: 'pr-urgent', bdg: 'danger' },
 };
 
-/** 状态：文字 + content.css 的 .st 色点类 */
+/** 状态：文字 + pages.css 的 .st 色点类 */
 export const STATE: Record<TicketStatus, { text: string; cls: string; bdg: string }> = {
   open: { text: '待处理', cls: 'st', bdg: 'info' },
   answered: { text: '已回复', cls: 'st ok', bdg: 'success' },

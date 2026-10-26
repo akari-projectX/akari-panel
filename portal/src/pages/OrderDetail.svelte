@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Check from '@lucide/svelte/icons/check';
   import Clock from '@lucide/svelte/icons/clock';

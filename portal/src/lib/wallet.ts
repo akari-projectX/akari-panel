@@ -45,7 +45,7 @@ export function usdtEstimate(cents: number, rateCents: number | null | undefined
   return rateCents && rateCents > 0 ? (cents / rateCents).toFixed(2) : null;
 }
 
-/** 状态 = 色点 + 文字（content.css 的 .st）：ok 绿、warn 琥珀、off 红点、空 = 灰点 */
+/** 状态 = 色点 + 文字（pages.css 的 .st）：ok 绿、warn 琥珀、off 红点、空 = 灰点 */
 export type Tone = 'ok' | 'warn' | 'off' | '';
 
 export const W_STATUS: Record<WithdrawalStatus, { text: string; tone: Tone }> = {

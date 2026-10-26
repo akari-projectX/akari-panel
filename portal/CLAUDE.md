@@ -10,7 +10,7 @@
 改外观时先对照 v1.4.0 源码（`git show v1.4.0:spa/src/...`），不要凭样稿。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
-  `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/content.css`（表格 `.tbl`、右侧信息条等遗留的共用件）、`tokens.css`（颜色只能写在这里，`check:colors`）。
+  `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages.css`（用户中心各页的版式与表格 `.tbl` 等，只由登录后的页面分包引入，不进首屏 CSS）、`tokens.css`（颜色只能写在这里，`check:colors`）。
   页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
 - 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
 - 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种：流程（图标 + 标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
@@ -55,7 +55,7 @@
   图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
   下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
-  线路状态、空状态）在 `src/styles/content.css`（main.ts 在 app.css 之后引入）。e2e `e2e/dashboard.spec.ts`。
+  线路状态、空状态）在 `src/styles/pages.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
@@ -79,7 +79,7 @@
   （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
   `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
   `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。
-  设置行样式 `.set-row` 在 `styles/content.css`。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。
+  设置行样式 `.set-row` 在 `styles/pages.css`。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。
   e2e `e2e/support.spec.ts`（React support #57–#59、polish #57）、`e2e/account.spec.ts`（React account 的设置场景）、`auth.spec.ts` #3–#5 接着测设置页的通行密钥管理；
   账户 `v2-account-`、`v2-settings-`、`v2-legacy-`、`v2-delete-<视口>`（seed）。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。

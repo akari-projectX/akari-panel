@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import { meApi, type MyNode } from '@/api';

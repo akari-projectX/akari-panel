@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import Pin from '@lucide/svelte/icons/pin';
   import { contentApi, type Announcement, type Announcements } from '@/api';
