@@ -1,0 +1,41 @@
+.shop-use { max-width: 760px; }
+.shop-bal > svg { flex: none; color: var(--brand); }
+.plan-head h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 16px; font-weight: 600; }
+.plan-per b { font-weight: 500; white-space: nowrap; color: var(--ok); }
+.plan-specs > div { display: flex; flex-direction: column-reverse; min-width: 0; padding: 12px 4px; }
+.plan-specs > div + div { border-left: 1px solid var(--line); }
+.plan-specs dd { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.plan-specs dt { font-size: 12px; color: var(--faint); }
+.plan-rich ul { display: flex; flex-direction: column; list-style: none; padding-left: 0; gap: 9px; }
+.plan-rich ul li { position: relative; padding-left: 24px; }
+.plan-rich ul li::before { content: ''; position: absolute; left: 0; top: .3em; width: 16px; height: 16px; background: var(--brand); mask: url('../../assets/icons/check.svg') center / contain no-repeat; }
+.plan-card .plan-rich ul li { padding-left: 22px; }
+.plan-card .plan-rich ul li::before { top: .35em; width: 14px; height: 14px; background: var(--ok); }
+.plan-cta p { min-height: 18px; margin-top: 8px; font-size: 12px; text-align: center; color: var(--faint); }
+.fstep-h h3 { font-size: 14px; font-weight: 500; }
+.fspec > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--body); }
+.fspec svg { flex: none; color: var(--brand); }
+.popt > button { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: none; font: inherit; text-align: left; color: inherit; transition: background-color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out); }
+.popt > button:hover:not(:disabled) { background: color-mix(in srgb, var(--hover) 50%, transparent); }
+.popt > button:disabled { cursor: not-allowed; opacity: .5; }
+.popt > button[aria-pressed='true'] { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 5%, transparent); }
+.popt b { display: block; font-size: 13px; font-weight: 500; }
+.popt > button[aria-pressed='true'] b { color: var(--brand); }
+.popt small { display: block; font-size: 11.5px; color: var(--muted); }
+.cpn > div { position: relative; flex: 1; }
+.cpn > div > svg { position: absolute; top: 50%; left: 12px; translate: 0 -50%; color: var(--faint); pointer-events: none; }
+.fline > div { display: flex; justify-content: space-between; }
+.fline > div > span:first-child { color: var(--muted); }
+.fline > div > span:last-child { font-variant-numeric: tabular-nums; }
+.ackrow input { flex: none; width: 16px; height: 16px; margin-top: 3px; accent-color: var(--brand); }
+.ackrow svg { display: inline; margin: -2px 4px 0 0; vertical-align: middle; color: var(--warn); }
+.pmeth > div { position: relative; }
+.pmeth input { position: absolute; opacity: 0; pointer-events: none; }
+.pmeth label { display: flex; height: 100%; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; transition: background-color var(--dur-hover) var(--ease-out); }
+.pmeth label:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
+.pmeth input:focus-visible + label { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.pmeth input:checked + label { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 5%, transparent); }
+.pmeth label > svg { flex: none; color: var(--muted); }
+.pmeth input:checked + label > svg, .pmeth input:checked + label > span { color: var(--brand); }
+.pmeth label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; }
+.rl { display: flex; align-items: center; gap: 8px; } .rl > svg { flex: none; color: var(--brand); }

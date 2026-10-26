@@ -35,7 +35,8 @@
       const r = a?.getBoundingClientRect();
       pos = r && r.width ? { x: r.left - n.left, y: r.bottom - n.top - 2, w: r.width } : null;
     };
-    measure();
+    /* 不在这里同步量：这时量会把整页的第一次排版挤进脚本里（紧挨着页面其余部分的渲染，排版做两遍）。
+       ResizeObserver 订阅后会在第一帧排版之后、绘制之前通知一次，那一刻量，首帧就带着这道线 */
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     el.querySelectorAll('.topnav-link').forEach((a) => ro.observe(a));
