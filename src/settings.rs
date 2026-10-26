@@ -574,13 +574,6 @@ fn valid_probe_urls(urls: &[String]) -> bool {
         && urls.iter().collect::<HashSet<_>>().len() == urls.len()
 }
 
-fn origin_host(o: &Origin) -> String {
-    o.host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase()
-}
-
 /// Pure: the Cloudflare ranges (stored override, else shipped).
 fn effective_cloudflare(stored: &Stored) -> (Vec<Cidr>, Source) {
     if let Some(list) = &stored.cloudflare_ranges {
@@ -901,11 +894,6 @@ impl Effective {
     /// not configured (callers fall back to their own configuration).
     pub fn public_origin(&self) -> Option<String> {
         self.install_origin()
-    }
-
-    /// Lower-case host of the main domain (None = browser origin).
-    pub fn main_host(&self) -> Option<String> {
-        self.main.as_ref().map(origin_host)
     }
 
     /// Advisory notes that hold while the configuration stays as it is

@@ -18,7 +18,6 @@ axum-extra = { version = "0.12", features = ["cookie"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dashmap = "6"
-data-encoding = "2"
 fred = { version = "10", features = ["enable-rustls", "i-scripts"] }
 hex = "0.4"
 # C1: EPay (易支付) signs with MD5 (already in the tree via sqlx-postgres).

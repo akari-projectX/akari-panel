@@ -480,17 +480,6 @@ pub(crate) async fn record_departed(
     Ok(())
 }
 
-/// Servers the users hold credentials on — for bumps after a change to
-/// what they are served.
-pub async fn servers_of_users(conn: &mut PgConnection, users: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT DISTINCT server_id FROM ({SERVERS_OF_USERS}) s ORDER BY server_id"
-    )))
-    .bind(users)
-    .fetch_all(conn)
-    .await
-}
-
 /// Debug helper for tests: the pairs a fresh full computation grants
 /// (`user -> entrances`).
 #[cfg(test)]
