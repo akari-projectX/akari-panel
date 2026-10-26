@@ -294,4 +294,4 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户�
 
 ## 已知问题
 
-完整清单见 `../REVIEW-2026-09-30.md`，排期在 `PLAN.md` Phase 0.5。改相关代码前先看。
+待办与已知遗留见工作区 `akari-workspace/PLAN-next.md`（下一版本待办）；审计结论见 `akari-workspace/research/code-audit-2026-10/` 与 `research/README.md` 索引。改相关代码前先看。
