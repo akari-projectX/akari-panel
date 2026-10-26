@@ -95,13 +95,18 @@ pub async fn apply_traffic_limits(conn: &mut PgConnection) -> sqlx::Result<Vec<U
     Ok(nodes)
 }
 
+/// The candidates of the expiry pass. Must stay implied by the predicate of
+/// the partial index `users_expiry_due` (migration 1118).
+fn expiry_due() -> String {
+    format!("({EXPIRED} AND NOT u.expiry_enforced)")
+}
+
 /// Push the removal of users whose expiry has passed: mark them enforced
 /// and bump their nodes (snapshots already exclude them; the bump makes
 /// connected agents actually converge). Idempotent via the marker, which
 /// PATCHing expires_at resets. Returns the bumped nodes.
 pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
-    let due = format!("({EXPIRED} AND NOT u.expiry_enforced)");
-    let nodes = apply_pass(conn, &due, "expiry_enforced = true").await?;
+    let nodes = apply_pass(conn, &expiry_due(), "expiry_enforced = true").await?;
     if !nodes.is_empty() {
         tracing::info!(nodes = nodes.len(), "expired users removed from nodes");
     }
@@ -387,6 +392,32 @@ mod tests {
             before.1 + 1,
             "the user's node is bumped"
         );
+        db.drop().await;
+    }
+
+    /// Audit batch 4 P3-3: the expiry candidate query can use the partial
+    /// index (its predicate is implied by the query's), so it is not a
+    /// sequential scan of `users` at every tick.
+    #[tokio::test]
+    async fn the_expiry_candidate_query_uses_the_partial_index() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let mut tx = db.pool.begin().await.unwrap();
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let plan: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "EXPLAIN SELECT u.id FROM users u WHERE {} ORDER BY u.id",
+            expiry_due()
+        )))
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        let plan = plan.join("\n");
+        assert!(plan.contains("users_expiry_due"), "{plan}");
         db.drop().await;
     }
 }
