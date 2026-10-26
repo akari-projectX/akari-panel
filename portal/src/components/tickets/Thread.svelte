@@ -153,8 +153,8 @@
   .order { font-size: 12.5px; color: var(--muted); }
   .msg { display: flex; gap: 10px; }
   .msg.mine { flex-direction: row-reverse; }
-  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, #10b981 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 500; }
-  .mine .av { background: linear-gradient(135deg, var(--brand), var(--brand-hover)); color: #fff; }
+  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 500; }
+  .mine .av { background: linear-gradient(135deg, var(--brand), var(--brand-hover)); color: var(--on-brand); }
   .col { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 80%; }
   .mine .col { align-items: flex-end; }
   .who { display: flex; align-items: baseline; gap: 8px; }

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Ban from '@lucide/svelte/icons/ban';
   import Headphones from '@lucide/svelte/icons/headphones';
+  import PageTitle from '../flat/PageTitle.svelte';
   import { formatDateTime } from '@/lib/format';
   import { auth } from '$lib/auth.svelte';
   import { t, tp } from '$lib/i18n.svelte';
@@ -10,12 +11,7 @@
   const me = $derived(auth.me);
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('账户已被封禁')}</h1>
-    <p>{t('封禁期间不能使用订阅和节点，也不能购买。')}</p>
-  </div>
-</div>
+<PageTitle title={t('账户已被封禁')} sub={t('封禁期间不能使用订阅和节点，也不能购买。')} />
 
 <section class="sec banned">
   <Ban class="mark" size={20} strokeWidth={1.75} aria-hidden="true" />

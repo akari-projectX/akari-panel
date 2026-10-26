@@ -28,10 +28,12 @@ export function navigate(to: string, opts: { replace?: boolean; state?: Record<s
   }
   const next = url.pathname + url.search + url.hash;
   const same = next === location.pathname + location.search + location.hash;
+  const samePath = url.pathname === location.pathname;
   if (opts.replace || same) history.replaceState(opts.state ?? history.state, '', next);
   else history.pushState(opts.state ?? {}, '', next);
   sync();
-  if (!same && !url.hash && !opts.keepScroll) window.scrollTo(0, 0);
+  /* 换了页：回到页首放在旧页面淡出之后（App 的切页外壳）；同一页内的查询串变化立刻回到页首 */
+  if (!same && samePath && !url.hash && !opts.keepScroll) window.scrollTo(0, 0);
 }
 
 /** 查询串里的一个参数 */

@@ -1109,7 +1109,6 @@ export const EN: Record<string, string> = {
   '页脚': 'Footer',
   '主导航': 'Main navigation',
   '跳到主要内容': 'Skip to main content',
-  '此页面迁移中': 'This page is being moved to the new portal',
   /* ── 门户 v2：登录、注册 ── */
   '密码要求': 'Password requirements',
   '通知': 'Notifications',
