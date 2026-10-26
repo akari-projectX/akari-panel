@@ -356,6 +356,7 @@ settings.allowlist_invalid
 settings.allowlist_too_long
 settings.audit_retention_invalid
 settings.cloudflare_range_invalid
+settings.cloudflare_range_not_public
 settings.cloudflare_ranges_too_many
 settings.confirm_required
 settings.domain_conflict

@@ -48,6 +48,7 @@ import {
   DangerZone,
   FieldRow,
   Loaded,
+  OwnerOnly,
   OwnerNotice,
   Panel,
   SRow,
@@ -571,7 +572,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
     <span className="text-warning">{tr(" · 保存后将删除更早的数据", " · older data is deleted after saving")}</span>
   );
   return (
-    <>
+    <OwnerOnly what={tr("保留设置", "the retention settings")}>
       <Group
         title={tr("保留天数", "Days kept")}
         footer={tr(
@@ -646,7 +647,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
           )}
         />
       </Group>
-    </>
+    </OwnerOnly>
   );
 }
 

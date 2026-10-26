@@ -356,6 +356,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "settings.allowlist_too_long": ["白名单最多 {max} 条", "At most {max} entries"],
   "settings.audit_retention_invalid": ["审计日志保留天数：0（永久）到 36500", "Audit log retention: 0 (forever) to 36500 days"],
   "settings.cloudflare_range_invalid": ["Cloudflare 网段：{range} 不是有效的 CIDR", "Cloudflare ranges: {range} is not a valid CIDR"],
+  "settings.cloudflare_range_not_public": ["Cloudflare 网段：{range} 不是公网网段（私有、回环、链路本地、保留地址，或范围过大：IPv4 前缀至少 /8，IPv6 至少 /16）", "Cloudflare ranges: {range} is not a public range (private, loopback, link-local or reserved space, or too wide: IPv4 prefix at least /8, IPv6 at least /16)"],
   "settings.cloudflare_ranges_too_many": ["Cloudflare 网段：最多 {max} 条", "Cloudflare ranges: at most {max}"],
   "settings.confirm_required": ["需要确认后才能执行", "This change takes effect at once: send confirm=true"],
   "settings.domain_conflict": ["{domain} 不能同时是{a}和{b}（一个域名只能有一种用途）", "{domain} cannot be both {a} and {b} (one role per domain)"],

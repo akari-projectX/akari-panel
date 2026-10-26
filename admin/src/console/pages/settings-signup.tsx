@@ -31,6 +31,7 @@ import {
   SRow,
   domainError,
   Loaded,
+  OwnerOnly,
   SwitchRow,
   Warnings,
   intError,
@@ -464,7 +465,7 @@ function LoginForm({ a }: { a: AuthSettings }) {
     },
   });
   return (
-    <>
+    <OwnerOnly what={tr("登录方式策略", "the sign-in policies")}>
       <Warnings items={a.warnings} />
       <Group
         title={tr("用户登录方式", "How users sign in")}
@@ -632,7 +633,7 @@ function LoginForm({ a }: { a: AuthSettings }) {
           }
         />
       </DangerZone>
-    </>
+    </OwnerOnly>
   );
 }
 

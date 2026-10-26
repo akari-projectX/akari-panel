@@ -1339,7 +1339,7 @@ async fn settings_api_validates_seals_and_audits() {
         return;
     };
     let st = state(&db).await;
-    let admin = db.admin().await;
+    let admin = db.owner().await;
     let mut c = Client::new(&st, rand_ip());
     c.cookie = Some(crate::auth::issue_token(&st, admin, "admin", 0).unwrap());
     let s = c.get("/test/api/v1/settings/signup").await.json();

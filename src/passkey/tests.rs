@@ -569,6 +569,12 @@ async fn prompt_role_policy_and_reset() {
     };
     let st = state_with_domain(&db, RP).await;
     let (admin, admin_email) = account(&db, "admin", "admin-password-1").await;
+    // R47: the sign-in policies are the owner's.
+    sqlx::query("UPDATE users SET is_owner = true WHERE id = $1")
+        .bind(admin)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let mut a = Client::new(&st, rand_ip());
     a.login(&admin_email, "admin-password-1").await;
     let v = a.get("/test/api/v1/settings/auth").await.json();

@@ -411,7 +411,7 @@ fn dns_verdicts() {
 // ---------------------------------------------------------------------------
 
 async fn admin_client(state: &AppState, db: &TestDb) -> Client {
-    let id = db.admin().await;
+    let id = db.owner().await;
     let (role, sv): (String, i64) =
         sqlx::query_as("SELECT role, session_ver FROM users WHERE id = $1")
             .bind(id)
@@ -1385,7 +1385,7 @@ bind = "127.0.0.1:8080"
 advertised_names = ["panel.example.com", "*.akari.test"]
 sub_domain = "sub.example.com"
 trust_cloudflare = true
-cloudflare_ranges = ["198.51.100.0/24"]
+cloudflare_ranges = ["104.16.0.0/13"]
 [grpc]
 bind = "127.0.0.1:8443"
 advertise = "grpc.example.com:9443"
@@ -1799,7 +1799,7 @@ async fn node_ops_and_security_api() {
     let r = put(
         "security",
         json!({"version": version, "audit_retention_days": 0,
-               "traffic_daily_retention_days": 0, "cloudflare_ranges": ["198.51.100.0/24", " 2001:db8::/32 "],
+               "traffic_daily_retention_days": 0, "cloudflare_ranges": ["104.16.0.0/13", " 2606:4700::/32 "],
                "extra_release_keys": [signer]}),
     )
     .await;
@@ -1814,7 +1814,7 @@ async fn node_ops_and_security_api() {
     assert_eq!(v["security"]["audit_retention_days"]["effective"], 0);
     assert_eq!(
         v["security"]["cloudflare_ranges"],
-        json!(["198.51.100.0/24", "2001:db8::/32"])
+        json!(["104.16.0.0/13", "2606:4700::/32"])
     );
     assert_eq!(v["cloudflare_ranges"], 2);
     assert_eq!(v["security"]["release_keys"].as_array().unwrap().len(), 2);
@@ -2250,4 +2250,79 @@ async fn d8_cli_set_prefers() {
     );
     drop(conn);
     db.drop().await;
+}
+
+fn cf(s: &str) -> bool {
+    super::cloudflare_range_public(&Cidr::parse(s).unwrap())
+}
+
+/// Audit batch 2, P1-1: a trusted Cloudflare range decides whose
+/// `CF-Connecting-IP` is believed; only public, narrow-enough prefixes pass.
+#[test]
+fn cloudflare_ranges_must_be_public_and_narrow() {
+    for bad in [
+        "0.0.0.0/0",
+        "::/0",
+        "10.0.0.0/8",
+        "10.1.2.0/24",
+        "127.0.0.1/32",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "100.64.0.0/10",
+        "100.0.0.0/8",
+        "0.0.0.0/7",
+        "64.0.0.0/2",
+        "fc00::/7",
+        "fd00::/8",
+        "fe80::/10",
+        "::1/128",
+        "2000::/3",
+        "2001:db8::/32",
+        "::ffff:10.0.0.0/104",
+    ] {
+        assert!(!cf(bad), "{bad} must be refused");
+    }
+    for good in [
+        "173.245.48.0/20",
+        "104.16.0.0/13",
+        "172.64.0.0/13",
+        "162.158.0.0/15",
+        "8.0.0.0/8",
+        "1.1.1.1/32",
+        "2400:cb00::/32",
+        "2606:4700::/32",
+        "2a06:98c0::/29",
+    ] {
+        assert!(cf(good), "{good} must pass");
+    }
+}
+
+/// The shipped Cloudflare list passes its own validation.
+#[test]
+fn shipped_cloudflare_ranges_pass_validation() {
+    let list = include_str!("../cloudflare_ips.txt");
+    let mut n = 0;
+    for l in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        assert!(cf(l), "{l}");
+        n += 1;
+    }
+    assert!(n > 10);
+}
+
+/// The 安全 form refuses a non-public range with its own code.
+#[test]
+fn security_form_refuses_non_public_ranges() {
+    let req = |r: &str| SecurityReq {
+        version: 0,
+        audit_retention_days: None,
+        traffic_daily_retention_days: None,
+        cloudflare_ranges: Some(vec![r.to_string()]),
+        extra_release_keys: None,
+    };
+    for bad in ["0.0.0.0/0", "10.0.0.0/8", "::/0"] {
+        let e = super::security_values(&req(bad)).unwrap_err();
+        assert_eq!(e.code(), "settings.cloudflare_range_not_public", "{bad}");
+    }
+    assert!(super::security_values(&req("104.16.0.0/13")).is_ok());
 }
