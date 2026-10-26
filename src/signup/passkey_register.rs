@@ -49,7 +49,7 @@ pub const PENDING_HOURS: i64 = 24;
 /// `.invalid` is reserved; it is unverified, so nothing is ever mailed to
 /// it, and the account id in it makes it unguessable).
 pub fn pending_email(id: Uuid) -> String {
-    format!("pending-{id}@pending.invalid")
+    format!("pending-{id}@{}", super::email::PENDING_DOMAIN)
 }
 
 #[derive(Deserialize)]
