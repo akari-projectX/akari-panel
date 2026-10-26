@@ -300,20 +300,17 @@ jobs:
       - name: monitoring config (Prometheus rules + tests, Grafana dashboards)
         run: make monitoring-check
 
-  e2e:
-    # Browser end-to-end (Playwright, Chromium; desktop + phone) against a real
-    # panel serving the embedded portal at / with its real CSP, behind a TLS
-    # front (passkeys): every line of research/portal-gap.md, no CSP violations
-    # (scripts/e2e-portal.sh, portal/e2e/), and the portal performance report
-    # next to the React portal's last numbers (artifact portal-perf); then the
-    # admin app (scripts/e2e.sh, admin/e2e/).
-    # Required check; W37: runs when the portal, the admin app (or what
-    # serves them) changes.
-    name: e2e (playwright, real CSP)
+  panel-build:
+    # The panel binary the browser suites drive, built once per run: portal
+    # and admin bundles embedded, `release` profile (the suites' timings are
+    # meant to be those of the shipped binary), shared by every e2e job as
+    # the artifact `panel-release` (binary + portal/dist, which the portal
+    # script and its size report read).
+    name: panel build (release binary)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rust-toolchain.toml pins the compiler (same as the Dockerfile).
@@ -321,6 +318,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          # The key of the release build this job replaced (the old `e2e` job
+          # id): its cached dependencies are still valid.
+          shared-key: e2e
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
@@ -328,31 +328,112 @@ jobs:
           cache-dependency-path: |
             portal/package-lock.json
             admin/package-lock.json
-      # The runner's own Postgres would collide with compose's port.
-      - run: sudo systemctl stop postgresql || true
-      - run: cd portal && npm ci && npx playwright install --with-deps chromium
-      # admin/ and portal/ pin their own Playwright versions; each needs its browser build.
-      - run: cd admin && npm ci && npx playwright install chromium
-      # E2E_PERF_OUT: the portal performance report (report only, see
-      # scripts/e2e-portal.sh); its summary goes to the job summary below.
-      - run: make e2e
+      - run: make portal admin panel
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: panel-release
+          path: |
+            target/release/akari
+            portal/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e-shard:
+    # Browser end-to-end (Playwright, Chromium; desktop + phone) against a
+    # real panel serving the embedded apps with their real CSP. The suites
+    # are serial (one panel, shared accounts, ordered steps) and each
+    # Playwright project uses its own names, so every shard starts its own
+    # panel + PostgreSQL + Valkey and runs one project of one suite:
+    #   portal-desktop / portal-mobile  scripts/e2e-portal.sh (TLS front,
+    #     passkeys, portal/e2e/); the mobile project also takes the portal
+    #     screenshot set (artifact portal-screens)
+    #   admin-desktop / admin-mobile    scripts/e2e.sh (admin/e2e/)
+    #   admin-screens                   the admin screenshot set (artifact
+    #     admin-screens): ~10 minutes on its own, so apart from the rest
+    # Timing runs are not here: `e2e-perf` measures on an otherwise idle machine.
+    name: e2e shard (${{ matrix.shard }})
+    needs: [changes, panel-build]
+    if: ${{ !cancelled() && needs.panel-build.result == 'success' && needs.changes.outputs.e2e != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: portal-desktop, app: portal, script: scripts/e2e-portal.sh, args: "--project=desktop" }
+          - { shard: portal-mobile, app: portal, script: scripts/e2e-portal.sh, args: "--project=mobile", screens: portal-screens }
+          - { shard: admin-desktop, app: admin, script: scripts/e2e.sh, args: '--project=desktop --grep-invert "screens: the v2 design shots|perf: first screen"' }
+          - { shard: admin-mobile, app: admin, script: scripts/e2e.sh, args: "--project=mobile" }
+          - { shard: admin-screens, app: admin, script: scripts/e2e.sh, args: "--project=desktop zz-screens", screens: admin-screens }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/e2e-setup
+        with:
+          portal: ${{ matrix.app == 'portal' }}
+          admin: ${{ matrix.app == 'admin' }}
+      - run: ${{ matrix.script }} ${{ matrix.args }}
         # Leave time for the uploads below when a run hangs.
-        timeout-minutes: 60
-        env:
-          E2E_PERF_OUT: ${{ runner.temp }}/perf
-      - if: always()
-        run: cat "$RUNNER_TEMP/perf/summary.md" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-      # Portal screenshot set (portal/e2e/; desktop 1440 / mobile 390,
-      # light / dark) for design review and PR evidence.
-      - if: ${{ !cancelled() }}
+        timeout-minutes: 35
+      # Screenshot sets (portal/e2e/zz-screens.spec.ts: desktop 1440 / mobile
+      # 390, light / dark; admin/e2e/zz-screens.spec.ts) for design review and
+      # PR evidence: one shard each, so the artifact names stay the plain
+      # `portal-screens` / `admin-screens`.
+      - if: ${{ !cancelled() && matrix.screens == 'portal-screens' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: portal-screens
           path: portal/test-results/screens
           if-no-files-found: warn
           retention-days: 14
-      # Portal performance (JSON per profile, bundle sizes, summary.md with
-      # the React portal's last numbers from the same harness); report only.
+      - if: ${{ !cancelled() && matrix.screens == 'admin-screens' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: admin-screens
+          path: admin/test-results/screens
+          if-no-files-found: warn
+          retention-days: 14
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-${{ matrix.shard }}
+          path: |
+            portal/test-results
+            admin/playwright-report
+            admin/test-results/*/error-context.md
+            /tmp/akari-e2e-portal/*.log
+            /tmp/akari-e2e/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+      - if: always()
+        run: docker compose down -v || true
+
+  e2e-perf:
+    # The timing runs, one per full run, alone on the machine: the portal's
+    # performance report (portal/e2e/perf/: cold load / LCP / TTI / route
+    # switches on desktop and a throttled mid-range phone, bundle sizes, next
+    # to the React portal's last numbers; report only; artifact portal-perf)
+    # and the admin app's timing suite (admin/e2e/zz-perf.spec.ts; blocking
+    # against admin/perf-budget.json; artifact admin-perf). Measured apart from
+    # the functional shards so that other browsers and a busy panel cannot
+    # skew a budget.
+    name: e2e perf (portal, admin)
+    needs: [changes, panel-build]
+    if: ${{ !cancelled() && needs.panel-build.result == 'success' && needs.changes.outputs.e2e != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/e2e-setup
+        with:
+          portal: "true"
+          admin: "true"
+      - run: scripts/e2e-portal.sh
+        env:
+          E2E_PERF_ONLY: "1"
+          E2E_PERF_OUT: ${{ runner.temp }}/perf
+      - if: always()
+        run: cat "$RUNNER_TEMP/perf/summary.md" >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - run: scripts/e2e.sh --project=desktop zz-perf
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -363,15 +444,6 @@ jobs:
             ${{ runner.temp }}/perf/summary.md
           if-no-files-found: warn
           retention-days: 30
-      # Admin screenshot set (admin/e2e/zz-screens.spec.ts) for design review.
-      - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: admin-screens
-          path: admin/test-results/screens
-          if-no-files-found: warn
-          retention-days: 14
-      # Admin timing results (admin/e2e/zz-perf.spec.ts, report-only; also in the step summary).
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -384,16 +456,37 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playwright-report
+          name: playwright-report-perf
           path: |
             portal/test-results
             admin/playwright-report
             admin/test-results/*/error-context.md
             /tmp/akari-e2e-portal/*.log
             /tmp/akari-e2e/*.log
+          if-no-files-found: ignore
           retention-days: 7
       - if: always()
         run: docker compose down -v || true
+
+  e2e:
+    # The required check. W37: runs (and so passes) with the heavy tier only;
+    # skipped otherwise, which a required check counts as success. When it
+    # runs, the build, the shards and the perf run must each have succeeded
+    # or been skipped: a failed or cancelled one fails it (the build is
+    # listed too: its failure leaves the shards skipped).
+    name: e2e (playwright, real CSP)
+    needs: [changes, panel-build, e2e-shard, e2e-perf]
+    if: ${{ !cancelled() && needs.changes.outputs.e2e != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ needs.panel-build.result }} ${{ needs.e2e-shard.result }} ${{ needs.e2e-perf.result }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case "$r" in success | skipped) ;; *) echo "::error::an e2e job did not succeed ($r)"; exit 1 ;; esac
+          done
 
   smoke:
     # Cross-repo end-to-end (smoke.sh). Needs the sibling layout

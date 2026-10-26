@@ -306,7 +306,7 @@ pub const SAMPLE_SQL: &str = "\
 INSERT INTO server_metrics_1m AS m (server_id, bucket, samples, cpu_sum, cpu_max, load1_sum, \
     mem_used_sum, mem_total, swap_used_sum, swap_total, disk_used, disk_total, rx_bps_sum, \
     tx_bps_sum, rx_bps_max, tx_bps_max, tcp_sum, udp_sum, conns_sum, conns_max, users_sum, users_max) \
-VALUES ($1, date_trunc('minute', now()), 1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10, $11, \
+VALUES ($1, date_trunc('minute', coalesce($16, now())), 1, $2, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $10, $11, \
     $12, $13, $14, $14, $15, $15) \
 ON CONFLICT (server_id, bucket) DO UPDATE SET \
     samples = m.samples + 1, \
@@ -326,6 +326,19 @@ ON CONFLICT (server_id, bucket) DO UPDATE SET \
     users_sum = m.users_sum + EXCLUDED.users_sum, users_max = GREATEST(m.users_max, EXCLUDED.users_max)";
 
 pub async fn write_sample(pg: &PgPool, server: Uuid, s: &Sample) -> sqlx::Result<()> {
+    write_sample_at(pg, server, s, None).await
+}
+
+/// `write_sample` into the minute of `at` instead of the database's current
+/// minute (`None`: now, by the database clock, as in production). Tests pin
+/// the minute: several writes that must land in one bucket would otherwise
+/// straddle a minute boundary now and then.
+pub async fn write_sample_at(
+    pg: &PgPool,
+    server: Uuid,
+    s: &Sample,
+    at: Option<DateTime<Utc>>,
+) -> sqlx::Result<()> {
     sqlx::query(SAMPLE_SQL)
         .bind(server)
         .bind(s.cpu)
@@ -342,6 +355,7 @@ pub async fn write_sample(pg: &PgPool, server: Uuid, s: &Sample) -> sqlx::Result
         .bind(s.udp.map(|v| v as f64))
         .bind(s.conns)
         .bind(s.users)
+        .bind(at)
         .execute(pg)
         .await?;
     Ok(())

@@ -245,13 +245,16 @@ async fn history_unknown_values() {
         users: 1,
         ..Default::default()
     };
-    write_sample(&db.pool, n, &known).await.unwrap();
+    // One minute for both samples (a write at each side of a minute
+    // boundary would make two buckets).
+    let at = Some(Utc::now() - chrono::Duration::minutes(5));
+    write_sample_at(&db.pool, n, &known, at).await.unwrap();
     let unknown = Sample {
         load1: Some(3.0),
         users: 1,
         ..Default::default()
     };
-    write_sample(&db.pool, n, &unknown).await.unwrap();
+    write_sample_at(&db.pool, n, &unknown, at).await.unwrap();
     let pts = history(&db.pool, n, &range_spec("1h").unwrap())
         .await
         .unwrap();
@@ -309,8 +312,9 @@ async fn history_merge_rollup_and_retention() {
         conns: users * 2,
         ..Default::default()
     };
-    write_sample(&db.pool, n, &s(10.0, 4)).await.unwrap();
-    write_sample(&db.pool, n, &s(30.0, 8)).await.unwrap();
+    let at = Some(Utc::now() - chrono::Duration::minutes(5));
+    write_sample_at(&db.pool, n, &s(10.0, 4), at).await.unwrap();
+    write_sample_at(&db.pool, n, &s(30.0, 8), at).await.unwrap();
     let pts = history(&db.pool, n, &range_spec("1h").unwrap())
         .await
         .unwrap();
