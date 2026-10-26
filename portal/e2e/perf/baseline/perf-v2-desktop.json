@@ -1,0 +1,20 @@
+{
+  "portal": "v2",
+  "profile": "desktop",
+  "runs": 5,
+  "result": {
+    "login.fcp": 60,
+    "login.lcp": 148,
+    "login.tti": 60,
+    "login.ready": 133,
+    "dashboard.fcp": 52,
+    "dashboard.lcp": 340,
+    "dashboard.tti": 52,
+    "dashboard.ready": 218,
+    "switch./nodes": 5,
+    "switch./orders": 12,
+    "switch./shop": 17,
+    "switch./traffic": 18,
+    "switch./": 13
+  }
+}

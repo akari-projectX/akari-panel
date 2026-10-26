@@ -42,11 +42,53 @@ function bootScript(): Plugin {
   };
 }
 
+/*
+ * 首帧样式表 assets/head-<内容哈希>.css：颜色令牌 + 启动画面（src/boot/head.css 的 @import 展开，去注释与多余空白），
+ * 以阻塞首帧的 <link> 插在 <head> 最前面，所以启动画面（带 Logo 与活动指示器）在 HTML 与这一张小表到手时就能画出来。
+ * 不能走 Vite 的 CSS 管线：入口分包的 CSS 只有一份，会和应用样式表合在一起。
+ */
+function headCss(): Plugin {
+  const dir = path.resolve(import.meta.dirname, 'src');
+  const build = () => {
+    const entry = readFileSync(path.join(dir, 'boot/head.css'), 'utf8');
+    const css = entry.replace(/@import\s+'([^']+)';/g, (_m, rel: string) => readFileSync(path.resolve(dir, 'boot', rel), 'utf8'));
+    return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ').replace(/ ?([{};]) ?/g, '$1').trim();
+  };
+  const fileName = () => `assets/head-${createHash('sha256').update(build()).digest('hex').slice(0, 8)}.css`;
+  return {
+    name: 'akari-head-css',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler: () => [{ tag: 'link', attrs: { rel: 'stylesheet', href: `/${fileName()}` }, injectTo: 'head-prepend' }],
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: fileName(), source: build() });
+    },
+  };
+}
+
+/*
+ * 应用样式表（入口分包的 CSS）不阻塞首帧：首帧只需要 head.css（令牌 + 启动画面），整张应用样式表被启动画面盖着，没有必要让首帧等它。
+ * 标成 media="print" + data-defer（不匹配的媒体不挡渲染），src/boot/boot.js 在文档解析完成时改成 all；
+ * 启动画面收起前会等它加载完（lib/boot.svelte.ts），所以用户不会看到没有样式的页面。
+ */
+function deferAppCss(): Plugin {
+  return {
+    name: 'akari-defer-app-css',
+    apply: 'build',
+    transformIndexHtml: {
+      order: 'post',
+      handler: (html) => html.replace(/<link rel="stylesheet"([^>]*?) href="(\/assets\/index-[^"]+\.css)"([^>]*)>/, '<link rel="stylesheet"$1 href="$2"$3 media="print" data-defer>'),
+    },
+  };
+}
+
 export default defineConfig({
   base: '/',
   /* public/assets/licenses/：字体许可证，原样复制 */
   publicDir: path.resolve(import.meta.dirname, 'public'),
-  plugins: [svelte(), tailwindcss(), bootScript()],
+  plugins: [svelte(), tailwindcss(), bootScript(), headCss(), deferAppCss()],
   resolve: {
     alias: {
       $lib: path.resolve(import.meta.dirname, 'src/lib'),

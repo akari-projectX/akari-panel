@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { contentApi, meApi, orderApi, ticketApi, walletApi, type Announcement, type Announcements } from '@/api';
+  import { contentApi, type Announcement, type Announcements } from '@/api';
   import { summarize } from '@/lib/content-text';
-  import { K } from '@/lib/cache';
-  import { addDays, daysLeft, formatBytes, formatDate, formatMoney, fromNow, siteToday, trafficUsage } from '@/lib/format';
+  import { daysLeft, formatBytes, formatDate, formatMoney, fromNow, trafficUsage } from '@/lib/format';
   import { trafficDays } from '@/lib/traffic';
   import { NODES_REFRESH_MS } from '@/lib/node';
   import TrendingUp from '@lucide/svelte/icons/trending-up';
@@ -23,6 +22,7 @@
   import NodesPreview from './NodesPreview.svelte';
   import Notices from './Notices.svelte';
   import { announcementText } from '$lib/announcement';
+  import { dashSpecs } from '$lib/dash-data';
   import { att } from '$lib/attention.svelte';
   import { auth } from '$lib/auth.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
@@ -42,12 +42,14 @@
   const plan = $derived(auth.plan);
   const hasPlan = $derived(!!plan?.plan);
 
-  const announcements = resource(() => ({ key: K.announcements, fetch: () => contentApi.announcements() }));
-  const nodes = resource(() => ({ key: K.nodes, fetch: () => meApi.nodes(), enabled: full }));
+  /* 键与取法与「进页面之前就开始取」共用（lib/dash-data） */
+  const spec = dashSpecs();
+  const announcements = resource(() => spec.announcements);
+  const nodes = resource(() => ({ ...spec.nodes, enabled: full }));
   autoReload(() => nodes.reload(), NODES_REFRESH_MS, () => full);
-  const balance = resource(() => ({ key: K.balance, fetch: () => walletApi.balance({ limit: 1 }) }));
-  const orders = resource(() => ({ key: K.orders, fetch: () => orderApi.list() }));
-  const tickets = resource(() => ({ key: K.tickets, fetch: () => ticketApi.list() }));
+  const balance = resource(() => spec.balance);
+  const orders = resource(() => spec.orders);
+  const tickets = resource(() => spec.tickets);
 
   /* ── 公告：最新一条没读过的（置顶的优先，面板已经排好）放在横幅里；打开 = 标记已读，导航上的未读数跟着变 ── */
   let notice = $state<Announcement | null>(null);
@@ -82,9 +84,7 @@
   const latestInfo = $derived(latest ? { title: text(latest).title, brief: summarize(text(latest).html, 80) } : null);
 
   /* ── 近 7 天（全站时区的日历日，今天算一天；续费范围的账户面板不给流量记录） ── */
-  const to = siteToday();
-  const from = addDays(to, -6);
-  const traffic = resource(() => ({ key: K.traffic(from, to), fetch: () => meApi.traffic(from, to), enabled: full }));
+  const traffic = resource(() => ({ ...spec.traffic, enabled: full }));
   const week = $derived(trafficDays(traffic.data));
   const totalDown = $derived(week.reduce((n, d) => n + d.downBytes, 0));
   const totalUp = $derived(week.reduce((n, d) => n + d.upBytes, 0));

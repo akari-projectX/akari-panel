@@ -58,6 +58,19 @@ function check() {
   softTimer ??= setTimeout(dismiss, SOFT_WAIT);
 }
 
+/* 应用样式表（不挡首帧，见 vite.config.ts deferAppCss）加载完才能收起启动画面，免得露出没有样式的页面；最多等 MAX_CSS_WAIT */
+const MAX_CSS_WAIT = 8000;
+function appCss(): Promise<void> {
+  const link = document.querySelector<HTMLLinkElement>('link[data-defer]');
+  if (!link || link.sheet) return Promise.resolve();
+  return new Promise((resolve) => {
+    const end = () => resolve();
+    link.addEventListener('load', end, { once: true });
+    link.addEventListener('error', end, { once: true });
+    setTimeout(end, MAX_CSS_WAIT);
+  });
+}
+
 function dismiss() {
   if (done) return;
   done = true;
@@ -65,7 +78,7 @@ function dismiss() {
   clearTimeout(softTimer);
   const el = document.getElementById('boot');
   if (!el) { boot.out = true; return; }
-  Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, FONT_WAIT))]).then(() => {
+  Promise.all([appCss(), Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, FONT_WAIT))])]).then(() => {
     el.classList.add('boot-out');
     boot.out = true;
     const drop = () => el.remove();

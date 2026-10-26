@@ -9,7 +9,7 @@
   import { boot, startBoot } from '$lib/boot.svelte';
   import { t } from '$lib/i18n.svelte';
   import { REDIRECTS, match, type Page } from '$lib/pages';
-  import { prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
+  import { prefetchCurrent, prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
   import { loc, navigate } from '$lib/router.svelte';
   import { allowed, R, safeRedirect } from '$lib/routes';
 
@@ -62,6 +62,13 @@
   const who = $derived(auth.me && !auth.me.email_pending ? `${auth.me.id}:${scope()}` : '');
   $effect(() => {
     if (boot.out && who) loadAttention(scope());
+  });
+
+  /* 正在看的这一页：分包与首屏数据不等页面挂载就开始取（lib/prefetch prefetchCurrent）；换页（intent 预取之外的跳转）同样适用 */
+  $effect(() => {
+    if (view.kind !== 'page' || !who) return;
+    const s = scope();
+    if (s) untrack(() => prefetchCurrent(loc.path, s));
   });
 
   /* 切页预取（lib/prefetch）：启动画面收起后趁空闲把其余页面的分包与首屏数据取好；换了账户（范围）重新来 */
