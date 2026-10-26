@@ -315,7 +315,9 @@ async fn bought(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<Bought>
 /// Grant/extend the plan of a paid order under a savepoint: a business
 /// failure (plan gone/disabled/sold out, user gone/admin, reset pack
 /// without the plan) rolls back only the plan change and is stored in
-/// `fulfil_error`. Returns (fulfilled, detail, the failure's code).
+/// `fulfil_error`. A transient database error is no business failure: it
+/// fails the caller's transaction (P2-2). Returns (fulfilled, detail, the
+/// failure's code).
 async fn fulfil(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -340,6 +342,12 @@ async fn fulfil(
             .await?;
             Ok((true, detail, None))
         }
+        // A transient database error (deadlock, lock timeout, connection
+        // loss) says nothing about the order: do not store it as a verdict.
+        // Fail the whole payment transaction instead — the notify is not
+        // acknowledged (the gateway resends) and the reconcile tick queries
+        // again; the conditional UPDATE above makes the retry fulfil once.
+        Err(e) if e.is_transient() => Err(e),
         Err(e) => {
             sp.rollback().await?;
             let msg = e.message().chars().take(300).collect::<String>();

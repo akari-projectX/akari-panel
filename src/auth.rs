@@ -39,6 +39,9 @@ pub struct ApiError {
     message: String,
     code: &'static str,
     params: serde_json::Map<String, serde_json::Value>,
+    /// The database failed in a way that says nothing about the request
+    /// (see [`is_transient`]); only `From<sqlx::Error>` sets it.
+    transient: bool,
 }
 
 /// Whether `code` is a valid error code: two or more dot-separated
@@ -130,7 +133,15 @@ impl ApiError {
             message,
             code,
             params,
+            transient: false,
         }
+    }
+    /// Whether the failure was a transient database error (serialization
+    /// failure, deadlock, lock/statement timeout, connection loss): retrying
+    /// the same work can succeed, so it must not be recorded as a verdict on
+    /// the request (a paid order's fulfilment, for one).
+    pub fn is_transient(&self) -> bool {
+        self.transient
     }
     /// The canonical rejection (`reject::not_found`) as an error: an empty
     /// 404 without security headers (D4: an admin session on the portal).
@@ -230,7 +241,28 @@ impl From<sqlx::Error> for ApiError {
             }
         }
         tracing::error!(error = %e, "api db error");
-        ApiError::internal()
+        let mut err = ApiError::internal();
+        err.transient = is_transient(&e);
+        err
+    }
+}
+
+/// A database error that is not a property of the statement or its data:
+/// SQLSTATE class 40 (serialization failure, deadlock), 55P03 (lock
+/// timeout), 57014 (statement timeout/cancel), class 08 (connection
+/// exception), or a pool/IO/TLS failure. Data and integrity errors (class
+/// 22/23, the `AK*` guards) are deterministic and are not transient.
+pub fn is_transient(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Database(d) => d.code().is_some_and(|c| {
+            c.starts_with("40") || c.starts_with("08") || c == "55P03" || c == "57014"
+        }),
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed => true,
+        _ => false,
     }
 }
 
