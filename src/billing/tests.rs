@@ -977,6 +977,76 @@ async fn concurrent_duplicates_fulfil_once() {
     db.drop().await;
 }
 
+/// Audit 2026-10 P2-2: a transient database error (here a lock timeout,
+/// SQLSTATE 55P03) while the plan is granted is not a verdict on the order:
+/// the whole payment rolls back, the notify is NOT acknowledged (the gateway
+/// resends), and the retry fulfils exactly once. A business failure still
+/// leaves the order paid with `fulfil_error` (covered by the sold-out and
+/// plan-gone tests).
+#[tokio::test]
+async fn transient_error_in_fulfilment_fails_the_payment() {
+    let Some(db) = TestDb::with_options(&[("lock_timeout", "100ms")]).await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = priced_plan(&db, "p", 1200, 30).await;
+    let user = db.user().await;
+    let (oid, otn) = order_row(&db, user, plan, 1200, 30).await;
+    let body = form(&notify_params(&otn, "12.00", "TRADE_SUCCESS"));
+
+    // Another transaction holds the servers the grant must lock (nothing
+    // before the fulfilment savepoint touches them).
+    let mut blocker = db.admin.begin().await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT 1 FROM {}.servers FOR UPDATE",
+        db.schema
+    )))
+    .execute(&mut *blocker)
+    .await
+    .unwrap();
+
+    let (method, alipay) = method_of(&state);
+    let err = super::api::handle_notify(&state, &*alipay, method, None, &body)
+        .await
+        .expect_err("a transient error must fail the payment transaction");
+    assert!(err.is_transient(), "{err:?}");
+    let r = post_notify(&state, rand_ip(), body.clone()).await;
+    assert_ne!(r.body, b"success", "the gateway must resend");
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        order_status(&db, oid).await,
+        ("pending".into(), false, None)
+    );
+    assert_eq!(active_plan(&db, user).await, None);
+    for sql in [
+        "SELECT count(*) FROM audit_log WHERE action = 'order.paid' AND target_id = $1::text",
+        "SELECT count(*) FROM payment_events WHERE order_id = $1",
+    ] {
+        assert_eq!(count(&db, sql, oid).await, 0, "{sql}");
+    }
+
+    // The resent notify after the contention is gone: paid and fulfilled once.
+    blocker.rollback().await.unwrap();
+    let r = post_notify(&state, rand_ip(), body.clone()).await;
+    assert_eq!(r.body, b"success");
+    assert_eq!(order_status(&db, oid).await, ("paid".into(), true, None));
+    assert!(active_plan(&db, user).await.is_some());
+    let r = post_notify(&state, rand_ip(), body).await;
+    assert_eq!(r.body, b"success");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM audit_log WHERE action = 'order.paid' AND target_id = $1::text",
+            oid
+        )
+        .await,
+        1
+    );
+    drop(state);
+    db.drop().await;
+}
+
 /// Renewal extends the same plan by its period from the current expiry;
 /// a different plan replaces it (usage reset); exactly the plan's nodes
 /// are bumped, once each, and the order + plan change write one audit row
