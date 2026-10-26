@@ -1842,56 +1842,6 @@ async fn period_and_proration_sql() {
             .await;
         assert!(r.is_err(), "{period} {days:?} accepted");
     }
-    let prorate = |v: Option<i64>, nd: Option<i32>, secs: Option<f64>, cap: i64| {
-        let pool = db.pool.clone();
-        async move {
-            sqlx::query_scalar::<_, i64>("SELECT akari_prorate($1, $2, $3::numeric, $4)")
-                .bind(v)
-                .bind(nd)
-                .bind(secs)
-                .bind(cap)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-        }
-    };
-    let day = 86400.0;
-    // 15 of 30 days of 30.00 = 15.00; one second less floors to 14.99.
-    assert_eq!(
-        prorate(Some(3000), Some(30), Some(15.0 * day), 3000).await,
-        1500
-    );
-    assert_eq!(
-        prorate(Some(3000), Some(30), Some(15.0 * day - 1.0), 3000).await,
-        1499
-    );
-    // 1 fen per 864 s at 30.00/30d: 863 s are worth nothing yet.
-    assert_eq!(prorate(Some(3000), Some(30), Some(863.0), 3000).await, 0);
-    assert_eq!(prorate(Some(3000), Some(30), Some(864.0), 3000).await, 1);
-    // Odd prices floor: 9.99 for 7 of 30 days = 233.1 -> 233.
-    assert_eq!(
-        prorate(Some(999), Some(30), Some(7.0 * day), 999).await,
-        233
-    );
-    // Capped by what was paid (stacked/extended expiries).
-    assert_eq!(
-        prorate(Some(3000), Some(30), Some(365.0 * day), 9000).await,
-        9000
-    );
-    // Never negative, nothing for unknowns.
-    assert_eq!(
-        prorate(Some(3000), Some(30), Some(-5.0 * day), 3000).await,
-        0
-    );
-    assert_eq!(prorate(Some(3000), None, Some(day), 3000).await, 0);
-    assert_eq!(prorate(None, Some(30), Some(day), 3000).await, 0);
-    assert_eq!(prorate(Some(3000), Some(30), None, 3000).await, 0);
-    assert_eq!(prorate(Some(3000), Some(30), Some(day), 0).await, 0);
-    // Largest price, longest remaining: no overflow.
-    assert_eq!(
-        prorate(Some(100_000_000), Some(30), Some(3650.0 * day), i64::MAX).await,
-        12_166_666_666
-    );
     let nominal: Vec<Option<i32>> = sqlx::query_scalar(
         "SELECT akari_period_nominal_days(k, d) FROM (VALUES ('month', NULL::int), \
          ('quarter', NULL), ('half_year', NULL), ('year', NULL), ('two_year', NULL), \

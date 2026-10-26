@@ -380,6 +380,50 @@ async fn switch_credit_values_each_order_for_its_own_time() {
     db.drop().await;
 }
 
+/// The credit floors to the fen and never exceeds what the order paid
+/// (the checks that used to run against the unused SQL function
+/// `akari_prorate`, now against the real path, `switch_credit`).
+#[tokio::test]
+async fn switch_credit_floors_to_the_fen_and_is_capped_by_the_price() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, a) = catalog_plan(&db, "fl-a", &[(PeriodKind::Days, Some(30), 999)], |_| {}).await;
+    let (_, _b) = catalog_plan(&db, "fl-b", &[(PeriodKind::Year, None, 99999)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, a, "days", json!({})).await;
+    let remaining = |days: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "UPDATE user_plans SET expires_at = now() + interval '{days}' \
+                 WHERE user_id = $1 AND status = 'active'"
+            )))
+            .bind(u)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // 9.99 for 7 of 30 days = 233.1 fen: 233, and a few seconds less still 233.
+    remaining("7 days").await;
+    assert_eq!(credit(&c).await, 233);
+    // 863 s of a 30-day order at 9.99 are worth a third of a fen: nothing.
+    remaining("863 seconds").await;
+    assert_eq!(credit(&c).await, 0);
+    // More time than the order covers: capped by what was paid.
+    remaining("365 days").await;
+    assert_eq!(credit(&c).await, 999);
+    // Expired: never negative.
+    remaining("-5 days").await;
+    assert_eq!(credit(&c).await, 0);
+    drop(state);
+    db.drop().await;
+}
+
 /// C1 (billing review 2026-10-09): commission money spent on an order is
 /// not withdrawable again when other money reaches the balance later; an
 /// order that ends unpaid gives the commission back as withdrawable.
