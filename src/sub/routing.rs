@@ -304,8 +304,7 @@ fn parse_items(section: &str, items: Vec<Item>) -> Result<Vec<Item>, ApiError> {
             Match::Category => catalog::category(&r.value).is_some(),
             Match::Geosite | Match::Geoip => list_name(&r.value),
             Match::Domain | Match::DomainSuffix => {
-                crate::entrances::valid_host(&r.value)
-                    && r.value.parse::<std::net::IpAddr>().is_err()
+                crate::hostname::is_dns_name(&r.value, crate::hostname::NameRules::WITH_UNDERSCORE)
             }
             Match::DomainKeyword => {
                 (1..=64).contains(&r.value.len())

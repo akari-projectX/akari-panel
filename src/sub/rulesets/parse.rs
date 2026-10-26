@@ -297,17 +297,8 @@ fn bare(s: &str) -> Line {
 /// IP address.
 fn domain(v: &str) -> Option<String> {
     let v = v.trim().strip_suffix('.').unwrap_or(v.trim());
-    if v.is_empty() || v.len() > 253 || v.parse::<IpAddr>().is_ok() {
-        return None;
-    }
-    let ok = v.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    });
-    ok.then(|| v.to_ascii_lowercase())
+    crate::hostname::is_dns_name(v, crate::hostname::NameRules::WITH_UNDERSCORE)
+        .then(|| v.to_ascii_lowercase())
 }
 
 /// A keyword: 1-253 characters of a domain name.

@@ -159,7 +159,7 @@ pub fn parse_origin(s: &str) -> Result<Origin, String> {
         Some(p) => Some(p.parse::<u16>().ok().filter(|p| *p > 0).ok_or("bad port")?),
     };
     let is_ip = host.starts_with('[') || host.parse::<std::net::Ipv4Addr>().is_ok();
-    if !is_ip && !crate::nodetpl::valid_hostname(&host) {
+    if !is_ip && !crate::hostname::is_dns_name(&host, crate::hostname::NameRules::RFC1123) {
         return Err("host must be a domain name or an IP address (no path)".into());
     }
     let o = Origin { https, host, port };

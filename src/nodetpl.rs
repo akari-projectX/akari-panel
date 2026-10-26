@@ -33,6 +33,7 @@ use serde_json::Value;
 
 use crate::api::ApiJson;
 use crate::auth::{ApiError, AuthUser};
+use crate::hostname::{self, NameRules};
 use crate::protocols::model::{Inbound, Protocol, Security, Transport, TransportKind, Users};
 use crate::protocols::{security, transport};
 
@@ -212,8 +213,7 @@ fn wants_tls(tls_domain: &Option<String>, tls: Option<bool>) -> bool {
 /// CHECK of migration 0080 is the same rule).
 pub fn node_tls_domain(d: &str) -> Result<String, ApiError> {
     let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
-    if !valid_hostname(&d) || !d.contains('.') || d.bytes().all(|b| b.is_ascii_digit() || b == b'.')
-    {
+    if !hostname::is_dns_name(&d, NameRules::RFC1123.at_least_labels(2)) {
         return Err(bad_request!(
             "node.tls_domain_invalid",
             "tls_domain must be a domain name like node1.example.com (no IP, no wildcard)"
@@ -284,20 +284,6 @@ fn new_short_id() -> String {
     hex::encode(crate::entropy::bytes(8))
 }
 
-/// A DNS name (no IP literal, no port): letters, digits, '-', '.', 1..=253.
-pub fn valid_hostname(h: &str) -> bool {
-    !h.is_empty()
-        && h.len() <= 253
-        && h.parse::<IpAddr>().is_err()
-        && h.split('.').all(|l| {
-            !l.is_empty()
-                && l.len() <= 63
-                && !l.starts_with('-')
-                && !l.ends_with('-')
-                && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
-}
-
 /// "host" or "host:port" → (host, port), host a DNS name.
 pub fn parse_dest(dest: &str) -> Result<(String, u16), ApiError> {
     let dest = dest.trim().to_ascii_lowercase();
@@ -311,7 +297,7 @@ pub fn parse_dest(dest: &str) -> Result<(String, u16), ApiError> {
         ),
         None => (dest.clone(), 443),
     };
-    if !valid_hostname(&host) {
+    if !hostname::is_dns_name(&host, NameRules::RFC1123) {
         return Err(bad_request!(
             "template.dest_invalid",
             "dest must be a domain name (optionally :port)"
@@ -342,7 +328,7 @@ fn ws_path(path: &Option<String>) -> Result<String, ApiError> {
 
 fn domain(d: &str, what: &str) -> Result<String, ApiError> {
     let d = d.trim().to_ascii_lowercase();
-    if !valid_hostname(&d) {
+    if !hostname::is_dns_name(&d, NameRules::RFC1123) {
         return Err(bad_request!(
             "template.domain_invalid",
             "{what} must be the domain name of the node's certificate",
@@ -810,7 +796,10 @@ pub async fn check_domain(
         let host = sa.trim_start_matches('[').trim_end_matches(']');
         match host.parse::<IpAddr>() {
             Ok(ip) => expected.push(ip.to_canonical()),
-            Err(_) if valid_hostname(host) && !host.eq_ignore_ascii_case(&domain) => {
+            Err(_)
+                if hostname::is_dns_name(host, NameRules::RFC1123)
+                    && !host.eq_ignore_ascii_case(&domain) =>
+            {
                 if let Ok(ips) = resolve(host).await {
                     expected.extend(ips);
                 }

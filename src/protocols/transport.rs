@@ -16,14 +16,6 @@ pub fn valid_path(p: &str) -> bool {
             .all(|b| b.is_ascii_graphic() && !b"\"'\\#`<>{}|^".contains(&b))
 }
 
-/// Host header values: a DNS-ish name (optionally :port).
-pub fn valid_host(h: &str) -> bool {
-    !h.is_empty()
-        && h.len() <= 253
-        && h.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-.:[]".contains(&b))
-}
-
 /// gRPC service names (may hold '/' for custom paths).
 pub fn valid_service_name(s: &str) -> bool {
     s.len() <= 128
@@ -51,7 +43,7 @@ pub fn check(t: &Transport) -> Result<(), Fault> {
     }
     if let Some(Some(h)) = &f.host
         && !h.is_empty()
-        && !valid_host(h)
+        && !crate::hostname::is_host_header(h)
     {
         return Err(Fault::Host);
     }

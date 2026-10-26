@@ -27,22 +27,13 @@ pub fn parse_domain(raw: &str) -> Option<String> {
     if ascii.is_empty() || ascii.len() > 253 {
         return None;
     }
-    let labels: Vec<&str> = ascii.split('.').collect();
-    if labels.len() < 2 {
+    if !crate::hostname::is_dns_name(
+        &ascii,
+        crate::hostname::NameRules::RFC1123.at_least_labels(2),
+    ) {
         return None;
     }
-    for l in &labels {
-        let b = l.as_bytes();
-        if b.is_empty()
-            || b.len() > 63
-            || b[0] == b'-'
-            || b[b.len() - 1] == b'-'
-            || !b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
-        {
-            return None;
-        }
-    }
-    let tld = labels[labels.len() - 1];
+    let tld = ascii.rsplit('.').next()?;
     if !(tld.starts_with("xn--")
         || (tld.len() >= 2 && tld.bytes().all(|c| c.is_ascii_alphabetic())))
     {

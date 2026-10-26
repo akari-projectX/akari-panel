@@ -329,17 +329,8 @@ fn valid_host(h: &str) -> Option<String> {
         return Some(h.to_string());
     }
     let ascii = idna::domain_to_ascii(h.trim_end_matches('.')).ok()?;
-    let ok = !ascii.is_empty()
-        && ascii.len() <= 253
-        && ascii.split('.').all(|l| {
-            !l.is_empty()
-                && l.len() <= 63
-                && !l.starts_with('-')
-                && !l.ends_with('-')
-                && l.bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-        });
-    ok.then(|| ascii.to_ascii_lowercase())
+    crate::hostname::is_dns_name(&ascii, crate::hostname::NameRules::WITH_UNDERSCORE)
+        .then(|| ascii.to_ascii_lowercase())
 }
 
 fn blank(v: &Option<String>) -> Option<String> {
