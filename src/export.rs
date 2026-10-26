@@ -36,6 +36,23 @@ const PAGE: i64 = 1000;
 /// Longest date range (inclusive days).
 pub const MAX_RANGE_DAYS: i64 = 366;
 const DEFAULT_RANGE_DAYS: i64 = 30;
+/// Longest a whole export may run. A client that stops reading but keeps
+/// the connection open would otherwise hold the REPEATABLE READ snapshot
+/// (and its pool connection, and the vacuum horizon) forever.
+const MAX_EXPORT: std::time::Duration = std::time::Duration::from_secs(600);
+/// Longest the final error chunk waits for a reader.
+const ERROR_CHUNK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `producer` for at most `limit`; dropping it on expiry releases its
+/// transaction and connection.
+async fn bounded(
+    limit: std::time::Duration,
+    producer: impl Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    tokio::time::timeout(limit, producer)
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("export took too long")))
+}
 
 /// A CSV download response whose body is produced by `producer` on its own
 /// task: rows are sent as they are read.
@@ -46,11 +63,13 @@ fn download(
     rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
 ) -> Response {
     tokio::spawn(async move {
-        if let Err(e) = producer.await {
+        if let Err(e) = bounded(MAX_EXPORT, producer).await {
             tracing::warn!(error = %e, "csv export aborted");
             // The client sees a truncated body (an error mid-stream cannot
             // become a status code any more).
-            let _ = tx.send(Err(std::io::Error::other(e.to_string()))).await;
+            let _ = tx
+                .send_timeout(Err(std::io::Error::other(e.to_string())), ERROR_CHUNK_WAIT)
+                .await;
         }
     });
     let body = Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx));
