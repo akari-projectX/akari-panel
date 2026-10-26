@@ -529,7 +529,7 @@ disable_caddy_apt_source() {
 
 base_packages() {
 	need=
-	for c in curl:curl gpg:gnupg ss:iproute2 tar:tar sha256sum:coreutils; do
+	for c in curl:curl gpg:gnupg ss:iproute2 tar:tar sha256sum:coreutils openssl:openssl; do
 		have "${c%%:*}" || need="$need ${c#*:}"
 	done
 	[ -e /etc/ssl/certs/ca-certificates.crt ] || need="$need ca-certificates"
@@ -757,9 +757,51 @@ save_state() {
 		echo "CADDY_OURS=${CADDY_OURS:-}"
 		echo "# Backups: an age public key (age1...) encrypts them; empty = plain files (0600)."
 		echo "AGE_RECIPIENT=${AGE_RECIPIENT:-}"
-		echo "# Backups: path of an EC (prime256v1) PEM private key; SHA256SUMS is signed with it (docs/BACKUP.md, Authenticity)."
+		echo "# Backups: path of the EC (prime256v1) PEM private key every backup is signed with (made by the installer; docs/BACKUP.md, Authenticity)."
 		echo "BACKUP_SIGN_KEY=${BACKUP_SIGN_KEY:-}"
 	} >"$STATE_ENV"
+}
+
+# --- backup signing key -----------------------------------------------------------------
+
+# ensure_backup_key: every backup is signed (docs/BACKUP.md, Authenticity).
+# The key is an EC prime256v1 key made once by the installer, root-only
+# (0600) in $ETC next to install.env, kept out of the backups themselves.
+# openssl writes it straight to the file: it is never on a command line
+# or in the log. A path set in install.env that cannot be read is an error
+# (a new key would silently change who the backups are signed by).
+ensure_backup_key() {
+	if [ -n "${BACKUP_SIGN_KEY:-}" ]; then
+		[ -r "$BACKUP_SIGN_KEY" ] ||
+			die "备份签名密钥 $BACKUP_SIGN_KEY（install.env 的 BACKUP_SIGN_KEY）不可读" \
+				"the backup signing key $BACKUP_SIGN_KEY (BACKUP_SIGN_KEY in install.env) is not readable"
+		return 0
+	fi
+	have openssl || {
+		[ "$APT_UPDATED" = 1 ] || apt_update
+		apt_install openssl
+	}
+	key=$ETC/backup-sign.pem
+	if [ ! -s "$key" ]; then
+		install -d -m 0750 "$ETC"
+		(
+			umask 077
+			openssl ecparam -name prime256v1 -genkey -noout -out "$key.new" 2>>"$LOG"
+		) || die '无法生成备份签名密钥' 'cannot generate the backup signing key'
+		chmod 0600 "$key.new"
+		mv -f "$key.new" "$key"
+		note "已生成备份签名密钥 $key（仅 root 可读；公钥见 akari-ctl info，请离线保存一份）" \
+			"generated the backup signing key $key (root only; the public key is in akari-ctl info, keep a copy offline)"
+	fi
+	BACKUP_SIGN_KEY=$key
+	# The public half, for a restore on another host (not secret).
+	openssl ec -in "$key" -pubout -out "$ETC/backup-sign.pub" 2>/dev/null && chmod 0644 "$ETC/backup-sign.pub"
+}
+
+# backup_public_key: the verification key (PEM) matching BACKUP_SIGN_KEY.
+backup_public_key() {
+	[ -n "${BACKUP_SIGN_KEY:-}" ] && [ -r "$BACKUP_SIGN_KEY" ] || return 0
+	openssl ec -in "$BACKUP_SIGN_KEY" -pubout 2>/dev/null
 }
 
 # detect_existing: an installation made by this tool (install.env), or a
@@ -1213,6 +1255,7 @@ BACKUP_PATH=
 do_backup() {
 	parent=$1 plain=$2 releases=${3:-0}
 	install -d -m 0700 "$parent"
+	ensure_backup_key
 	if [ "$plain" != 1 ] && [ -n "${AGE_RECIPIENT:-}" ]; then
 		have age || {
 			[ "$APT_UPDATED" = 1 ] || apt_update
@@ -1237,7 +1280,7 @@ do_backup() {
 		config_files="$DOCKER_DIR/.env $DOCKER_DIR/panel.toml $DOCKER_DIR/env/panel.env $DOCKER_DIR/env/postgres.env $DOCKER_DIR/env/valkey.env $STATE_ENV"
 		ver=$(kv_get "$DOCKER_DIR/.env" AKARI_IMAGE)
 	fi
-	out=$(env "$recip_env" "$plain_env" AKARI_BACKUP_SIGN_KEY="${BACKUP_SIGN_KEY:-}" AKARI_BACKUP_AGENT_RELEASES="$releases" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
+	out=$(env "$recip_env" "$plain_env" AKARI_BACKUP_SIGN_KEY="$BACKUP_SIGN_KEY" AKARI_BACKUP_AGENT_RELEASES="$releases" AKARI_PG_DUMP_CMD="$dump_cmd" AKARI_DATA_DIR="$data_dir" \
 		AKARI_BACKUP_DIR="$parent" AKARI_CONFIG_FILES="$config_files" AKARI_VERSION_STRING="$ver" \
 		AKARI_MANIFEST_EXTRA="mode=$MODE" bash "${BACKUP_SH:-$LIBDIR/backup.sh}" 2>>"$LOG") ||
 		die "备份失败（见 $LOG）" "backup failed (see $LOG)"
@@ -1258,8 +1301,8 @@ check_restore_dir() {
 			die "备份签名不符：SHA256SUMS 不是该公钥对应的签名者所签（或已被修改）：拒绝恢复" \
 				"backup signature mismatch: SHA256SUMS was not signed by the holder of that key (or was modified): refusing to restore"
 	elif [ -z "$MIGRATE_TO" ]; then
-		warn '未指定 --backup-verify-key：校验和只能证明备份完好，不能证明它出自你的备份主机（docs/BACKUP.md「真实性」）' \
-			'no --backup-verify-key: the checksums prove the backup is intact, not that your backup host made it (docs/BACKUP.md, Authenticity)'
+		warn '未指定 --backup-verify-key：备份内容未经验证来源，只能证明完好（integrity only），不能证明它出自你的备份主机（not authenticity）。若该备份可能被他人改写，请停止并用 akari-ctl info 打印的公钥重试（docs/BACKUP.md「真实性」）' \
+			'NO --backup-verify-key: this backup is NOT verified, integrity only, not authenticity - the checksums prove it is intact, not that your backup host made it. If anybody else could have written to the backup storage, stop and retry with the public key printed by akari-ctl info (docs/BACKUP.md, Authenticity)'
 	fi
 	(cd "$1" && sha256sum --check --quiet SHA256SUMS >/dev/null 2>&1) ||
 		die "备份校验失败（文件与 SHA256SUMS 不符，已损坏或被改动）：$1" "backup checksum mismatch (damaged or modified): $1"
@@ -1541,6 +1584,7 @@ install_bare() {
 
 	install -m 0755 "$REL/akari" "$BIN.new"
 	mv -f "$BIN.new" "$BIN"
+	ensure_backup_key
 	CUR_VERSION=$TAG STATUS=installing
 	save_state
 
@@ -1572,6 +1616,7 @@ install_docker_mode() {
 	get_bundle
 	install_tools
 	write_docker_files
+	ensure_backup_key
 	CUR_VERSION=$TAG STATUS=installing
 	save_state
 	step "拉取镜像 $IMAGE" "pulling $IMAGE"
@@ -1640,6 +1685,7 @@ finish() {
 	ctl=akari-ctl
 	[ -z "${SUDO_USER:-}" ] || ctl="sudo akari-ctl"
 	printf '  3. %s\n' "$(msg "备份：$ctl backup（在 $STATE_ENV 设置 AGE_RECIPIENT 以加密）；升级：$ctl upgrade；状态：$ctl status" "backups: $ctl backup (set AGE_RECIPIENT in $STATE_ENV to encrypt); upgrades: $ctl upgrade; health: $ctl status")"
+	printf '  4. %s\n' "$(msg "备份已默认签名：把 $ctl info 打印的备份验证公钥离线保存（恢复到新主机时需要）" "backups are signed by default: keep the backup verification public key printed by $ctl info offline (you need it to restore on a new host)")"
 	printf '  %s %s\n\n' "$(msg '安装日志（不含机密）：' 'install log (no secrets):')" "$LOG"
 	log "install finished: mode=$MODE version=$CUR_VERSION"
 }
@@ -2056,6 +2102,10 @@ cmd_info() {
 	if [ "$MODE" = bare ]; then prefix=$(prefix_bare); else prefix=$(docker_prefix_env); fi
 	o=$(origin)
 	printf '%s/%s/app\n%s/\n' "$o" "$prefix" "$o"
+	pub=$(backup_public_key)
+	if [ -n "$pub" ]; then
+		printf '\n%s\n%s\n' "$(msg "备份验证公钥（离线保存；恢复时用 --backup-verify-key <文件> 验证备份出自本机，docs/BACKUP.md「真实性」；对应的私钥 $BACKUP_SIGN_KEY 不要放进备份存储）：" "Backup verification public key (keep it offline; pass it as --backup-verify-key <file> when restoring to prove a backup came from this host, docs/BACKUP.md Authenticity; never put the private key $BACKUP_SIGN_KEY on the backup storage):")" "$pub"
+	fi
 }
 
 # --- arguments, main ---------------------------------------------------------------------

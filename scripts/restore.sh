@@ -16,10 +16,12 @@
 # Configuration (environment):
 #   AGE_IDENTITY_FILE      age private key able to decrypt the backup   [.age backups]
 #   AKARI_BACKUP_VERIFY_KEY  PEM public key matching the backup's
-#                          AKARI_BACKUP_SIGN_KEY: when set, the backup must
-#                          carry a valid SHA256SUMS.sig, else the restore stops.
-#                          Without it the checksums prove integrity only (the
-#                          backup is not damaged), not who made it.
+#                          AKARI_BACKUP_SIGN_KEY (akari-ctl info prints it):
+#                          when set, the backup must carry a valid
+#                          SHA256SUMS.sig, else the restore stops. Without it
+#                          the restore goes on with a loud warning: the
+#                          checksums prove integrity only (the backup is not
+#                          damaged), not who made it.
 #   DATABASE_URL           target PostgreSQL URL                         [required*]
 #   AKARI_PG_RESTORE_CMD   alternative command reading a custom-format dump
 #                          on stdin, e.g.
@@ -61,7 +63,7 @@ fi
 echo "restore: checking checksums"
 (cd "$src" && sha256sum --check --quiet SHA256SUMS) || die "checksum mismatch: the backup files differ from SHA256SUMS (damaged or modified)"
 if [ -z "${AKARI_BACKUP_VERIFY_KEY:-}" ]; then
-  echo "restore: NOTE: checksums give integrity only, not authenticity (the files are intact, nothing more): anyone who can write to the backup storage can rewrite them together with SHA256SUMS. Set AKARI_BACKUP_VERIFY_KEY to check the signature (docs/BACKUP.md)" >&2
+  echo "restore: WARNING: NO AKARI_BACKUP_VERIFY_KEY: this backup is NOT verified. The checksums give integrity only, not authenticity (the files are intact, nothing more): anyone who can write to the backup storage can rewrite them together with SHA256SUMS, and a restore installs the CA key, jwt.key and master.key from it. If that is possible, stop and set AKARI_BACKUP_VERIFY_KEY to the public key akari-ctl info prints (docs/BACKUP.md)" >&2
 fi
 
 if [ -n "${AKARI_PG_RESTORE_CMD:-}" ]; then

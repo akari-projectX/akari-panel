@@ -42,6 +42,9 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 
 - **备份加密**：在 `/etc/akari/install.env` 设置 `AGE_RECIPIENT=age1…`（`age-keygen` 生成，私钥离线保存），
   之后的备份（含升级前自动备份）都用 age 加密；未设置时为 0600 明文文件并给出警告（docs/BACKUP.md）。
+- **备份签名（默认开启）**：安装/升级/备份时安装器在 `/etc/akari/backup-sign.pem`（root、0600）生成签名密钥，
+  每个备份目录带 `SHA256SUMS.sig`。`akari-ctl info` 打印**验证公钥**，请离线保存；恢复到新主机时
+  `--backup-verify-key <公钥文件>` 强制验证（缺签名/伪造一律拒绝），不给则继续但打印“未经验证”的醒目警告（docs/BACKUP.md「真实性」）。
 - **v0.3.x → v0.4 不能升级，只能全新安装**：v0.4 把迁移 0001–0168 压缩为新基线 `1000_baseline.sql`。
   - `akari-ctl upgrade` 在改动任何东西之前就会拒绝（`database from v0.3.x — fresh install required`），面板启动时也会拒绝 v0.3.x 的数据库。
   - v0.3.x 的备份**不能**恢复到 v0.4。

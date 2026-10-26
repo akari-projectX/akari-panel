@@ -154,6 +154,15 @@ grep -q "^AKARI_IMAGE=.*:${new#v}@sha256:" /opt/akari/.env || fail ".env does no
 [ "$(stat -c %a /opt/akari/.env)" = 600 ] || fail ".env is not 0600"
 [ "$(stat -c %a /opt/akari/env/panel.env)" = 600 ] || fail "env/panel.env is not 0600"
 grep -qF -e "$pw" -e "$P0" /var/log/akari-install.log && fail "a secret is in the install log"
+log "docker: backups are signed by default"
+akari-ctl backup --yes --out "$work/sigbk" || fail "docker backup"
+sigdir=$(find "$work/sigbk" -maxdepth 1 -name "akari-*" | sed -n 1p)
+[ -s "$sigdir/SHA256SUMS.sig" ] || fail "the docker backup is not signed"
+[ "$(stat -c %a /etc/akari/backup-sign.pem)" = 600 ] || fail "the backup signing key is not 0600"
+akari-ctl info | sed -n '/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p' >"$work/sigbk.pub"
+openssl dgst -sha256 -verify "$work/sigbk.pub" -signature "$sigdir/SHA256SUMS.sig" "$sigdir/SHA256SUMS" >/dev/null \
+	|| fail "the key printed by akari-ctl info does not verify the backup"
+grep -q 'PRIVATE KEY' /var/log/akari-install.log && fail "the signing key is in the install log"
 log "docker: uninstall --purge"
 akari-ctl uninstall --yes --purge --confirm purge || fail "docker purge"
 docker volume ls -q | grep -q '^akari_' && fail "volumes left after purge"

@@ -8,7 +8,7 @@
 #   config.tar.age  the files in AKARI_CONFIG_FILES (optional), age-encrypted
 #   MANIFEST        versions, timestamp, source host (no secrets)
 #   SHA256SUMS      of the data files and MANIFEST
-#   SHA256SUMS.sig  optional (AKARI_BACKUP_SIGN_KEY): ECDSA signature of SHA256SUMS
+#   SHA256SUMS.sig  ECDSA signature of SHA256SUMS (AKARI_BACKUP_SIGN_KEY)
 # Nothing sensitive is ever written to disk unencrypted (every stream is
 # piped through age). Encryption is to PUBLIC age recipients, so the host
 # that runs backups never holds a key that can read them.
@@ -41,13 +41,17 @@
 #                          agent_release_chunks; tens of MB each). Default:
 #                          their rows are left out (the tables are restored
 #                          empty; upload the releases again or use 检查更新)
-#   AKARI_BACKUP_SIGN_KEY  optional PEM private key (EC prime256v1): SHA256SUMS
+#   AKARI_BACKUP_SIGN_KEY  PEM private key (EC prime256v1); akari-ctl makes one
+#                          at install (/etc/akari/backup-sign.pem). SHA256SUMS
 #                          is signed with it (openssl) so that a restore holding
 #                          the public key (AKARI_BACKUP_VERIFY_KEY) can tell a
 #                          backup made here from one written by anybody who can
 #                          write to the backup storage and knows the age PUBLIC
 #                          key. Keep this key away from the backup storage;
-#                          docs/BACKUP.md "Authenticity".
+#                          docs/BACKUP.md "Authenticity". Required, like the
+#                          encryption choice: without it the script stops,
+#                          unless AKARI_BACKUP_UNSIGNED=1 says (explicitly)
+#                          that unsigned backups are wanted.                [one of]
 #   AKARI_VERIFY_IDENTITY  optional age identity file: when set, the fresh
 #                          backup is decrypted and checked (pg_restore --list,
 #                          tar -t) before success is reported
@@ -70,6 +74,10 @@ sign_key="${AKARI_BACKUP_SIGN_KEY:-}"
 if [ -n "$sign_key" ]; then
   need openssl
   [ -r "$sign_key" ] || die "cannot read AKARI_BACKUP_SIGN_KEY $sign_key"
+elif [ "${AKARI_BACKUP_UNSIGNED:-0}" = 1 ]; then
+  echo "backup: WARNING: unsigned backup: a restore can prove integrity only, not that this host made it; anybody who can write to the backup storage can substitute a backup (docs/BACKUP.md, Authenticity)" >&2
+else
+  die "set AKARI_BACKUP_SIGN_KEY (akari-ctl creates /etc/akari/backup-sign.pem; docs/BACKUP.md \"Authenticity\" for the openssl commands), or AKARI_BACKUP_UNSIGNED=1"
 fi
 age_args=()
 plain=0
