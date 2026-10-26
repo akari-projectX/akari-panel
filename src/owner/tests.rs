@@ -495,3 +495,34 @@ async fn trust_settings_are_owner_only() {
         StatusCode::OK
     );
 }
+
+/// Your own password is not changed through the admin user update (audit
+/// auth P3-2): `POST /me/password` asks for the current one. Another
+/// account's password stays the owner's / admins' tool.
+#[tokio::test]
+async fn an_admin_cannot_set_their_own_password_without_the_current_one() {
+    let Some((db, state)) = setup().await else {
+        return;
+    };
+    let owner = db.owner().await;
+    let user = db.user().await;
+    let c = client_for(&state, owner).await;
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/users/{owner}"),
+            Some(json!({"password": "a-new-password-1"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{:?}", r.json());
+    assert_eq!(r.json()["code"], "user.password_self");
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/users/{user}"),
+            Some(json!({"password": "a-new-password-1"})),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    db.drop().await;
+}

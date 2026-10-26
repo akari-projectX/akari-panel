@@ -521,6 +521,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "user.owner_only": ["只有所有者可以执行此操作（管理其他管理员、后台前缀与白名单、支付渠道密钥）", "Only the owner may do this (admin accounts, admin prefix, payment keys)"],
   "user.owner_protected": ["所有者不能被降级、封禁或删除：请先把所有者转让给另一位管理员", "The owner cannot be demoted, banned or deleted; transfer the ownership first"],
   "user.owner_target": ["只能转让给已启用的管理员", "Only an enabled admin can become the owner"],
+  "user.password_self": ["不能在这里修改自己的密码：请在“账户”页修改（需要当前密码）", "Change your own password on the Account page (it asks for the current password)"],
   "user.plan_filter_invalid": ["套餐筛选无效", "Plan_id must be a plan id or none"],
   "user.promote_banned": ["该账号已被封禁：请先解封，再设为管理员", "The account is banned; unban it before making it an admin"],
   "user.query_too_long": ["搜索内容最多 {max} 个字符", "Q is longer than {max} characters"],
