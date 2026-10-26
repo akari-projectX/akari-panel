@@ -143,6 +143,20 @@
   --info: #0e7490;
   --info-soft: rgb(8 145 178 / 0.11);
 
+  /* 公告标签（实底，与门户 portal tokens.css 同值）：十一个预设色键；浅色 700 档底 + 白字，深色 400 档底 + 深字 */
+  --tag-red: #dc2626;
+  --tag-orange: #c2410c;
+  --tag-amber: #b45309;
+  --tag-green: #15803d;
+  --tag-teal: #0f766e;
+  --tag-cyan: #0e7490;
+  --tag-blue: #1d4ed8;
+  --tag-indigo: #4338ca;
+  --tag-violet: #7c3aed;
+  --tag-pink: #be185d;
+  --tag-slate: #475569;
+  --on-tag: #ffffff;
+
   /* 数据可视化：分类色 8 槽、固定顺序，颜色跟着实体走（直连 1 号、中转 2 号）；浅色底 #fff 校验过 */
   --chart-1: #2563eb;
   --chart-2: #eb6834;
@@ -205,6 +219,19 @@
   --info: #22d3ee;
   --info-soft: rgb(34 211 238 / 0.12);
 
+  --tag-red: #f87171;
+  --tag-orange: #fb923c;
+  --tag-amber: #fbbf24;
+  --tag-green: #4ade80;
+  --tag-teal: #2dd4bf;
+  --tag-cyan: #22d3ee;
+  --tag-blue: #60a5fa;
+  --tag-indigo: #818cf8;
+  --tag-violet: #a78bfa;
+  --tag-pink: #f472b6;
+  --tag-slate: #94a3b8;
+  --on-tag: #111317;
+
   /* 深色单独选色（深色底 #1a1b21 校验过），不是自动反转 */
   --chart-1: #3b8cf5;
   --chart-2: #d95926;
@@ -245,6 +272,60 @@
     --glass-toolbar: #121318;
     --popover: #202128;
   }
+}
+
+/* 公告标签：小号圆角实底（颜色键在 data-tag，值是上面的 --tag-*；色块 .ann-tag-dot 同用） */
+.ann-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--on-tag);
+  background: var(--c, var(--tag-slate));
+}
+[data-tag="red"] {
+  --c: var(--tag-red);
+}
+[data-tag="orange"] {
+  --c: var(--tag-orange);
+}
+[data-tag="amber"] {
+  --c: var(--tag-amber);
+}
+[data-tag="green"] {
+  --c: var(--tag-green);
+}
+[data-tag="teal"] {
+  --c: var(--tag-teal);
+}
+[data-tag="cyan"] {
+  --c: var(--tag-cyan);
+}
+[data-tag="blue"] {
+  --c: var(--tag-blue);
+}
+[data-tag="indigo"] {
+  --c: var(--tag-indigo);
+}
+[data-tag="violet"] {
+  --c: var(--tag-violet);
+}
+[data-tag="pink"] {
+  --c: var(--tag-pink);
+}
+[data-tag="slate"] {
+  --c: var(--tag-slate);
+}
+.ann-tag-dot {
+  background: var(--c, var(--tag-slate));
 }
 
 html {

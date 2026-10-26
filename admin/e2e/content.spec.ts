@@ -7,6 +7,7 @@ import {
   USER,
   USER_PW,
   apiAs,
+  apiJson,
   confirmDialog,
   dialog,
   isMobile,
@@ -184,6 +185,138 @@ test("CNT-01 CNT-02 CNT-05: announcements by lifecycle, editor with preview and 
   await confirmDialog(page, title, "删除公告");
   await toast(page, "已删除");
   await expect(page.getByText(title, { exact: true })).toHaveCount(0);
+});
+
+test("CNT-07: announcement tags — the preset eight, create with a preset colour, edit, reorder, disable, delete only when unused", async ({
+  page,
+}, info) => {
+  const name = uniq(info, "tag").slice(0, 12);
+  const renamed = `${name}`.slice(0, 9) + "-2";
+  const title = `${uniq(info, "tagged")}-${run}`;
+  await openConsole(page, "/content/tags");
+  const rows = page.getByTestId("tag-row");
+  // The migration's eight presets, in order, solid chips.
+  await expect(rows.getByTestId("ann-tag").nth(0)).toHaveText("活动");
+  await expect(rows.getByTestId("ann-tag").nth(0)).toHaveAttribute("data-tag", "pink");
+  await expect(rows.getByTestId("ann-tag").nth(1)).toHaveText("维护");
+  await expect(rows.getByTestId("ann-tag").nth(7)).toHaveText("通知");
+  // Create: the colour comes from the palette only (11 swatches), the preview follows.
+  await page.getByRole("button", { name: "新建标签" }).first().click();
+  const d = dialog(page, "新建标签");
+  await d.getByRole("button", { name: "保存" }).click();
+  await expect(d.getByText("请填写中文名称")).toBeVisible();
+  await expect(d.getByRole("radio")).toHaveCount(11);
+  await d.getByLabel("中文名称").fill(name);
+  await d.getByRole("radio", { name: "青", exact: true }).click();
+  await expect(d.getByTestId("tag-preview").getByTestId("ann-tag")).toHaveText(name);
+  await expect(d.getByTestId("tag-preview").getByTestId("ann-tag")).toHaveAttribute("data-tag", "cyan");
+  await d.getByRole("button", { name: "保存" }).click();
+  await toast(page, "标签已创建");
+  const mine = (n: string) => rows.filter({ has: page.getByTestId("ann-tag").filter({ hasText: n }) });
+  await expect(mine(name)).toHaveCount(1);
+  await expect(rows.last()).toContainText(name);
+  // Edit: rename, English name, colour.
+  await mine(name)
+    .getByRole("button", { name: `编辑 ${name}` })
+    .click();
+  const e = dialog(page, "编辑标签");
+  await e.getByLabel("中文名称").fill(renamed);
+  await e.getByLabel("英文名称").fill("Renamed");
+  await e.getByRole("radio", { name: "紫", exact: true }).click();
+  await e.getByRole("button", { name: "保存" }).click();
+  await toast(page, "标签已保存");
+  await expect(mine(renamed).getByTestId("ann-tag")).toHaveAttribute("data-tag", "violet");
+  await expect(mine(renamed)).toContainText("Renamed");
+  // Reorder: up one, and it stays there.
+  await page.getByRole("button", { name: `上移 ${renamed}` }).click();
+  await expect(rows.nth(7)).toContainText(renamed);
+  // Disable, enable.
+  await mine(renamed)
+    .getByRole("button", { name: `${renamed} 的操作` })
+    .click();
+  await page.getByRole("menuitem", { name: "停用" }).click();
+  await toast(page, "已停用");
+  await expect(mine(renamed)).toContainText("已停用");
+  await mine(renamed)
+    .getByRole("button", { name: `${renamed} 的操作` })
+    .click();
+  await page.getByRole("menuitem", { name: "启用" }).click();
+  await toast(page, "已启用");
+  // In use: the delete item is off (disable instead); the API says 409 with the count.
+  const tag = (await apiJson<{ id: string; name_zh: string }[]>("GET", "/announcement-tags")).find(
+    (t) => t.name_zh === renamed,
+  );
+  expect(tag).toBeTruthy();
+  const ann = await apiJson<{ id: string }>("POST", "/announcements", {
+    title_zh: title,
+    body_zh: "x",
+    tag_id: tag?.id,
+    enabled: false,
+  });
+  await page.reload();
+  await mine(renamed)
+    .getByRole("button", { name: `${renamed} 的操作` })
+    .click();
+  await expect(page.getByRole("menuitem", { name: /删除/ })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(mine(renamed)).toContainText("1 条公告");
+  await apiJson("DELETE", `/announcements/${ann.id}`);
+  // Unused again: delete (confirmation), the row goes.
+  await page.reload();
+  await mine(renamed)
+    .getByRole("button", { name: `${renamed} 的操作` })
+    .click();
+  await page.getByRole("menuitem", { name: "删除…" }).click();
+  await confirmDialog(page, undefined, "删除标签");
+  await toast(page, "已删除");
+  await expect(mine(renamed)).toHaveCount(0);
+});
+
+test("CNT-08: the announcement editor picks one tag, previews the title with it, and the list shows it", async ({
+  page,
+}, info) => {
+  const title = `${uniq(info, "tagged")}-${run}`;
+  await openConsole(page, "/content");
+  await page.getByRole("button", { name: "新建公告" }).first().click();
+  const d = dialog(page, "新建公告");
+  await d.getByLabel("标题（中文）").fill(title);
+  await d.getByLabel("正文（Markdown）").fill("正文");
+  // No tag by default; picking one shows it before the title, live, in both previews.
+  const group = d.getByRole("radiogroup", { name: "标签" });
+  await expect(group.getByRole("radio", { name: "无标签" })).toHaveAttribute("aria-checked", "true");
+  await group.getByRole("radio", { name: "维护" }).click();
+  await expect(group.getByRole("radio", { name: "维护" })).toHaveAttribute("aria-checked", "true");
+  const strip = d.getByTestId("title-preview");
+  await expect(strip.getByTestId("ann-tag")).toHaveText("维护");
+  await expect(strip.getByTestId("ann-tag")).toHaveAttribute("data-tag", "amber");
+  await expect(strip).toContainText(title);
+  await expect(d.getByTestId("preview").getByTestId("ann-tag")).toHaveText("维护");
+  // Only one at a time.
+  await group.getByRole("radio", { name: "重要" }).click();
+  await expect(group.getByRole("radio", { name: "维护" })).toHaveAttribute("aria-checked", "false");
+  await expect(strip.getByTestId("ann-tag")).toHaveAttribute("data-tag", "red");
+  await d.getByRole("button", { name: "发布" }).click();
+  await toast(page, "已发布");
+  // The list row shows the chip before the title; the user's API carries it.
+  const live = page.getByRole("region", { name: "进行中" });
+  const rowOf = live.locator("button", { has: page.getByText(title, { exact: true }) });
+  await expect(rowOf.getByTestId("ann-tag")).toHaveText("重要");
+  const user = await apiAs(USER, USER_PW, true);
+  const mine = (await (await user.get(`${ORIGIN}/api/v1/me/announcements`)).json()).announcements.find(
+    (a: { title_zh: string }) => a.title_zh === title,
+  );
+  expect(mine.tag).toMatchObject({ name_zh: "重要", name_en: "Important", color: "red" });
+  // Clear the tag again from the editor.
+  await rowOf.click();
+  const e = dialog(page, "编辑公告");
+  await e.getByRole("radiogroup", { name: "标签" }).getByRole("radio", { name: "无标签" }).click();
+  await e.getByRole("button", { name: "保存" }).click();
+  await toast(page, "公告已保存");
+  await expect(rowOf.getByTestId("ann-tag")).toHaveCount(0);
+  await live.getByRole("button", { name: `${title} 的操作` }).click();
+  await page.getByRole("menuitem", { name: "删除…" }).click();
+  await confirmDialog(page, title, "删除公告");
+  await toast(page, "已删除");
 });
 
 test("CNT-03 CNT-04 CNT-05 CNT-06: knowledge base — categories, articles with preview and slug check, legal pages", async ({

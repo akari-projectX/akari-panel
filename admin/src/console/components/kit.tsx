@@ -998,6 +998,7 @@ export function Fresh({
  */
 export function PreviewPane({
   title,
+  tag,
   html,
   state = "ok",
   label,
@@ -1006,6 +1007,8 @@ export function PreviewPane({
   className,
 }: {
   title?: string;
+  /** A chip shown before the title (the announcement's tag). */
+  tag?: ReactNode;
   html: string;
   state?: "ok" | "rendering" | "error";
   label?: ReactNode;
@@ -1060,7 +1063,12 @@ export function PreviewPane({
           </div>
         ) : html || title ? (
           <article>
-            {title && <h2 className="mb-2 text-title3 font-semibold tracking-[-0.015em]">{title}</h2>}
+            {title && (
+              <h2 className="mb-2 flex items-center gap-2 text-title3 font-semibold tracking-[-0.015em]">
+                {tag}
+                <span className="min-w-0 break-words">{title}</span>
+              </h2>
+            )}
             {html ? (
               <div className="md" dangerouslySetInnerHTML={{ __html: html }} />
             ) : (

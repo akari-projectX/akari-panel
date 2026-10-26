@@ -149,6 +149,8 @@
 | CNT-02 | 公告邮件通知：弹窗写收件对象、人数（`recipients`）、未验证/封禁不发、按收件人语言；已发过时黄色警告并必须勾选「我确认要重复发送」；发送中弹窗显示已发 / 总数与进度条（列表行同步，每 5 秒刷新），失败邮件去 系统状态 › 邮件队列 | `POST /announcements/{id}/mail`、`GET /announcements` | 实现 |
 | CNT-03 | 知识库分类（v2：主从布局左栏，计数、全部文章、未分类；手机为横滑胶囊）：管理分类 lg 弹窗（新建、上移/下移排序、中/英名同行改、文章数），删除（写明「N 篇文章会变成未分类」，输入名称确认） | `/kb/categories*` | 实现 |
 | CNT-04 | 知识库文章（右栏当前分类的文章，「全部文章」按分类分组；每行排序号、标题、英文未填标记、地址、已发布/草稿、更新日期、⋯ 编辑/发布或撤回/删除；空分类「在这里新建文章」、搜索无结果「清除搜索」）：编辑器 xl 弹窗（分类、排序（非负整数）、中英标题与正文、地址（与其他文章实时比对：可用 / 「已被「…」使用」）、发布；正文载入完成前锁定并显示骨架，不会覆盖已输入的标题）、删除（输入标题确认，写明旧链接变 404） | `/kb/articles*` | 实现 |
+| CNT-07 | 公告标签（内容页第三个分段「公告标签」）：迁移预置的八个（活动 玫红、维护 琥珀、调整 蓝、新功能 紫、优惠 绿、重要 红、新线路 青绿、通知 灰）；每行标签（与门户同一实底样式）、英文名、颜色、使用它的公告数、已停用徽章、↑ ↓ 排序（整表保存）、⋯（编辑、停用/启用、删除）；新建/编辑 md 弹窗：中文名（必填，≤12 字）、英文名、颜色（11 个预设色块的单选组，没有取色器）、启用开关、实时预览（标签 + 示例标题）；被公告使用的标签「删除」置灰（只能停用：旧公告照常显示，新公告不能选），未使用的删除要确认 | `/announcement-tags*` | 实现 |
+| CNT-08 | 公告编辑器的标签：「标签」单选（无标签 + 启用的标签 + 本公告已有的停用标签，选一个即取消另一个）、标题预览行（标签 + 标题，随输入更新）、右侧门户预览的标题前带标签；公告列表每行在标题前显示标签；复制为新公告时停用的标签不带过去 | `/announcements*`（`tag_id`）、`/announcement-tags` | 实现 |
 | CNT-05 | 正文编辑器旁的服务端渲染实时预览（渲染中 / 出错可重试） | `POST /content/preview` | 实现 |
 | CNT-06 | 服务条款 / 隐私政策：知识库左栏固定的「法律页面」组（手机在列表下方），固定 slug `terms`、`privacy` 的文章（未创建时点开即新建），编辑器隐藏分类与地址并说明关闭发布的后果（门户条款页读取它） | **后端新增**：文章 `slug` 字段（唯一，迁移 1080）；公开读取接口由门户 PR（W36-b）添加 | 实现 + 后端新增 |
 
@@ -321,7 +323,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | `GET/POST /coupons`、`GET/PATCH/DELETE /coupons/{id}`、`/coupon-batches*` | CPN-* |
 | `GET /balances`、`/commissions`、`GET/PUT /commission-settings`、`GET /withdrawals`、`POST …/approve`、`/reject`、`GET /finance/summary` | FIN-* |
 | `GET /tickets`、`GET /tickets/{id}`、`POST …/replies`、`/close`、`/reopen`、`PUT …/assignee`、`GET /admins` | TKT-* |
-| `/announcements*`、`POST /content/preview`、`/kb/categories*`、`/kb/articles*` | CNT-* |
+| `/announcements*`、`/announcement-tags*`、`POST /content/preview`、`/kb/categories*`、`/kb/articles*` | CNT-* |
 | `GET/POST /servers`、`GET/PATCH/DELETE /servers/{id}`、`POST …/enroll-token`、`/install` | NOD-01…07 |
 | `GET /servers/{id}/status`、`/metrics`、`POST /servers/{id}/probe` | NOD-08 |
 | `GET/PUT /servers/{id}/alert-rules` | NOD-09 |
