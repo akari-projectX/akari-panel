@@ -13,7 +13,8 @@
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
   import PageTitle from '../flat/PageTitle.svelte';
-  import { PLATFORM_ICON, iconOf } from '$lib/doc-icons';
+  import { iconOf, platformIcon } from '$lib/doc-icons';
+  import DocIcon from '../DocIcon.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { isUnread } from '$lib/read-state.svelte';
   import { resource } from '$lib/resource.svelte';
@@ -47,7 +48,7 @@
   );
 
   const device = detectPlatform();
-  const DeviceIcon = PLATFORM_ICON[device.id];
+  const deviceIcon = platformIcon(device.icon);
   /* 当前设备：有同名分类就给「查看教程」；没有就不占位置（客户端下载在仪表盘） */
   const deviceChapter = $derived(chapters.find((c) => c.platform?.id === device.id));
 
@@ -91,15 +92,14 @@
     <nav aria-label={t('文档分类')} class="cats">
       <button type="button" aria-pressed={cat === 'all'} onclick={() => filter('all')}><BookOpen size={14} strokeWidth={1.75} aria-hidden="true" /><span>{t('全部')}</span><em class="tnum">{total}</em></button>
       {#each chapters as c (c.name)}
-        {@const CI = iconOf(c)}
-        <button type="button" aria-pressed={cat === c.name} onclick={() => filter(c.name)}><CI size={14} strokeWidth={1.75} aria-hidden="true" /><span>{c.name}</span><em class="tnum">{c.articles.length}</em></button>
+        <button type="button" aria-pressed={cat === c.name} onclick={() => filter(c.name)}><DocIcon spec={iconOf(c)} size={14} /><span>{c.name}</span><em class="tnum">{c.articles.length}</em></button>
       {/each}
     </nav>
   {/if}
 
   {#if deviceChapter && !q && cat === 'all'}
     <p class="device">
-      {#if DeviceIcon}<DeviceIcon size={15} strokeWidth={1.75} aria-hidden="true" />{/if}
+      <DocIcon spec={deviceIcon} size={15} />
       <span>{tp('你正在使用 {p}', { p: device.name })}</span>
       <span class="dot-sep" aria-hidden="true">·</span>
       <button type="button" class="link" onclick={() => filter(deviceChapter.name)}>
@@ -134,11 +134,10 @@
     <div class="grid">
       {#each shown as { a, c } (a.id)}
         {@const unread = isUnread(a.id)}
-        {@const CI = iconOf(c)}
         <button type="button" class="card" onclick={() => open(a)}>
           <div>
             <div class="ct">
-              <span class="cn"><CI size={14} strokeWidth={1.75} aria-hidden="true" class="ci" />{c.name}</span>
+              <span class="cn"><DocIcon spec={iconOf(c)} size={14} class="ci" />{c.name}</span>
               {#if unread}<i class="ud" title={t('未读')}></i>{/if}
             </div>
             <h4>{a.title}</h4>
