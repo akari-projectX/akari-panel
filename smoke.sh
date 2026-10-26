@@ -2,6 +2,7 @@
 # Cross-repo end-to-end smoke test. Lives in akari-panel (the integrator) and
 # expects the sibling checkout convention: ../akari-agent must exist.
 set -euo pipefail
+SMOKE_SCRIPT=$(realpath "$0")
 cd "$(dirname "$0")"
 
 # Pattern test on a command's output that READS ALL OF IT (grep -q exits at
@@ -230,9 +231,34 @@ p["sign_type"] = "RSA2"; p["sign"] = base64.b64encode(sig).decode()
 if len(sys.argv) > 5: p["total_amount"] = sys.argv[5]  # tamper after signing
 print(urllib.parse.urlencode(p), end="")
 PY
-start_panel() {  # $1 = log file
-  AKARI_TEST_LIMITS="$SMOKE_LIMITS" "$PANEL" -c "$LOG/panel.toml" serve >"$1" 2>&1 &
-  PANEL_PID=$!
+# stop_proc PID: SIGTERM and wait until the process is gone. Sections run in
+# subshells, so `wait` cannot reap a process an earlier section started (it
+# returns at once): poll instead, so a restarted agent never overlaps the old
+# one (identity files, finals.json written on graceful stop). 30 s, then KILL.
+stop_proc() {
+  [ -n "${1:-}" ] || return 0
+  kill "$1" 2>/dev/null || return 0
+  for _ in $(seq 1 300); do kill -0 "$1" 2>/dev/null || { wait "$1" 2>/dev/null || true; return 0; }; sleep 0.1; done
+  kill -KILL "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+start_panel() {  # $1 = log file; the panel's exit status lands in "$1.exit"
+  # A section runs in a subshell, so a later section cannot `wait` for a panel
+  # an earlier one started: a wrapper records the exit status instead.
+  PANEL_LOG=$1
+  rm -f "$1.exit"
+  (
+    AKARI_TEST_LIMITS="$SMOKE_LIMITS" "$PANEL" -c "$LOG/panel.toml" serve >"$1" 2>&1
+    echo $? >"$1.exit"
+  ) &
+  local wrapper=$!
+  PANEL_PID=""
+  for _ in $(seq 1 50); do
+    PANEL_PID=$(pgrep -P "$wrapper" | sed -n 1p) || true
+    [ -n "$PANEL_PID" ] && break
+    sleep 0.1
+  done
+  [ -n "$PANEL_PID" ] || { echo "FAIL: the panel did not start"; cat "$1"; exit 1; }
   # Poll instead of a fixed sleep: migrations run before the listener binds.
   for _ in $(seq 1 100); do
     (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
@@ -242,7 +268,16 @@ start_panel() {  # $1 = log file
   (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null || { echo "FAIL: panel not listening"; cat "$1"; exit 1; }
 }
 start_panel "$LOG/panel-first.log"
-trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+# Cleanup on EVERY exit path. EXIT_EXTRA: containers the running section
+# started (sections set and restore it; it travels with the shell state).
+EXIT_EXTRA=""
+smoke_exit() {
+  eval "$EXIT_EXTRA"
+  cleanup_upd
+  # shellcheck disable=SC2086
+  kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true
+}
+trap smoke_exit EXIT
 
 # Reset AFTER startup: fresh volumes have no tables until the panel migrates,
 # and Valkey rate-limit counters would poison the next run's login test.
@@ -267,6 +302,106 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates CASCADE; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
+# --- sections: run them all, report every failure ---------------------------
+# Every `echo "== title =="` line below starts a section (this file stays one
+# linear script for shellcheck and for reading; the runner splits it at those
+# lines). A section runs in its own subshell with `set -e`, so an assertion
+# that fails ends its section exactly as it used to end the whole run; the
+# shell state it leaves (variables, functions, arrays) is handed on to the next
+# section, and the run goes on. Every failed section is listed at the end and
+# the exit status is non-zero. Later sections that depend on what a failed one
+# was to leave behind fail too: read the first failure first.
+# SMOKE_FATAL: the sections that build the fixture every other section needs
+# (panel, admin, server, node, agent); a failure in one of them ends the run.
+SMOKE_FATAL='^(W25:|first admin|register server|login \(wrong|configure node \+ user|start agent: initial|W12: agent capabilities)'
+SECTION_STATE=$LOG/section-state.sh
+# EXIT trap of a section's subshell: write down the variables and functions
+# the section leaves (not the read-only and shell-maintained ones).
+smoke_save_state() {
+  set +e # a trap that fails would replace the section's exit status
+  local _smoke_v _smoke_opts
+  {
+    for _smoke_v in $(compgen -v); do
+      case $_smoke_v in
+        _smoke_* | BASH* | EUID | PPID | UID | SHELLOPTS | FUNCNAME | LINENO | RANDOM | SRANDOM | SECONDS | PIPESTATUS \
+          | _ | OLDPWD | PWD | OPTIND | OPTARG | OPTERR | COMP* | DIRSTACK | GROUPS | HISTCMD | EPOCH* | SHLVL \
+          | COLUMNS | LINES | MAPFILE | REPLY | IFS) continue ;;
+      esac
+      _smoke_opts=$(declare -p "$_smoke_v" 2>/dev/null) || continue
+      read -r _ _smoke_opts _ <<<"$_smoke_opts"
+      case $_smoke_opts in *r*) continue ;; esac
+      declare -p "$_smoke_v"
+    done
+    for _smoke_v in $(declare -F | awk '{print $3}'); do
+      case $_smoke_v in smoke_*) ;; *) declare -f "$_smoke_v" ;; esac
+    done
+  } >"$SECTION_STATE.new" 2>/dev/null
+  mv "$SECTION_STATE.new" "$SECTION_STATE"
+}
+# The end of the run: the loud account of skipped agent-dependent sections.
+smoke_finish() {
+  echo
+  if [ "${#SKIPPED[@]}" -gt 0 ]; then
+    # Loud on purpose: these agent features were NOT exercised by this run.
+    echo "!! ${#SKIPPED[@]} agent-dependent section(s) SKIPPED (agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]):"
+    printf '!!   - %s\n' "${SKIPPED[@]}"
+    echo "!! run ci (workflow_dispatch) with agent_ref=<agent branch> to exercise them"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      { echo "### smoke: ${#SKIPPED[@]} agent-dependent section(s) skipped"
+        echo "agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]"
+        printf -- '- %s\n' "${SKIPPED[@]}"; } >>"$GITHUB_STEP_SUMMARY"
+    fi
+  fi
+}
+awk -v titles="$LOG/section-titles" '
+  /^# smoke-sections-begin$/ { on = 1; next }
+  !on { next }
+  /^echo "== .* =="$/ {
+    if (n) print "}"
+    n++
+    t = $0; sub(/^echo "== /, "", t); sub(/ ==\"$/, "", t)
+    printf "%d\t%s\n", n, t >titles
+    printf "smoke_section_%d() {\n", n
+  }
+  n { print }
+  END { if (n) print "}" }
+' "$SMOKE_SCRIPT" >"$LOG/sections.sh"
+bash -n "$LOG/sections.sh" || { echo "FAIL: the sections of $SMOKE_SCRIPT do not parse"; exit 1; }
+# shellcheck disable=SC1091
+. "$LOG/sections.sh"
+SMOKE_FAILED=()
+: >"$SECTION_STATE"
+while read -r -u 3 _smoke_n _smoke_title; do
+  set +e # the subshell must not run under an `||` / `if` (errexit would be ignored in it)
+  ( trap smoke_save_state EXIT; set -e; "smoke_section_$_smoke_n" 3<&- )
+  _smoke_rc=$?
+  set -e
+  # shellcheck disable=SC1090
+  . "$SECTION_STATE"
+  if [ "$_smoke_rc" -ne 0 ]; then
+    SMOKE_FAILED+=("$_smoke_title (exit $_smoke_rc)")
+    echo "!! SECTION FAILED (exit $_smoke_rc): $_smoke_title"
+    [ -z "${GITHUB_ACTIONS:-}" ] || echo "::error title=smoke section failed::$_smoke_title (exit $_smoke_rc)"
+    if [[ $_smoke_title =~ $SMOKE_FATAL ]]; then
+      echo "FAIL: a section that sets up the fixture failed; the sections after it cannot run"
+      break
+    fi
+  fi
+done 3<"$LOG/section-titles"
+smoke_finish
+if [ "${#SMOKE_FAILED[@]}" -gt 0 ]; then
+  echo "SMOKE TEST FAILED: ${#SMOKE_FAILED[@]} section(s) failed:"
+  printf '!!   - %s\n' "${SMOKE_FAILED[@]}"
+  echo "!! the first failure is the cause; later ones may follow from it"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    { echo "### smoke: ${#SMOKE_FAILED[@]} section(s) failed"
+      printf -- '- %s\n' "${SMOKE_FAILED[@]}"; } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  exit 1
+fi
+echo "SMOKE TEST PASSED"
+exit 0
+# smoke-sections-begin
 echo "== W25: an old panel.toml on a clean database: obsolete keys imported once, constants ignored =="
 # The reset above cleared what the first start imported: start again so the
 # import runs against the clean database (what an upgrade does once).
@@ -2185,7 +2320,7 @@ MP_API="http://127.0.0.1:18025/api/v1"
 docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
 docker run -d --name akari-smoke-mailpit --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11025 \
   -e MP_UI_BIND_ADDR=127.0.0.1:18025 axllent/mailpit:v1.27 >/dev/null
-trap 'docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+EXIT_EXTRA='docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true'
 for _ in $(seq 1 40); do curl -sf --noproxy '*' "$MP_API/info" >/dev/null && break; sleep 0.5; done
 curl -sf --noproxy '*' "$MP_API/info" >/dev/null || { echo "FAIL: mailpit did not start"; docker logs akari-smoke-mailpit 2>&1 | tail -5; exit 1; }
 # mp_mail ADDR N: wait until ADDR has >= N messages; print the newest one's
@@ -3026,7 +3161,7 @@ echo "ops: ok (batch balance/mail/plan exactly once + audited, users/orders/traf
 # W15: Mailpit is no longer needed; stop sending (nothing to deliver to).
 psql_q "UPDATE mail_settings SET enabled = false" >/dev/null
 docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
-trap 'cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+EXIT_EXTRA=''
 
 # W7: plan speed limits are enforced by the agent (protocol 4, per user,
 # both directions). A limit change alone is a UserDelta (no xray rebuild)
@@ -3252,8 +3387,8 @@ elif need_agent "protocol>=6" "W10 automatic node certificate"; then
     -tlsalpn01 "" -management 127.0.0.1:18055 >/dev/null
   docker run -d --name akari-smoke-pebble --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:2.10.1 \
     -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053 >/dev/null
-  PREV_EXIT_TRAP=$(trap -p EXIT)
-  trap 'docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+  PREV_EXIT_EXTRA=$EXIT_EXTRA
+  EXIT_EXTRA='docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true'
   mkdir -p "$LOG/acme"
   for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/14000) 2>/dev/null && break; sleep 0.5; done
   docker cp akari-smoke-pebble:/test/certs/pebble.minica.pem "$LOG/acme/pebble-api.pem" >/dev/null
@@ -3261,7 +3396,7 @@ elif need_agent "protocol>=6" "W10 automatic node certificate"; then
   BASE="$BASE" SUB_PATH="$SUBP" JAR="$JAR" LOG="$LOG" AGENT="$AGENT" PEBBLE_API_ROOT="$LOG/acme/pebble-api.pem" \
     python3 scripts/smoke-acme.py || { echo "FAIL: W10 automatic certificate"; docker logs akari-smoke-pebble 2>&1 | tail -10; exit 1; }
   docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null
-  eval "$PREV_EXIT_TRAP"
+  EXIT_EXTRA=$PREV_EXIT_EXTRA
 fi
 
 echo "== Sprint 3a: a protocol-0 agent gets the empty state and is flagged (N5) =="
@@ -3269,7 +3404,7 @@ OLD_SRC="$LOG/old-agent-src"
 mkdir -p "$OLD_SRC"
 if git -C "$AGENT_DIR" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
     && (cd "$OLD_SRC" && go build -o "$LOG/old-agent" . ) >"$LOG/old-build.log" 2>&1; then
-  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  stop_proc "$AGENT_PID"
   # The old agent only reads v1 bootstrap files (key inside): build one from
   # the enrolled identity — the same shape as pre-M1c bootstrap files.
   python3 - "$BOOT" "$LOG/state-main/identity.pem" "$LOG/v1-bootstrap.toml" <<'PY'
@@ -3292,7 +3427,7 @@ PY
   grep '"msg":"applying config snapshot"' "$LOG/old-agent.log" | tail -1 | matches '"config_version":0' \
     || { echo "FAIL: old agent did not get the empty state"; cat "$LOG/old-agent.log"; exit 1; }
   wait_port closed 10
-  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  stop_proc "$AGENT_PID"
   "$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >>"$LOG/agent.log" 2>&1 &
   AGENT_PID=$!
   for _ in $(seq 1 15); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
@@ -3530,7 +3665,7 @@ last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches -Fx '(Tru
   || { echo "FAIL: webhook test"; cat /tmp/akari-smoke/last; exit 1; }
 # Stop the agent: the node goes offline, the alert fires (one evaluator),
 # the webhook gets a signed "firing" for this node.
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 cat >"$LOG/hook-check.py" <<'PY'
 import hashlib, hmac, json, sys
 path, secret, node, event = sys.argv[1:5]
@@ -3658,7 +3793,7 @@ done
 # with the row.
 [ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: pending server left a tombstone"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM server_enrollments WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: enrollment token outlived its server"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 echo "server delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
@@ -3698,7 +3833,7 @@ TOML
 # instance shortens it with the TEST-ONLY limits variable.
 AKARI_TEST_LIMITS="cert_validity_secs=60" "$PANEL" -c "$LOG/panel-b.toml" serve >"$LOG/panel-b.log" 2>&1 &
 PANEL_B=$!
-trap 'cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+EXIT_EXTRA=''
 for _ in $(seq 1 20); do [ "$(code "http://127.0.0.1:8081/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
 # W25: a setting saved on instance A applies on instance B as well
 # (notify → reload on every instance): 安全 → 审计日志保留天数, read back as
@@ -3793,9 +3928,9 @@ while IFS= read -r f; do
   [ "$(stat -c %a "$f")" = "$want" ] || { echo "FAIL: $f is not 0$want"; exit 1; }
 done < <(find "$LOG/state-renew" -mindepth 1)
 grep -q 'PRIVATE KEY' "$LOG/renew-agent.log" "$LOG/panel-b.log" && { echo "FAIL: key material in a log"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
-kill $PANEL_B 2>/dev/null; wait $PANEL_B 2>/dev/null || true
+stop_proc "$PANEL_B"
 PANEL_B=""
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$API_SERVER")" = "202" ] || { echo "FAIL: delete api-node's server"; exit 1; }
 echo "enrollment + renewal: ok"
@@ -4170,8 +4305,8 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   # tmpfs state: idmapped (noexec) StateDirectory mounts as on a VPS (W18).
   docker run -d --name akari-smoke-node --network host --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /var/lib/private:mode=0700 akari-node-test:debian13 >/dev/null
-  PREV_EXIT_TRAP=$(trap -p EXIT)
-  trap 'docker rm -f akari-smoke-node >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+  PREV_EXIT_EXTRA=$EXIT_EXTRA
+  EXIT_EXTRA='docker rm -f akari-smoke-node >/dev/null 2>&1 || true'
   for _ in $(seq 1 30); do docker exec akari-smoke-node systemctl is-system-running 2>/dev/null | matches -E 'running|degraded' && break; sleep 1; done
   # Not root and no sudo (the image has none): the command stops at sudo,
   # nothing of the script runs unprivileged.
@@ -4223,7 +4358,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
   docker exec akari-smoke-node akari-agent-uninstall >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
   docker rm -f akari-smoke-node >/dev/null
-  eval "$PREV_EXIT_TRAP"
+  EXIT_EXTRA=$PREV_EXIT_EXTRA
   echo "installer (container): ok (BBR + fq $BBR_STATE, restored by the uninstaller)"
 else
   echo "installer container test skipped (SMOKE_INSTALL_CONTAINER=0)"
@@ -4254,8 +4389,8 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   docker build -q -t akari-node-test:alpine3.22 scripts/install-test-alpine >/dev/null
   docker rm -f akari-smoke-alp >/dev/null 2>&1 || true
   docker run -d --init --name akari-smoke-alp --network host --privileged akari-node-test:alpine3.22 >/dev/null
-  PREV_EXIT_TRAP=$(trap -p EXIT)
-  trap 'docker rm -f akari-smoke-alp >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${PANEL_B:+$PANEL_B} ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+  PREV_EXIT_EXTRA=$EXIT_EXTRA
+  EXIT_EXTRA='docker rm -f akari-smoke-alp >/dev/null 2>&1 || true'
   ax() { docker exec akari-smoke-alp sh -c "$1"; }
   for _ in $(seq 1 30); do ax 'test -e /run/openrc/softlevel && rc-status >/dev/null 2>&1' && break; sleep 0.5; done
   ax "$ALP_CMD" >"$LOG/alp-install.out" 2>&1 || { echo "FAIL: installer (Alpine)"; cat "$LOG/alp-install.out"; exit 1; }
@@ -4308,7 +4443,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
       ! rc-update show default | grep akari >/dev/null' || { echo "FAIL: Alpine uninstall left something behind"; exit 1; }
   ax 'ps -o args' | matches '^/usr/local/bin/akari-agent ' && { echo "FAIL: Alpine agent still running after uninstall"; exit 1; }
   docker rm -f akari-smoke-alp >/dev/null
-  eval "$PREV_EXIT_TRAP"
+  EXIT_EXTRA=$PREV_EXIT_EXTRA
   [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$ALP_ID")" = "202" ] || { echo "FAIL: delete alp-node's server"; exit 1; }
   for kv in $ALP_RL; do vk set "${kv%%=*}" "${kv#*=}" KEEPTTL >/dev/null; done
   echo "w32 Alpine node: ok (OpenRC install, BBR + fq $ALP_BBR, AKARI_BBR=0 reinstall restored it, uninstall clean)"
@@ -4417,7 +4552,7 @@ grep -q '^server_name = "127.0.0.1"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI b
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent.log" || { echo "FAIL: r22-old agent never connected"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 [ "$(psql_q "SELECT server_name FROM servers WHERE name='r22-old'")" = "127.0.0.1" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
 
@@ -4496,8 +4631,8 @@ grep -q '^	https_port 8446$' "$LOG/Caddyfile" || { echo "FAIL: Caddyfile global 
 docker run -d --name akari-smoke-caddy --network host -e AKARI_DOMAIN=myapp.test \
   -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
   -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
-PREV_EXIT_TRAP=$(trap -p EXIT)
-trap 'docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true; cleanup_upd; kill $PANEL_PID ${AGENT_PID:+$AGENT_PID} $MOCK_PID ${W11_PROBE_PID:+$W11_PROBE_PID} 2>/dev/null || true' EXIT
+PREV_EXIT_EXTRA=$EXIT_EXTRA
+EXIT_EXTRA='docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true'
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
 RES=(--resolve myapp.test:8446:127.0.0.1 --resolve sub.akari.test:8446:127.0.0.1 --resolve evil.test:8446:127.0.0.1
      --resolve myapp.test:8447:127.0.0.1 --resolve evil.test:8447:127.0.0.1)
@@ -4616,7 +4751,7 @@ docker rm -f akari-smoke-r22 >/dev/null
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent2.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent2.log" || { echo "FAIL: old-server-name agent lost after the change"; tail -5 "$LOG/r22-old-agent2.log"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 # The current node name cannot be removed; the built-in one neither.
 for n in grpc.akari.test localhost; do
@@ -4624,7 +4759,7 @@ for n in grpc.akari.test localhost; do
       -d "{\"name\":\"$n\",\"confirm\":true}")" = "400" ] || { echo "FAIL: locked server name $n removable"; exit 1; }
 done
 docker rm -f akari-smoke-caddy >/dev/null
-eval "$PREV_EXIT_TRAP"
+EXIT_EXTRA=$PREV_EXIT_EXTRA
 # CLI: show + unset (audited); the name history (certificate) stays.
 "$PANEL" settings show | matches 'node domains: *grpc.akari.test' || { echo "FAIL: settings show"; "$PANEL" settings show; exit 1; }
 "$PANEL" settings unset all >/dev/null || { echo "FAIL: settings unset"; exit 1; }
@@ -4937,7 +5072,12 @@ grep -q "channel established" "$LOG/term-agent.log" || { echo "FAIL: term agent 
 kill -TERM $PANEL_PID
 EXIT=""
 for _ in $(seq 1 24); do
-  if ! kill -0 $PANEL_PID 2>/dev/null; then EXIT=0; wait $PANEL_PID || EXIT=$?; break; fi
+  if ! kill -0 $PANEL_PID 2>/dev/null; then
+    # start_panel's wrapper wrote the exit status (see there: no `wait` across sections).
+    for _ in $(seq 1 20); do [ -s "$PANEL_LOG.exit" ] && break; sleep 0.1; done
+    EXIT=$(cat "$PANEL_LOG.exit" 2>/dev/null || echo "no exit status")
+    break
+  fi
   sleep 0.5
 done
 [ "$EXIT" = "0" ] || { echo "FAIL: panel did not exit cleanly within 12 s after SIGTERM (exit '$EXIT')"; tail -5 "$LOG/panel.log"; exit 1; }
@@ -4945,7 +5085,7 @@ for m in "SIGTERM received" "agent sessions ended" "final traffic flush done" "s
   grep -q "$m" "$LOG/panel.log" || { echo "FAIL: shutdown log lacks '$m'"; tail -8 "$LOG/panel.log"; exit 1; }
 done
 grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent stream not ended with 'panel shutting down'"; grep 'channel closed' "$LOG/term-agent.log" | tail -2; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 # Back to no node domain: the restart below must not bring grpc.advertise back.
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node (S4-3)"; exit 1; }
@@ -5019,19 +5159,5 @@ for p in "$PREFIX" "${OLD_BASE##*/}" smoke-door-2026; do
   grep -qF "$p" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: an admin prefix appears in the panel log"; exit 1; }
 done
 grep -qF "$NEW_TOKEN" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a subscription token appears in the panel log"; exit 1; }
-kill $PANEL_PID 2>/dev/null; wait $PANEL_PID 2>/dev/null || true
+stop_proc "$PANEL_PID"
 echo "admin prefix, allowlist, subscription path: ok"
-
-echo
-if [ "${#SKIPPED[@]}" -gt 0 ]; then
-  # Loud on purpose: these agent features were NOT exercised by this run.
-  echo "!! ${#SKIPPED[@]} agent-dependent section(s) SKIPPED (agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]):"
-  printf '!!   - %s\n' "${SKIPPED[@]}"
-  echo "!! run ci (workflow_dispatch) with agent_ref=<agent branch> to exercise them"
-  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    { echo "### smoke: ${#SKIPPED[@]} agent-dependent section(s) skipped"
-      echo "agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]"
-      printf -- '- %s\n' "${SKIPPED[@]}"; } >>"$GITHUB_STEP_SUMMARY"
-  fi
-fi
-echo "SMOKE TEST PASSED"

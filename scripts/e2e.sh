@@ -15,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PANEL=./target/release/akari
+PANEL=${PANEL_BIN:-./target/release/akari}
 E2E_DB=${E2E_DB:-akari_e2e}
 E2E_VALKEY_DB=${E2E_VALKEY_DB:-15}
 PORT=${E2E_PORT:-8090}

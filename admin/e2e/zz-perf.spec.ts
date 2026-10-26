@@ -3,8 +3,8 @@
 // bar tap → the target's `main[data-ready]`, both stamped in the page) dashboard → users → nodes →
 // orders → settings, and scrolling a 2,000-row user list (rAF gaps), on a
 // desktop and on a "mid phone" (Pixel 7 viewport, CDP CPU ×4, Fast 3G).
-// Every metric: 5 runs, the first (cold cache) reported apart as "first
-// visit", the median of the other 4 against admin/perf-budget.json. The
+// Every metric: 7 runs, the first (cold cache) reported apart as "first
+// visit", the median of the other 6 against admin/perf-budget.json. The
 // results go to test-results/perf.json and the GitHub step summary. Budget
 // overruns fail the test only when perf-budget.json has `"blocking": true`
 // (or PERF_BLOCKING=1); otherwise they are printed.
@@ -27,7 +27,8 @@ const BUDGET_FILE = JSON.parse(readFileSync(join(HERE, "..", "perf-budget.json")
   phone: Record<string, number>;
 };
 const BLOCKING = BUDGET_FILE.blocking === true || process.env.PERF_BLOCKING === "1";
-const RUNS = 5;
+// The median of 6 warm runs: one slow switch (a noisy neighbour on a shared runner) moves it less than the median of 4.
+const RUNS = 7;
 const SWITCHES: [string, string][] = [
   ["用户", "users"],
   ["节点", "nodes"],
@@ -356,7 +357,7 @@ test("perf: first screen, page switches, big list", async ({ browser }, info) =>
   const md = [
     `### Admin timing (${BLOCKING ? "blocking" : "report-only"})`,
     "",
-    "| env | metric | first visit | median (warm, 4 runs) | budget | |",
+    "| env | metric | first visit | median (warm, 6 runs) | budget | |",
     "|---|---|---|---|---|---|",
     ...rows,
     "",
