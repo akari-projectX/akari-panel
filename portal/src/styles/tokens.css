@@ -61,6 +61,11 @@
   --logo-dot: #2563eb;
   /* 流量图 */
   --chart-area-opacity: .16;
+  --chart-1: #2563eb;
+  --chart-2: #38bdf8;
+  --chart-3: #60a5fa;
+  --chart-4: #93c5fd;
+  --chart-5: #bfdbfe;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .08);
   /* 订阅二维码：明暗两套主题下都是白底深色码（扫码器只认得这种） */
   --qr-ink: #0d1526;
@@ -113,6 +118,11 @@
   --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
   --logo-ink: #eef0f5;
   --logo-dot: #4a9dff;
+  --chart-1: #4a9dff;
+  --chart-2: #7fdcff;
+  --chart-3: #69b1ff;
+  --chart-4: #91caff;
+  --chart-5: #bae0ff;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
   --line-track: rgb(255 255 255 / .2);
   --card-track: rgb(255 255 255 / .12);
@@ -158,6 +168,11 @@
     --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
     --logo-ink: #eef0f5;
     --logo-dot: #4a9dff;
+    --chart-1: #4a9dff;
+    --chart-2: #7fdcff;
+    --chart-3: #69b1ff;
+    --chart-4: #91caff;
+    --chart-5: #bae0ff;
     --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
     --line-track: rgb(255 255 255 / .2);
     --card-track: rgb(255 255 255 / .12);
