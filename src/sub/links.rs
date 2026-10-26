@@ -7,6 +7,17 @@ use serde_json::json;
 
 use super::proxy::{Proxy, encode_fragment};
 
+/// A server address as a URL authority host: IPv6 literals in brackets
+/// (RFC 3986), anything else as is (entrance addresses are validated host
+/// names or IP addresses).
+fn host(server: &str) -> String {
+    if server.contains(':') && !server.starts_with('[') {
+        format!("[{server}]")
+    } else {
+        server.to_string()
+    }
+}
+
 fn query_params(p: &Proxy, include_flow: bool) -> String {
     let mut params = vec![format!("type={}", encode_fragment(p.net.network()))];
     if p.net.security != "none" {
@@ -62,7 +73,7 @@ pub(crate) fn render_links(proxies: &[Proxy]) -> String {
             "vless" => lines.push(format!(
                 "vless://{}@{}:{}?{}#{}",
                 p.id_or_password,
-                p.server,
+                host(&p.server),
                 p.net.port,
                 query_params(p, true),
                 frag
@@ -70,7 +81,7 @@ pub(crate) fn render_links(proxies: &[Proxy]) -> String {
             "trojan" => lines.push(format!(
                 "trojan://{}@{}:{}?{}#{}",
                 p.id_or_password,
-                p.server,
+                host(&p.server),
                 p.net.port,
                 query_params(p, false),
                 frag
@@ -115,14 +126,14 @@ pub(crate) fn render_links(proxies: &[Proxy]) -> String {
                 "ss://{}:{}@{}:{}#{}",
                 p.method,
                 encode_fragment(&p.id_or_password),
-                p.server,
+                host(&p.server),
                 p.net.port,
                 frag
             )),
             "hysteria2" => lines.push(format!(
                 "hysteria2://{}@{}:{}/?sni={}#{}",
                 encode_fragment(&p.id_or_password),
-                p.server,
+                host(&p.server),
                 p.net.port,
                 encode_fragment(&p.net.sni),
                 frag

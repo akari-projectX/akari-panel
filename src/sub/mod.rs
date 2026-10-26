@@ -1335,6 +1335,34 @@ mod tests {
         );
     }
 
+    /// Audit P2-2: an IPv6 literal is bracketed in share-link authorities
+    /// (RFC 3986); the Clash document quotes it.
+    #[test]
+    fn ipv6_servers_are_bracketed_in_links() {
+        let tcp = json!({"port": 443, "streamSettings": {"network": "tcp", "security": "tls",
+                         "tlsSettings": {"serverName": "n.example.com"}}});
+        let ss = json!({"port": 8388});
+        let want = |l: &str, prefix: &str| {
+            assert!(l.starts_with(prefix), "{l}");
+        };
+        for protocol in ["vless", "trojan", "hysteria2"] {
+            let p = [plain_proxy(protocol, "2001:db8::1", tcp.clone())];
+            let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+            let at = links.split('@').nth(1).unwrap();
+            want(at, "[2001:db8::1]:443");
+        }
+        let p = [plain_proxy("ss2022", "2001:db8::1", ss)];
+        let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+        assert!(links.contains("@[2001:db8::1]:8388#"), "{links}");
+        // IPv4 and names are untouched.
+        let p = [plain_proxy("vless", "203.0.113.7", tcp.clone())];
+        let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+        assert!(links.contains("@203.0.113.7:443?"), "{links}");
+        let p = [plain_proxy("vless", "2001:db8::1", tcp)];
+        let clash = render_clash(&p, &routing::Routing::default());
+        assert!(clash.contains("    server: \"2001:db8::1\"\n"), "{clash}");
+    }
+
     #[test]
     fn yaml_scalars() {
         assert_eq!(yaml("/ws"), "/ws");
