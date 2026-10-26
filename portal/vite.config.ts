@@ -57,10 +57,12 @@ function headCss(): Plugin {
   const fileName = () => `assets/head-${createHash('sha256').update(build()).digest('hex').slice(0, 8)}.css`;
   return {
     name: 'akari-head-css',
-    apply: 'build',
     transformIndexHtml: {
       order: 'post',
-      handler: () => [{ tag: 'link', attrs: { rel: 'stylesheet', href: `/${fileName()}` }, injectTo: 'head-prepend' }],
+      /* 开发服务器没有构建产物：直接引源文件（Vite 展开 @import） */
+      handler: (_html, ctx) => [
+        { tag: 'link', attrs: { rel: 'stylesheet', href: ctx.server ? '/src/boot/head.css' : `/${fileName()}` }, injectTo: 'head-prepend' },
+      ],
     },
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: fileName(), source: build() });
