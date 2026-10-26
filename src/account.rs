@@ -39,12 +39,7 @@ pub async fn change_own_password(
     jar: CookieJar,
     ApiJson(req): ApiJson<ChangePasswordReq>,
 ) -> Result<(CookieJar, axum::http::StatusCode), ApiError> {
-    if req.new_password.len() < 8 {
-        return Err(bad_request!(
-            "account.password_too_short",
-            "password must be at least 8 characters"
-        ));
-    }
+    crate::signup::check_password(&req.new_password)?;
     // An account without a password (registered with a passkey): the first
     // password is set on the proof of a passkey; nothing to guess, so no
     // login-limit attempt.
