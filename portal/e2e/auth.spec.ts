@@ -458,6 +458,26 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
     await expect(pk).toHaveCount(1);
     await expect(pk).toHaveClass(/pri/);
     await shot(page, info, 'login-passkey-only');
+
+    /* 通行密钥用不了（回退）：密码 + 发到已验证邮箱的验证码；错码被拒，对的码登录 */
+    const fb = page.getByTestId('passkey-fallback');
+    await page.getByRole('button', { name: '通行密钥用不了？改用密码 + 邮箱验证码' }).click();
+    const sentAt = Date.now() - 1000;
+    await fb.getByRole('button', { name: '发送邮箱验证码' }).click();
+    await expect(fb.getByText('验证码已发送到账户的已验证邮箱')).toBeVisible();
+    await shot(page, info, 'login-passkey-fallback');
+    const code = /\b(\d{6})\b/.exec(await latestMail(email, sentAt))?.[1] ?? '';
+    expect(code).toMatch(/^\d{6}$/);
+    await page.getByLabel('邮箱验证码').fill(code === '000000' ? '111111' : '000000');
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await expect(page.getByText('验证码不正确或已失效，请重新获取')).toBeVisible();
+    await page.getByLabel('邮箱验证码').fill(code);
+    await page.getByRole('button', { name: '登录', exact: true }).click();
+    await dashboard(page);
+    await page.context().clearCookies();
+    await page.evaluate(() => sessionStorage.clear());
+    await login(page, email);
+    await expect(page.getByText('这个账户只能用通行密钥登录。')).toBeVisible();
     await pk.click();
     await dashboard(page);
     /* 「以后再说」只问一次：没有 passkey_prompt 的登录不再弹 */
@@ -518,6 +538,18 @@ test('#3 #4 #5 passkeys: offered after a password login, then sign-in without a 
   } finally {
     await a.patch('auth', FIELDS.auth, before);
   }
+});
+
+test('a browser that refuses the site\'s passkeys gets the emailed-code fallback up front', async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.credentials.get = () => Promise.reject(new DOMException('related origin not allowed', 'SecurityError'));
+  });
+  await page.goto('/login');
+  await page.getByRole('button', { name: '使用通行密钥登录' }).click();
+  const fb = page.getByTestId('passkey-fallback');
+  await expect(fb.getByText('这个浏览器无法使用本站的通行密钥')).toBeVisible();
+  await expect(fb.getByRole('button', { name: '发送邮箱验证码' })).toHaveClass(/pri/);
+  await expect(fb.getByRole('button', { name: '使用通行密钥登录' })).toHaveCount(0);
 });
 
 test('registration with a passkey: no address or password, then an email must be bound (a dialog that cannot be closed)', async ({ page }, info) => {

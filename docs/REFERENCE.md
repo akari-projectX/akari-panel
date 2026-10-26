@@ -194,6 +194,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | POST | /auth/login | — | `{email, password, guard?}`（D1：地址不区分大小写，已验证与否均可）：argon2id 校验，设置会话 cookie；→ `{id, email, role, expired, quota_exhausted, banned, passkey_prompt}`（R21 续费范围；W28-c：被封禁的 role=user 账号登录后进入门户范围*）。所有失败都返回统一的 401，包括被拦截的机器人（W27 `guard`，见下）。开启 Turnstile 时：400 `auth.captcha_failed`（令牌缺失，或 Cloudflare 以访客侧错误码拒绝）/ 503 `auth.captcha_unavailable`（校验服务不可达，或 Turnstile 密钥配置错误：Cloudflare 拒绝密钥/请求、存储的密钥打不开；记 ERROR 日志） |
+| POST | /auth/login/fallback/code | — | `{email, password}`（同登录体）：仅通行密钥账户的回退（用户裁决 2026-10-15）。凭据不对 = 登录的统一 401（计入登录限速）；密码正确才有别的回答：账户密码仍可用 → 400 `auth.fallback_unneeded`；没有已验证邮箱或邮件发送关闭 → 409 `auth.fallback_unavailable`（提示 `akari admin reset-login`）；否则把 6 位一次性验证码（10 分钟、单次、错 5 次作废、只存 HMAC）发到**已验证**邮箱 → `{ok:true}`（按客户端 10/时与按地址 5/时·20/天限发）。之后 `POST /auth/login` 带 `fallback_code` = 密码 + 验证码登录；错码 = 统一 401 并计入登录限速；成功写审计 `user.login.passkey_fallback` 并给该邮箱发 `security_notice` |
 | POST | /auth/passkey/options | — (passkeys available) | W27：可发现凭据登录的挑战 `{state, options}`（`options` = WebAuthn `publicKey` 请求选项；`no-store`；每客户端地址 30 次/分钟）。没有 https 主域名 = 标准拒绝 |
 | POST | /auth/passkey/login | — (passkeys available) | W27：`{state, credential}`（浏览器的 `PublicKeyCredential` JSON）→ 会话 cookie + 登录应答。所有失败都返回统一的 401 |
 | POST | /auth/logout | — | 清除 cookie，并终止该账号的所有会话 |

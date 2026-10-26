@@ -584,6 +584,17 @@ ROOT_ID=$(psql_q "SELECT id FROM users WHERE email = 'root@smoke.test'")
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$ROOT_ID/login-method/reset")" = "200" ] && last_json "d['deleted_passkeys']" | matches '^0$' \
   || { echo "FAIL: admin login-method reset"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/me")" = "401" ] || { echo "FAIL: the admin login-method reset left the session alive"; exit 1; }
+# Passkey-only fallback (password + a code mailed to the verified address): the
+# code request answers like the login for wrong credentials, and only a correct
+# password learns anything else (this account's password still works).
+FB_URL="$BASE/auth/login/fallback/code"
+[ "$(code -X POST "$FB_URL" -H 'Content-Type: application/json' -d '{"email":"nobody@smoke.test","password":"wrong-password-1"}')" = "401" ] \
+  && last_json "d['code']" | matches '^auth.unauthorized$' || { echo "FAIL: fallback code with unknown credentials"; exit 1; }
+[ "$(code -X POST "$FB_URL" -H 'Content-Type: application/json' -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "400" ] \
+  && last_json "d['code']" | matches '^auth.fallback_unneeded$' || { echo "FAIL: fallback code for an account whose password works: $(cat /tmp/akari-smoke/last)"; exit 1; }
+[ "$(code -X POST "$FB_URL" -H 'Content-Type: application/json' -d '{"email":"a@b.test","password":"x","unknown":1}')" = "400" ] \
+  || { echo "FAIL: fallback code request accepts unknown fields"; exit 1; }
+[ "$(fp "$FB_URL")" = "$REJ" ] || { echo "FAIL: GET on the fallback code endpoint is not the plain 404"; exit 1; }
 echo "passkeys: ok"
 
 echo "== login (wrong password x3, then ok) =="

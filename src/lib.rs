@@ -39,6 +39,7 @@ pub mod grpc;
 pub mod hostname;
 pub mod install;
 pub mod kb;
+pub mod login_fallback;
 pub mod login_limit;
 pub mod mail;
 pub mod mailhook;

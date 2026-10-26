@@ -161,6 +161,10 @@ fn inner_router(state: AppState) -> Router {
             get(nodeinstall::binary),
         )
         .route("/{prefix}/auth/login", post(api::login))
+        .route(
+            "/{prefix}/auth/login/fallback/code",
+            post(crate::login_fallback::request_code),
+        )
         .route("/{prefix}/auth/logout", post(api::logout))
         .route("/{prefix}/api/v1/me", get(api::me))
         .route(

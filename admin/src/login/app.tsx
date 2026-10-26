@@ -53,6 +53,11 @@ export const LOGIN_ERRORS: ErrorTable = {
     "Human verification is unavailable, try again later",
   ],
   "auth.passkey_required": ["此账户只能使用通行密钥登录", "This account signs in with a passkey"],
+  "auth.fallback_unavailable": [
+    "此账户没有已验证的邮箱（或站点未开启邮件发送），不能用邮箱验证码登录；请站点运维为你重置登录方式",
+    "This account has no verified email address (or mail sending is off), so the emailed code cannot be used; ask the site operator to reset your login method",
+  ],
+  "auth.fallback_unneeded": ["此账户可以直接用密码登录", "This account can sign in with its password"],
   "account.passkey_exists": ["这个通行密钥已经绑定过", "This passkey is already registered"],
   "account.passkey_failed": ["通行密钥验证失败，请重试", "The passkey could not be verified, please try again"],
   "account.passkey_limit": ["每个账户最多 {max} 个通行密钥", "At most {max} passkeys per account"],
@@ -356,6 +361,12 @@ export function LoginApp() {
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [passkeyOnly, setPasskeyOnly] = useState(false);
+  // The passkey cannot be used here (the browser refused it for the site's
+  // origins): the emailed-code fallback becomes the main action.
+  const [passkeyBroken, setPasskeyBroken] = useState(false);
+  const [fallbackOpen, setFallbackOpen] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
+  const [fbCode, setFbCode] = useState("");
   const [notAdmin, setNotAdmin] = useState<string | null>(null);
   const [bind, setBind] = useState(false);
   const pwInput = useRef<HTMLInputElement>(null);
@@ -476,6 +487,59 @@ export function LoginApp() {
     }
   };
 
+  const minWait = async () => {
+    const wait = (opts?.guard?.form_min_secs ?? 0) * 1000 + 300 - (Date.now() - loadedAt.current);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  };
+
+  // Passkey-only fallback: password + a code mailed to the verified address.
+  const onSendCode = async (e?: FormEvent) => {
+    e?.preventDefault();
+    if (busy || !email || !password) return;
+    setBusy("password");
+    setError(null);
+    try {
+      await authPost("/login/fallback/code", { email: email.trim(), password });
+      setCodeSent(true);
+      setFbCode("");
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.status === 401
+          ? tr("邮箱或密码不正确。", "Wrong email or password.")
+          : errorText(err, lang),
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onFallbackLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy || !fbCode.trim()) return;
+    setBusy("password");
+    setError(null);
+    await minWait();
+    try {
+      const answer = await authPost<LoginAnswer>("/login", {
+        email: email.trim(),
+        password,
+        fallback_code: fbCode.trim(),
+        guard: { form_token: opts?.guard?.form_token ?? null, website, turnstile: captcha || null },
+      });
+      await finish(answer, email.trim());
+    } catch (err) {
+      setBusy(null);
+      setCaptchaReset((n) => n + 1);
+      loadOptions();
+      setFbCode("");
+      setError(
+        err instanceof ApiError && err.status === 401
+          ? tr("验证码不正确或已失效，请重新获取。", "The code is wrong or no longer valid. Request a new one.")
+          : errorText(err, lang),
+      );
+    }
+  };
+
   const onPasskey = async () => {
     setBusy("passkey");
     setError(null);
@@ -493,6 +557,20 @@ export function LoginApp() {
     } catch (err) {
       setBusy(null);
       if (ctl.signal.aborted) return;
+      if (err instanceof DOMException && err.name === "SecurityError") {
+        // The browser does not accept this site's passkeys (no related-origin
+        // support, or the passkey domain is unreachable).
+        setPasskeyBroken(true);
+        setPasskeyOnly(true);
+        setFallbackOpen(true);
+        setError(
+          tr(
+            "这个浏览器无法使用本站的通行密钥。可以改用密码 + 邮箱验证码登录。",
+            "This browser cannot use this site's passkeys. You can sign in with your password and an emailed code instead.",
+          ),
+        );
+        return;
+      }
       setError(
         err instanceof ApiError && err.status === 401
           ? tr("通行密钥无效或未注册", "This passkey is not valid here")
@@ -510,6 +588,32 @@ export function LoginApp() {
   const passkeyOk = !!opts?.passkey && passkeysSupported();
   const name = opts?.site_name ?? "Akari";
   const formBusy = busy !== null;
+  const turnstileBlock = turnstile && (
+    <div className="grid gap-1.5">
+      <TurnstileBox
+        siteKey={turnstile.site_key}
+        onToken={onCaptcha}
+        onFail={setCaptchaFailed}
+        resetKey={captchaReset}
+        theme={theme}
+        lang={lang}
+      />
+      {!captcha && !captchaFailed && (
+        <p role="status" className="flex items-center gap-2 text-body text-muted-foreground">
+          <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+          {tr("正在确认你是真人…", "Checking that you are human…")}
+        </p>
+      )}
+      {captchaFailed && (
+        <div role="alert" className="flex items-center gap-3 text-body text-destructive">
+          <span>{tr("人机验证加载失败，请刷新重试", "Human verification could not load, reload and try again")}</span>
+          <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
+            {tr("重试", "Retry")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
 
   const passkeyButton = (
     <Button
@@ -610,13 +714,115 @@ export function LoginApp() {
                       "This account signs in with a passkey only. Use a passkey saved on this device, or insert a security key.",
                     )}
                   </p>
-                  {passkeyOk ? (
+                  {passkeyOk && !passkeyBroken ? (
                     passkeyButton
                   ) : (
                     <p className="text-body text-warning">
-                      {tr("这个浏览器或站点不支持通行密钥。", "This browser or site does not support passkeys.")}
+                      {passkeyBroken
+                        ? tr("这个浏览器无法使用本站的通行密钥。", "This browser cannot use this site's passkeys.")
+                        : tr("这个浏览器或站点不支持通行密钥。", "This browser or site does not support passkeys.")}
                     </p>
                   )}
+                  <div className="mt-4" data-testid="passkey-fallback">
+                    {!fallbackOpen && !(!passkeyOk || passkeyBroken) ? (
+                      <button
+                        type="button"
+                        className="text-footnote text-primary hover:underline"
+                        onClick={() => setFallbackOpen(true)}
+                      >
+                        {tr(
+                          "通行密钥用不了？改用密码 + 邮箱验证码",
+                          "Passkey not working? Use your password + an emailed code",
+                        )}
+                      </button>
+                    ) : (
+                      <form
+                        className="grid gap-3 rounded-xl bg-window p-3 ring-1 ring-border ring-inset"
+                        onSubmit={codeSent ? onFallbackLogin : onSendCode}
+                        noValidate
+                      >
+                        <p className="text-footnote font-medium text-foreground">
+                          {tr("密码 + 邮箱验证码登录", "Password + emailed code")}
+                        </p>
+                        {codeSent ? (
+                          <>
+                            <p role="status" className="text-footnote text-muted-foreground">
+                              {tr(
+                                "验证码已发送到账户的已验证邮箱，10 分钟内有效。",
+                                "A code was sent to the account's verified address; it is valid for 10 minutes.",
+                              )}
+                            </p>
+                            <Field label={tr("邮箱验证码", "Emailed code")}>
+                              <Input
+                                id="fallback-code"
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                                maxLength={6}
+                                value={fbCode}
+                                onChange={(e) => setFbCode(e.target.value.replace(/\D/g, ""))}
+                                className="h-10 rounded-[10px] font-mono tracking-widest"
+                                required
+                              />
+                            </Field>
+                            {turnstileBlock}
+                            <Button
+                              type="submit"
+                              variant="primary"
+                              size="lg"
+                              className="w-full"
+                              loading={busy === "password"}
+                              disabled={fbCode.length !== 6 || (wantTurnstile && (!turnstile || !captcha))}
+                            >
+                              {tr("登录", "Sign in")}
+                            </Button>
+                            <button
+                              type="button"
+                              className="text-footnote text-primary hover:underline"
+                              onClick={() => void onSendCode()}
+                              disabled={formBusy}
+                            >
+                              {tr("重新发送验证码", "Send a new code")}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <Field label={tr("邮箱", "Email")}>
+                              <Input
+                                id="fallback-email"
+                                type="email"
+                                autoComplete="username"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="h-10 rounded-[10px]"
+                                required
+                              />
+                            </Field>
+                            <Field label={tr("密码", "Password")}>
+                              <Input
+                                id="fallback-password"
+                                type="password"
+                                autoComplete="current-password"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="h-10 rounded-[10px]"
+                                required
+                              />
+                            </Field>
+                            <Button
+                              type="submit"
+                              variant={!passkeyOk || passkeyBroken ? "primary" : "outline"}
+                              size="lg"
+                              className="w-full"
+                              loading={busy === "password"}
+                              disabled={!email || !password}
+                            >
+                              {tr("发送邮箱验证码", "Email me a code")}
+                            </Button>
+                          </>
+                        )}
+                      </form>
+                    )}
+                  </div>
                   <Recovery />
                 </>
               ) : (
@@ -706,37 +912,7 @@ export function LoginApp() {
                         </label>
                       </div>
                     )}
-                    {turnstile && (
-                      <div className="grid gap-1.5">
-                        <TurnstileBox
-                          siteKey={turnstile.site_key}
-                          onToken={onCaptcha}
-                          onFail={setCaptchaFailed}
-                          resetKey={captchaReset}
-                          theme={theme}
-                          lang={lang}
-                        />
-                        {!captcha && !captchaFailed && (
-                          <p role="status" className="flex items-center gap-2 text-body text-muted-foreground">
-                            <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-                            {tr("正在确认你是真人…", "Checking that you are human…")}
-                          </p>
-                        )}
-                        {captchaFailed && (
-                          <div role="alert" className="flex items-center gap-3 text-body text-destructive">
-                            <span>
-                              {tr(
-                                "人机验证加载失败，请刷新重试",
-                                "Human verification could not load, reload and try again",
-                              )}
-                            </span>
-                            <Button type="button" variant="ghost" size="sm" onClick={retryCaptcha}>
-                              {tr("重试", "Retry")}
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    {turnstileBlock}
                     <Button
                       type="submit"
                       variant="primary"
