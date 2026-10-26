@@ -64,7 +64,7 @@ test("DNS-01: Cloudflare tokens (owner) — add, test the connection, a rejected
   const badCard = d.getByTestId(`dns-account-${bad}`);
   await badCard.getByRole("button", { name: "测试连接" }).click();
   await expect(badCard).toContainText("Cloudflare 拒绝了这个令牌");
-  await d.getByRole("button", { name: "关闭" }).click();
+  await d.getByRole("button", { name: "关闭" }).last().click();
   await expect(d).toBeHidden();
   // The page keeps working with the good token and names the failing one.
   await expect(page.getByTestId("dns-zone-error")).toContainText("Cloudflare 拒绝了这个令牌");
@@ -74,7 +74,7 @@ test("DNS-01: Cloudflare tokens (owner) — add, test the connection, a rejected
   await d.getByTestId(`dns-account-${bad}`).getByRole("button", { name: "删除" }).click();
   await confirmDialog(page, bad, /删除令牌/);
   await toast(page, "令牌已删除");
-  await d.getByRole("button", { name: "关闭" }).click();
+  await d.getByRole("button", { name: "关闭" }).last().click();
   await expect(page.getByTestId("dns-zone-error")).toHaveCount(0);
 });
 
