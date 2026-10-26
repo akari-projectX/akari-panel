@@ -1068,14 +1068,16 @@ pub async fn delete(
             .fetch_optional(&mut *tx)
             .await?;
     if passwordless == Some(true) {
-        let others: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM webauthn_credentials WHERE user_id = $1 AND id <> $2",
+        let (others, owned): (i64, bool) = sqlx::query_as(
+            "SELECT count(*) FILTER (WHERE id <> $2), coalesce(bool_or(id = $2), false) \
+             FROM webauthn_credentials WHERE user_id = $1",
         )
         .bind(me.id)
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-        if others == 0 {
+        // Someone else's (or no) passkey stays the canonical rejection below.
+        if owned && others == 0 {
             return Err(conflict!(
                 "account.passkey_last",
                 "set a password before deleting the only passkey of this account"
