@@ -428,6 +428,13 @@ pub async fn release_holds(
     .bind(order_id)
     .fetch_optional(&mut *conn)
     .await?;
+    // Lock order (docs/PAYMENTS.md): orders → coupons → user_balances. The
+    // coupon goes first: a late payment (holding `entitle::lock`) takes the
+    // coupon row and then the balance row, so taking them the other way
+    // round here could deadlock with it (audit 2026-10 P2-5).
+    if super::coupons::release(conn, order_id).await? {
+        detail["coupon_released"] = json!(true);
+    }
     if let Some((user, cents)) = held {
         match user {
             Some(user) => {
@@ -441,9 +448,6 @@ pub async fn release_holds(
             // went with them).
             None => detail["balance_refunded_cents"] = json!(0),
         }
-    }
-    if super::coupons::release(conn, order_id).await? {
-        detail["coupon_released"] = json!(true);
     }
     Ok(detail)
 }
