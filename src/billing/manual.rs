@@ -103,12 +103,21 @@ pub async fn apply_create(
     };
     let gift_cents = if req.gift { list_cents } else { 0 };
     // What it does (stored like a customer order's; 中-2, 低-4).
-    let current: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, plan_id FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    let current: Option<(Uuid, Uuid, bool)> = sqlx::query_as(
+        "SELECT id, plan_id, expires_at IS NOT NULL FROM user_plans \
+         WHERE user_id = $1 AND status = 'active'",
     )
     .bind(req.user_id)
     .fetch_optional(&mut *conn)
     .await?;
+    // A holder of this very plan without an end date has nothing to renew
+    // (the shop refuses the same, catalog::decide): the grant would do
+    // nothing and a paid order would still count as revenue.
+    if kind != super::catalog::PeriodKind::Reset
+        && current.is_some_and(|c| c.1 == req.plan_id && !c.2)
+    {
+        return Err(super::catalog::Refusal::NoExpiry.error());
+    }
     let action = super::catalog::action_for(current.map(|c| c.1), req.plan_id, kind);
     let id = Uuid::new_v4();
     let otn = new_out_trade_no();
