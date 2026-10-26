@@ -77,7 +77,8 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     use akari_panel::*;
-    match sel % 29 {
+    let sel = sel % 34;
+    match sel {
         0 => strict::<api::LoginReq>(body),
         1 => strict::<api::CreateUserReq>(body),
         2 => strict::<api::UpdateUserReq>(body),
@@ -129,6 +130,12 @@ fuzz_target!(|data: &[u8]| {
                     Some(p),
                     "routing parse not idempotent"
                 );
+            }
+        }
+        28..=32 => {
+            // Passkey registration, address binding and the passkey centre.
+            if let Err(violation) = fuzzing::passkey_body(sel - 28, body) {
+                panic!("{violation}");
             }
         }
         _ => path(&String::from_utf8_lossy(body)),

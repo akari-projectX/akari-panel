@@ -176,6 +176,24 @@ pub fn signup_body(kind: u8, body: &[u8]) -> Result<bool, String> {
     })
 }
 
+/// Number of passkey / binding request body kinds `passkey_body` knows.
+pub const PASSKEY_BODIES: u8 = 5;
+
+/// Parse `body` as passkey request kind `kind % PASSKEY_BODIES` (the
+/// passkey registration options and finish bodies, the address binding
+/// bodies, the passkey centre domain) and check `deny_unknown_fields`.
+/// Ok(parsed?) or Err(invariant violation).
+pub fn passkey_body(kind: u8, body: &[u8]) -> Result<bool, String> {
+    use crate::signup::{passkey_register, profile};
+    Ok(match kind % PASSKEY_BODIES {
+        0 => strict::<passkey_register::OptionsReq>(body)?.is_some(),
+        1 => strict::<passkey_register::FinishReq>(body)?.is_some(),
+        2 => strict::<profile::BindReq>(body)?.is_some(),
+        3 => strict::<profile::BindCodeReq>(body)?.is_some(),
+        _ => strict::<crate::settings::PasskeyDomainReq>(body)?.is_some(),
+    })
+}
+
 /// Render the order receipt with an arbitrary plan name and the code mail
 /// with an arbitrary code: (text, html) of each, both locales.
 pub fn mail_render(plan_name: &str, code: &str) -> Vec<(String, String, String)> {
