@@ -33,11 +33,18 @@
 //! request number (`out_request_no`, `<out_trade_no>R<n>`) makes it
 //! idempotent; an unknown outcome (network) stays `pending` and the
 //! reconcile loop (`refund_tick`) queries the provider and retries with the
-//! same number until it is confirmed; a refusal is `failed` (nothing
-//! moved; the admin may try again or choose another way). When the
-//! provider confirms, `apply_refund` records it like ③ (the amount as
-//! refunded at the provider) with the subscription effect and the
-//! customer's notice. ② **to the balance**. ③ **record only** — refunded
+//! same number until it is confirmed; a DEFINITE refusal (the codes in
+//! `alipay::refund_refused`) is `failed` (nothing moved; the admin may try
+//! again or choose another way) — any other gateway error (system error,
+//! unknown code) is an unknown outcome and stays `pending` (P2-3: `failed`
+//! would invite a second payout by another route). When the provider
+//! confirms, `apply_refund` records it like ③ (the amount as refunded at
+//! the provider) with the subscription effect and the customer's notice. If
+//! that cannot be recorded (e.g. the user is gone but the order still holds
+//! a balance part) the request becomes `confirmed` (P2-4): the money is
+//! gone, the panel alerts the admins, and the admin records it with an
+//! ordinary refund of ③ (`external_cents` = the confirmed amount, which
+//! `apply_refund` insists on); no other original-route refund is accepted. ② **to the balance**. ③ **record only** — refunded
 //! by hand in the provider's console, the real amount entered.
 //!
 //! Lock order (as `orders::apply_mark_paid`): `entitle::lock` → the order
@@ -332,6 +339,21 @@ pub async fn preview(conn: &mut PgConnection, order_id: Uuid) -> Result<Value, A
     }))
 }
 
+/// The order's original-route request when the provider refunded but the
+/// panel could not record it (P2-4).
+async fn confirmed_request(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+) -> sqlx::Result<Option<OriginalRequest>> {
+    let raw: Option<Value> = sqlx::query_scalar("SELECT refund_request FROM orders WHERE id = $1")
+        .bind(order_id)
+        .fetch_one(conn)
+        .await?;
+    Ok(raw
+        .and_then(|v| serde_json::from_value::<OriginalRequest>(v).ok())
+        .filter(|r| r.state == "confirmed"))
+}
+
 /// What the admin asked for.
 #[derive(Clone, Copy, Debug)]
 pub struct Refund<'a> {
@@ -384,25 +406,41 @@ pub async fn apply_refund(
 ) -> Result<Value, ApiError> {
     crate::entitle::lock(conn).await?;
     let (_, _, user, amount, balance, balance_state, _) = refundable(conn, order_id, true).await?;
+    // P2-4: the provider already refunded (original route, not recordable
+    // then): only the matching record-only refund is accepted — anything
+    // else would pay the customer twice.
+    let confirmed = confirmed_request(conn, order_id).await?;
+    if let Some(c) = &confirmed
+        && (req.to_balance || req.external_cents != Some(c.cents))
+    {
+        return Err(conflict!(
+            "order_admin.refund_confirmed_record",
+            "the provider already refunded {refunded_cents} cents: record exactly that (no to_balance, external_cents = that amount)",
+            refunded_cents = c.cents
+        ));
+    }
     let external = req.external(amount)?;
     let effect = if req.keep_plan {
         Effect::none(Unchanged::KeepPlan)
     } else {
         effect(conn, order_id).await?
     };
-    let balance_part = if balance_state == "held" { balance } else { 0 };
+    // The held balance part goes back to the balance — unless the user is
+    // gone (their balance went with them, like `orders::release_holds`):
+    // then only an out-of-band refund of the gateway part can be recorded.
+    let balance_part = if balance_state == "held" && user.is_some() {
+        balance
+    } else {
+        0
+    };
     let cash_part = if req.to_balance { amount } else { 0 };
     let credit = balance_part + cash_part;
-    let user = match (user, credit > 0) {
-        (Some(u), _) => Some(u),
-        (None, false) => None,
-        (None, true) => {
-            return Err(conflict!(
-                "order_admin.refund_user_gone",
-                "the user no longer exists; refund out of band without to_balance"
-            ));
-        }
-    };
+    if user.is_none() && credit > 0 {
+        return Err(conflict!(
+            "order_admin.refund_user_gone",
+            "the user no longer exists; refund out of band without to_balance"
+        ));
+    }
     // 低-2: the coupon use comes back (lock order: orders → coupons).
     let coupon_released = super::coupons::release_refunded(conn, order_id).await?;
     if let (Some(user), Some(revoke)) = (user, effect.revoke()) {
@@ -419,6 +457,12 @@ pub async fn apply_refund(
         e.order_id = Some(order_id);
         e.reason = Some(req.reason);
         super::ledger::apply_entry(conn, actor, &e).await?;
+    }
+    if let Some(mut c) = confirmed {
+        c.state = "done".into();
+        c.next_at = None;
+        c.done_at = Some(Utc::now());
+        store(conn, order_id, &c).await?;
     }
     let effect_json = effect.to_json();
     sqlx::query(
@@ -475,7 +519,8 @@ pub async fn apply_refund(
 pub struct OriginalRequest {
     pub out_request_no: String,
     pub cents: i64,
-    /// pending | done | failed.
+    /// pending | done | failed | confirmed (refunded at the provider, not
+    /// yet recorded: an admin records it, P2-4).
     pub state: String,
     pub attempts: i32,
     pub last_error: Option<String>,
@@ -541,6 +586,12 @@ pub async fn begin_original(
         ));
     }
     let prev: Option<OriginalRequest> = prev.and_then(|v| serde_json::from_value(v).ok());
+    if prev.as_ref().is_some_and(|p| p.state == "confirmed") {
+        return Err(conflict!(
+            "order_admin.refund_confirmed",
+            "the provider already refunded this order; record that refund instead"
+        ));
+    }
     // A failed request moved nothing: the same amount retries the same
     // number (idempotent), another amount gets the next number.
     let out_request_no = match &prev {
@@ -607,6 +658,9 @@ pub enum Settled {
     Done(Value),
     /// The provider refused (nothing moved): its message.
     Failed(String),
+    /// The provider refunded, but the panel could not record it (the
+    /// message): alerted, waiting for the admin to record it.
+    Confirmed(String),
     /// No answer yet: the reconcile loop keeps asking.
     Pending,
     /// Not pending any more (settled elsewhere meanwhile).
@@ -706,7 +760,7 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
             next.next_at = None;
             next.done_at = Some(Utc::now());
             store(&mut tx, order_id, &next).await?;
-            let result = apply_refund(
+            let applied = apply_refund(
                 &mut tx,
                 &actor,
                 order_id,
@@ -718,7 +772,17 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
                     portal: portal.as_deref(),
                 },
             )
-            .await?;
+            .await;
+            let result = match applied {
+                Ok(v) => v,
+                // Retry later: the request stays pending, the gateway is
+                // asked again (idempotent) and the recording redone.
+                Err(e) if e.is_transient() => return Err(e),
+                Err(e) => {
+                    drop(tx);
+                    return confirm_unrecorded(state, &actor, order_id, &r, e.message()).await;
+                }
+            };
             tx.commit().await?;
             let mut result = result;
             result["original"] = json!({
@@ -774,6 +838,70 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
     Ok(settled)
 }
 
+/// The provider confirmed the refund but `apply_refund` refused it for good
+/// (`why`): in its own transaction mark the request `confirmed` (so the
+/// reconcile loop stops, and the admin may record the refund as ③ — nothing
+/// else), audit `order.refund.confirmed` and alert the admins through the
+/// `billing` alert channels.
+async fn confirm_unrecorded(
+    state: &AppState,
+    actor: &Actor,
+    order_id: Uuid,
+    r: &OriginalRequest,
+    why: &str,
+) -> Result<Settled, ApiError> {
+    let mut tx = state.pg().begin().await?;
+    let cur: Option<Value> =
+        sqlx::query_scalar("SELECT refund_request FROM orders WHERE id = $1 FOR UPDATE")
+            .bind(order_id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !cur
+        .and_then(|v| serde_json::from_value::<OriginalRequest>(v).ok())
+        .is_some_and(|c| c.state == "pending" && c.out_request_no == r.out_request_no)
+    {
+        return Ok(Settled::Gone);
+    }
+    let mut next = r.clone();
+    next.state = "confirmed".into();
+    next.attempts += 1;
+    next.last_error = Some(why.chars().take(300).collect());
+    next.next_at = None;
+    store(&mut tx, order_id, &next).await?;
+    crate::audit::record(
+        &mut tx,
+        actor,
+        "order.refund.confirmed",
+        "order",
+        Some(order_id.to_string()),
+        Some(json!({ "refund_request": { "state": "pending" } })),
+        Some(json!({
+            "out_request_no": r.out_request_no,
+            "cents": r.cents,
+            "error": next.last_error,
+        })),
+    )
+    .await?;
+    let otn: String = sqlx::query_scalar("SELECT out_trade_no FROM orders WHERE id = $1")
+        .bind(order_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let msg = crate::alerts::channels::Message::billing(
+        &format!("[订单] 原路退款已在支付渠道成功，但面板无法记账：{otn}"),
+        &format!(
+            "订单：{otn}\n退款请求号：{}\n渠道已退：{}.{:02} 元\n无法记账的原因：{why}\n请在订单页按「记录已退款」补记同样的金额（不要再次原路退款或退到余额）。",
+            r.out_request_no,
+            r.cents / 100,
+            r.cents % 100,
+        ),
+        json!({ "order_id": order_id, "out_trade_no": otn, "cents": r.cents }),
+    );
+    super::orders::enqueue_billing_alert(&mut tx, order_id, &msg).await?;
+    tx.commit().await?;
+    tracing::error!(order = %order_id, "refund confirmed by the provider but not recorded");
+    Ok(Settled::Confirmed(why.to_string()))
+}
+
 /// Reconcile: settle the pending original-route refunds that are due
 /// (each claimed by pushing `next_at` out first, so instances do not race
 /// on one). Returns how many were looked at.
@@ -793,6 +921,9 @@ pub async fn refund_tick(state: &AppState) -> Result<usize, ApiError> {
         match settle_original(state, *id).await {
             Ok(Settled::Failed(e)) => {
                 tracing::warn!(order = %id, error = e, "original-route refund refused")
+            }
+            Ok(Settled::Confirmed(e)) => {
+                tracing::error!(order = %id, error = e, "original-route refund not recorded")
             }
             Ok(_) => {}
             Err(e) => tracing::warn!(order = %id, error = %e.message(), "original-route refund"),
