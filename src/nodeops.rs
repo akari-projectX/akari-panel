@@ -115,8 +115,12 @@ fn read_password_hash() -> Result<String> {
         Ok(p) if !p.is_empty() => p,
         _ => rpassword::prompt_password("password: ")?,
     };
-    if password.len() < 8 {
-        bail!("password must be at least 8 characters");
+    if !(crate::signup::PASSWORD_MIN..=crate::signup::PASSWORD_MAX).contains(&password.len()) {
+        bail!(
+            "password must be {}-{} bytes",
+            crate::signup::PASSWORD_MIN,
+            crate::signup::PASSWORD_MAX
+        );
     }
     crate::auth::hash_password(&password)
 }

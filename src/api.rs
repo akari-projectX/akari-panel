@@ -1056,12 +1056,7 @@ pub async fn create_user(
     user.require_admin()?;
     let email = crate::signup::email::parse(req.email.trim())
         .ok_or_else(|| bad_request!("signup.invalid_email", "invalid email address"))?;
-    if req.password.len() < 8 {
-        return Err(bad_request!(
-            "account.password_too_short",
-            "password must be at least 8 characters"
-        ));
-    }
+    crate::signup::check_password(&req.password)?;
     let role = req.role.as_deref().unwrap_or("user");
     if role != "user" && role != "admin" {
         return Err(bad_request!(
@@ -1298,13 +1293,8 @@ pub(crate) async fn apply_update_user(
             "role must be 'user' or 'admin'"
         ));
     }
-    if let Some(pw) = &password
-        && pw.len() < 8
-    {
-        return Err(bad_request!(
-            "account.password_too_short",
-            "password must be at least 8 characters"
-        ));
+    if let Some(pw) = &password {
+        crate::signup::check_password(pw)?;
     }
     // Your own password changes through POST /me/password, which asks for
     // the current one: a stolen admin session must not be able to set a new

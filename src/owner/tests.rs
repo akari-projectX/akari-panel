@@ -524,5 +524,14 @@ async fn an_admin_cannot_set_their_own_password_without_the_current_one() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // One password rule everywhere: the upper bound too.
+    let r = c
+        .req(
+            Method::PATCH,
+            &format!("/test/api/v1/users/{user}"),
+            Some(json!({"password": "x".repeat(300)})),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "account.password_too_long");
     db.drop().await;
 }
