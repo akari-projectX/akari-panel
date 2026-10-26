@@ -236,14 +236,13 @@
 
   /* ========== 页面框架（v1.4.0） ========== */
   .page { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
+  .page.out { opacity: 0; pointer-events: none; transition: opacity var(--dur-exit) var(--ease-in); }
   /* 定宽容器：两侧留出较宽边距（v1.4.0 的 .page-wrap） */
   .wrap { width: 100%; max-width: 1240px; margin-inline: auto; padding-inline: 56px; }
   main.wrap { flex: 1; padding-top: 0; padding-bottom: 56px; }
   /* 页头：大标题（30px / 700）+ 一行说明；上面留 48px，下面 8px，区块靠自己的留白分隔 */
-  .ph { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding-top: 48px; padding-bottom: 8px; }
-  .ph > div { min-width: 0; }
-  .page-title, .ph h1 { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; color: var(--fg); }
-  .page-sub, .ph p { margin-top: 10px; max-width: 620px; font-size: 15px; line-height: 1.75; letter-spacing: -.008em; color: var(--muted); overflow-wrap: anywhere; }
+  .page-title { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; color: var(--fg); }
+  .page-sub { margin-top: 10px; max-width: 620px; font-size: 15px; line-height: 1.75; letter-spacing: -.008em; color: var(--muted); overflow-wrap: anywhere; }
   /* 区块：靠留白分隔，不画线（只在相邻两块之间一道细线） */
   .quiet { color: var(--faint); font-size: 13px; }
   .link { color: var(--brand); font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
@@ -517,6 +516,8 @@
     background: var(--popover); color: var(--fg); outline: none;
     box-shadow: var(--shadow-dialog), 0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
     animation: dlg-in var(--dur-hover) var(--ease-out);
+    top: calc(var(--vv-top, 0px) + var(--vv-h, 100dvh) / 2);
+    max-height: calc(var(--vv-h, 100dvh) - 2 * max(12px, env(safe-area-inset-top), env(safe-area-inset-bottom)));
   }
   .dlg.wide { max-width: 560px; }
   .dlg.confirm { max-width: 420px; }
@@ -603,7 +604,6 @@
    文本框（.input）的聚焦边框照旧：那是「正在输入」的提示，不是键盘焦点环 */
 :root[data-input='pointer'] { --focus: none; }
 :root[data-input='pointer'] :focus-visible { outline: none; }
-:root[data-input='pointer'] .opt:has(input:focus-visible) { outline: none; }
 
 /* ========== 响应式（v1.4.0：1100 / 1024 / 640） ========== */
 @media (min-width: 1024px) {
@@ -616,7 +616,7 @@
 }
 @media (max-width: 640px) {
   .wrap, main:not(.wrap) > .lg-page { padding-inline: 20px; }
-  .page-title, .ph h1 { font-size: 26px; }
+  .page-title { font-size: 26px; }
   .err { padding-top: 40px; }
   .toasts { left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 12px); bottom: auto; width: auto; max-width: none; }
   .toast { animation-name: toast-in-top; }
