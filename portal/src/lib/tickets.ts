@@ -13,18 +13,18 @@ export const CATEGORY: Record<TicketCategory, string> = {
 };
 
 /** 优先级：文字 + 说明；cls = 文字颜色（高 = 琥珀、紧急 = 红，只用文字颜色） */
-export const PRIORITY: Record<TicketPriority, { text: string; hint: string; cls: string }> = {
-  low: { text: '低', hint: '咨询、建议，不着急', cls: 'pr-low' },
-  normal: { text: '普通', hint: '部分节点或功能异常', cls: 'pr-normal' },
-  high: { text: '高', hint: '无法正常使用', cls: 'pr-high' },
-  urgent: { text: '紧急', hint: '完全不能用、涉及付款', cls: 'pr-urgent' },
+export const PRIORITY: Record<TicketPriority, { text: string; hint: string; cls: string; bdg: string }> = {
+  low: { text: '低', hint: '咨询、建议，不着急', cls: 'pr-low', bdg: 'neutral' },
+  normal: { text: '普通', hint: '部分节点或功能异常', cls: 'pr-normal', bdg: 'info' },
+  high: { text: '高', hint: '无法正常使用', cls: 'pr-high', bdg: 'warn12' },
+  urgent: { text: '紧急', hint: '完全不能用、涉及付款', cls: 'pr-urgent', bdg: 'danger' },
 };
 
 /** 状态：文字 + content.css 的 .st 色点类 */
-export const STATE: Record<TicketStatus, { text: string; cls: string }> = {
-  open: { text: '待处理', cls: 'st' },
-  answered: { text: '已回复', cls: 'st ok' },
-  closed: { text: '已关闭', cls: 'st' },
+export const STATE: Record<TicketStatus, { text: string; cls: string; bdg: string }> = {
+  open: { text: '待处理', cls: 'st', bdg: 'info' },
+  answered: { text: '已回复', cls: 'st ok', bdg: 'success' },
+  closed: { text: '已关闭', cls: 'st', bdg: 'neutral' },
 };
 
 /** 发送快捷键的写法：苹果设备是 ⌘，其余 Ctrl */
