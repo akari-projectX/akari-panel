@@ -165,8 +165,24 @@ pub fn redact_addresses(s: &str) -> String {
 /// Deliver up to `max` due messages through `t`. Returns how many were
 /// claimed (sent or not).
 pub async fn deliver_due(pg: &PgPool, t: &dyn Transport, max: usize) -> sqlx::Result<usize> {
+    deliver_due_within(pg, t, max, SEND_TIMEOUT).await
+}
+
+/// Consecutive timed-out sends after which a batch stops: the relay is
+/// black-holed, and every further message would wait the full timeout too
+/// (50 messages x 60 s would hold the loop, and every verification code
+/// behind it, for most of an hour). The rest stays queued for the next tick.
+const MAX_CONSECUTIVE_TIMEOUTS: u32 = 3;
+
+pub(crate) async fn deliver_due_within(
+    pg: &PgPool,
+    t: &dyn Transport,
+    max: usize,
+    send_timeout: Duration,
+) -> sqlx::Result<usize> {
     let mut n = 0;
-    while n < max {
+    let mut timeouts = 0;
+    while n < max && timeouts < MAX_CONSECUTIVE_TIMEOUTS {
         let token = Uuid::new_v4();
         let Some(row) = claim(pg, token).await? else {
             break;
@@ -178,13 +194,18 @@ pub async fn deliver_due(pg: &PgPool, t: &dyn Transport, max: usize) -> sqlx::Re
             text: row.body_text.clone(),
             html: row.body_html.clone(),
         };
-        let res = match tokio::time::timeout(SEND_TIMEOUT, t.send(&msg)).await {
+        let res = match tokio::time::timeout(send_timeout, t.send(&msg)).await {
             Ok(r) => r,
             Err(_) => Err(SendError {
                 permanent: false,
                 message: "timed out".into(),
             }),
         };
+        if matches!(&res, Err(e) if e.message == "timed out") {
+            timeouts += 1;
+        } else {
+            timeouts = 0;
+        }
         match &res {
             Ok(()) => tracing::debug!(id = row.id, kind = %row.kind, "mail sent"),
             // SMTP replies often quote the recipient ("550 <x@y>: no such
