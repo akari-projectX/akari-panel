@@ -12,7 +12,7 @@
   import { headingId } from '@/lib/content-text';
 
   /* headings：给 h3 / h4 按顺序补上目录锚点 id（编号与 @/lib/content-text 的 outline 一致；只加属性，不改内容） */
-  let { html, headings = false }: { html?: string | null; headings?: boolean } = $props();
+  let { html, headings = false, article = false }: { html?: string | null; headings?: boolean; article?: boolean } = $props();
   let el = $state<HTMLDivElement>();
 
   $effect(() => {
@@ -22,5 +22,5 @@
 </script>
 
 {#if html}
-  <div class="rich" bind:this={el}>{@html html}</div>
+  <div class="rich" class:rich-article={article} bind:this={el}>{@html html}</div>
 {/if}
