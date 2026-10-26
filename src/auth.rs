@@ -208,6 +208,9 @@ impl IntoResponse for ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
+        if let Some(busy) = e.downcast_ref::<Argon2Busy>() {
+            return (*busy).into();
+        }
         tracing::error!(error = %e, "api internal error");
         ApiError::internal()
     }
@@ -306,9 +309,17 @@ pub fn scrub_password(password: &str) {
 // (agents miss their keepalive PINGs and the whole fleet drops at once). The
 // async wrappers run the hash on the blocking pool, and at most
 // `argon2_permits()` at a time: the blocking pool alone is no bound (512
-// threads x 19 MiB). Excess requests queue for a permit instead of failing.
-// Verify, hash and scrub take the same path (same queue, same work), so the
-// login's equal-work property (no account-existence oracle) is unchanged.
+// threads x 19 MiB).
+//
+// Audit batch 2 (P2-3): the queue for a permit is bounded too. An unbounded
+// queue let a flood of unauthenticated logins / sign-ups / reset attempts
+// hold a task (and its request) each for as long as the backlog took to
+// drain, which starved every other password check. Now at most
+// `argon2_queue_max()` requests wait, none longer than `ARGON2_WAIT`; the
+// rest are answered 503 `request.busy` at once (retry shortly). Verify, hash
+// and scrub take the same path (same queue, same work), so the login's
+// equal-work property (no account-existence oracle) is unchanged — and so is
+// the busy answer: it depends on load, never on the account.
 
 /// Concurrent argon2 runs per process: half the CPUs, at least 2. Leaves
 /// the other half of the machine to the runtime workers while still letting
@@ -318,47 +329,173 @@ pub fn argon2_permits() -> usize {
     (cores / 2).max(2)
 }
 
-fn argon2_gate() -> &'static Arc<tokio::sync::Semaphore> {
-    static GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
-    GATE.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(argon2_permits())))
+/// Requests that may wait for a permit (16 per permit: at ~50 ms a run the
+/// last in line waits well under `ARGON2_WAIT`).
+pub fn argon2_queue_max() -> usize {
+    argon2_permits() * 16
 }
 
-/// Runs `f` on the blocking pool under an argon2 permit. The permit moves
-/// into the blocking closure: a request that is cancelled while hashing (the
-/// client went away) still holds its permit until the CPU work ends, so
-/// cancellations cannot exceed the bound. `None` only if the task panicked.
-async fn argon2_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    // The semaphore is never closed; acquire cannot fail.
-    let permit = argon2_gate().clone().acquire_owned().await.ok()?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        f()
+/// The longest a request waits for a permit.
+pub const ARGON2_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The password-hash queue is full (or the wait ran out): ask the client to
+/// retry. Converts to 503 `request.busy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Argon2Busy;
+
+impl std::fmt::Display for Argon2Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("password hashing is busy")
+    }
+}
+
+impl std::error::Error for Argon2Busy {}
+
+impl From<Argon2Busy> for ApiError {
+    fn from(_: Argon2Busy) -> Self {
+        api_error!(
+            SERVICE_UNAVAILABLE,
+            "request.busy",
+            "the server is busy, try again shortly"
+        )
+    }
+}
+
+/// Permits plus a bounded waiting line.
+struct Argon2Gate {
+    permits: Arc<tokio::sync::Semaphore>,
+    waiting: std::sync::atomic::AtomicUsize,
+    queue_max: usize,
+    wait: std::time::Duration,
+}
+
+/// Leaves the line when dropped (the wait ended, however it ended).
+struct InLine<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for InLine<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Argon2Gate {
+    fn new(permits: usize, queue_max: usize, wait: std::time::Duration) -> Self {
+        Self {
+            permits: Arc::new(tokio::sync::Semaphore::new(permits)),
+            waiting: std::sync::atomic::AtomicUsize::new(0),
+            queue_max,
+            wait,
+        }
+    }
+
+    /// A permit now, or after a bounded wait in a bounded line.
+    async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Argon2Busy> {
+        use std::sync::atomic::Ordering;
+        if let Ok(p) = self.permits.clone().try_acquire_owned() {
+            return Ok(p);
+        }
+        if self.waiting.fetch_add(1, Ordering::SeqCst) >= self.queue_max {
+            self.waiting.fetch_sub(1, Ordering::SeqCst);
+            return Err(Argon2Busy);
+        }
+        let _line = InLine(&self.waiting);
+        match tokio::time::timeout(self.wait, self.permits.clone().acquire_owned()).await {
+            Ok(Ok(p)) => Ok(p),
+            // Timed out (the semaphore is never closed).
+            _ => Err(Argon2Busy),
+        }
+    }
+
+    /// Runs `f` on the blocking pool under a permit. The permit moves into
+    /// the blocking closure: a request that is cancelled while hashing (the
+    /// client went away) still holds its permit until the CPU work ends, so
+    /// cancellations cannot exceed the bound. A panicked task counts as
+    /// busy (nothing was computed).
+    async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, Argon2Busy> {
+        let permit = self.acquire().await?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            f()
+        })
+        .await
+        .map_err(|_| Argon2Busy)
+    }
+}
+
+fn argon2_gate() -> &'static Argon2Gate {
+    #[cfg(test)]
+    if let Some(g) = TEST_GATE.with(|g| g.get()) {
+        return g;
+    }
+    static GATE: OnceLock<Argon2Gate> = OnceLock::new();
+    GATE.get_or_init(|| {
+        // Unit tests run hundreds of debug-build hashes at once on a few
+        // cores: no test may see a busy answer unless it asks for one.
+        #[cfg(test)]
+        return Argon2Gate::new(
+            argon2_permits(),
+            1 << 20,
+            std::time::Duration::from_secs(900),
+        );
+        #[cfg(not(test))]
+        Argon2Gate::new(argon2_permits(), argon2_queue_max(), ARGON2_WAIT)
     })
-    .await
-    .ok()
 }
 
-/// `hash_password` off the async workers (see above).
+#[cfg(test)]
+thread_local! {
+    /// A test's own gate for the requests served on this thread.
+    static TEST_GATE: std::cell::Cell<Option<&'static Argon2Gate>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Tests: a gate with no permits and no line on this thread until the guard
+/// drops — every password hash / check answers `Argon2Busy` at once, so a
+/// route-level test sees what a saturated server answers (and which steps
+/// come before the hash).
+#[cfg(test)]
+pub(crate) fn saturate_argon2_for_test() -> impl Drop {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_GATE.with(|g| g.set(None));
+        }
+    }
+    let gate: &'static Argon2Gate = Box::leak(Box::new(Argon2Gate::new(0, 0, ARGON2_WAIT)));
+    TEST_GATE.with(|g| g.set(Some(gate)));
+    Restore
+}
+
+async fn argon2_blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Argon2Busy> {
+    argon2_gate().run(f).await
+}
+
+/// `hash_password` off the async workers (see above). A saturated queue is
+/// an `Argon2Busy` inside the error (`ApiError::from` makes it a 503).
 pub async fn hash_password_async(password: &str) -> anyhow::Result<String> {
     let password = password.to_owned();
-    argon2_blocking(move || hash_password(&password))
-        .await
-        .unwrap_or_else(|| Err(anyhow::anyhow!("password hashing task failed")))
+    match argon2_blocking(move || hash_password(&password)).await {
+        Ok(r) => r,
+        Err(busy) => Err(busy.into()),
+    }
 }
 
 /// `verify_password` off the async workers (see above).
-pub async fn verify_password_async(password: &str, hash: &str) -> bool {
+pub async fn verify_password_async(password: &str, hash: &str) -> Result<bool, Argon2Busy> {
     let (password, hash) = (password.to_owned(), hash.to_owned());
-    argon2_blocking(move || verify_password(&password, &hash))
-        .await
-        .unwrap_or(false)
+    argon2_blocking(move || verify_password(&password, &hash)).await
 }
 
 /// `scrub_password` off the async workers (see above): the same queue and
 /// the same work as a real verification.
-pub async fn scrub_password_async(password: &str) {
+pub async fn scrub_password_async(password: &str) -> Result<(), Argon2Busy> {
     let password = password.to_owned();
-    argon2_blocking(move || scrub_password(&password)).await;
+    argon2_blocking(move || scrub_password(&password)).await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -853,6 +990,11 @@ mod argon2_tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// A password nobody typed (tests must not carry password literals).
+    fn random_pw() -> String {
+        format!("pw-{}", Uuid::new_v4().simple())
+    }
+
     /// Review 2026-10-02 C1: a burst of logins must not starve the runtime.
     /// Two workers, many password checks in flight: a ticker on the same
     /// runtime keeps firing on time (with argon2 on the workers it stalled
@@ -860,7 +1002,8 @@ mod argon2_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn runtime_stays_responsive_during_a_login_burst() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let hash = hash_password("correct horse").unwrap();
+        let (good, bad, unknown) = (random_pw(), random_pw(), random_pw());
+        let hash = hash_password(&good).unwrap();
         let burst = argon2_permits() * 4;
         let done = Arc::new(AtomicBool::new(false));
         let ticker = tokio::spawn({
@@ -881,12 +1024,13 @@ mod argon2_tests {
         let mut checks = tokio::task::JoinSet::new();
         for i in 0..burst {
             let hash = hash.clone();
+            let (good, bad, unknown) = (good.clone(), bad.clone(), unknown.clone());
             checks.spawn(async move {
                 match i % 3 {
-                    0 => verify_password_async("correct horse", &hash).await,
-                    1 => !verify_password_async("wrong horse", &hash).await,
+                    0 => verify_password_async(&good, &hash).await.unwrap(),
+                    1 => !verify_password_async(&bad, &hash).await.unwrap(),
                     _ => {
-                        scrub_password_async("unknown account").await;
+                        scrub_password_async(&unknown).await.unwrap();
                         true
                     }
                 }
@@ -937,5 +1081,49 @@ mod argon2_tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(PEAK.load(Ordering::SeqCst) <= argon2_permits());
+    }
+
+    /// Audit batch 2, P2-3: the line for a permit is bounded. With one
+    /// permit and room for two waiters, a fourth request is refused at once;
+    /// a waiter that is not served within the wait is refused too; once the
+    /// backlog drains the gate serves again.
+    #[tokio::test]
+    async fn the_queue_is_bounded_and_answers_busy() {
+        let gate = Arc::new(Argon2Gate::new(1, 2, Duration::from_millis(150)));
+        let slow = |gate: Arc<Argon2Gate>| {
+            tokio::spawn(async move {
+                gate.run(|| std::thread::sleep(Duration::from_millis(400)))
+                    .await
+            })
+        };
+        let running = slow(gate.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Two wait in line ...
+        let w1 = slow(gate.clone());
+        let w2 = slow(gate.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        // ... the third finds the line full.
+        let t = Instant::now();
+        assert_eq!(gate.run(|| ()).await, Err(Argon2Busy));
+        assert!(t.elapsed() < Duration::from_millis(100), "refused at once");
+        // The waiters give up after the wait: nobody holds a request for
+        // the whole backlog.
+        assert_eq!(w1.await.unwrap(), Err(Argon2Busy));
+        assert_eq!(w2.await.unwrap(), Err(Argon2Busy));
+        assert_eq!(running.await.unwrap(), Ok(()));
+        assert_eq!(gate.waiting.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(gate.run(|| 7).await, Ok(7), "served again");
+    }
+
+    #[test]
+    fn busy_is_a_503_with_its_own_code() {
+        let e: ApiError = Argon2Busy.into();
+        assert_eq!(
+            (e.status(), e.code()),
+            (StatusCode::SERVICE_UNAVAILABLE, "request.busy")
+        );
+        // Through anyhow (hash_password_async's error) too.
+        let e: ApiError = anyhow::Error::from(Argon2Busy).into();
+        assert_eq!(e.code(), "request.busy");
     }
 }

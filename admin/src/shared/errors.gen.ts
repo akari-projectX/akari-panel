@@ -321,6 +321,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "release.signature_invalid": ["签名校验失败：{detail}", "{detail}"],
   "release.upload_interrupted": ["上传中断，请重试", "Upload interrupted"],
   "request.body_too_large": ["提交的内容过大", "The request is too large"],
+  "request.busy": ["服务器繁忙，请稍后再试", "The server is busy. Please try again shortly."],
   "request.field_not_null": ["{field} 不能为空", "{field} cannot be empty"],
   "request.field_required": ["请填写 {field}", "{field} is required"],
   "request.field_too_long": ["{field} 最多 {max} 个字符", "{field} can be at most {max} characters"],

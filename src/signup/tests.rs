@@ -121,6 +121,11 @@ async fn register_via_api(c: &mut Client, db: &TestDb, email: &str, password: &s
     r.json()
 }
 
+/// A password nobody typed (tests must not carry password literals).
+fn random_pw() -> String {
+    format!("pw-{}", Uuid::new_v4().simple())
+}
+
 async fn user_id(db: &TestDb, email: &str) -> Uuid {
     sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
         .bind(email)
@@ -2214,5 +2219,130 @@ async fn user_invites_switch() {
         ic.get("/test/api/v1/me/invite-codes").await.json()["code"]["code"],
         code.as_str()
     );
+    db.drop().await;
+}
+
+/// Audit batch 2, P2-3: with the password-hash queue saturated, the cheap
+/// checks still come first. A wrong code / unknown link is the usual 400
+/// without a hash; a good one is answered 503 `request.busy` and is NOT
+/// used up (retry works); login answers busy without charging the failed
+/// attempt; changing the password hashes before the transaction and changes
+/// nothing when busy.
+#[tokio::test]
+async fn saturated_hashing_answers_busy_after_the_cheap_checks() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state(&db).await;
+    enable_mail(&db).await;
+    set_signup(
+        &db,
+        "register_enabled = true, email_verify = true, reset_enabled = true",
+    )
+    .await;
+    let anon = Client::new(&st, rand_ip());
+
+    // A registration code and a reset link, both good.
+    let fresh = addr();
+    let r = anon
+        .post(
+            "/test/auth/register/code",
+            json!({ "email": fresh, "locale": "en" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let (_, body) = wait_mail(&db, "register_code", &fresh).await;
+    let code = code_in(&body);
+    let wrong = if code == "999999" { "999998" } else { "999999" };
+    let (old_pw, new_pw, newer_pw, reg_pw) = (random_pw(), random_pw(), random_pw(), random_pw());
+    let id = with_password(&db, &old_pw).await;
+    let email = addr();
+    verified(&db, id, &email).await;
+    anon.post(
+        "/test/auth/password-reset/request",
+        json!({ "email": email }),
+    )
+    .await;
+    let (_, body) = wait_mail(&db, "password_reset", &email).await;
+    let token = token_in(&body);
+
+    let busy = crate::auth::saturate_argon2_for_test();
+    // Bad proofs: the usual refusal, no hash needed.
+    let r = anon
+        .post(
+            "/test/auth/register",
+            json!({ "email": fresh, "code": wrong, "password": reg_pw, "locale": "en" }),
+        )
+        .await;
+    assert_eq!(r.json()["error"], register::INVALID_CODE, "{:?}", r.json());
+    let r = anon
+        .post(
+            "/test/auth/password-reset",
+            json!({ "token": "0".repeat(43), "password": new_pw }),
+        )
+        .await;
+    assert_eq!(r.json()["error"], reset::INVALID_LINK);
+    // Good proofs: busy, and not used up.
+    let r = anon
+        .post(
+            "/test/auth/register",
+            json!({ "email": fresh, "code": code, "password": reg_pw, "locale": "en" }),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::SERVICE_UNAVAILABLE, json!("request.busy"))
+    );
+    let r = anon
+        .post(
+            "/test/auth/password-reset",
+            json!({ "token": token, "password": new_pw }),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::SERVICE_UNAVAILABLE, json!("request.busy"))
+    );
+    // Login: busy for any account (existing or not), not a failed attempt.
+    let mut c = Client::new(&st, rand_ip());
+    for who in [email.clone(), addr()] {
+        for _ in 0..crate::login_limit::PER_LOGIN + 2 {
+            let r = c.login(&who, &old_pw).await;
+            assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.json());
+        }
+    }
+    drop(busy);
+
+    // Load gone: everything that was refused for load works, once.
+    assert_eq!(c.login(&email, &old_pw).await.status, StatusCode::OK);
+    let r = anon
+        .post(
+            "/test/auth/register",
+            json!({ "email": fresh, "code": code, "password": reg_pw, "locale": "en" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    // Changing the password while busy changes nothing.
+    let busy = crate::auth::saturate_argon2_for_test();
+    let r = c
+        .post(
+            "/test/api/v1/me/password",
+            json!({ "current_password": old_pw, "new_password": newer_pw }),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::SERVICE_UNAVAILABLE, json!("request.busy"))
+    );
+    drop(busy);
+    let mut again = Client::new(&st, rand_ip());
+    assert_eq!(again.login(&email, &old_pw).await.status, StatusCode::OK);
+    let r = anon
+        .post(
+            "/test/auth/password-reset",
+            json!({ "token": token, "password": new_pw }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     db.drop().await;
 }

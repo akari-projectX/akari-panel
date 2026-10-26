@@ -745,9 +745,17 @@ pub async fn confirm_holder(
         attempt.release(state).await;
         return Err(ApiError::unauthorized());
     };
-    if !crate::auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
-        attempt.fail();
-        return Err(bad_request!("account.invalid_password", "invalid password"));
+    match crate::auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
+        Ok(true) => {}
+        Ok(false) => {
+            attempt.fail();
+            return Err(bad_request!("account.invalid_password", "invalid password"));
+        }
+        Err(busy) => {
+            // Load, not a wrong password.
+            attempt.release(state).await;
+            return Err(busy.into());
+        }
     }
     attempt.release(state).await;
     Ok(())

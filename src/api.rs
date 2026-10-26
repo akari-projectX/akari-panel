@@ -86,7 +86,11 @@ pub async fn login(
     {
         Ok(crate::botguard::Verdict::Pass) => {}
         Ok(crate::botguard::Verdict::Trap) => {
-            auth::scrub_password_async(&req.password).await;
+            if let Err(busy) = auth::scrub_password_async(&req.password).await {
+                // Load, not a credential failure.
+                attempt.release(&state).await;
+                return Err(busy.into());
+            }
             attempt.fail();
             return Err(ApiError::unauthorized());
         }
@@ -226,11 +230,11 @@ async fn check_credentials(
     // (`auth::PortalUser`: ban reason and tickets, W28-c). Disabled admins
     // do not log in at all.
     let Some(row) = row.filter(|r| may_sign_in(r) && r.password_hash.is_some()) else {
-        auth::scrub_password_async(password).await;
+        auth::scrub_password_async(password).await?;
         return Ok(Checked::Failed(account));
     };
     if !auth::verify_password_async(password, row.password_hash.as_deref().unwrap_or_default())
-        .await
+        .await?
     {
         return Ok(Checked::Failed(account));
     }
