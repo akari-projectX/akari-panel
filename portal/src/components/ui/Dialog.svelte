@@ -12,13 +12,15 @@
    * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。wide：520px（确认订单，样稿同宽）。
    */
   let {
-    open = $bindable(false), onOpenChange, dismissible = true, wide = false, alert = false, tone = 'brand', title, description, icon, children, footer,
+    open = $bindable(false), onOpenChange, dismissible = true, wide = false, alert = false, reading = false, meta, tone = 'brand', title, description, icon, children, footer,
   }: {
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
     dismissible?: boolean;
     wide?: boolean;
     alert?: boolean;
+    reading?: boolean;
+    meta?: Snippet;
     tone?: 'brand' | 'warn' | 'danger';
     title: string;
     description?: string;
@@ -35,24 +37,33 @@
   <Dialog.Portal>
     <Dialog.Overlay class="dlg-overlay" />
     <D.Content
-      class={['dlg', wide && 'wide', alert && 'confirm']}
+      class={['dlg', wide && 'wide', alert && 'confirm', reading && 'reading']}
       data-tone={tone}
       escapeKeydownBehavior={dismissible ? 'close' : 'ignore'}
       interactOutsideBehavior={dismissible ? 'close' : 'ignore'}
     >
-      <header>
-        <div class="dlg-head">
-          {@render icon?.()}
-          <div>
-            <Dialog.Title level={2}>{title}</Dialog.Title>
-            {#if description}<Dialog.Description>{description}</Dialog.Description>{/if}
-          </div>
-        </div>
-        {#if dismissible}
+      {#if reading}
+        <header>
+          {#if meta}<div class="rd-meta">{@render meta()}</div>{/if}
+          <Dialog.Title level={2}>{title}</Dialog.Title>
+          {#if description}<Dialog.Description class="sr">{description}</Dialog.Description>{/if}
           <Dialog.Close class="dlg-x" aria-label={t('关闭')}><X size={16} strokeWidth={1.75} aria-hidden="true" /></Dialog.Close>
-        {/if}
-      </header>
-      {#if children}<div class="bd">{@render children()}</div>{/if}
+        </header>
+      {:else}
+        <header>
+          <div class="dlg-head">
+            {@render icon?.()}
+            <div>
+              <Dialog.Title level={2}>{title}</Dialog.Title>
+              {#if description}<Dialog.Description>{description}</Dialog.Description>{/if}
+            </div>
+          </div>
+          {#if dismissible}
+            <Dialog.Close class="dlg-x" aria-label={t('关闭')}><X size={16} strokeWidth={1.75} aria-hidden="true" /></Dialog.Close>
+          {/if}
+        </header>
+      {/if}
+      {#if children}<div class="bd">{#if reading}<div class="rd-in">{@render children()}</div>{:else}{@render children()}{/if}</div>{/if}
       {#if footer}<footer>{@render footer()}</footer>{/if}
     </D.Content>
   </Dialog.Portal>

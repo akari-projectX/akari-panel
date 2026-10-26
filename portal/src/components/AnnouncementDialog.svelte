@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Megaphone from '@lucide/svelte/icons/megaphone';
+  import Pin from '@lucide/svelte/icons/pin';
   import type { Announcement } from '@/api';
   import { formatDateTime } from '@/lib/format';
   import RichHtml from './RichHtml.svelte';
@@ -16,12 +18,24 @@
   $effect(() => { if (item) shown = item; });
   const n = $derived(item ?? shown);
   const text = $derived(n ? announcementText(n, i18n.locale) : null);
-  const meta = $derived(n ? `${formatDateTime(n.created_at)}${n.pinned ? ` · ${t('置顶')}` : ''}` : '');
 </script>
 
-<Dialog open={!!item} onOpenChange={(o) => { if (!o) onclose(); }} title={text?.title ?? ''} description={meta}>
+<Dialog open={!!item} onOpenChange={(o) => { if (!o) onclose(); }} reading title={text?.title ?? ''}>
+  {#snippet meta()}
+    {#if n}
+      <Megaphone class="rd-ann" size={14} strokeWidth={1.75} aria-hidden="true" />
+      {#if n.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+      <span class="tnum">{formatDateTime(n.created_at)}</span>
+    {/if}
+  {/snippet}
   {#if text}<RichHtml html={text.html} />{/if}
   {#snippet footer()}
-    <button type="button" class="btn" onclick={onclose}>{t('我知道了')}</button>
+    <div class="ok-row"><button type="button" class="btn" onclick={onclose}>{t('我知道了')}</button></div>
   {/snippet}
 </Dialog>
+
+<style>
+  :global(.rd-ann) { color: var(--brand); }
+  .ok-row { display: flex; justify-content: flex-end; }
+  .ok-row .btn { height: 32px; }
+</style>
