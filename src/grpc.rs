@@ -208,7 +208,15 @@ pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
 /// BASE_MISMATCH for what it cannot apply in place (a re-add with a new key
 /// over a tombstone, too many tombstones): the panel then sends a Snapshot,
 /// which also compacts. Older agents get a Snapshot for any removal there.
+/// Superseded by `SS_NATIVE_REMOVE_PROTOCOL`; this is the rule for agents
+/// 5..=7 only.
 pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
+
+/// Agents from this protocol on run an xray whose multi-user Shadowsocks 2022
+/// server looks users up by hash/email, so RemoveUser is safe against
+/// in-flight handshakes: removal and rotation on a Shadowsocks server are
+/// ordinary deltas, like on every other protocol.
+pub const SS_NATIVE_REMOVE_PROTOCOL: u32 = 8;
 
 /// W10: agents from this protocol on obtain and renew the server certificate
 /// for `servers.tls_domain` themselves (ConfigSnapshot.acme) and report it
@@ -441,12 +449,12 @@ pub struct SetDigest {
     users: BTreeMap<UserKey, [u8; 16]>,
     /// W7: non-zero speed limits (bytes/s) of the users, by user.
     limits: BTreeMap<UserKey, u64>,
-    /// W8: the inbounds include a Shadowsocks one. The agent refuses
-    /// deltas that rotate users there (xray's multi-user SS2022 inbound
-    /// cannot safely shrink while running; akari-agent `shrinkUnsafe`) —
-    /// and, below `SS_TOMBSTONE_PROTOCOL`, removals too — so such changes
-    /// go out as a Snapshot right away instead of a delta the agent
-    /// answers BASE_MISMATCH.
+    /// W8: the inbounds include a Shadowsocks one. Agents below
+    /// `SS_NATIVE_REMOVE_PROTOCOL` refuse deltas that rotate users there
+    /// (their xray's multi-user SS2022 inbound cannot safely shrink while
+    /// running) — and, below `SS_TOMBSTONE_PROTOCOL`, removals too — so
+    /// such changes go out as a Snapshot right away instead of a delta the
+    /// agent answers BASE_MISMATCH.
     shrink_unsafe: bool,
 }
 
@@ -572,8 +580,8 @@ fn drops_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
 
 /// Like `drops_credential_digest`, but only users that stay with changed
 /// credentials count (a user that is gone does not): on a Shadowsocks server
-/// of a protocol >= `SS_TOMBSTONE_PROTOCOL` agent, removals are deltas and
-/// rotations Snapshots. Conservative: any change of a staying user's
+/// of a `SS_TOMBSTONE_PROTOCOL`..`SS_NATIVE_REMOVE_PROTOCOL` agent, removals
+/// are deltas and rotations Snapshots. Conservative: any change of a staying user's
 /// credentials counts, on any inbound.
 fn rotates_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
     base.users
@@ -773,7 +781,7 @@ impl SyncState {
         if self.remove_rebuild && drops_credential_digest(&bset, want) {
             return None;
         }
-        if bset.shrink_unsafe {
+        if bset.shrink_unsafe && self.protocol < SS_NATIVE_REMOVE_PROTOCOL {
             let unsafe_change = if self.protocol >= SS_TOMBSTONE_PROTOCOL {
                 rotates_credential_digest(&bset, want)
             } else {
@@ -3578,6 +3586,7 @@ mod tests {
     /// delta); additions stay deltas. W9: from SS_TOMBSTONE_PROTOCOL on,
     /// removals (and re-adds) are deltas too; rotations stay Snapshots, as
     /// does everything that drops a credential in remove_mode=rebuild.
+    /// From SS_NATIVE_REMOVE_PROTOCOL on, rotations are deltas as well.
     #[test]
     fn shadowsocks_node_shrinks_by_snapshot() {
         let t0 = Instant::now();
@@ -3603,6 +3612,13 @@ mod tests {
             (SS_TOMBSTONE_PROTOCOL, false, &s1, &rotate, false),
             (SS_TOMBSTONE_PROTOCOL, true, &s1, &remove, false),
             (SS_TOMBSTONE_PROTOCOL, true, &s1, &rotate, false),
+            (SS_NATIVE_REMOVE_PROTOCOL - 1, false, &s1, &rotate, false),
+            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &add, true),
+            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &remove, true),
+            (SS_NATIVE_REMOVE_PROTOCOL, false, &remove, &readd, true),
+            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &rotate, true),
+            (SS_NATIVE_REMOVE_PROTOCOL, true, &s1, &remove, false),
+            (SS_NATIVE_REMOVE_PROTOCOL, true, &s1, &rotate, false),
         ] {
             let mut s = SyncState {
                 remove_rebuild: rebuild,

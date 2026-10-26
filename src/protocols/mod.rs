@@ -30,8 +30,8 @@
 //! | hysteria    | `{"auth"}` (64 hex)           |                             |
 //!
 //! The agent re-checks everything that matters for safety after xray's own
-//! parse (method/key lengths, protocol of the inbound, Shadowsocks shrink
-//! rule); these checks give the admin the error early and keep
+//! parse (method/key lengths, protocol of the inbound, Shadowsocks
+//! credential shape); these checks give the admin the error early and keep
 //! subscriptions renderable.
 
 pub mod generate;

@@ -15,9 +15,10 @@ agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 wo
 
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
-- `Hello.protocol_version`：当前 7（W28-a：按账号共享限速，见下）。各版本含义：
+- `Hello.protocol_version`：当前 8（SS2022 原生移除/轮换，见下）。各版本含义：
+  - 8：SS2022 的移除与凭据轮换是原生 delta（agent 的 xray 按 hash/email 查用户，无墓碑；面板对协议 ≥8 的 SS 节点不再把轮换改发 Snapshot，`grpc::SS_NATIVE_REMOVE_PROTOCOL`）。5–7 的 agent 保留墓碑规则。
   - 6：agent 自己用 ACME 申请/续期节点证书（W10）。`ConfigSnapshot.acme`（AcmeConfig：domain、directory_url（空 = Let's Encrypt）、email），`Heartbeat.cert`（CertStatus：state PENDING/VALID/FAILED、not_after、next_attempt、last_error ≤512 字节、error_kind DNS/CONNECTION/RATE_LIMITED/PORT_BUSY/CAA/REJECTED/CA_UNREACHABLE、challenge、failures）。acme 不进 state hash（改域名 bump config_version → Snapshot）。**字段号分段**：W10 用既有消息的 10–19，W11 用 20–49。
-  - 5：SS2022 墓碑删除。
+  - 5：SS2022 墓碑删除（协议 8 起被原生删除取代，仍用于 5–7 的旧 agent）。
   - 4：执行 `UserOp.speed_limit_bytes_per_sec` 每用户限速（W7）。
   - 3：自更新。
   - 2：会用 `AgentChannel.Renew` 续期证书。
