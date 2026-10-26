@@ -111,7 +111,7 @@
   {#if q}
     <div role="status" class="found">
       <span>{tp('关于「{q}」的搜索结果：找到 {n} 篇匹配文档', { q, n: found.data ? shown.length : 0 })}</span>
-      <button type="button" class="link" onclick={clearSearch}>{t('清除搜索')}</button>
+      <button type="button" class="btn ghost sm clr" onclick={clearSearch}>{t('清除搜索')}</button>
     </div>
   {/if}
 </div>
@@ -175,10 +175,13 @@
   .device { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13.5px; color: var(--muted); }
   .device :global(svg) { flex: none; }
   .dot-sep { color: var(--faint); }
-  .found { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+  .found { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--hover) 50%, transparent); font-size: 13px; color: var(--muted); }
+  .found .clr { height: 28px; padding: 0 8px; color: var(--brand); }
+  .found .clr:hover { color: var(--brand-ink); }
 
   .top-tools { margin-top: 36px; }
-  .docs { margin-top: 48px; }
+  .docs { margin-top: 40px; }
+  @media (min-width: 640px) { .docs { margin-top: 48px; } }
   .docs-h { margin-bottom: 16px; }
   .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
   @media (min-width: 768px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
