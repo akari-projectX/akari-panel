@@ -1,5 +1,7 @@
 <script lang="ts">
+  import Headphones from '@lucide/svelte/icons/headphones';
   import Send from '@lucide/svelte/icons/send';
+  import UserRound from '@lucide/svelte/icons/user-round';
   import { ticketApi, type TicketDetail, type TicketRow } from '@/api';
   import { K } from '@/lib/cache';
   import { formatDateTime } from '@/lib/format';
@@ -35,11 +37,6 @@
 
   const status = $derived((ticket && detail.data?.id === ticket.id && detail.data.status) || th?.status);
   const closed = $derived(status === 'closed');
-  const meta = $derived(th
-    ? [t(CATEGORY[th.category]), tp('{level}优先级', { level: t(PRIORITY[th.priority].text) }), status ? t(STATE[status].text) : '', formatDateTime(th.created_at)]
-      .filter(Boolean).join(' · ')
-    : '');
-
   let reply = $state('');
   $effect(() => { if (ticket) reply = ''; });
   const replying = new Pending();
@@ -95,18 +92,29 @@
   }
 </script>
 
-<Dialog open={!!ticket} onOpenChange={(o) => { if (!o) onclose(); }} wide title={th?.subject ?? ''} description={meta}>
+<Dialog open={!!ticket} onOpenChange={(o) => { if (!o) onclose(); }} reading title={th?.subject ?? ''} description={th ? t(CATEGORY[th.category]) : ''}>
+  {#snippet meta()}
+    {#if th}
+      <span>{t(CATEGORY[th.category])}</span>
+      <span class={['bdg', 'rd-pill', PRIORITY[th.priority].bdg]}>{tp('{level}优先级', { level: t(PRIORITY[th.priority].text) })}</span>
+      {#if status}<span class={['bdg', STATE[status].bdg]}>{t(STATE[status].text)}</span>{/if}
+      <span class="tnum">{formatDateTime(th.created_at)}</span>
+    {/if}
+  {/snippet}
   <div class="msgs">
     {#if detail.loading && !detail.data}
       <Loading rows={2} />
     {:else if detail.error && !detail.data}
       <LoadError error={detail.error} onretry={detail.reload} />
     {:else if detail.data}
-      {#if detail.data.order_no}<p class="order num">{tp('关联订单 {n}', { n: detail.data.order_no })}</p>{/if}
+      {#if detail.data.order_no}<p class="order">{tp('关联订单 {n}', { n: detail.data.order_no })}</p>{/if}
       {#each detail.data.messages as m (m.id)}
         <div class="msg" class:mine={!m.staff}>
-          <div class="who"><b>{m.staff ? t('客服') : t('我')}</b><span class="num">{formatDateTime(m.created_at)}</span></div>
-          <div class="bubble">{m.body}</div>
+          <div class="av">{#if m.staff}<Headphones size={14} strokeWidth={1.75} aria-hidden="true" />{:else}<UserRound size={14} strokeWidth={2.2} aria-hidden="true" />{/if}</div>
+          <div class="col">
+            <div class="who"><b>{m.staff ? t('客服') : t('我')}</b><span class="tnum">{formatDateTime(m.created_at)}</span></div>
+            <div class="bubble">{m.body}</div>
+          </div>
         </div>
       {/each}
       <div bind:this={end}></div>
@@ -120,7 +128,7 @@
         <label for="ticket-reply" class="sr">{t('回复此工单…')}</label>
         <textarea id="ticket-reply" class="input" rows="2" placeholder={t('回复此工单…')} bind:value={reply} onkeydown={key}></textarea>
         <div class="acts">
-          <button type="button" class="textbtn quiet" disabled={closing.busy} onclick={() => (asking = true)}>{t('问题已解决，关闭工单')}</button>
+          <button type="button" class="btn ghost sm muted quiet" disabled={closing.busy} onclick={() => (asking = true)}>{t('问题已解决，关闭工单')}</button>
           <span class="keys">{SEND_KEY}</span>
           <button type="button" class="btn pri" disabled={replying.busy || !reply.trim()} onclick={send}>
             <Send size={14} strokeWidth={1.75} aria-hidden="true" />{replying.busy ? t('发送中') : t('发送')}
@@ -141,28 +149,33 @@
 />
 
 <style>
-  .msgs { display: flex; flex-direction: column; gap: 18px; min-height: 80px; }
+  .msgs > * + * { margin-top: 20px; }
   .order { font-size: 12.5px; color: var(--muted); }
-  .msg { display: flex; flex-direction: column; align-items: flex-start; max-width: 82%; }
-  .msg.mine { align-self: flex-end; align-items: flex-end; }
-  .who { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+  .msg { display: flex; gap: 10px; }
+  .msg.mine { flex-direction: row-reverse; }
+  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, #10b981 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 500; }
+  .mine .av { background: linear-gradient(135deg, var(--brand), var(--brand-hover)); color: #fff; }
+  .col { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 80%; }
+  .mine .col { align-items: flex-end; }
+  .who { display: flex; align-items: baseline; gap: 8px; }
   .mine .who { flex-direction: row-reverse; }
-  .who b { font-weight: 600; color: var(--fg); }
+  .who b { font-size: 12.5px; font-weight: 600; }
   .who span { font-size: 11.5px; color: var(--muted); }
   .bubble {
-    margin-top: 6px; padding: 10px 14px; border-radius: 10px; background: var(--secondary); color: var(--body);
+    margin-top: 6px; padding: 10px 14px; border-radius: 16px 16px 16px 6px; background: var(--hover); color: var(--body);
     font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere;
   }
-  .mine .bubble { background: var(--brand-soft); color: var(--fg); }
-  .closed { flex: 1; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
-  .reply { display: flex; flex-direction: column; gap: 10px; width: 100%; }
-  .reply textarea { max-height: 160px; }
-  .acts { display: flex; align-items: center; gap: 12px; }
-  .acts .textbtn { margin-right: auto; font-size: 13px; }
-  .keys { font-size: 11.5px; color: var(--muted); }
-  .acts .btn { flex: none; }
-  @media (max-width: 720px) {
+  .mine .bubble { border-radius: 16px 16px 6px 16px; background: var(--brand); color: var(--on-brand); }
+  .closed { font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+  .reply { display: flex; flex-direction: column; gap: 10px; }
+  .reply textarea { height: 64px; min-height: 64px; max-height: 160px; padding: 8px 10px; line-height: 20px; resize: none; }
+  .acts { display: flex; align-items: center; gap: 8px; }
+  .acts .quiet { margin-left: -10px; }
+  .keys { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+  .acts .btn.pri { flex: none; height: 32px; }
+  .acts { height: 32px; }
+  @media (max-width: 639px) {
     .keys { display: none; }
-    .acts .btn { flex: none; }
+    .acts .btn.pri { margin-left: auto; }
   }
 </style>
