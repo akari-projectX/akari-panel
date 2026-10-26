@@ -116,7 +116,7 @@
     </div>
 
     <div class="sub-qr">
-      <div class="sub-box"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><Qr value={url} /></div>
+      <div class="sub-box"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><Qr value={url} mark /></div>
       <div class="sub-qk">{t('扫码导入')}</div>
     </div>
   </div>
