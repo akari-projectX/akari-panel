@@ -605,6 +605,15 @@ done
 [ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: good login failed"; exit 1; }
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
+# Audit auth P3-2: an admin's own password changes only through /me/password
+# (with the current one), never through PATCH /users/{self}.
+[ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/users/$ROOT_ID" -H 'Content-Type: application/json' \
+    -d '{"password":"another-password-123"}')" = "400" ] && last_json "d['code']" | matches '^user.password_self$' \
+  || { echo "FAIL: PATCH /users/{self} set the admin's own password"; cat /tmp/akari-smoke/last; exit 1; }
+# Audit auth P3-15: the placeholder domain of pending passkey accounts is no address.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"pending-x@pending.invalid","password":"placeholder-pass-1"}')" = "400" ] \
+  || { echo "FAIL: pending.invalid accepted as an address"; cat /tmp/akari-smoke/last; exit 1; }
 echo "login: ok"
 
 echo "== D1/D7: email login, no second factor =="
