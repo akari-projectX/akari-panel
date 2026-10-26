@@ -8,30 +8,30 @@ use serde_json::json;
 use super::proxy::{Proxy, encode_fragment};
 
 fn query_params(p: &Proxy, include_flow: bool) -> String {
-    let mut params = vec![format!("type={}", p.net.network())];
+    let mut params = vec![format!("type={}", encode_fragment(p.net.network()))];
     if p.net.security != "none" {
-        params.push(format!("security={}", p.net.security));
+        params.push(format!("security={}", encode_fragment(&p.net.security)));
     }
     if include_flow && !p.flow.is_empty() {
-        params.push(format!("flow={}", p.flow));
+        params.push(format!("flow={}", encode_fragment(&p.flow)));
     }
     if !p.net.sni.is_empty() {
-        params.push(format!("sni={}", p.net.sni));
+        params.push(format!("sni={}", encode_fragment(&p.net.sni)));
     }
     if !p.net.public_key.is_empty() {
-        params.push(format!("pbk={}", p.net.public_key));
+        params.push(format!("pbk={}", encode_fragment(&p.net.public_key)));
     }
     if !p.net.short_id.is_empty() {
-        params.push(format!("sid={}", p.net.short_id));
+        params.push(format!("sid={}", encode_fragment(&p.net.short_id)));
     }
     if !p.net.fingerprint.is_empty() {
-        params.push(format!("fp={}", p.net.fingerprint));
+        params.push(format!("fp={}", encode_fragment(&p.net.fingerprint)));
     }
     match p.net.network() {
         "ws" | "httpupgrade" | "xhttp" => {
             params.push(format!("path={}", encode_fragment(&p.net.path)));
             if !p.net.host.is_empty() {
-                params.push(format!("host={}", p.net.host));
+                params.push(format!("host={}", encode_fragment(&p.net.host)));
             }
             if p.net.network() == "xhttp" {
                 let mode = if p.net.mode.is_empty() {
@@ -39,7 +39,7 @@ fn query_params(p: &Proxy, include_flow: bool) -> String {
                 } else {
                     &p.net.mode
                 };
-                params.push(format!("mode={mode}"));
+                params.push(format!("mode={}", encode_fragment(mode)));
             }
         }
         "grpc" => {
@@ -124,7 +124,7 @@ pub(crate) fn render_links(proxies: &[Proxy]) -> String {
                 encode_fragment(&p.id_or_password),
                 p.server,
                 p.net.port,
-                p.net.sni,
+                encode_fragment(&p.net.sni),
                 frag
             )),
             _ => {}

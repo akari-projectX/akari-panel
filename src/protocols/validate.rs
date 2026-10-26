@@ -49,6 +49,7 @@ pub fn check(ib: &Inbound) -> Result<(), Fault> {
         return Err(Fault::Rule(r.id.clone()));
     }
     super::transport::check(&ib.transport)?;
+    super::security::check(&ib.security)?;
     match module_for(&ib.protocol) {
         Some(m) => m.check(ib),
         None => Ok(()),

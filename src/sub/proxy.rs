@@ -266,6 +266,28 @@ pub(crate) fn yaml(s: &str) -> String {
     }
 }
 
+/// A YAML scalar for a host-like or key-like value (server, SNI, Host
+/// header, REALITY key and short id): plain when it only holds
+/// `[A-Za-z0-9._-]` (so IPv4 addresses and digit-only short ids stay
+/// as they were), JSON-quoted otherwise. Unlike [`yaml`] it never quotes
+/// a value merely for lacking letters. Stored values are validated at save
+/// time; this keeps older or hand-written rows from breaking the document.
+pub(crate) fn yaml_token(s: &str) -> String {
+    const RESERVED: [&str; 11] = [
+        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "~", "nan",
+    ];
+    let plain = !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        && !s.starts_with(['-', '.'])
+        && !RESERVED.contains(&s.to_ascii_lowercase().as_str());
+    if plain {
+        s.to_string()
+    } else {
+        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+    }
+}
+
 /// The inbound of a test proxy (unit tests of the renderers).
 #[cfg(test)]
 pub(crate) fn net_from_inbound(inbound: &serde_json::Value) -> Option<Net> {

@@ -5,7 +5,7 @@
 //! proxy. Renders the neutral client proxies (`proxy.rs`).
 
 use super::groups::{self, Kind, Member, Plan, TEST_INTERVAL, TEST_URL};
-use super::proxy::{Proxy, log_omitted, yaml};
+use super::proxy::{Proxy, log_omitted, yaml, yaml_token};
 use super::routing::{DnsMode, Kind as ListKind, Matcher, Routing, Target};
 
 pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
@@ -39,7 +39,7 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
             "vless" => {
                 out.push_str(&format!("    uuid: {}\n", p.id_or_password));
                 if !p.flow.is_empty() {
-                    out.push_str(&format!("    flow: {}\n", p.flow));
+                    out.push_str(&format!("    flow: {}\n", yaml_token(&p.flow)));
                 }
             }
             "vmess" => {
@@ -58,7 +58,7 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
             "hysteria2" => {
                 out.push_str(&format!("    password: {}\n", yaml(&p.id_or_password)));
                 if !p.net.sni.is_empty() {
-                    out.push_str(&format!("    sni: {}\n", p.net.sni));
+                    out.push_str(&format!("    sni: {}\n", yaml_token(&p.net.sni)));
                 }
                 out.push_str("    alpn:\n      - h3\n");
                 continue;
@@ -82,7 +82,7 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
                 } else {
                     "servername"
                 };
-                out.push_str(&format!("    {key}: {}\n", p.net.sni));
+                out.push_str(&format!("    {key}: {}\n", yaml_token(&p.net.sni)));
             }
         }
         if !p.net.fingerprint.is_empty() {
@@ -90,9 +90,15 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
         }
         if p.net.security == "reality" {
             out.push_str("    reality-opts:\n");
-            out.push_str(&format!("      public-key: {}\n", p.net.public_key));
+            out.push_str(&format!(
+                "      public-key: {}\n",
+                yaml_token(&p.net.public_key)
+            ));
             if !p.net.short_id.is_empty() {
-                out.push_str(&format!("      short-id: {}\n", p.net.short_id));
+                out.push_str(&format!(
+                    "      short-id: {}\n",
+                    yaml_token(&p.net.short_id)
+                ));
             }
         }
         match p.net.network() {
@@ -101,7 +107,7 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
                 out.push_str(&format!("      path: {}\n", yaml(&p.net.path)));
                 if !p.net.host.is_empty() {
                     out.push_str("      headers:\n");
-                    out.push_str(&format!("        Host: {}\n", p.net.host));
+                    out.push_str(&format!("        Host: {}\n", yaml_token(&p.net.host)));
                 }
                 if p.net.network() == "httpupgrade" {
                     out.push_str("      v2ray-http-upgrade: true\n");
@@ -111,10 +117,10 @@ pub(crate) fn render_clash(proxies: &[Proxy], routing: &Routing) -> String {
                 out.push_str("    xhttp-opts:\n");
                 out.push_str(&format!("      path: {}\n", yaml(&p.net.path)));
                 if !p.net.host.is_empty() {
-                    out.push_str(&format!("      host: {}\n", p.net.host));
+                    out.push_str(&format!("      host: {}\n", yaml_token(&p.net.host)));
                 }
                 if !p.net.mode.is_empty() {
-                    out.push_str(&format!("      mode: {}\n", p.net.mode));
+                    out.push_str(&format!("      mode: {}\n", yaml_token(&p.net.mode)));
                 }
             }
             "grpc" => {
