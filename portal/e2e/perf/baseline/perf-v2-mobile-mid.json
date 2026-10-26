@@ -1,0 +1,20 @@
+{
+  "portal": "v2",
+  "profile": "mobile-mid",
+  "runs": 5,
+  "result": {
+    "login.fcp": 1128,
+    "login.lcp": 3284,
+    "login.tti": 1190,
+    "login.ready": 3467,
+    "dashboard.fcp": 1124,
+    "dashboard.lcp": 4120,
+    "dashboard.tti": 3879,
+    "dashboard.ready": 4946,
+    "switch./nodes": 197,
+    "switch./orders": 142,
+    "switch./shop": 74,
+    "switch./traffic": 637,
+    "switch./": 50
+  }
+}

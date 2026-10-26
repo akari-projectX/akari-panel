@@ -1,5 +1,6 @@
 import { contentApi, meApi, orderApi, shopApi, ticketApi } from '@/api';
 import { K, load, readCache } from '@/lib/cache';
+import { dashSpecs } from './dash-data';
 import { loadedPage, preloadPage } from './lazy';
 import { match, PAGES } from './pages';
 import { allowed, R, type Scope } from './routes';
@@ -65,6 +66,23 @@ export function prefetchDash(scope: Scope) {
     if (job) void job().finally(next);
   };
   for (let i = 0; i < 3; i++) next();
+}
+
+/**
+ * 正在看的这一页：地址一知道（登录态在缓存里，或 /me 刚回来）就把它的分包与首屏数据取起来，不等页面组件挂载。
+ * 刷新后的第一屏本来是一条串行的链——/me → 分包（连同它静态依赖的一串模块）→ 页面挂载 → 取数，限速的手机网络上每一段都是几百毫秒；
+ * 这里让分包与数据请求和 /me 之后的渲染并行。数据请求进 lib/cache 的在途表，页面自己的 resource 复用同一个 Promise。
+ * 现在只有仪表盘（刷新最常落脚的地方）有数据清单；其余页面只预载分包，数据由页面自己取（指针移上链接时的预取照旧）。
+ */
+export function prefetchCurrent(path: string, scope: Scope) {
+  const found = match(path);
+  if (!found || !allowed(found.page.path, scope)) return;
+  void preloadPage(found.page.load);
+  if (found.page.path !== R.dashboard) return;
+  const d = dashSpecs();
+  const jobs: { key: string; fetch: () => Promise<unknown> }[] = [d.announcements, d.balance, d.orders, d.tickets, d.help];
+  if (scope === 'full') jobs.push(d.traffic, d.nodes);
+  for (const j of jobs) void load(j.key, j.fetch).catch(() => {});
 }
 
 /** 访客页：其余访客页（登录、注册、找回密码之间互相跳）与仪表盘（登录后去那里）；数据很少，进页面时再取 */
