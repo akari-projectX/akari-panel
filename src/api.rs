@@ -1,4 +1,4 @@
-use crate::auth::{api_error, bad_request, conflict};
+use crate::auth::{bad_request, conflict};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
@@ -30,6 +30,11 @@ pub struct LoginReq {
     /// v0.4: honeypot / form token / Turnstile (`botguard`).
     #[serde(default)]
     pub guard: Option<crate::botguard::Guard>,
+    /// Passkey-only fallback: the code mailed to the account's verified
+    /// address (`login_fallback`); ignored unless the account's password
+    /// sign-in is refused.
+    #[serde(default)]
+    pub fallback_code: Option<String>,
 }
 
 /// POST /auth/login {email, password}. Failed attempts are rate limited per
@@ -101,39 +106,50 @@ pub async fn login(
     match check_credentials(&state, &email, &req.password).await {
         Ok(Checked::Ok(row)) => {
             // The password was right: whatever follows is not a credential
-            // failure.
-            attempt.release(&state).await;
+            // failure (except a wrong fallback code below).
             // D4: admins sign in under the admin prefix; on the portal the
             // answer is the wrong password's.
             if entry.refuses(&row.role) {
+                attempt.release(&state).await;
                 return Err(ApiError::unauthorized());
             }
             // W27: an account with a passkey may be passkey-only (its own
             // choice or the role's policy); only the holder of the
             // password learns that.
-            let policy = crate::passkey::login_policy(&state, row.id, &row.role).await?;
+            let policy = match crate::passkey::login_policy(&state, row.id, &row.role).await {
+                Ok(p) => p,
+                Err(e) => {
+                    attempt.release(&state).await;
+                    return Err(e);
+                }
+            };
+            let mut method = "password";
             if policy.password_refused {
-                return Err(api_error!(
-                    FORBIDDEN,
-                    "auth.passkey_required",
-                    "this account signs in with a passkey"
-                ));
+                // Passkeys unusable: the password plus a code mailed to the
+                // verified address signs in; a wrong code is a failed attempt.
+                let Some(code) = req.fallback_code.as_deref() else {
+                    attempt.release(&state).await;
+                    return Err(crate::login_fallback::passkey_required());
+                };
+                match crate::login_fallback::consume(&state, &row, code, client).await {
+                    Ok(true) => method = "password_email_code",
+                    Ok(false) => {
+                        attempt.fail();
+                        return Err(ApiError::unauthorized());
+                    }
+                    Err(e) => {
+                        attempt.release(&state).await;
+                        return Err(e);
+                    }
+                }
             }
-            finish_login(&state, &row, client, "password").await?;
+            attempt.release(&state).await;
+            finish_login(&state, &row, client, method).await?;
             login_response(&state, jar, &row, policy.prompt)
         }
         Ok(Checked::Failed(account)) => {
-            let (name_count, pair_count) = (attempt.name_count, attempt.pair_count);
+            note_failed_login(&state, account, client, &attempt);
             attempt.fail();
-            // The first failure of the window, and the one that fills
-            // either lockout bucket (network or all networks).
-            if let Some(id) = account
-                && (name_count == 1
-                    || pair_count == crate::login_limit::PER_NAME_NETWORK
-                    || name_count == crate::login_limit::PER_NAME)
-            {
-                audit_login_failure(&state, id, client, name_count, pair_count);
-            }
             Err(ApiError::unauthorized())
         }
         Err(e) => {
@@ -141,6 +157,25 @@ pub async fn login(
             attempt.release(&state).await;
             Err(e)
         }
+    }
+}
+
+/// Audit a failed attempt at an existing account: the first failure of the
+/// window, and the one that fills either lockout bucket (network or all
+/// networks).
+pub(crate) fn note_failed_login(
+    state: &AppState,
+    account: Option<Uuid>,
+    client: std::net::IpAddr,
+    attempt: &crate::login_limit::Attempt,
+) {
+    let (name_count, pair_count) = (attempt.name_count, attempt.pair_count);
+    if let Some(id) = account
+        && (name_count == 1
+            || pair_count == crate::login_limit::PER_NAME_NETWORK
+            || name_count == crate::login_limit::PER_NAME)
+    {
+        audit_login_failure(state, id, client, name_count, pair_count);
     }
 }
 
@@ -202,7 +237,7 @@ pub(crate) fn login_response(
         .into_response())
 }
 
-enum Checked {
+pub(crate) enum Checked {
     Ok(LoginRow),
     /// The existing account the attempt named, if any (for the audit log
     /// only).
@@ -211,7 +246,7 @@ enum Checked {
 
 /// Verify the password with the same work for every kind of failure.
 /// `email` is already lower-cased (addresses are stored lower-case).
-async fn check_credentials(
+pub(crate) async fn check_credentials(
     state: &AppState,
     email: &str,
     password: &str,
@@ -3975,6 +4010,7 @@ mod tests {
                 email: login.into(),
                 password: password.into(),
                 guard: None,
+                fallback_code: None,
             }),
         )
         .await;

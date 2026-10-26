@@ -81,6 +81,8 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "auth.captcha_failed": ["人机验证未通过，请重试", "Human verification failed, please try again"],
   "auth.captcha_unavailable": ["人机验证服务暂不可用，请稍后再试", "Human verification is unavailable, try again later"],
   "auth.credentials_required": ["请填写账号和密码", "Enter your account and password"],
+  "auth.fallback_unavailable": ["此账户没有已验证的邮箱（或站点未开启邮件发送），不能用邮箱验证码登录；请站点运维为你重置登录方式", "This account has no verified email address (or mail sending is off), so the emailed code cannot be used; ask the site operator to reset your login method"],
+  "auth.fallback_unneeded": ["此账户可以直接用密码登录", "This account can sign in with its password"],
   "auth.forbidden": ["没有权限执行此操作", "You are not allowed to do this."],
   "auth.passkey_required": ["此账户只能使用通行密钥登录", "This account signs in with a passkey"],
   "auth.unauthorized": ["登录已失效，请重新登录", "Your session has ended. Please sign in again."],

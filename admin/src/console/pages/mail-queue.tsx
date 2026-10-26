@@ -57,6 +57,7 @@ function mailKindName(k: string, tr: Tr): string {
     register_code: ["注册验证码", "Sign-up code"],
     register_exists: ["邮箱已注册提醒", "Already registered"],
     email_code: ["邮箱验证码", "Email code"],
+    login_code: ["登录验证码", "Sign-in code"],
     password_reset: ["找回密码", "Password reset"],
     order_paid: ["支付回执", "Payment receipt"],
     expiry_soon: ["套餐即将到期", "Plan expiring"],
