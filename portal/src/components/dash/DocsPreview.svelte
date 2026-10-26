@@ -9,6 +9,7 @@
   import Loading from '../Loading.svelte';
   import PaneHead from '../flat/PaneHead.svelte';
   import { iconOf } from '$lib/doc-icons';
+  import DocIcon from '../DocIcon.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { navigate } from '$lib/router.svelte';
   import { resource } from '$lib/resource.svelte';
@@ -22,7 +23,7 @@
   const categories = $derived(docCategories(docs.data, i18n.locale, t('其他')));
   const featured = $derived(categories[0]);
   const open = (name: string) => navigate(`${R.help}?cat=${encodeURIComponent(name)}`);
-  const FIcon = $derived(featured ? iconOf(featured) : null);
+  const fIcon = $derived(featured ? iconOf(featured) : null);
 </script>
 
 <PaneHead>
@@ -35,12 +36,12 @@
   <Loading rows={3} />
 {:else if docs.error && !docs.data}
   <LoadError error={docs.error} onretry={docs.reload} />
-{:else if !featured || !FIcon}
+{:else if !featured || !fIcon}
   <Empty title={t('站点还没有发布文档')} desc={t('站长在后台的「知识库」里发布文章后，这里就会有入口。')} />
 {:else}
   <button type="button" class="feat" onclick={() => open(featured.name)}>
     <div class="feat-h">
-      <FIcon size={28} strokeWidth={1.75} aria-hidden="true" />
+      <DocIcon spec={fIcon} size={28} />
       <div class="feat-m">
         <div class="feat-t"><span>{featured.name}</span>{#if featured.mine}<i class="cur">{t('当前设备')}</i>{/if}</div>
         <div class="feat-s">
@@ -60,8 +61,7 @@
       <div class="oth-h">{t('其他分类')}</div>
       <div class="oth-g">
         {#each categories.slice(1, 7) as c (c.name)}
-          {@const CIcon = iconOf(c)}
-          <button type="button" onclick={() => open(c.name)}><CIcon size={20} strokeWidth={1.75} aria-hidden="true" /><span>{c.name}</span></button>
+          <button type="button" onclick={() => open(c.name)}><DocIcon spec={iconOf(c)} size={20} /><span>{c.name}</span></button>
         {/each}
       </div>
     </div>
