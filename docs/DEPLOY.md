@@ -159,6 +159,11 @@ Cloudsmith 恢复后如需改回 apt 更新：把文件改回原名即可。CI �
 | 5432, 6379 | 仅面板 | 绝不对外发布 |
 | 9100 metrics | Prometheus | 回环 / 内网，默认关闭 |
 
+两点前提（审计 auth P3-24/P3-25）：
+
+- **面板的 web 端口必须放在反向代理后面。** 面板自己不设请求头/请求体的总超时，也不限并发连接数；慢速连接（slowloris）的防护由 Caddy/nginx 承担（Caddy 默认带头部超时；nginx 保持 `client_header_timeout`/`client_body_timeout` 默认值或更严）。
+- **8443 的 agent 注册限速按 TCP 对端地址计。** 前面若有不带 PROXY 协议的 L4 代理（HAProxy/云负载均衡的 TCP 模式），所有 agent 会共用一个桶；要么直连 8443，要么让代理保留来源地址。
+
 防火墙（nftables 示例，裸机；ufw 请自行调整）：
 
 ```
