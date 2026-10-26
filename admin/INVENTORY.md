@@ -192,6 +192,8 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | DNS-04 | 危险记录：面板自己在用的名字（站点域名、通行密钥中心域名、服务器证书域名、入口连接地址）改地址/类型/代理或删除时，409 后弹出「这会影响面板自身的功能」列出名字与用途，确认后带 `confirm` 重发；只改备注/TTL 不需要确认 | 同上（`dns.confirm_required`） | 实现 |
 | DNS-05 | 批量（勾选 → 浮动条）：设为橙云/灰云、更换 IP（IPv4 只写 A、IPv6 只写 AAAA，不符的跳过并说明）、删除（输入数量）；有失败或跳过时弹出逐条结果；含危险记录时整批先确认 | `POST …/records/batch` | 实现 |
 | DNS-06 | 审计：`dns.account.*`、`dns.record.*` 有中英文名称，记录前后值，令牌从不出现 | `GET /audit` | 实现 |
+| DNS-07 | 域名页联动（系统设置 → 域名）：每个主域名/订阅域名/节点通信域名/通行密钥中心域名下一行 Cloudflare 状态（所在区域、A/AAAA/CNAME 记录与云朵）；已设面板公网地址时「指向本面板」（A/AAAA 一次建好或更新，改已有记录会先弹出影响确认）；未设时所有者可「设置面板地址」（IPv4/IPv6，只接受公网地址，其他管理员只读）；节点通信域名被设成橙云时「改为灰云」一键修正 | `GET /dns/domains`、`GET /dns/panel-addresses`、`PUT /settings/public-addresses`（所有者）、`POST /dns/link`、`…/records/batch` | 实现 |
+| DNS-08 | 服务器设置页「DNS 解析」：证书域名与直连入口的连接域名（IP 字面量不需要）的当前记录；「指向 <agent 来源地址>」一键建/更新（一律灰云）；机器换 IP 后「IP 变了…」填新地址批量更新；中转入口没有已知地址，在 DNS 页或 `POST /dns/link` 带 `address` 创建 | `GET/POST /dns/link/server/{id}` | 实现 |
 
 ## 11. 套餐
 
@@ -335,6 +337,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | `/agent-releases*`、`/agent-updates*`、`/rollouts*` | UPD-* |
 | `GET /audit` | AUD-* |
 | `/dns/accounts*`、`GET /dns/zones`、`/dns/accounts/{a}/zones/{z}/records*` | DNS-01…06 |
+| `GET /dns/domains`、`/dns/panel-addresses`、`POST /dns/link`、`/dns/link/server/{id}`、`PUT /settings/public-addresses` | DNS-07、08 |
 | `GET/PUT /settings`、`PUT /settings/site`、`POST /settings/dns-check`、`/domains/impact`、`/server-names/remove` | SET-01…05、25 |
 | `PUT /settings/passkey-domain` | SET-27 |
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |

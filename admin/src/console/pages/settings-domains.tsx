@@ -11,6 +11,7 @@
 // confirmed with the servers that still use it). The danger zone holds the
 // passkey centre: a dialog for the new name, then the typed confirmation on
 // save.
+import { DomainDns, useDnsDomains } from "./dns-link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CircleCheck,
@@ -27,7 +28,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { get, post, put } from "../../shared/api";
 import { cn } from "../../shared/cn";
@@ -176,6 +177,7 @@ function Domains({ d }: { d: SettingsView }) {
   const errText = useErrText();
   const [checks, setChecks] = useState<Record<string, Check>>({});
   const [adding, setAdding] = useState<Kind | null>(null);
+  const dnsQ = useDnsDomains();
   const f = useDraft(domainBase(d));
   const v = f.value!;
   const base = domainBase(d);
@@ -388,6 +390,13 @@ function Domains({ d }: { d: SettingsView }) {
               check={checks[`${kind}:${dom}`]}
               certDays={kind === "main" && i === 0 && dom === base.main[0] ? certDays : null}
               usedFor={usedFor(kind, dom, i === 0)}
+              dnsLine={
+                <DomainDns
+                  kind={kind}
+                  state={dnsQ.data?.hosts.find((h) => h.host === dom.replace(/:\d+$/, "").toLowerCase())}
+                  panel={dnsQ.data?.panel}
+                />
+              }
               lockedRemove={i === 0 && items.length > 1}
               onPreferred={() => f.set(kind, [dom, ...items.filter((_, j) => j !== i)])}
               onCheck={() => void dns(kind, dom)}
@@ -480,6 +489,7 @@ function DomainRow({
   check,
   certDays,
   usedFor,
+  dnsLine,
   lockedRemove,
   onPreferred,
   onCheck,
@@ -494,6 +504,8 @@ function DomainRow({
   check?: Check;
   certDays?: number | null;
   usedFor?: string;
+  /** The Cloudflare line (records, point-at-panel); only for names that are saved. */
+  dnsLine?: ReactNode;
   lockedRemove?: boolean;
   onPreferred?: () => void;
   onCheck?: () => void;
@@ -637,6 +649,7 @@ function DomainRow({
           )}
         </div>
       )}
+      {!removed && !added && dnsLine}
     </div>
   );
 }
@@ -1051,6 +1064,7 @@ type Passkeys = { passkeys: { current: boolean }[] };
 /** SET-27: the passkey centre (WebAuthn RP ID); changing it voids every bound passkey. */
 function PasskeyCentre({ d }: { d: SettingsView }) {
   const tr = useTr();
+  const dnsQ = useDnsDomains();
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [run] = useAction();
@@ -1139,6 +1153,15 @@ function PasskeyCentre({ d }: { d: SettingsView }) {
             }
           />
         </div>
+        {p.domain && !f.isEdited("domain") && (
+          <div className="px-4 pb-3">
+            <DomainDns
+              kind="passkey"
+              state={dnsQ.data?.hosts.find((h) => h.host === p.domain!.replace(/:\d+$/, "").toLowerCase())}
+              panel={dnsQ.data?.panel}
+            />
+          </div>
+        )}
         <DangerRow
           label={tr("移除域名", "Removing a domain")}
           description={tr(

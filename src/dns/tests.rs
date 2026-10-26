@@ -485,3 +485,268 @@ async fn rate_limits_are_retried_or_reported() {
         (json!("dns.rate_limited"), json!(60))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Linking the panel's names
+// ---------------------------------------------------------------------------
+
+const SETTINGS: &str = "/test/api/v1/settings/public-addresses";
+
+impl Env {
+    async fn set_addresses(&self, v4: &str, v6: &str) {
+        let version: i64 = sqlx::query_scalar("SELECT version FROM panel_settings WHERE id = 1")
+            .fetch_one(&self.db.pool)
+            .await
+            .unwrap();
+        let r = self
+            .owner
+            .put(
+                SETTINGS,
+                json!({ "version": version, "public_ipv4": v4, "public_ipv6": v6 }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    }
+
+    async fn make_domain(&self, kind: &str, host: &str) {
+        sqlx::query(
+            "INSERT INTO site_domains (kind, domain, host, preferred) \
+             VALUES ($1, $2, $2, NOT EXISTS (SELECT 1 FROM site_domains WHERE kind = $1))",
+        )
+        .bind(kind)
+        .bind(host)
+        .execute(&self.db.pool)
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn public_addresses_are_owner_only_validated_and_audited() {
+    let Some(env) = setup().await else { return };
+    let version: i64 = sqlx::query_scalar("SELECT version FROM panel_settings WHERE id = 1")
+        .fetch_one(&env.db.pool)
+        .await
+        .unwrap();
+    for (v4, v6) in [
+        ("10.0.0.1", ""),
+        ("203.0.113.5", ""),
+        ("", "fe80::1"),
+        ("2001:4860:4860::8888", ""),
+        ("nope", ""),
+    ] {
+        let r = env
+            .owner
+            .put(
+                SETTINGS,
+                json!({ "version": version, "public_ipv4": v4, "public_ipv6": v6 }),
+            )
+            .await;
+        assert_eq!(
+            (r.status, r.json()["code"].clone()),
+            (
+                StatusCode::BAD_REQUEST,
+                json!("settings.public_address_invalid")
+            ),
+            "{v4} {v6}"
+        );
+    }
+    let admin = client_for(&env.state, env.db.admin().await).await;
+    let r = admin
+        .put(
+            SETTINGS,
+            json!({ "version": version, "public_ipv4": "8.8.8.8" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    env.set_addresses("8.8.8.8", "2001:4860:4860::8888").await;
+    // A stale form is a conflict.
+    let r = env
+        .owner
+        .put(SETTINGS, json!({ "version": version, "public_ipv4": "" }))
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let audit = env.audits("settings.public_addresses.update").await;
+    assert_eq!(audit.len(), 1);
+    assert_eq!(audit[0]["after"]["public_ipv4"], "8.8.8.8");
+}
+
+#[tokio::test]
+async fn domains_show_their_records_and_link_creates_updates_and_stays_grey() {
+    let Some(env) = setup().await else { return };
+    let acc = env.account("a", GOOD_TOKEN).await;
+    env.make_domain("main", "panel.example.test").await;
+    env.make_domain("node", "node.example.test").await;
+    env.make_domain("sub", "sub.elsewhere.invalid").await;
+    env.mock
+        .add("example.test", "A", "panel.example.test", "192.0.2.1", true);
+    let r = env.owner.get(&format!("{BASE}/domains")).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let hosts = r.json()["hosts"].as_array().unwrap().clone();
+    let by = |h: &str| hosts.iter().find(|x| x["host"] == h).unwrap().clone();
+    assert_eq!(
+        by("panel.example.test")["records"][0]["content"],
+        "192.0.2.1"
+    );
+    assert_eq!(by("panel.example.test")["records"][0]["proxied"], true);
+    assert_eq!(
+        by("node.example.test")["records"].as_array().unwrap().len(),
+        0
+    );
+    assert!(by("sub.elsewhere.invalid")["zone"].is_null());
+    // No address configured: refused, nothing written.
+    let link = |hosts: Value, confirm: bool| {
+        let owner = &env.owner;
+        async move {
+            owner
+                .post(
+                    &format!("{BASE}/link"),
+                    json!({ "hosts": hosts, "confirm": confirm }),
+                )
+                .await
+        }
+    };
+    let r = link(json!([{ "host": "node.example.test" }]), false).await;
+    assert_eq!(r.json()["code"], "dns.panel_address_unset");
+    env.set_addresses("8.8.8.8", "2001:4860:4860::8888").await;
+    // The node domain is created grey (A and AAAA), even if orange was asked.
+    let r = link(
+        json!([{ "host": "node.example.test", "proxied": true }]),
+        false,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["ok"], 1);
+    let recs: Vec<Value> = env
+        .mock
+        .records()
+        .into_iter()
+        .filter(|x| x["name"] == "node.example.test")
+        .collect();
+    assert_eq!(recs.len(), 2);
+    assert!(recs.iter().all(|x| x["proxied"] == false));
+    // Again: nothing to change.
+    let r = link(json!([{ "host": "node.example.test" }]), false).await;
+    assert_eq!(r.json()["results"][0]["changes"][0]["action"], "unchanged");
+    // The main domain exists with another address: updating asks first.
+    let r = link(
+        json!([{ "host": "panel.example.test", "address": "8.8.4.4" }]),
+        false,
+    )
+    .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::CONFLICT, json!("dns.confirm_required"))
+    );
+    assert!(
+        env.mock
+            .records()
+            .iter()
+            .any(|x| x["content"] == "192.0.2.1")
+    );
+    let r = link(
+        json!([{ "host": "panel.example.test", "address": "8.8.4.4" }]),
+        true,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["results"][0]["changes"][0]["action"], "updated");
+    // The orange cloud of a web name is kept.
+    let kept = env
+        .mock
+        .records()
+        .into_iter()
+        .find(|x| x["name"] == "panel.example.test")
+        .unwrap();
+    assert_eq!(
+        (kept["content"].clone(), kept["proxied"].clone()),
+        (json!("8.8.4.4"), json!(true))
+    );
+    // A name nobody manages, and an IP literal, fail on their own.
+    let r = link(
+        json!([{ "host": "sub.elsewhere.invalid" }, { "host": "8.8.8.8" }]),
+        false,
+    )
+    .await;
+    let codes: Vec<Value> = r.json()["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["code"].clone())
+        .collect();
+    assert_eq!(
+        codes,
+        vec![json!("dns.link_no_zone"), json!("dns.link_not_a_name")]
+    );
+    // Writes were audited like the records API's.
+    assert_eq!(env.audits("dns.record.create").await.len(), 2);
+    assert_eq!(env.audits("dns.record.update").await.len(), 1);
+    let _ = acc;
+}
+
+#[tokio::test]
+async fn a_server_links_its_certificate_domain_and_direct_hosts() {
+    let Some(env) = setup().await else { return };
+    env.account("a", GOOD_TOKEN).await;
+    let node = env.db.node().await;
+    let server = env.db.server_of(node).await;
+    sqlx::query("UPDATE servers SET tls_domain = 'hk.example.test', agent_addr = '8.8.4.4'::inet WHERE id = $1")
+        .bind(server)
+        .execute(&env.db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE entrances SET connect_host = 'direct.example.test' WHERE node_id = $1 AND kind = 'direct'")
+        .bind(node)
+        .execute(&env.db.pool)
+        .await
+        .unwrap();
+    let status = env.owner.get(&format!("{BASE}/link/server/{server}")).await;
+    assert_eq!(status.status, StatusCode::OK, "{:?}", status.json());
+    assert_eq!(status.json()["address"], "8.8.4.4");
+    assert_eq!(status.json()["hosts"].as_array().unwrap().len(), 2);
+    let r = env
+        .owner
+        .post(&format!("{BASE}/link/server/{server}"), json!({}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["ok"], 2);
+    let recs = env.mock.records();
+    assert_eq!(recs.len(), 2);
+    assert!(
+        recs.iter()
+            .all(|x| x["content"] == "8.8.4.4" && x["proxied"] == false)
+    );
+    // The machine moved: the same call with the new address updates both
+    // (they are in use by the panel, so it asks first).
+    let r = env
+        .owner
+        .post(
+            &format!("{BASE}/link/server/{server}"),
+            json!({ "address": "8.8.8.8" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "dns.confirm_required");
+    let r = env
+        .owner
+        .post(
+            &format!("{BASE}/link/server/{server}"),
+            json!({ "address": "8.8.8.8", "confirm": true }),
+        )
+        .await;
+    assert_eq!(r.json()["ok"], 2);
+    assert!(env.mock.records().iter().all(|x| x["content"] == "8.8.8.8"));
+    // A private address is refused; an unknown server is 404.
+    let r = env
+        .owner
+        .post(
+            &format!("{BASE}/link/server/{server}"),
+            json!({ "address": "10.0.0.1" }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "dns.link_address_invalid");
+    let r = env
+        .owner
+        .get(&format!("{BASE}/link/server/{}", uuid::Uuid::new_v4()))
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}

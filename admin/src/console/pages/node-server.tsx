@@ -4,6 +4,7 @@
 // error, warnings — Chinese title, one line, raw text on demand), then tabs
 // (`?tab=`): 节点与入口 (node cards with their entrance tables), 监控
 // (machine, latency, history, node traffic), 流量额度, 告警规则, 设置.
+import { ServerDns } from "./dns-link";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
@@ -1938,6 +1939,8 @@ function SettingsTab({ s }: { s: ServerView }) {
           />
         </form>
       </Card>
+
+      <ServerDns id={s.id} />
 
       <Group
         title={tr("安装与注册", "Install and enrollment")}

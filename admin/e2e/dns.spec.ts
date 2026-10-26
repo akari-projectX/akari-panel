@@ -249,6 +249,101 @@ test("DNS-05: batch — select, orange cloud, a new address (other families skip
   await expect(page.locator("[data-row]:visible")).toHaveCount(0);
 });
 
+test("DNS-07: site domains — the panel's address (owner), point a name at the panel, a node domain goes back to grey", async ({
+  page,
+}, info) => {
+  const account = await accountId(uniq(info, "cf-good"));
+  const sub = `${uniq(info, "link")}.${ZONE_NAME}`;
+  const node = `${uniq(info, "linknode")}.${ZONE_NAME}`;
+  const addresses = sql(
+    "SELECT coalesce(public_ipv4, '') || '|' || coalesce(public_ipv6, '') FROM panel_settings WHERE id = 1",
+  );
+  const [old4, old6] = addresses.split("|");
+  const nodeRecord = await addRecord(account, node, "8.8.4.4", { proxied: true, ttl: 1 });
+  try {
+    sql("UPDATE panel_settings SET public_ipv4 = NULL, public_ipv6 = NULL WHERE id = 1");
+    for (const [kind, host] of [
+      ["sub", sub],
+      ["node", node],
+    ])
+      sql(
+        `INSERT INTO site_domains (kind, domain, host, preferred) VALUES ('${kind}', '${host}', '${host}', NOT EXISTS (SELECT 1 FROM site_domains WHERE kind = '${kind}'))`,
+      );
+    await openConsole(page, "/settings/domains");
+    const subRow = page.locator(`[data-domain="${sub}"]`);
+    // Without a panel address the row offers to set it (owner).
+    await expect(subRow.getByText("Cloudflare 上还没有解析记录")).toBeVisible();
+    await subRow.getByRole("button", { name: "设置面板地址" }).click();
+    const d = dialog(page, "面板的公网地址");
+    await d.getByLabel("IPv4").fill("10.0.0.1");
+    await d.getByRole("button", { name: "保存" }).click();
+    await toast(page, "必须是公网");
+    await d.getByLabel("IPv4").fill("8.8.8.8");
+    await d.getByLabel("IPv6").fill("2001:4860:4860::8888");
+    await d.getByRole("button", { name: "保存" }).click();
+    await toast(page, "面板地址已保存");
+    // Point the name at the panel: an A and an AAAA record appear.
+    await subRow.getByRole("button", { name: "指向本面板" }).click();
+    await toast(page, "解析已更新");
+    await expect(subRow.getByTestId("dns-record-chip")).toHaveCount(2);
+    await expect(subRow).toContainText("A 8.8.8.8");
+    await expect(subRow).toContainText("AAAA 2001:4860:4860::8888");
+    // The node domain was orange: one click makes it grey (asks, it is in use).
+    const nodeRow = page.locator(`[data-domain="${node}"]`);
+    await nodeRow.getByRole("button", { name: "改为灰云" }).click();
+    await confirmDialog(page, undefined, /仍然切换/);
+    await toast(page, "已改为灰云");
+    await expect(nodeRow.getByRole("button", { name: "改为灰云" })).toHaveCount(0);
+  } finally {
+    sql(`DELETE FROM site_domains WHERE host IN ('${sub}', '${node}')`);
+    sql(
+      `UPDATE panel_settings SET public_ipv4 = ${old4 ? `'${old4}'` : "NULL"}, public_ipv6 = ${old6 ? `'${old6}'` : "NULL"} WHERE id = 1`,
+    );
+    const { records } = await apiJson<{ records: { id: string }[] }>(
+      "GET",
+      `/dns/accounts/${account}/zones/${ZONE}/records?search=link`,
+    );
+    for (const r of records)
+      await apiJson("DELETE", `/dns/accounts/${account}/zones/${ZONE}/records/${r.id}?confirm=true`).catch(() => {});
+    await apiJson("DELETE", `/dns/accounts/${account}/zones/${ZONE}/records/${nodeRecord}?confirm=true`).catch(
+      () => {},
+    );
+  }
+});
+
+test('DNS-08: a server — its certificate domain follows the server\'s address, and "IP changed" updates it in one click', async ({
+  page,
+}, info) => {
+  const account = await accountId(uniq(info, "cf-good"));
+  const host = `${uniq(info, "srv")}.${ZONE_NAME}`;
+  const { id } = await apiJson<{ id: string }>("POST", "/servers", { name: uniq(info, "dns-server") });
+  sql(`UPDATE servers SET tls_domain = '${host}', agent_addr = '8.8.4.4'::inet WHERE id = '${id}'`);
+  try {
+    await openConsole(page, `/nodes/${id}?tab=settings`);
+    const card = page.getByTestId("server-dns");
+    await expect(card.getByTestId(`server-dns-${host}`)).toContainText("还没有解析记录");
+    await card.getByRole("button", { name: "指向 8.8.4.4" }).click();
+    await toast(page, "解析已更新");
+    await expect(card.getByTestId(`server-dns-${host}`)).toContainText("A 8.8.4.4");
+    // The machine moved: type the new address; the name is in use, so it asks.
+    await card.getByRole("button", { name: "IP 变了" }).click();
+    await card.getByLabel("新的 IP 地址").fill("8.8.8.8");
+    await card.getByRole("button", { name: "更新全部解析" }).click();
+    await confirmDialog(page, undefined, /仍然修改/);
+    await toast(page, "解析已更新");
+    await expect(card.getByTestId(`server-dns-${host}`)).toContainText("A 8.8.8.8");
+    await expect(card.getByTestId(`server-dns-${host}`)).not.toContainText("8.8.4.4");
+  } finally {
+    const { records } = await apiJson<{ records: { id: string }[] }>(
+      "GET",
+      `/dns/accounts/${account}/zones/${ZONE}/records?search=${host}`,
+    );
+    for (const r of records)
+      await apiJson("DELETE", `/dns/accounts/${account}/zones/${ZONE}/records/${r.id}?confirm=true`).catch(() => {});
+    await apiJson("DELETE", `/servers/${id}`).catch(() => {});
+  }
+});
+
 test("DNS-06: the audit log names the DNS changes and the token never appears; the tokens are removed", async ({
   page,
 }, info) => {
