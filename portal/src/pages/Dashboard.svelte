@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import Banned from '../components/dash/Banned.svelte';
   import Overview from '../components/dash/Overview.svelte';
   import { scope } from '$lib/auth.svelte';

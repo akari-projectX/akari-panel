@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import { orderApi, shopApi, type Offer, type PayMethod, type ShopPlan } from '@/api';
   import { K } from '@/lib/cache';
   import { daysLeft, formatDate, formatMoney, formatSpeed, trafficUsage } from '@/lib/format';

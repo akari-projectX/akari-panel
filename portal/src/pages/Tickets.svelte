@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import Headphones from '@lucide/svelte/icons/headphones';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Plus from '@lucide/svelte/icons/plus';

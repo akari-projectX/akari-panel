@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import { orderApi, walletApi, type MyOrder } from '@/api';
   import { K } from '@/lib/cache';
   import { ORDER_ACTION, formatDateTime, formatMoney, orderState, periodText } from '@/lib/format';
