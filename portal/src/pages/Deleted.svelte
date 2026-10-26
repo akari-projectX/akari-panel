@@ -20,6 +20,6 @@
         ? t('你的账户和个人数据已全部删除。')
         : t('你的账户已注销，所有设备上的登录都已结束。')}
   />
-  <p class="quiet">{t('这个邮箱以后可以重新注册，但原来的套餐、余额和记录不会回来。')}</p>
+  <p class="au-note">{t('这个邮箱以后可以重新注册，但原来的套餐、余额和记录不会回来。')}</p>
   <a class="btn pri btn-block btn-gap" href={R.login} data-replace>{t('返回登录页')}</a>
 </AuthShell>

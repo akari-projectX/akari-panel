@@ -1133,7 +1133,6 @@ export const EN: Record<string, string> = {
   '{n} 条未读': '{n} unread',
   '此页面迁移中': 'This page is being moved to the new portal',
   /* ── 门户 v2：登录、注册 ── */
-  '登录或注册': 'Sign in or sign up',
   '密码要求': 'Password requirements',
   '通知': 'Notifications',
   /* ── 门户 v2：商店、订单 ── */
@@ -1150,4 +1149,10 @@ export const EN: Record<string, string> = {
   '上一篇 / 下一篇': 'Previous / next',
   '工单概况': 'Tickets at a glance',
   '客服有新回复': 'New reply from support',
+  /* ── 门户恢复 v1.4.0 ── */
+  '继续使用你的订阅': 'Sign in to manage your subscription',
+  '还没有账号？': 'No account yet?',
+  '注册后即可取得订阅链接': 'Get your subscription link right after signing up',
+  '{label}（选填）': '{label} (optional)',
+  '已有账号？': 'Already have an account? ',
 };
