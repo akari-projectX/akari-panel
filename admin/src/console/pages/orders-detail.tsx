@@ -37,7 +37,7 @@ import { useToast } from "../../shared/ui/toast";
 import { useAction } from "../data";
 import { CopyText, FixCount, IconBadge, Timeline, type TimelineItem } from "../components/kit";
 import { AffixInput, RadioCards } from "../components/inputs";
-import { OrdStatus, orderState } from "../components/status";
+import { OrdStatus, confirmedRefundCents, orderState } from "../components/status";
 import { useCrumb } from "../session";
 import { periodLabel } from "../terms";
 import { actionText, MethodTag, paidTotal, type Order, type RefundEffect } from "./orders";
@@ -246,6 +246,19 @@ function hero(o: Order, tr: Tr): Hero {
         text: tr(
           "支付渠道已受理，通常 1–3 天到账；到账后状态会自动更新。",
           "The provider accepted it; it usually lands in 1–3 days and the status updates by itself.",
+        ),
+      };
+    case "refund_unrecorded":
+      return {
+        tone: "warning",
+        icon: Undo2,
+        title: tr(
+          `支付渠道已退款 ${yuan(o.refund_request?.cents)}，面板还没记账`,
+          `The provider refunded ${yuan(o.refund_request?.cents)}; the panel has not recorded it`,
+        ),
+        text: tr(
+          "钱已经原路退给用户了，不要再次退款。点「退款」按「仅登记」补记同样的金额，订单、套餐和余额才会更新。",
+          "The money is back with the payer. Do not refund again: use Refund → Record only with the same amount so the order, the plan and the balance are updated.",
         ),
       };
     case "partial_refund":
@@ -667,6 +680,24 @@ function OrderBody({ o, events }: { o: Order; events: PayEvent[] }) {
             )}
           </div>
         )}
+        {confirmedRefundCents(o) !== null && (
+          <div className="rounded-xl bg-warning-soft/60 p-3 ring-1 ring-border ring-inset">
+            <div className="flex items-center gap-2 text-body font-semibold">
+              <CircleAlert className="size-4 text-warning" aria-hidden="true" />
+              {tr("渠道已退款，等待登记 · ", "Refunded at the provider, not recorded · ")}
+              {yuan(o.refund_request!.cents)}
+            </div>
+            <p className="mt-1 text-body text-muted-foreground">
+              {tr(
+                "面板记账失败（用户或订单状态已变）。请在「退款」里选「仅登记」，金额必须正好是渠道已退的数额。",
+                "The panel could not record it. In Refund choose “Record only”; the amount must be exactly what the provider refunded.",
+              )}
+            </p>
+            {o.refund_request!.last_error && (
+              <Raw label={tr("原始错误", "Raw error")}>{o.refund_request!.last_error}</Raw>
+            )}
+          </div>
+        )}
         {o.refund_request?.state === "failed" && !o.refunded_at && (
           <div className="rounded-xl bg-destructive-soft/60 p-3 ring-1 ring-destructive/20 ring-inset">
             <div className="flex items-center gap-2 text-body font-semibold text-destructive">
@@ -831,10 +862,13 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
   });
   const max = p.data?.amount_cents ?? 0;
   const gateway = max > 0;
+  // The provider already refunded (the panel could not record it): only a
+  // record-only refund of exactly that amount is accepted (409 otherwise).
+  const confirmed = confirmedRefundCents(o);
   const [route, setRoute] = useState<Route | null>(null);
-  const r: Route = route ?? (p.data?.original_available ? "original" : "balance");
+  const r: Route = confirmed !== null ? "record" : (route ?? (p.data?.original_available ? "original" : "balance"));
   const [amount, setAmount] = useState<string | null>(null);
-  const amountText = amount ?? centsToYuanText(max);
+  const amountText = amount ?? centsToYuanText(confirmed ?? max);
   const [keepPlan, setKeepPlan] = useState(false);
   const [reason, setReason] = useState("");
   const [typed, setTyped] = useState("");
@@ -848,13 +882,15 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
       ? null
       : cents === null
         ? tr("请输入金额，最多两位小数", "Enter an amount (2 decimals at most)")
-        : r === "original" && cents <= 0
-          ? tr("金额必须大于 0", "Must be more than 0")
-          : cents > max
-            ? r === "record"
-              ? tr(`超出实付 ${yuan(max)}，请填商家平台实际退的金额`, `More than the ${yuan(max)} paid`)
-              : tr(`最多可退 ${yuan(max)}`, `At most ${yuan(max)}`)
-            : null;
+        : confirmed !== null && cents !== confirmed
+          ? tr(`只能登记渠道已退的 ${yuan(confirmed)}`, `Only the ${yuan(confirmed)} the provider refunded`)
+          : r === "original" && cents <= 0
+            ? tr("金额必须大于 0", "Must be more than 0")
+            : cents > max
+              ? r === "record"
+                ? tr(`超出实付 ${yuan(max)}，请填商家平台实际退的金额`, `More than the ${yuan(max)} paid`)
+                : tr(`最多可退 ${yuan(max)}`, `At most ${yuan(max)}`)
+              : null;
   const reasonErr = reason.trim() ? null : tr("请写明退款原因", "Give the reason");
   const typedErr = typed.trim() === tail ? null : tr("请输入订单号后 6 位", "Type the last 6 characters");
   const errs = [amountErr, reasonErr, typedErr].filter(Boolean).length;
@@ -957,6 +993,25 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
         <ErrorState compact error={p.error} onRetry={() => void p.refetch()} />
       ) : (
         <div className="grid gap-5">
+          {confirmed !== null && (
+            <Banner
+              tone="warning"
+              icon={<CircleAlert />}
+              title={
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-warning/15 px-2 py-0.5 text-footnote font-semibold">
+                    {tr("渠道已退款", "Refunded at the provider")}
+                  </span>
+                  {yuan(confirmed)}
+                </span>
+              }
+            >
+              {tr(
+                "支付渠道已经把这笔钱退给了用户，只是面板没能记账。这里只能「仅登记」同样的金额，不会再次退款。",
+                "The provider has already paid this back; the panel just could not record it. You can only record exactly that amount here: nothing is refunded again.",
+              )}
+            </Banner>
+          )}
           <section>
             <h4 className="mb-2 text-footnote font-semibold text-muted-foreground">
               {tr("退款后会发生什么", "What the refund undoes")}
@@ -1023,13 +1078,16 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
                     icon: <CreditCard />,
                     title: tr("原路退回", "To the payer"),
                     desc: tr("调用支付渠道退款，可部分退", "Through the provider; partial allowed"),
-                    disabled: originalOff,
+                    disabled:
+                      confirmed !== null ? tr("渠道已退款，只能登记", "Already refunded: record it") : originalOff,
                   },
                   {
                     value: "balance",
                     icon: <Wallet />,
                     title: tr("退到余额", "To the balance"),
                     desc: tr("立即到账，可再消费", "Credited now, can be spent"),
+                    disabled:
+                      confirmed !== null ? tr("渠道已退款，只能登记", "Already refunded: record it") : undefined,
                   },
                   {
                     value: "record",
@@ -1050,7 +1108,12 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
                 error={tried || amount !== null ? (amountErr ?? undefined) : undefined}
                 hint={tr(`最多 ${yuan(max)}`, `At most ${yuan(max)}`)}
               >
-                <AffixInput prefix="¥" value={amountText} onChange={(e) => setAmount(e.target.value)} />
+                <AffixInput
+                  prefix="¥"
+                  value={amountText}
+                  readOnly={confirmed !== null}
+                  onChange={(e) => setAmount(e.target.value)}
+                />
               </Field>
             )}
             <Field

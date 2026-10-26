@@ -23,7 +23,7 @@ import { EmptyState, ErrorState, SkeletonRows } from "../../shared/ui/states";
 import { FilterChip } from "../../shared/ui/table";
 import { SearchField } from "../components/kit";
 import { WEEKDAYS } from "../components/ops-bits";
-import { OrdStatus, orderState } from "../components/status";
+import { OrdStatus, confirmedRefundCents, orderState } from "../components/status";
 import { useDebounced } from "../kit";
 import { SECONDARY } from "../data";
 import { useQS } from "../router";
@@ -60,6 +60,7 @@ export type Order = {
   refund_external_cents: number | null;
   refund_reason: string | null;
   refund_effect: RefundEffect | null;
+  /** state: pending | done | failed | confirmed (the provider refunded; waiting to be recorded). */
   refund_request: { state: string; cents: number; last_error: string | null; attempts: number } | null;
   status: string;
   trade_no: string | null;
@@ -164,6 +165,14 @@ function AmountSub({ o }: { o: Order }) {
       <span className="text-warning">
         {tr("退款处理中 ", "Refunding ")}
         {yuan(o.refund_request.cents)}
+      </span>
+    );
+  if (confirmedRefundCents(o) !== null)
+    return (
+      <span className="text-warning">
+        {tr("渠道已退 ", "Provider refunded ")}
+        {yuan(o.refund_request!.cents)}
+        {tr("，待登记", ", record it")}
       </span>
     );
   if (o.refunded_at)
