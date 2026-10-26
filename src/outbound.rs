@@ -87,6 +87,7 @@ fn public_v4(a: Ipv4Addr) -> bool {
         || (o0 == 203 && o1 == 0 && o2 == 113) // TEST-NET-3
         || (o0 == 192 && o1 == 88 && o2 == 99) // 6to4 relay anycast
         || (o0 == 198 && (o1 & 0xfe) == 18) // 198.18/15 benchmarking
+        || a.octets() == [168, 63, 129, 16] // Azure WireServer (public space, host-only service)
         || a.is_multicast()
         || o0 >= 240) // reserved + broadcast
 }
@@ -100,6 +101,10 @@ fn public_v6(a: Ipv6Addr) -> bool {
     // ::/96 (IPv4-compatible, also :: and ::1)
     if s[..6] == [0; 6] {
         return false;
+    }
+    // IPv4-translated ::ffff:0:0:0/96 (SIIT) → the embedded address.
+    if s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0 {
+        return public_v4(v4(s[6], s[7]));
     }
     // NAT64 64:ff9b::/96 → the embedded address; 64:ff9b:1::/48 local use.
     if s[0] == 0x64 && s[1] == 0xff9b {
@@ -347,6 +352,9 @@ mod tests {
             "172.31.255.255",
             "192.168.1.1",
             "169.254.169.254",
+            "168.63.129.16",
+            "::ffff:0:10.0.0.1",
+            "::ffff:0:a00:1",
             "169.254.0.1",
             "100.64.0.1",
             "100.127.255.255",
@@ -408,6 +416,8 @@ mod tests {
             "64:ff9b::101:101",
             "2002:101:101::1",
             "3fff:1000::1",
+            "168.63.129.15",
+            "::ffff:0:101:101",
         ] {
             assert!(public_address(ip(a)), "{a} must pass");
         }
