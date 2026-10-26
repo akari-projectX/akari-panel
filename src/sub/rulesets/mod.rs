@@ -417,8 +417,10 @@ pub async fn serve(
     let Some(id) = file.strip_suffix(".json").filter(|id| valid_id(id)) else {
         return reject::not_found();
     };
-    let row: Option<(String, String)> = match sqlx::query_as(
-        "SELECT body, etag FROM sub_rule_sets WHERE id = $1 AND body IS NOT NULL",
+    // The ETag first: a revalidation (304) must not read the body (up to
+    // 16 MiB) out of PostgreSQL.
+    let etag: Option<String> = match sqlx::query_scalar(
+        "SELECT etag FROM sub_rule_sets WHERE id = $1 AND body IS NOT NULL",
     )
     .bind(id)
     .fetch_optional(state.pg())
@@ -430,7 +432,7 @@ pub async fn serve(
             return reject::not_found();
         }
     };
-    let Some((body, etag)) = row else {
+    let Some(etag) = etag else {
         return reject::not_found();
     };
     let etag = format!("\"{etag}\"");
@@ -455,6 +457,27 @@ pub async fn serve(
         )
             .into_response();
     }
+    // One read for body and ETag together, so the pair is consistent even if
+    // a refresh landed after the check above.
+    let row: Option<(String, String)> = match sqlx::query_as(
+        "SELECT body, etag FROM sub_rule_sets WHERE id = $1 AND body IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_optional(state.pg())
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "rule-set read failed");
+            return reject::not_found();
+        }
+    };
+    let Some((body, fresh)) = row else {
+        return reject::not_found();
+    };
+    let Ok(etag_value) = HeaderValue::from_str(&format!("\"{fresh}\"")) else {
+        return reject::not_found();
+    };
     (
         [
             (
