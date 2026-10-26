@@ -27,7 +27,7 @@ import {
   TriangleAlert,
   Users,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { del, get, post, put } from "../../shared/api";
 import { cn } from "../../shared/cn";
@@ -51,6 +51,7 @@ import { useAction } from "../data";
 import { navigate, useQS, useRoute } from "../router";
 import { useSite } from "../session";
 import { KnowledgeBase, useArticles } from "./content-kb";
+import { TagChip, TagsManager, useAnnouncementTags, type AnnouncementTag } from "./content-tags";
 
 export type Announcement = {
   id: string;
@@ -63,6 +64,10 @@ export type Announcement = {
   visible_from: string | null;
   visible_until: string | null;
   audience: string;
+  tag_id: string | null;
+  tag_name_zh: string | null;
+  tag_name_en: string | null;
+  tag_color: string | null;
   active: boolean;
   reads: number;
   mail_requested_at: string | null;
@@ -117,9 +122,10 @@ export function ContentPage() {
   const tr = useTr();
   const { sub } = useRoute();
   const [, patch] = useQS();
-  const tab = sub[0] === "kb" ? "kb" : "announcements";
+  const tab = sub[0] === "kb" ? "kb" : sub[0] === "tags" ? "tags" : "announcements";
   const anns = useAnnouncements();
   const arts = useArticles();
+  const tags = useAnnouncementTags();
   const live = (anns.data ?? []).filter((a) => lifeOf(a) === "live").length;
   const docs = (arts.data ?? []).filter((a) => a.slug !== "terms" && a.slug !== "privacy").length;
   return (
@@ -139,6 +145,10 @@ export function ContentPage() {
           tab === "announcements" ? (
             <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new", copy: null })}>
               {tr("新建公告", "New announcement")}
+            </Button>
+          ) : tab === "tags" ? (
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+              {tr("新建标签", "New tag")}
             </Button>
           ) : undefined
         }
@@ -160,12 +170,13 @@ export function ContentPage() {
                   </>
                 ),
               },
+              { value: "tags", label: tr("公告标签", "Announcement tags"), count: tags.data?.length },
               { value: "kb", label: tr("知识库", "Knowledge base"), count: arts.data ? docs : undefined },
             ]}
           />
         </div>
       </PageHeader>
-      {tab === "announcements" ? <Announcements q={anns} /> : <KnowledgeBase />}
+      {tab === "announcements" ? <Announcements q={anns} /> : tab === "tags" ? <TagsManager /> : <KnowledgeBase />}
     </>
   );
 }
@@ -443,6 +454,7 @@ function AnnRow({ a, life, axis }: { a: Announcement; life: Life; axis: AxisRang
               {tr("置顶", "Pinned")}
             </Badge>
           )}
+          {a.tag_color && a.tag_name_zh && <TagChip name={a.tag_name_zh} color={a.tag_color} />}
           <span className="truncate text-body font-semibold hover:text-primary">{a.title_zh}</span>
         </span>
         <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-footnote text-muted-foreground">
@@ -554,7 +566,9 @@ function AnnouncementEditor({
     from: a ? toLocalInput(a.visible_from) : "",
     until: a ? toLocalInput(a.visible_until) : "",
     audience: (src?.audience ?? "all") as Audience,
+    tag_id: src?.tag_id ?? "",
   });
+  const tagsQ = useAnnouncementTags();
   const [lang, setLang] = useState("zh");
   const [tried, setTried] = useState(false);
   const [saveDraft, draftBusy] = useAction();
@@ -576,6 +590,9 @@ function AnnouncementEditor({
           ? tr("结束时间要晚于开始时间", "Must be after the start")
           : null,
   };
+  // Pickable: the enabled tags, plus the one this announcement already has (even if disabled).
+  const offered = (tagsQ.data ?? []).filter((t) => t.enabled || t.id === a?.tag_id);
+  const tag: AnnouncementTag | undefined = offered.find((t) => t.id === f.tag_id);
   const bad = Object.values(errs).filter(Boolean).length;
   const err = (k: keyof typeof errs) => (tried && errs[k]) || undefined;
   const wasLive = !!a && a.enabled;
@@ -596,6 +613,7 @@ function AnnouncementEditor({
       visible_from: fromIso,
       visible_until: untilIso,
       audience: f.audience,
+      tag_id: tag?.id ?? null,
     };
     const run = enabled ? publish : saveDraft;
     const r = await run(() => (a ? put(`/announcements/${a.id}`, body) : post("/announcements", body)), {
@@ -642,12 +660,12 @@ function AnnouncementEditor({
               {tr("取消", "Cancel")}
             </Button>
             {!wasLive && (
-              <Button loading={draftBusy} disabled={publishBusy} onClick={() => void submit(false)}>
+              <Button loading={draftBusy} disabled={publishBusy || tagsQ.isPending} onClick={() => void submit(false)}>
                 {tr("存为草稿", "Save as draft")}
               </Button>
             )}
             {wasLive && (
-              <Button loading={draftBusy} disabled={publishBusy} onClick={() => void submit(false)}>
+              <Button loading={draftBusy} disabled={publishBusy || tagsQ.isPending} onClick={() => void submit(false)}>
                 {tr("撤回为草稿", "Back to draft")}
               </Button>
             )}
@@ -655,7 +673,7 @@ function AnnouncementEditor({
               variant="primary"
               icon={Send}
               loading={publishBusy}
-              disabled={draftBusy}
+              disabled={draftBusy || tagsQ.isPending}
               onClick={() => void submit(true)}
             >
               {wasLive ? tr("保存", "Save") : tr("发布", "Publish")}
@@ -700,6 +718,38 @@ function AnnouncementEditor({
               }
               onChange={(e) => setF(zh ? { ...f, title_zh: e.target.value } : { ...f, title_en: e.target.value })}
             />
+          </Field>
+          <Field
+            label={tr("标签", "Tag")}
+            group
+            hint={tr(
+              "公告标题前的彩色小标签，可以不选。标签在「公告标签」里管理。",
+              "A small coloured label before the title; optional. Manage tags in Announcement tags.",
+            )}
+          >
+            <div role="radiogroup" aria-label={tr("标签", "Tag")} className="flex flex-wrap gap-2">
+              <TagChoice on={!tag} onClick={() => setF({ ...f, tag_id: "" })}>
+                <span className="text-footnote font-medium text-muted-foreground">{tr("无标签", "No tag")}</span>
+              </TagChoice>
+              {offered.map((t) => (
+                <TagChoice key={t.id} on={tag?.id === t.id} onClick={() => setF({ ...f, tag_id: t.id })}>
+                  <TagChip name={t.name_zh} color={t.color} />
+                  {!t.enabled && <span className="text-footnote text-faint">{tr("已停用", "disabled")}</span>}
+                </TagChoice>
+              ))}
+            </div>
+            <div
+              data-testid="title-preview"
+              className="mt-2 flex min-w-0 items-center gap-2 rounded-lg bg-window px-3 py-2 ring-1 ring-border ring-inset"
+            >
+              <span className="shrink-0 text-footnote text-muted-foreground">{tr("标题预览", "Title preview")}</span>
+              {tag && <TagChip name={zh || !tag.name_en ? tag.name_zh : tag.name_en} color={tag.color} />}
+              <span className="truncate text-body font-semibold">
+                {cur.title.trim() || (
+                  <span className="font-normal text-faint">{tr("（还没有标题）", "(no title yet)")}</span>
+                )}
+              </span>
+            </div>
           </Field>
           <Field
             label={zh ? tr("正文（Markdown）", "Body (Markdown)") : tr("正文（英文）", "Body (English)")}
@@ -766,6 +816,7 @@ function AnnouncementEditor({
           <MarkdownPreview
             className="min-h-[320px] lg:h-[calc(min(86vh,880px)-170px)]"
             title={cur.title}
+            tag={tag && <TagChip name={zh || !tag.name_en ? tag.name_zh : tag.name_en} color={tag.color} />}
             markdown={cur.body}
             label={
               zh
@@ -776,6 +827,24 @@ function AnnouncementEditor({
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/** One option of the tag picker (a radio): the tag as users see it, ringed when chosen. */
+function TagChoice({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={on}
+      onClick={onClick}
+      className={cn(
+        "inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-card px-2.5 shadow-[0_0_0_0.5px_var(--input)] transition-shadow",
+        on && "shadow-[0_0_0_1.5px_var(--primary),0_0_0_4px_var(--ring)]",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

@@ -13,12 +13,15 @@ import { PreviewPane } from "./kit";
 /** The preview pane for a Markdown draft (debounced; the last render stays while the next one renders). */
 export function MarkdownPreview({
   title,
+  tag,
   markdown,
   label,
   loading,
   className,
 }: {
   title: string;
+  /** A tag chip shown before the title (announcements). */
+  tag?: ReactNode;
   markdown: string;
   label: ReactNode;
   /** The body is still loading (shows "rendering"). */
@@ -41,6 +44,7 @@ export function MarkdownPreview({
       <PreviewPane
         className="h-full"
         title={title.trim()}
+        tag={tag}
         html={empty ? "" : (q.data?.html ?? "")}
         state={state}
         label={label}
