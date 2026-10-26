@@ -1,17 +1,21 @@
 <script lang="ts">
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import { orderApi, walletApi, type MyOrder } from '@/api';
   import { K } from '@/lib/cache';
-  import { ORDER_ACTION, formatDateTime, formatMoney, orderState, periodText, yuan } from '@/lib/format';
+  import { ORDER_ACTION, formatDateTime, formatMoney, orderState, periodText } from '@/lib/format';
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import Row from '../components/flat/Row.svelte';
+  import Section from '../components/flat/Section.svelte';
+  import StatRow from '../components/flat/StatRow.svelte';
+  import Tabs from '../components/flat/Tabs.svelte';
+  import { navigate } from '$lib/router.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
   import { R } from '$lib/routes';
-  import { toneClass } from '$lib/shop';
   import { toast } from '$lib/toast.svelte';
 
   /*
@@ -56,82 +60,53 @@
   const typeText = (o: MyOrder) => t(ORDER_ACTION[o.action]);
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('我的订单')}</h1>
-    <p>{t('全部消费记录与支付状态。')}</p>
-  </div>
-  <a class="link" href={R.shop}>{t('去选套餐')}<ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" /></a>
-</div>
+<PageTitle title={t('我的订单')} sub={t('全部消费记录与支付状态。')} />
 
-<section class="stats" aria-label={t('订单概况')}>
-  <div>
-    <div class="lb">{t('累计消费')}</div>
-    <div class="v num"><span class="ccy">¥</span>{yuan(paidTotal, { always2: true })}</div>
-    <div class="sub">{t('已付款、未退款的订单（含余额支付）')}</div>
-  </div>
-  <div>
-    <div class="lb">{t('订单总数')}</div>
-    <div class="v num">{all.length}<small>{t(' 笔')}</small></div>
-    <div class="sub num">{last ? tp('最近一笔 {d}', { d: formatDateTime(last.created_at) }) : t('还没有下过单')}</div>
-  </div>
-  <div>
-    <div class="lb">{t('待支付')}</div>
-    <div class="v num">{pendingCount}<small>{t(' 笔')}</small></div>
-    <div class="sub">{t('超时未支付将自动关闭')}</div>
-  </div>
-  <div>
-    <div class="lb">{t('账户余额')}</div>
-    <div class="v num">{#if balance.data}<span class="ccy">¥</span>{yuan(balance.data.balance_cents, { always2: true })}{:else}—{/if}</div>
-    <div class="sub">{t('下单时可以选择抵扣')}</div>
-  </div>
-</section>
+<Section>
+  <StatRow items={[
+    { k: t('累计消费'), v: formatMoney(paidTotal), x: t('已付款、未退款的订单（含余额支付）') },
+    { k: t('订单总数'), v: String(all.length), unit: t(' 笔').trim(), x: last ? tp('最近一笔 {d}', { d: formatDateTime(last.created_at) }) : t('还没有下过单') },
+    { k: t('待支付'), v: String(pendingCount), unit: t(' 笔').trim(), x: t('超时未支付将自动关闭') },
+    { k: t('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—', x: t('下单时可以选择抵扣') },
+  ]} />
+</Section>
 
-<section class="sec" aria-labelledby="h-orders">
-  <div class="sh">
-    <div>
-      <h2 id="h-orders">{t('订单记录')}</h2>
-      {#if list.length}<p>{tp('共 {n} 笔订单', { n: list.length })}</p>{/if}
-    </div>
-  </div>
-
-  <div class="filters" role="group" aria-label={t('按状态筛选')}>
-    {#each TABS as x (x.key)}
-      <button type="button" aria-pressed={tab === x.key} onclick={() => (tab = x.key)}>{t(x.label)}</button>
-    {/each}
-  </div>
+<Section>
+  {#snippet title()}{t('订单记录')}{/snippet}
+  {#snippet desc()}{#if list.length}{tp('共 {n} 笔订单', { n: list.length })}{/if}{/snippet}
+  <Tabs mb label={t('按状态筛选')} value={tab} onchange={(k) => (tab = k)} tabs={TABS.map((x) => ({ key: x.key, label: t(x.label) }))} />
 
   {#if !orders.data && orders.loading}
-    <Loading rows={5} />
+    <Loading />
   {:else if !orders.data && orders.error}
     <LoadError error={orders.error} onretry={orders.reload} />
   {:else if list.length === 0}
     <Empty title={t('这里还没有订单')} desc={t('选一个套餐下单后，记录会出现在这里。')}>
-      {#snippet action()}<a class="btn sm" href={R.shop}>{t('去选套餐')}</a>{/snippet}
+      {#snippet action()}<button type="button" class="btn sm" onclick={() => navigate(R.shop)}>{t('去选套餐')}</button>{/snippet}
     </Empty>
   {:else}
-    <!-- 窄屏：八列的表放不下，一行一笔订单，点整行进详情 -->
-    <div class="rows list">
-      {#each list as o (o.id)}
+    <!-- 窄屏：八列的表放不下，改成一行一笔订单，点整行进详情 -->
+    <div class="md-hide">
+      {#each list as o, i (o.id)}
         {@const st = orderState(o)}
-        <a class="li" href={R.order(o.id)}>
-          <div class="main">
-            <div class="t"><span>{o.plan_name}</span></div>
-            <div class="s num">{[typeText(o), periodText(o.period, o.period_days, t, tp), formatDateTime(o.created_at)].join(' · ')}</div>
-          </div>
-          <div class="end">
-            <b class="num">{formatMoney(o.amount_cents)}</b>
-            <span class={toneClass(st.tone)}>{t(st.text)}</span>
-          </div>
-        </a>
+        <Row first={i === 0} onclick={() => navigate(R.order(o.id))}>
+          {#snippet title()}{o.plan_name}{/snippet}
+          {#snippet desc()}{[typeText(o), periodText(o.period, o.period_days, t, tp), formatDateTime(o.created_at)].filter(Boolean).join(' · ')}{/snippet}
+          {#snippet extra()}
+            <span class="oend">
+              <span class="tnum" style="font-size: 15px; font-weight: 500">{formatMoney(o.amount_cents)}</span>
+              <span class={['bdg', st.tone]}>{t(st.text)}</span>
+            </span>
+          {/snippet}
+        </Row>
       {/each}
     </div>
-    <div class="tbl">
-      <table>
+    <div class="md-only tbl-w">
+      <table class="tbl flat-head">
         <thead>
           <tr>
-            <th>{t('订单号')}</th><th>{t('套餐')}</th><th>{t('类型')}</th><th>{t('周期')}</th>
-            <th class="r">{t('金额')}</th><th>{t('状态')}</th><th>{t('下单时间')}</th><th class="r">{t('操作')}</th>
+            <th style="min-width: 180px">{t('订单号')}</th><th style="width: 128px">{t('套餐')}</th><th style="width: 112px">{t('类型')}</th><th style="width: 112px">{t('周期')}</th>
+            <th style="width: 96px">{t('金额')}</th><th style="width: 96px">{t('状态')}</th><th style="width: 160px">{t('下单时间')}</th><th class="r" style="width: 128px">{t('操作')}</th>
           </tr>
         </thead>
         <tbody>
@@ -139,16 +114,16 @@
             {@const st = orderState(o)}
             <tr>
               <td><code>{o.out_trade_no}</code></td>
-              <td class="plan" title={o.plan_name}>{o.plan_name}</td>
-              <td>{typeText(o)}</td>
-              <td>{periodText(o.period, o.period_days, t, tp)}</td>
-              <td class="r num amt">{formatMoney(o.amount_cents)}</td>
-              <td><span class={toneClass(st.tone)}>{t(st.text)}</span></td>
-              <td class="num muted">{formatDateTime(o.created_at)}</td>
-              <td class="r acts">
-                <a class="link" href={R.order(o.id)}>{o.status === 'pending' ? t('去支付') : t('详情')}</a>
+              <td><span class="bdg brandbadge trunc" title={o.plan_name}><span>{o.plan_name}</span></span></td>
+              <td style="font-size: 14px">{typeText(o)}</td>
+              <td style="font-size: 14px">{periodText(o.period, o.period_days, t, tp)}</td>
+              <td class="tnum" style="font-weight: 500">{formatMoney(o.amount_cents)}</td>
+              <td><span class={['bdg', st.tone]}>{t(st.text)}</span></td>
+              <td class="tnum" style="color: var(--muted); font-size: 14px">{formatDateTime(o.created_at)}</td>
+              <td class="r">
+                <a class="btn link-btn" href={R.order(o.id)}>{o.status === 'pending' ? t('去支付') : t('详情')}</a>
                 {#if o.status === 'pending'}
-                  <button type="button" class="link quiet-link" disabled={cancelling.busy} onclick={() => cancel(o)}>{t('取消')}</button>
+                  <button type="button" class="btn link-btn" disabled={cancelling.busy} onclick={() => cancel(o)}>{t('取消')}</button>
                 {/if}
               </td>
             </tr>
@@ -157,52 +132,8 @@
       </table>
     </div>
   {/if}
-</section>
+</Section>
 
 <style>
-  .ph .link { margin-bottom: 4px; }
-  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 4px 0 32px; }
-  .stats > div { min-width: 0; padding: 0 28px; border-left: 1px solid var(--line); }
-  .stats > div:first-child { padding-left: 0; border-left: 0; }
-  .lb { font-size: 13px; color: var(--muted); }
-  .v { display: flex; align-items: baseline; gap: 4px; margin-top: 6px; font-size: 28px; line-height: 36px; font-weight: 600; letter-spacing: -.02em; color: var(--fg); white-space: nowrap; }
-  .v small { font-size: 14px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
-  .v .ccy { margin-right: 1px; font-size: 18px; }
-  .sub { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
-
-  .filters { display: flex; flex-wrap: wrap; gap: 4px 24px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
-  .filters button { position: relative; padding: 0 0 10px; border: 0; border-radius: 0; background: none; color: var(--muted); font: inherit; font-size: 13.5px; }
-  .filters button:hover { color: var(--fg); }
-  .filters button[aria-pressed='true'] { color: var(--fg); font-weight: 600; }
-  .filters button[aria-pressed='true']::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--brand); }
-
-  .rows { display: none; border-top: 0; }
-  .li .end { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
-  .li .end b { font-size: 15px; font-weight: 500; color: var(--fg); }
-
-  .tbl { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-  th { padding: 12px 12px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 500; color: var(--faint); text-align: left; white-space: nowrap; }
-  td { padding: 13px 12px; border-bottom: 1px solid var(--line); color: var(--body); white-space: nowrap; }
-  th:first-child, td:first-child { padding-left: 0; }
-  th:last-child, td:last-child { padding-right: 0; }
-  tbody tr:hover td { background: var(--hover); }
-  .r { text-align: right; }
-  code { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg); }
-  .plan { max-width: 220px; overflow: hidden; text-overflow: ellipsis; color: var(--fg); font-weight: 500; }
-  .amt { font-weight: 500; color: var(--fg); }
-  .muted { color: var(--muted); }
-  .acts { display: flex; justify-content: flex-end; gap: 14px; }
-
-  @media (max-width: 960px) {
-    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 0; }
-    .stats > div:nth-child(3) { padding-left: 0; border-left: 0; }
-  }
-  @media (max-width: 720px) {
-    .rows { display: block; }
-    .tbl { display: none; }
-    .v { font-size: 22px; line-height: 28px; }
-    .stats > div { padding: 0 0 0 16px; }
-    .sub { font-size: 12px; }
-  }
+  .oend { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 </style>

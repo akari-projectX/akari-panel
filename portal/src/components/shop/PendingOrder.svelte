@@ -12,7 +12,7 @@
    * 待支付订单的提醒细行（React 门户 components/pending-order.tsx）：「取消订单 / 去支付」。商店页头下面一条，
    * 确认订单对话框里也有一条（有这样一笔订单时面板拒绝再下新单，order.in_progress）。截止时间 = 订单的 expires_at。
    */
-  let { order, onchange }: { order: MyOrder; onchange: () => void } = $props();
+  let { order, onchange, compact = false, className }: { order: MyOrder; onchange: () => void; compact?: boolean; className?: string } = $props();
 
   const cancelling = new Pending();
   /* 挂载时取一次「现在」就够：这条提醒不需要秒级倒计时，进订单页才有 */
@@ -33,21 +33,14 @@
   }
 </script>
 
-<div class="notes pending-order">
-  <div class="note" role="status">
-    <Clock size={16} strokeWidth={1.75} aria-hidden="true" />
-    <p class="tx">
-      <b>{t('你有一笔待支付的订单')}</b><span class="gap"></span>
-      <span class="num">{summary} · {expired ? t('即将自动关闭') : tp('{t} 前未支付将自动关闭', { t: formatTime(order.expires_at) })}</span>
-    </p>
-    <div class="acts">
-      <button type="button" class="btn sm ghost" disabled={cancelling.busy} onclick={cancel}>{t('取消订单')}</button>
-      <a class="btn sm pri" href={R.order(order.id)}>{t('去支付')}</a>
-    </div>
+<div role="status" class={['notice', 'warn-bg', compact && 'compact', className]}>
+  <Clock size={16} strokeWidth={1.75} class="ic-warn" aria-hidden="true" />
+  <div class="grow">
+    <div class="nt">{t('你有一笔待支付的订单')}</div>
+    <div class="nd">{summary} · {expired ? t('即将自动关闭') : tp('{t} 前未支付将自动关闭', { t: formatTime(order.expires_at) })}</div>
+  </div>
+  <div class="nx">
+    <button type="button" class="btn sm ghost muted" disabled={cancelling.busy} onclick={cancel}>{t('取消订单')}</button>
+    <a class="btn sm pri" href={R.order(order.id)}>{t('去支付')}</a>
   </div>
 </div>
-
-<style>
-  .pending-order { margin: 0 0 28px; }
-  :global(.dlg) .pending-order { margin: 0 0 4px; }
-</style>

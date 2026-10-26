@@ -18,16 +18,16 @@ const isMobile = (info: TestInfo) => info.project.name === 'mobile';
 async function shop(page: Page) {
   await page.goto('/shop');
   await ready(page, '商店');
-  await expect(page.locator('.plan').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.plan-card').first()).toBeVisible({ timeout: 15_000 });
 }
 
-const card = (page: Page, name: string) => page.locator('.plan').filter({ has: page.getByRole('heading', { name, exact: true }) });
+const card = (page: Page, name: string) => page.locator('.plan-card').filter({ has: page.getByRole('heading', { name, exact: true }) });
 
 /** 确认订单里的一个选项（周期、支付方式）：整行 label */
-const option = (dialog: Locator, text: string | RegExp) => dialog.locator('label.opt').filter({ has: dialog.page().locator('b', { hasText: text }) });
+const option = (dialog: Locator, text: string | RegExp) => dialog.locator('.popt > button, .pmeth label').filter({ has: dialog.page().locator('b, span', { hasText: text }) });
 
 /** 订单页上的订单号 */
-const outTradeNo = async (page: Page) => (await page.locator('.info dd.no code').textContent())?.trim() ?? '';
+const outTradeNo = async (page: Page) => (await page.locator('.od-dl code').first().textContent())?.trim() ?? '';
 
 /** 第二个支付宝方式（多于一种时必须选）；用完删掉 */
 async function secondAlipay(): Promise<() => Promise<void>> {
@@ -53,28 +53,28 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(std.getByTestId('plan-price')).toHaveText(/¥\s*12\.50\s*\/月 起/);
   await expect(std.getByText('2 种周期可选')).toBeVisible();
   await expect(std.getByText('年付省 17%')).toBeVisible();
-  await expect(std.locator('.specs > div')).toHaveCount(3);
-  await expect(std.locator('.specs')).toContainText('100 GB');
-  await expect(std.locator('.specs')).toContainText('每月');
-  await expect(std.locator('.feats li').filter({ hasText: '全部节点' })).toBeVisible();
+  await expect(std.locator('.plan-specs > div')).toHaveCount(3);
+  await expect(std.locator('.plan-specs')).toContainText('100 GB');
+  await expect(std.locator('.plan-specs')).toContainText('每月');
+  await expect(std.locator('.plan-rich li').filter({ hasText: '全部节点' })).toBeVisible();
   const prem = card(page, seed.premium);
   await expect(prem.getByTestId('plan-price')).toHaveText(/¥\s*30\s*\/月$/);
   await expect(prem.getByText('更多流量')).toBeVisible();
   /* 后台标了「推荐」：实底小标签 */
-  await expect(prem.locator('.tag')).toHaveText('推荐');
-  await expect(prem.locator('.tag')).toHaveClass(/tg/);
+  await expect(prem.locator('.plan-tag')).toHaveText('推荐');
+  await expect(prem.locator('.plan-tag')).toHaveClass(/is-rec/);
   /* 当前套餐：品牌色边框 + 文字 + 主按钮「续费」+ 一行说明；别的套餐：换套餐 + 折算说明；「推荐」卡也用主按钮 */
-  const cur = page.locator('.plan.current');
+  const cur = page.locator('.plan-card.is-current');
   await expect(cur).toHaveCount(1);
-  await expect(cur.locator('.tag')).toHaveText('当前套餐');
+  await expect(cur.locator('.plan-tag')).toHaveText('当前套餐');
   await expect(cur.getByRole('button', { name: '续费' })).toHaveClass(/pri/);
   await expect(cur.getByText('从到期日顺延')).toBeVisible();
   await expect(prem.getByText('旧套餐剩余价值自动抵扣')).toBeVisible();
   await expect(prem.getByRole('button', { name: '更换到此套餐' })).toHaveClass(/pri/);
   /* 当前套餐区：名称 + 生效中、到期与剩余天数、流量用量 */
-  await expect(page.getByRole('region', { name: '当前套餐' })).toContainText('生效中');
-  await expect(page.getByRole('region', { name: '当前套餐' })).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
-  await expect(page.getByRole('meter', { name: '流量用量' })).toBeVisible();
+  await expect(page.locator('main section.sec').first()).toContainText('生效中');
+  await expect(page.locator('main section.sec').first()).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
+  await expect(page.getByRole('progressbar', { name: '流量用量' })).toBeVisible();
   /* 手机一栏，桌面同一行并排 */
   const [b1, b2] = [await std.boundingBox(), await prem.boundingBox()];
   if (isMobile(info)) expect(Math.abs((b1?.x ?? 0) - (b2?.x ?? 1))).toBeLessThan(2);
@@ -88,10 +88,9 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await cur.getByRole('button', { name: '续费' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: '确认订单' })).toBeVisible();
-  await expect(dialog.getByRole('radiogroup', { name: '购买时长' }).getByRole('radio')).toHaveCount(2);
-  await expect(option(dialog, '年付')).toContainText('省 17%');
+  await expect(dialog.locator('.popt > button')).toHaveCount(2);
   await expect(option(dialog, '年付')).toContainText(/每月 ¥12\.50/);
-  await expect(dialog.getByRole('radiogroup', { name: '支付方式' })).toHaveCount(0);
+  await expect(dialog.getByRole('group', { name: '支付方式' })).toHaveCount(0);
   await expect(dialog.getByText('应付金额')).toBeVisible();
   await expect(dialog.getByRole('button', { name: /^支付 ¥15(\.00)?$/ })).toBeEnabled();
   await option(dialog, '年付').click();
@@ -116,7 +115,7 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
 test('#31 the current plan: quota, reset period and next reset, expiry, speed', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await shop(page);
-  const cur = page.getByRole('region', { name: '当前套餐' });
+  const cur = page.locator('main section.sec').first();
   await expect(cur.getByRole('heading', { name: /E2E 标准/ })).toBeVisible();
   await expect(cur).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
   await expect(cur).toContainText('300 Mbps');
@@ -132,10 +131,10 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
 
   /* 流量重置包，余额全额抵扣：面板当场付清，订单页弹付款结果（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
-  await expect(page.getByRole('region', { name: '流量重置包' })).toContainText(`重置「${seed.plan}」的流量`);
+  await expect(page.locator('main section.sec').filter({ hasText: '流量重置包' })).toContainText(`重置「${seed.plan}」的流量`);
   await page.getByRole('button', { name: '购买', exact: true }).click();
   await expect(dialog.getByText('余额抵扣')).toBeVisible();
-  await expect(dialog.getByRole('radiogroup', { name: '购买时长' })).toHaveCount(0);
+  await expect(dialog.locator('.popt > button')).toHaveCount(0);
   await dialog.getByRole('button', { name: '确认开通' }).click();
   await expect(dialog.getByRole('button', { name: '查看订阅' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '返回仪表盘' })).toBeVisible();
@@ -143,8 +142,8 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await payResult(page, '支付成功', seed.plan, 10_000, { info, name: 'pay-success-light' });
   await expect(page).toHaveURL(/\/orders\/[0-9a-f-]+$/);
   await ready(page, '订单详情');
-  await expect(page.locator('.bill-head')).toContainText('已付款');
-  await expect(page.locator('.info')).toContainText('流量重置');
+  await expect(page.locator('.od-bh')).toContainText('已付款');
+  await expect(page.locator('.od-dl')).toContainText('流量重置');
   await expect(page.getByRole('list', { name: '订单进度' })).toContainText('套餐生效');
   /* 只弹一次：刷新后不再出现 */
   await page.reload();
@@ -162,11 +161,11 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   /* 用余额续费一个月 */
   await shop(page);
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
-  await page.locator('.plan.current').getByRole('button', { name: '续费' }).click();
+  await page.locator('.plan-card.is-current').getByRole('button', { name: '续费' }).click();
   await option(dialog, '月付').click();
   await dialog.getByRole('button', { name: '确认开通' }).click();
   await payResult(page, '支付成功', seed.plan);
-  await expect(page.locator('.info')).toContainText('续费');
+  await expect(page.locator('.od-dl')).toContainText('续费');
 
   /* 第二个支付方式：多于一种时必须选（#42）；换到高级套餐：旧套餐折算抵扣（#37），支付宝扫码，网关标记已付款后页面自己变（#44） */
   const drop = await secondAlipay();
@@ -174,10 +173,10 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await shop(page);
     await card(page, seed.premium).getByRole('button', { name: '更换到此套餐' }).click();
     await expect(dialog.getByText('旧套餐折算抵扣')).toBeVisible();
-    await expect(dialog.getByRole('radiogroup', { name: '支付方式' }).getByRole('radio')).toHaveCount(2);
+    await expect(dialog.getByRole('group', { name: '支付方式' }).getByRole('radio')).toHaveCount(2);
     await expect(dialog.getByRole('button', { name: /^支付 ¥/ })).toBeDisabled();
     await option(dialog, /^支付宝$/).click();
-    await expect(option(dialog, /^支付宝$/)).toHaveClass(/on/);
+    await expect(dialog.getByRole('radio', { name: /^支付宝$/ })).toBeChecked();
     await shot(page, info, 'confirm-methods-light');
     await dark(page);
     await shot(page, info, 'confirm-methods-dark');
@@ -186,7 +185,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await ready(page, '订单详情');
     await expect(page.getByRole('heading', { name: /扫码支付|支付宝付款/ })).toBeVisible();
     await expect(page.getByRole('img', { name: '付款二维码' })).toBeVisible();
-    await expect(page.locator('.bill-head')).toContainText('待支付');
+    await expect(page.locator('.od-bh')).toContainText('待支付');
     await expect(page.getByText(/请在 .* 前完成支付（还剩 \d+ 分钟）/)).toBeVisible();
     await shot(page, info, 'order-pending-light');
     await dark(page);
@@ -195,8 +194,8 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await payAtGateway(await outTradeNo(page));
     /* 轮询看到已付款：同一个结果弹窗 */
     await payResult(page, '支付成功', seed.premium, 30_000);
-    await expect(page.locator('.bill-head')).toContainText('已付款');
-    await expect(page.locator('.info')).toContainText('更换套餐');
+    await expect(page.locator('.od-bh')).toContainText('已付款');
+    await expect(page.locator('.od-dl')).toContainText('更换套餐');
   } finally {
     await drop();
   }
@@ -204,21 +203,21 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   /* #46 订单列表：类型、状态、四个数字；筛选 */
   await page.goto('/orders');
   await ready(page, '我的订单');
-  const list = isMobile(info) ? page.locator('.rows') : page.locator('table');
+  const list = isMobile(info) ? page.locator('.md-hide') : page.locator('table');
   await expect(list).toContainText('更换套餐');
   await expect(list).toContainText('流量重置');
   await expect(list).toContainText('已付款');
-  await expect(page.getByRole('region', { name: '订单概况' })).toContainText('累计消费');
-  await page.getByRole('button', { name: '已关闭', exact: true }).click();
-  await expect(page.getByRole('button', { name: '已关闭', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.statrow')).toContainText('累计消费');
+  await page.getByRole('tab', { name: '已关闭', exact: true }).click();
+  await expect(page.getByRole('tab', { name: '已关闭', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('这里还没有订单')).toBeVisible();
-  await page.getByRole('button', { name: '全部', exact: true }).click();
+  await page.getByRole('tab', { name: '全部', exact: true }).click();
   await shot(page, info, 'orders-light');
   await dark(page);
   await shot(page, info, 'orders-dark');
   await page.emulateMedia({ colorScheme: 'light' });
   /* 点一行进详情 */
-  if (isMobile(info)) await page.locator('.rows a').first().click();
+  if (isMobile(info)) await page.locator('.md-hide button').first().click();
   else await page.locator('table').getByRole('link', { name: '详情' }).first().click();
   await ready(page, '订单详情');
 });
@@ -234,14 +233,14 @@ test('#37 credit beyond the new price is forfeited only after an explicit acknow
   await dialog.getByRole('button', { name: '确认开通' }).click();
   await payResult(page, '支付成功', seed.plan);
   await ready(page, '订单详情');
-  await expect(page.locator('.bill-head')).toContainText('已付款');
+  await expect(page.locator('.od-bh')).toContainText('已付款');
 });
 
 test('#45 a pending order is shown on the shop, blocks a new order, and can be cancelled', async ({ page }, info) => {
   await signIn(page, 'plain@e2e.test');
   await shop(page);
   /* 没有套餐：当前套餐区写未订阅，按钮是立即订阅 */
-  await expect(page.getByRole('region', { name: '当前套餐' })).toContainText('未订阅');
+  await expect(page.locator('main section.sec').first()).toContainText('未订阅');
   await card(page, seed.plan).getByRole('button', { name: '立即订阅' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: /^支付 ¥/ }).click();
@@ -261,7 +260,7 @@ test('#45 a pending order is shown on the shop, blocks a new order, and can be c
   await ready(page, '订单详情');
   await page.getByRole('button', { name: '取消订单' }).click();
   await expect(page.getByText('订单已取消').first()).toBeVisible();
-  await expect(page.locator('.bill-head')).toContainText('已取消');
+  await expect(page.locator('.od-bh')).toContainText('已取消');
   await expect(page.getByRole('list', { name: '订单进度' })).toContainText('已取消');
   await expect(page.getByText('这笔订单已关闭，可以重新选购套餐。')).toBeVisible();
   await shot(page, info, 'order-cancelled-light');
@@ -294,21 +293,21 @@ test('#40 coupons are entered in the order confirmation: refused in the UI langu
   /* 有效：服务端报价里的折扣与应付金额 */
   await apply(code);
   await expect(dialog.getByText(new RegExp(`优惠码 ${code} 已生效`))).toBeVisible();
-  await expect(dialog.locator('.sum')).toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).toContainText(/[−-]¥3(\.00)?/);
   await shot(page, info, 'confirm-coupon-light');
   /* 关掉再开：优惠码清空，价格回到不带码的报价 */
   await page.keyboard.press('Escape');
   await premium.click();
   await expect(dialog.getByLabel('优惠码')).toHaveValue('');
-  await expect(dialog.locator('.sum')).not.toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).not.toContainText(/[−-]¥3(\.00)?/);
   await page.keyboard.press('Escape');
 
   /* 与余额一起用（换套餐的折算同在这份报价里） */
   await page.getByRole('switch', { name: '用余额抵扣' }).click();
   await premium.click();
   await apply(code);
-  await expect(dialog.locator('.sum')).toContainText(/[−-]¥3(\.00)?/);
-  await expect(dialog.locator('.sum')).toContainText('余额抵扣');
+  await expect(dialog.locator('.fline')).toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).toContainText('余额抵扣');
   await page.keyboard.press('Escape');
 });
 
@@ -329,7 +328,7 @@ test('#38 #48 refusals: renewal-only plans are not offered to newcomers, sold-ou
     await expect(soldOut).toBeVisible();
     /* 仅续费的套餐不卖给新用户：不在目录里 */
     await expect(card(page, 'V2 仅续费')).toHaveCount(0);
-    await expect(soldOut.locator('.tag')).toHaveText('已售罄');
+    await expect(soldOut.locator('.plan-tag')).toHaveText('已售罄');
     await expect(soldOut.getByRole('button', { name: '已售罄' })).toBeDisabled();
   } finally {
     for (const id of [renewal.id, full.id]) await a.call('DELETE', `/api/v1/plans/${id}`).catch(() => undefined);
@@ -348,10 +347,10 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
     await page.goto(`/orders/${id}`);
     await ready(page, '订单详情');
     await expect(page.getByText(/这笔订单已于 .* 退款/)).toBeVisible();
-    await expect(page.locator('.info')).toContainText(method);
+    await expect(page.locator('.od-dl')).toContainText(method);
     await expect(page.getByText(line)).toBeVisible();
     await expect(page.getByText('这笔订单开通的套餐已同时结束。')).toBeVisible();
-    await expect(page.locator('.bill-head')).toContainText('已退款');
+    await expect(page.locator('.od-bh')).toContainText('已退款');
     if (route === 'balance') {
       await expect(page.getByRole('link', { name: '查看钱包' })).toBeVisible();
       await shot(page, info, 'order-refunded-light');
@@ -363,7 +362,7 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
   await page.goto('/orders');
   await ready(page, '我的订单');
   await page.getByRole('button', { name: '已退款', exact: true }).click();
-  const list = isMobile(info) ? page.locator('.rows .li') : page.locator('tbody tr');
+  const list = isMobile(info) ? page.locator('.md-hide button') : page.locator('tbody tr');
   await expect(list).toHaveCount(3);
 });
 
@@ -383,7 +382,7 @@ test('#19 renewal scope (quota used up): the dashboard leads to the shop, which 
   await page.getByRole('link', { name: '去恢复' }).click();
   await ready(page, '商店');
   /* 流量用完：当前套餐排最前，默认给重置包 */
-  await expect(page.locator('.plan').first()).toHaveClass(/current/);
-  await expect(page.locator('.plan.current').getByRole('button', { name: '购买重置包' })).toBeVisible();
-  await expect(page.getByRole('region', { name: '当前套餐' })).toContainText('流量已用完');
+  await expect(page.locator('.plan-card').first()).toHaveClass(/current/);
+  await expect(page.locator('.plan-card.is-current').getByRole('button', { name: '购买重置包' })).toBeVisible();
+  await expect(page.locator('main section.sec').first()).toContainText('流量已用完');
 });

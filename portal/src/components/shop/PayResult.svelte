@@ -4,7 +4,7 @@
   import type { MyOrder } from '@/api';
   import { formatDate, formatMoney } from '@/lib/format';
   import type { PayOutcome } from '@/lib/shop';
-  import Dialog from '../ui/Dialog.svelte';
+  import ResultDialog from '../ui/ResultDialog.svelte';
   import { auth } from '$lib/auth.svelte';
   import { t } from '$lib/i18n.svelte';
   import { navigate } from '$lib/router.svelte';
@@ -20,7 +20,7 @@
    */
   let { order, outcome, onclose }: { order: MyOrder; outcome: PayOutcome | null; onclose: () => void } = $props();
 
-  let mark = $state<HTMLElement | null>(null);
+  let markEl = $state<HTMLElement | null>(null);
 
   $effect(() => {
     if (outcome !== 'success' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -28,7 +28,7 @@
     /* 圆环画完、对勾开始落下的那一刻炸开 */
     const timer = setTimeout(() => {
       void import('@/lib/confetti').then((m) => {
-        if (!cancelled && mark) m.default(mark, 800);
+        if (!cancelled && markEl) m.default(markEl, 800);
       });
     }, 200);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -52,33 +52,34 @@
 </script>
 
 {#if outcome}
-  <Dialog open onOpenChange={(o) => { if (!o) onclose(); }} title={t(VIEW[outcome].title)} description={t(VIEW[outcome].description)}>
-    {#snippet icon()}
-      <span class={['result-mark', outcome]} bind:this={mark}>
-        {#if outcome === 'success'}
+  {@const v = VIEW[outcome]}
+  <ResultDialog open onOpenChange={(o) => { if (!o) onclose(); }} title={t(v.title)} description={t(v.description)}>
+    {#snippet mark()}
+      {#if outcome === 'success'}
+        <span class="result-mark is-success" bind:this={markEl}>
           <svg viewBox="0 0 56 56" aria-hidden="true">
-            <circle class="arc" cx="28" cy="28" r="25" pathLength="1" />
-            <path class="tick" d="M17 29.5l7.5 7.5L39.5 21" pathLength="1" />
+            <circle class="draw-in ring" cx="28" cy="28" r="25" pathLength="1" />
+            <path class="draw-in tick" d="M17 29.5l7.5 7.5L39.5 21" pathLength="1" />
           </svg>
-        {:else if outcome === 'refunded'}
-          <Undo2 size={26} strokeWidth={1.75} aria-hidden="true" />
-        {:else}
-          <Clock size={26} strokeWidth={1.75} aria-hidden="true" />
-        {/if}
-      </span>
+        </span>
+      {:else if outcome === 'refunded'}
+        <span class="result-mark is-warning"><Undo2 size={28} strokeWidth={1.75} aria-hidden="true" /></span>
+      {:else}
+        <span class="result-mark is-muted shake-x"><Clock size={28} strokeWidth={1.75} aria-hidden="true" /></span>
+      {/if}
     {/snippet}
 
     {#if outcome !== 'expired'}
-      <dl class="result-sum">
-        <div><dt>{t('金额')}</dt><dd class="num">{formatMoney(paid)}</dd></div>
+      <dl class="result-summary">
+        <div><dt>{t('金额')}</dt><dd class="tnum">{formatMoney(paid)}</dd></div>
         <div><dt>{t('订购套餐')}</dt><dd>{order.plan_name}</dd></div>
         {#if outcome === 'success' && plan?.plan}
-          <div><dt>{t('到期时间')}</dt><dd class="num">{plan.expires_at ? formatDate(plan.expires_at) : t('长期')}</dd></div>
+          <div><dt>{t('到期时间')}</dt><dd class="tnum">{plan.expires_at ? formatDate(plan.expires_at) : t('长期')}</dd></div>
         {/if}
       </dl>
     {/if}
 
-    {#snippet footer()}
+    {#snippet actions()}
       {#if outcome === 'success'}
         <button type="button" class="btn" onclick={() => go(`${R.dashboard}#subscribe`)}>{t('查看订阅')}</button>
         <button type="button" class="btn pri" onclick={() => go(R.dashboard)}>{t('返回仪表盘')}</button>
@@ -90,22 +91,5 @@
         <button type="button" class="btn pri" onclick={() => go(R.shop)}>{t('重新选购')}</button>
       {/if}
     {/snippet}
-  </Dialog>
+  </ResultDialog>
 {/if}
-
-<style>
-  .result-mark { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; color: var(--muted); }
-  .result-mark.success { color: var(--ok); }
-  .result-mark.refunded { color: var(--warn); }
-  .result-mark svg { width: 44px; height: 44px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-  .arc, .tick { stroke-dasharray: 1; stroke-dashoffset: 1; animation: draw var(--dur-base) var(--ease-out) forwards; }
-  .tick { stroke-width: 3; animation-delay: 180ms; }
-  .result-sum { padding: 4px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13.5px; }
-  .result-sum div { display: flex; justify-content: space-between; gap: 16px; padding: 7px 0; }
-  .result-sum dt { color: var(--muted); }
-  .result-sum dd { min-width: 0; color: var(--fg); text-align: right; overflow-wrap: anywhere; }
-  @keyframes draw { to { stroke-dashoffset: 0; } }
-  @media (prefers-reduced-motion: reduce) {
-    .arc, .tick { animation: none; stroke-dashoffset: 0; }
-  }
-</style>
