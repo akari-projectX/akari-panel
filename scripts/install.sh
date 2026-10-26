@@ -1115,13 +1115,19 @@ prefix_bare() {
 # --- health checks ------------------------------------------------------------------
 
 # wait_health URL SECONDS: 200 from /<prefix>/healthz (served under the
-# admin prefix by every version; v0.4 also answers /healthz).
+# admin prefix by every version; v0.4 also answers /healthz). Polls every
+# second and returns the moment it answers; on bare metal it gives up at once
+# when systemd has marked the panel unit failed (a crash loop that hit its
+# start limit) instead of waiting out the budget.
 wait_health() {
 	i=0
 	while [ "$i" -lt "$2" ]; do
 		[ "$(http_status "$1")" = 200 ] && return 0
-		sleep 2
-		i=$((i + 2))
+		if [ "$MODE" = bare ] && systemctl is-failed --quiet akari-panel.service 2>/dev/null; then
+			return 1
+		fi
+		sleep 1
+		i=$((i + 1))
 	done
 	return 1
 }
@@ -1135,15 +1141,23 @@ panel_health_url() {
 	fi
 }
 
-# check_proxy PREFIX: healthz through Caddy (TLS, the public path).
+# check_proxy PREFIX: healthz through Caddy (TLS, the public path). Returns
+# as soon as it answers. Without a domain (IP only) the certificate comes from
+# Caddy's internal CA and nothing waits on DNS or the ACME order, so a short
+# budget is enough; on bare metal a Caddy that is not running fails at once.
 check_proxy() {
 	url="$(origin)/$1/healthz"
+	budget=60
+	[ -n "$DOMAIN" ] || budget=15
 	i=0
-	while [ "$i" -lt 60 ]; do
+	while [ "$i" -lt "$budget" ]; do
+		if [ "$MODE" = bare ] && ! systemctl is-active --quiet caddy.service 2>/dev/null; then
+			return 1
+		fi
 		# Through this host's Caddy whatever DNS says (NAT, DNS not yet set).
 		[ "$(http_status "$url" "::127.0.0.1:")" = 200 ] && return 0
-		sleep 2
-		i=$((i + 2))
+		sleep 1
+		i=$((i + 1))
 	done
 	return 1
 }

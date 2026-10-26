@@ -94,6 +94,15 @@ cx sh -c 'echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] http://dl.cloudsmith
 inst() {
 	docker exec -e LANG=C.UTF-8 -e AKARI_ADMIN_PASSWORD="$pw" -e AKARI_SOURCE_DIR=/src "$@"
 }
+# timed CMD...: runs it and prints the wall time (the IP-only job records the
+# install and upgrade times here; the installer returns from its waits as soon
+# as the condition holds).
+timed() {
+	local t0=$SECONDS rc=0
+	"$@" || rc=$?
+	echo "TIMING [$address] $2 ${3:-}: $((SECONDS - t0))s (exit $rc)"
+	return "$rc"
+}
 local_rel=(-e AKARI_RELEASES_URL=file:///rel -e AKARI_COSIGN_KEY=/rel/cosign.pub)
 
 # The installer's default admin (v0.4 D1: the e-mail is the login):
@@ -187,7 +196,7 @@ if [ -n "$prev" ]; then
 	inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge $prev"
 fi
 log "install $new — bare, $address"
-inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
+timed inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
 PREFIX=$(prefix)
 check_panel "$new"
 cx test -e /etc/apt/sources.list.d/caddy-stable.list && fail "the dead Cloudsmith source is still on"
@@ -236,7 +245,7 @@ SUBP=$(cx sh -c "sed -n 's/.*\"sub_url\":\"\([^\"]*\)\".*/\1/p' /tmp/last" | sed
 echo "ok: subscription"
 
 log "broken release $broken: the upgrade must roll back"
-if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$broken"; then
+if timed inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$broken"; then
 	fail "the broken upgrade reported success"
 fi
 cx grep -q 'rolling back\|自动回滚' /var/log/akari-install.log || fail "no rollback in the log"
