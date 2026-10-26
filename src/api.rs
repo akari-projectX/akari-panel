@@ -617,6 +617,8 @@ pub async fn user_subscription(
             ));
         }
     }
+    // An anonymized account has no link and never gets one again.
+    refuse_erased(&mut tx, id).await?;
     let actor = Actor::of(&admin);
     let stored = crate::sub::ensure_token(&mut tx, state.master_key(), &actor, id)
         .await?
