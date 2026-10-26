@@ -125,17 +125,20 @@
 <style>
   .form { display: flex; flex-direction: column; gap: 16px; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .two :global(.field-label label) { font-size: 14px; line-height: 1; }
+  .two :global(.sel-trig) { margin-bottom: 8px; }
   .prio { margin: 0; padding: 0; border: 0; min-width: 0; }
-  .prio legend { margin-bottom: 6px; padding: 0; font-size: 13px; font-weight: 500; color: var(--body); }
+  .prio legend { margin-bottom: 8px; padding: 0; font-size: 13px; font-weight: 500; color: var(--fg); }
   .opts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .opts label {
-    display: grid; place-items: center; height: 38px; border: 1px solid var(--line2); border-radius: 8px;
-    font-size: 13.5px; color: var(--body); cursor: pointer; transition: border-color var(--dur-hover) var(--ease-out);
+    display: grid; place-items: center; height: 40px; border: 1px solid var(--line); border-radius: calc(var(--radius) * 1.4);
+    font-size: 13px; font-weight: 500; color: var(--fg); cursor: pointer; transition: background-color .15s, color .15s;
   }
-  .opts label:hover { border-color: color-mix(in srgb, var(--fg) 28%, transparent); }
-  .opts label.on { border-color: var(--brand); color: var(--brand); font-weight: 500; box-shadow: inset 0 0 0 1px var(--brand); }
+  .opts label:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
+  .opts label.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 5%, transparent); color: var(--brand); }
   .opts label:has(:focus-visible) { box-shadow: var(--focus); }
-  .hint { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+  .hint { margin-top: 8px; font-size: 12px; line-height: 21px; color: var(--muted); }
+  .form :global(textarea.input) { height: 64px; min-height: 64px; padding: 8px 10px; line-height: 20px; resize: none; }
   @media (max-width: 720px) {
     .two { grid-template-columns: 1fr; }
   }

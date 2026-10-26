@@ -630,7 +630,7 @@
 .rc-pie .clg { margin-top: -5px; }
 
 /* 下拉选择（ui/Select.svelte，shadcn Select 的外观） */
-.sel-trig { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 40px; padding: 0 8px 0 10px; text-align: left; cursor: pointer; white-space: nowrap; }
+.sel-trig { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 32px; line-height: 20px; padding: 0 8px 0 10px; text-align: left; cursor: pointer; white-space: nowrap; }
 .sel-trig > svg { flex: none; color: var(--muted); pointer-events: none; }
 .sel-val { overflow: hidden; text-overflow: ellipsis; }
 .sel-pop { z-index: 60; min-width: var(--bits-select-anchor-width); max-height: var(--bits-select-content-available-height); overflow: hidden auto; border-radius: 8px; background: var(--surface); color: var(--fg); box-shadow: var(--pop-shadow), 0 0 0 1px var(--line); }
