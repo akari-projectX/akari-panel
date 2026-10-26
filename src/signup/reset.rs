@@ -252,12 +252,19 @@ pub async fn reset_password(
     }
     let hash = auth::hash_password_async(&req.password).await?;
     let mut tx = state.pg().begin().await?;
-    if apply_reset(&mut tx, &req.token, &hash, Some(client))
-        .await?
-        .is_none()
-    {
+    let Some(user) = apply_reset(&mut tx, &req.token, &hash, Some(client)).await? else {
         return Err(invalid_link());
-    }
+    };
+    let portal = crate::mail::portal_url(&state);
+    crate::mailhook::security_notice(
+        &mut tx,
+        user,
+        crate::mail::templates::SecurityEvent::PasswordChanged,
+        Some(client),
+        portal.as_deref(),
+        None,
+    )
+    .await;
     tx.commit().await?;
     Ok(super::ok_json(json!({ "ok": true })))
 }

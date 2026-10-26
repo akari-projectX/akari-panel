@@ -130,7 +130,8 @@ async fn change_password_inner(
         return Ok(None);
     }
     let new_hash = auth::hash_password_async(&req.new_password).await?;
-    let out = write_password(&mut tx, user, &new_hash, false).await?;
+    let portal = crate::mail::portal_url(state);
+    let out = write_password(&mut tx, user, &new_hash, false, portal.as_deref()).await?;
     tx.commit().await?;
     Ok(Some(out))
 }
@@ -145,7 +146,8 @@ async fn set_password(
 ) -> Result<(String, i64), ApiError> {
     let new_hash = auth::hash_password_async(password).await?;
     let mut tx = state.pg().begin().await?;
-    let out = write_password(&mut tx, user, &new_hash, first).await?;
+    let portal = crate::mail::portal_url(state);
+    let out = write_password(&mut tx, user, &new_hash, first, portal.as_deref()).await?;
     tx.commit().await?;
     Ok(out)
 }
@@ -155,6 +157,7 @@ async fn write_password(
     user: &AuthUser,
     new_hash: &str,
     first: bool,
+    portal: Option<&str>,
 ) -> Result<(String, i64), ApiError> {
     let (role, sv): (String, i64) = sqlx::query_as(
         "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
@@ -173,6 +176,15 @@ async fn write_password(
         Some(json!({ "password": crate::audit::CHANGED, "self_service": true, "first": first })),
     )
     .await?;
+    crate::mailhook::security_notice(
+        conn,
+        user.id,
+        crate::mail::templates::SecurityEvent::PasswordChanged,
+        user.ip,
+        portal,
+        None,
+    )
+    .await;
     Ok((role, sv))
 }
 
