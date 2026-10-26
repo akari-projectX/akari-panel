@@ -245,3 +245,30 @@ async fn traffic_export_days_and_nodes() {
     assert_eq!(audits(&db, "export.traffic").await, 2);
     db.drop().await;
 }
+
+/// Audit core P3-4: an export whose client never reads is cut off at the
+/// limit, and the producer (its snapshot transaction, its connection) is
+/// dropped instead of waiting for ever.
+#[tokio::test]
+async fn a_stalled_export_is_cut_off() {
+    struct Held(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (tx, _rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+    let held = Held(released.clone());
+    let producer = async move {
+        let _held = held;
+        loop {
+            tx.send(Ok(Bytes::from_static(b"row\n")))
+                .await
+                .map_err(|_| anyhow::anyhow!("client went away"))?;
+        }
+    };
+    let r = bounded(std::time::Duration::from_millis(100), producer).await;
+    assert!(r.is_err_and(|e| e.to_string().contains("too long")));
+    assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+}
