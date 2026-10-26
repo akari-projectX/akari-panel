@@ -7,7 +7,7 @@
 #   without BBR + fq:     curl -fsSL <link> | sh -s -- --no-bbr
 #                         (or AKARI_BBR=0 in the environment of sh)
 #   uninstall:            curl -fsSL <link> | sh -s -- --uninstall
-#                         (or, on an installed node, as root: akari-agent-uninstall)
+#                         (or, on an installed node, as root: akari-agent-uninstall [--yes])
 #
 # What it does: downloads the agent for this machine's architecture and
 # checks its SHA-256, writes /etc/akari-agent/bootstrap.toml (0600: panel
@@ -232,7 +232,50 @@ cat >"$TMP/uninstall" <<'AKARI_UNINSTALL_EOF'
 # Remove the Akari agent (written by the installer).
 set -eu
 @@UNINSTALL_FN@@
+usage() {
+	cat <<'AKARI_USAGE_EOF'
+Usage: akari-agent-uninstall [--yes]
+
+Remove the Akari agent from this machine: its services, binary,
+/etc/akari-agent (bootstrap, certificates), state directory and the
+BBR + fq settings the installer added. Delete the node in the panel as well.
+
+Options:
+  -y, --yes   do not ask for confirmation (required when not on a terminal)
+  -h, --help  show this help and exit
+AKARI_USAGE_EOF
+}
+yes=0
+for arg in "$@"; do
+	case "$arg" in
+	-h | --help)
+		usage
+		exit 0
+		;;
+	-y | --yes) yes=1 ;;
+	*)
+		say "unknown option: $arg"
+		usage >&2
+		exit 2
+		;;
+	esac
+done
 [ "$(id -u)" -eq 0 ] || { say "run as root"; exit 1; }
+if [ "$yes" -ne 1 ]; then
+	if [ ! -t 0 ]; then
+		say "refusing to uninstall without confirmation: pass --yes"
+		exit 1
+	fi
+	printf 'Remove the Akari agent and its data from this machine? [y/N] ' >&2
+	read -r answer || answer=
+	case "$answer" in
+	y | Y | yes | YES) ;;
+	*)
+		say "cancelled"
+		exit 1
+		;;
+	esac
+fi
 uninstall
 AKARI_UNINSTALL_EOF
 install -m 0755 "$TMP/uninstall" "$UNINSTALLER"

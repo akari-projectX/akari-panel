@@ -4410,7 +4410,7 @@ assert n['update_status']['superseded'] is True, n['update_status']" \
   fi
   echo "w23 reinstall: update status superseded, units current, uninstall hint: ok"
   # Uninstall removes the updater as well.
-  udx 'akari-agent-uninstall' >>"$LOG/upd-install.out" 2>&1 || { echo "FAIL: uninstall (update node)"; exit 1; }
+  udx 'akari-agent-uninstall --yes' >>"$LOG/upd-install.out" 2>&1 || { echo "FAIL: uninstall (update node)"; exit 1; }
   udx 'test ! -e /etc/systemd/system/akari-agent-update.path && test ! -e /etc/systemd/system/akari-agent-update.service && test ! -e /var/lib/akari-agent-update && test ! -e /usr/local/bin/akari-agent.prev' \
     || { echo "FAIL: uninstall left the updater behind"; exit 1; }
   cleanup_upd
@@ -4577,7 +4577,18 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: --no-bbr changed $(host_cc)"; exit 1; }
   cat "$LOG/install-nobbr.out" >>"$LOG/install.out"
   [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
-  docker exec akari-smoke-node akari-agent-uninstall >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
+  # The helper never uninstalls by accident: --help prints usage, unknown options exit 2,
+  # and without --yes (no terminal here) it refuses and leaves the agent in place.
+  docker exec akari-smoke-node akari-agent-uninstall --help 2>&1 | matches 'Usage: akari-agent-uninstall' \
+    || { echo "FAIL: uninstall helper --help"; exit 1; }
+  docker exec akari-smoke-node akari-agent-uninstall -h >/dev/null 2>&1 || { echo "FAIL: uninstall helper -h exit code"; exit 1; }
+  rc=0; docker exec akari-smoke-node akari-agent-uninstall --bogus >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] || { echo "FAIL: uninstall helper unknown option exit $rc (want 2)"; exit 1; }
+  rc=0; docker exec akari-smoke-node akari-agent-uninstall >/dev/null 2>&1 </dev/null || rc=$?
+  [ "$rc" = 1 ] || { echo "FAIL: uninstall helper without --yes exit $rc (want 1)"; exit 1; }
+  docker exec akari-smoke-node test -x /usr/local/bin/akari-agent \
+    || { echo "FAIL: uninstall helper removed the agent without --yes"; exit 1; }
+  docker exec akari-smoke-node akari-agent-uninstall --yes >>"$LOG/install.out" 2>&1 || { echo "FAIL: uninstall helper"; exit 1; }
   docker rm -f akari-smoke-node >/dev/null
   EXIT_EXTRA=$PREV_EXIT_EXTRA
   echo "installer (container): ok (BBR + fq $BBR_STATE, restored by the uninstaller)"
@@ -4656,7 +4667,7 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: AKARI_BBR=0 did not restore '$BBR_BEFORE' ($(host_cc))"; exit 1; }
   grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/alp-reinstall.out" || { echo "FAIL: Alpine reinstall output"; cat "$LOG/alp-reinstall.out"; exit 1; }
   # Uninstall: services, scripts, user, mount, state, logs: all gone.
-  ax 'akari-agent-uninstall' >>"$LOG/alp-install.out" 2>&1 || { echo "FAIL: Alpine uninstall"; exit 1; }
+  ax 'akari-agent-uninstall --yes' >>"$LOG/alp-install.out" 2>&1 || { echo "FAIL: Alpine uninstall"; exit 1; }
   ax 'test ! -e /etc/init.d/akari-agent && test ! -e /etc/init.d/akari-agent-update && test ! -e /usr/local/bin/akari-agent &&
       test ! -e /etc/akari-agent && test ! -e /var/lib/akari-agent && test ! -e /var/lib/akari-agent-update &&
       test ! -e /var/log/akari-agent && ! grep -q "^akari-agent:" /etc/passwd /etc/group &&

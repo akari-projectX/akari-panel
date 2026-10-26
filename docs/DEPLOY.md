@@ -665,7 +665,7 @@ W32：也支持带 OpenRC >= 0.45 的 Alpine Linux，已在 3.22 上测试，见
 
 重复运行是安全的（原地重装/升级）。节点几秒内显示为 `online`。
 重装还会把该节点在已结束（中止/完成）的灰度发布中的条目转为历史：节点列表中它显示为灰色的 `…（重装前）`，而不是节点当前的更新状态。
-卸载：在节点上以 root 执行 `akari-agent-uninstall`（sudo 用户用 `sudo akari-agent-uninstall`；安装器会打印适合其运行方式的形式），
+卸载：在节点上以 root 执行 `akari-agent-uninstall`（sudo 用户用 `sudo akari-agent-uninstall`；安装器会打印适合其运行方式的形式）。它在终端里会先要求确认，非交互环境须加 `--yes`；`--help` 只打印用法，未知参数退出码 2；
 或使用新命令加 `| sudo sh -s -- --uninstall`（root：`| sh -s -- --uninstall`）；然后在面板中删除该节点。
 
 **Security of the link（链接的安全性）。** URL 中的令牌*就是*节点的注册令牌（256 位，只存其 SHA-256，一次性，TTL 很短）。
