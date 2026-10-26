@@ -4978,6 +4978,35 @@ VER=$(last_json "d['version']")
 [ "$(code -H "Host: alt.akari.test" "$BASE/healthz")" = "200" ] || { echo "FAIL: the second main domain"; exit 1; }
 [ "$(code "$ASK?domain=sub2.akari.test")" = "200" ] && [ "$(code "$ASK?domain=alt.akari.test")" = "200" ] \
   || { echo "FAIL: ask refuses a listed name"; exit 1; }
+# Passkey centre (ROR): the centre answers only GET /.well-known/webauthn with
+# every https main-domain origin; everything else there, and the well-known
+# path on any other host, is the canonical rejection.
+PK_CENTRE=id.akari.test
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/passkey-domain" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,\"domain\":\"$PK_CENTRE\"}")" = "200" ] \
+  || { echo "FAIL: set the passkey centre: $(cat /tmp/akari-smoke/last)"; exit 1; }
+VER=$(last_json "d['version']")
+[ "$(code -H "Host: $PK_CENTRE" "$ROOT/.well-known/webauthn")" = "200" ] \
+  && last_json "d == {'origins': ['https://myapp.test:8446', 'https://alt.akari.test']}" | matches '^True$' \
+  || { echo "FAIL: well-known content: $(cat /tmp/akari-smoke/last)"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H "Host: $PK_CENTRE" "$ROOT/.well-known/webauthn" | tr -d '\r' \
+  | matches -i '^content-type: application/json' || { echo "FAIL: well-known content type"; exit 1; }
+curl -s --noproxy '*' -D - -o /dev/null -H "Host: $PK_CENTRE" "$ROOT/.well-known/webauthn" | tr -d '\r' \
+  | matches -i '^cache-control: public, max-age=300' || { echo "FAIL: well-known cache header"; exit 1; }
+for PK_REJECT in "$ROOT/" "$ROOT/healthz" "$ROOT/.well-known/webauthn/x" "$ROOT/.well-known/other" "$BASE/api/v1/me" "-X POST $ROOT/.well-known/webauthn"; do
+  # shellcheck disable=SC2086
+  [ "$(fp -H "Host: $PK_CENTRE" $PK_REJECT)" = "$REJ" ] || { echo "FAIL: the passkey centre answers $PK_REJECT"; exit 1; }
+done
+for PK_HOST in alt.akari.test myapp.test:8446 sub.akari.test; do
+  [ "$(fp -H "Host: $PK_HOST" "$ROOT/.well-known/webauthn")" = "$REJ" ] \
+    || { echo "FAIL: /.well-known/webauthn answers on $PK_HOST"; exit 1; }
+done
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/passkey-domain" -H 'Content-Type: application/json' \
+    -d "{\"version\":$VER,\"domain\":null}")" = "200" ] || { echo "FAIL: clear the passkey centre"; exit 1; }
+VER=$(last_json "d['version']")
+[ "$(fp -H "Host: $PK_CENTRE" "$ROOT/.well-known/webauthn")" = "$REJ" ] \
+  || { echo "FAIL: a cleared passkey centre still answers"; exit 1; }
+echo "passkey centre well-known: ok"
 D8_BACK='"main_domains":["myapp.test:8446"],"sub_domains":["sub.akari.test"],"node_domains":["grpc.akari.test"]'
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/domains/impact" -H 'Content-Type: application/json' -d "{$D8_BACK}")" = "200" ] \
   && last_json "sorted((r['kind'], r['domain'], r['places'][0]['what']) for r in d['removed']) == [('main', 'alt.akari.test', 'portal_console'), ('sub', 'sub2.akari.test', 'subscription_links')]" | matches '^True$' \
