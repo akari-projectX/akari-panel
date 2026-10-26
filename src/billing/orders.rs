@@ -286,11 +286,20 @@ async fn refund_unfulfillable(
         json!({ "order_id": order_id, "out_trade_no": otn, "code": code,
                 "refund_cents": done["refund_cents"] }),
     );
-    // An alert failure never rolls the money back (savepoint).
+    enqueue_billing_alert(conn, order_id, &msg).await
+}
+
+/// Queue a `billing` alert for the admins in the caller's transaction. An
+/// alert failure never rolls the money back (savepoint).
+pub(super) async fn enqueue_billing_alert(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+    msg: &crate::alerts::channels::Message,
+) -> Result<(), ApiError> {
     let mut sp = conn.begin().await?;
     let queued = async {
         let s = crate::alerts::load(&mut sp).await?;
-        crate::alerts::channels::enqueue(&mut sp, &s.channels(), &msg).await
+        crate::alerts::channels::enqueue(&mut sp, &s.channels(), msg).await
     }
     .await;
     match queued {
@@ -315,7 +324,9 @@ async fn bought(conn: &mut PgConnection, order_id: Uuid) -> sqlx::Result<Bought>
 /// Grant/extend the plan of a paid order under a savepoint: a business
 /// failure (plan gone/disabled/sold out, user gone/admin, reset pack
 /// without the plan) rolls back only the plan change and is stored in
-/// `fulfil_error`. Returns (fulfilled, detail, the failure's code).
+/// `fulfil_error`. A transient database error is no business failure: it
+/// fails the caller's transaction (P2-2). Returns (fulfilled, detail, the
+/// failure's code).
 async fn fulfil(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -340,6 +351,12 @@ async fn fulfil(
             .await?;
             Ok((true, detail, None))
         }
+        // A transient database error (deadlock, lock timeout, connection
+        // loss) says nothing about the order: do not store it as a verdict.
+        // Fail the whole payment transaction instead — the notify is not
+        // acknowledged (the gateway resends) and the reconcile tick queries
+        // again; the conditional UPDATE above makes the retry fulfil once.
+        Err(e) if e.is_transient() => Err(e),
         Err(e) => {
             sp.rollback().await?;
             let msg = e.message().chars().take(300).collect::<String>();
@@ -411,6 +428,13 @@ pub async fn release_holds(
     .bind(order_id)
     .fetch_optional(&mut *conn)
     .await?;
+    // Lock order (docs/PAYMENTS.md): orders → coupons → user_balances. The
+    // coupon goes first: a late payment (holding `entitle::lock`) takes the
+    // coupon row and then the balance row, so taking them the other way
+    // round here could deadlock with it (audit 2026-10 P2-5).
+    if super::coupons::release(conn, order_id).await? {
+        detail["coupon_released"] = json!(true);
+    }
     if let Some((user, cents)) = held {
         match user {
             Some(user) => {
@@ -424,9 +448,6 @@ pub async fn release_holds(
             // went with them).
             None => detail["balance_refunded_cents"] = json!(0),
         }
-    }
-    if super::coupons::release(conn, order_id).await? {
-        detail["coupon_released"] = json!(true);
     }
     Ok(detail)
 }

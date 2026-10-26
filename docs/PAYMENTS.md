@@ -148,6 +148,8 @@ amount  = price − min(credit, price)        -- never negative
   （`fulfil_error` = "not replaced"，同中-2 的自动退款与告警）。下单时的订阅在此期间到期、现在没有
   订阅时照常开通（这正是付款要买的）；同一套餐的续费照常续期。
 - 开通因业务原因失败时，订单保持**已付款**并记录 `fulfil_error`；支付宝仍会收到 `success`。
+  **瞬时数据库错误**（序列化失败、死锁、锁/语句超时、连接中断；`auth::is_transient`）不是业务原因，不记为
+  `fulfil_error`：整个付款事务回滚，通知不回 `success`（网关会重发），对账循环也会重查——重试恰好开通一次。
   套餐售罄、被删除或停用，或重置包对应的套餐用户已不持有：自动退回余额（中-2，见 "Stock and sale rules"）。
   其他失败（用户已被删除或现在是管理员，迟到付款所需的余额部分已不存在）：管理员到 订单 → 状态「已付款未开通」
   → 详情 → 重试开通（须填原因，审计 `order.fulfil.retry`）。
@@ -304,14 +306,23 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
 1. **原路退回**（`original: true`，支付宝 API `alipay.trade.refund`，密钥模式）：面板直接请求支付宝把
    `original_cents`（默认全部实付金额，可部分退款）退回付款账户。每笔请求带幂等的退款请求号
    `out_request_no`（`<订单号>R<n>`）：同号重试绝不会退两次。支付宝确认后才记账（与方式 3 一样记为
-   「支付渠道已退」`refund_external_cents`，同时撤销订阅效果、发退款通知）；支付宝明确拒绝（余额不足等）
+   「支付渠道已退」`refund_external_cents`，同时撤销订阅效果、发退款通知）；支付宝**明确拒绝**
+   （`alipay::refund_refused` 列出的：余额不足、金额超限、交易不存在/不允许退款、参数或权限错误等）
    = 502 `order_admin.refund_gateway_failed`，没有退出任何钱，可重试（同金额用同一请求号）或改用其他方式；
-   结果未知（网络超时等）= 202 `{pending: true}`，此时其他退款方式被拒（409 `order_admin.refund_in_progress`），
+   **其余一切**（`ACQ.SYSTEM_ERROR`、`20000`/`isp.unknow-error`、未知错误码、网络超时等）都是结果未知，
+   绝不记为失败（否则管理员可改走别的方式，而原请求可能已经退出）；只有 `refund` 调用本身的明确拒绝才算失败，
+   查询出错不算 = 202 `{pending: true}`，此时其他退款方式被拒（409 `order_admin.refund_in_progress`），
    对账循环用 `alipay.trade.fastpay.refund.query` 查询该请求号，查到即记账，查不到就用同一请求号重试
-   （1 分钟起翻倍，最长 1 小时）。订单详情的 `refund_request` 显示请求号、金额、状态（pending/done/failed）、
+   （1 分钟起翻倍，最长 1 小时）。订单详情的 `refund_request` 显示请求号、金额、状态（pending/done/failed/confirmed）、
    尝试次数与最近错误，可与支付宝账单对账。支付方式的「允许原路退款」开关（`refund_original`，默认开）
    关闭后不提供此方式（409 `order_admin.refund_original_unavailable`）；`refund-preview` 的
    `original_available` 告诉后台是否可用。审计 `order.refund.request`、`order.refund.failed`、`order.refund`。
+   **支付宝已退款但面板记不了账**（`apply_refund` 确定性失败）：请求转为 `confirmed`（对账循环不再查询），
+   审计 `order.refund.confirmed`，并通过 `billing` 告警通道通知管理员；发起的接口返回 409
+   `order_admin.refund_confirmed_unrecorded`。此后只接受**方式 3**、金额恰为支付宝已退金额的记录
+   （`external_cents` = 该金额、不退到余额，否则 409 `order_admin.refund_confirmed_record`），记账成功后请求变为
+   `done`；再次原路退款 409 `order_admin.refund_confirmed`。买家已被删除而订单仍持有余额部分时，该部分无处可退
+   （余额随用户删除），不再使该退款失败：只记录支付宝部分。
 2. **退到余额**（`to_balance: true`）。
 3. **仅登记**：已在支付宝商家后台手工退款，填写实际金额（`external_cents`）。
 
@@ -390,6 +401,7 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 
 `entitle::lock`（创建订单和 `apply_mark_paid`）→ `orders` 行 → `coupons` / `coupon_redemptions` → `commissions` →
 `user_balances` → `withdrawals`。返利扫描和提现绝不会在取得靠后的锁之后再取靠前的锁。
+`orders::release_holds`（未付结束的订单）先释放优惠券、再退余额，与迟到付款（先兑现优惠券、后重扣余额）同序。
 
 ## Configuration (系统设置 → 支付)（配置）
 

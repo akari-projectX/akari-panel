@@ -1029,13 +1029,13 @@ openssl s_client -connect www.apple.com:443 -tls1_3 -alpn h2 </dev/null 2>/dev/n
 `serverNames[0]` 是客户端发送的 SNI。用户的 flow 取自入站的 `settings.flow`
 （要用 Vision，就像模板那样在 `settings` 中加 `"flow": "xtls-rprx-vision"`）；之后修改它会更新每个用户的凭据（id 不变），订阅随之更新。
 
-## 3d. Protocol / transport matrix (W8, agent xray-core v26.3.27)（协议 / 传输矩阵）
+## 3d. Protocol / transport matrix (W8, agent xray-core v26.10.21)（协议 / 传输矩阵）
 
 每一行都做过端到端检查：模板 → `validate_inbound` → 每用户凭据 → agent 应用（gate 吊销）→ 三种格式的订阅 → 真实客户端转发流量
 （`smoke.sh` W8 段：可用时用 mihomo 1.19 和 sing-box 1.12+；agent 的 `TestRT_ProtocolMatrix` 金丝雀用 xray 自带客户端，含计费和吊销）。
 
 <!-- BEGIN GENERATED protocols-matrix: from proto/protocols.toml by `make gen-protocols`; CI fails when stale -->
-Generated from `proto/protocols.toml` (manifest schema 1, kernel xray-core v26.3.27); edit the manifest, then `make gen-protocols`.
+Generated from `proto/protocols.toml` (manifest schema 1, kernel xray-core v26.10.21); edit the manifest, then `make gen-protocols`.
 
 | Protocol | Transport | Security | Options | Links (v2rayN/Shadowrocket) | Clash (mihomo) | sing-box |
 |---|---|---|---|---|---|---|
@@ -1103,7 +1103,9 @@ XHTTP mode（`auto`、`packet-up`、`stream-up`、`stream-one`）或 gRPC servic
 （该公告涉及 grpc-go 的 xDS 服务端路径；xray 的普通 gRPC 服务端不在受影响路径上，但固定版本使 `govulncheck` 无需 allow-list 即可保持干净。）
 
 **内嵌内核不支持：** TUIC（xray-core 没有 TUIC）。不会添加其他内核。
-Hysteria 2 之所以受支持，是因为 xray-core v26.3.27 把它实现为多用户入站。
+Hysteria 2 之所以受支持，是因为 xray-core v26.10.21 把它实现为多用户入站。
+
+**用户不能访问节点的内网（xray-core ≥ 26.4，随 agent 升级生效）。** 内嵌内核的直连出站（freedom）默认拒绝用户经 vless/vmess/trojan/hysteria/shadowsocks 入站去往私有、回环、链路本地地址（被拦的连接约 30–90 秒后才断开）。这是上游的安全默认，面板与 agent 保持不变；节点自身所在内网里的服务因此不会被用户借道访问。需要放行（例如自建测试环境把回显服务放在 127.0.0.1）时，在 agent 的环境里设置 `AKARI_ALLOW_PRIVATE_DESTINATIONS=1`（面板 `smoke.sh` 即如此）。
 
 ## 3e. Node status, latency tests and the traffic multiplier (W11)（节点状态、延迟测试与流量倍率）
 

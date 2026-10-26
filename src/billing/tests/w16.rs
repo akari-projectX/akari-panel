@@ -892,6 +892,82 @@ async fn coupon_release_on_expiry_and_late_payment() {
     db.drop().await;
 }
 
+/// Audit 2026-10 P2-5: `release_holds` takes the coupon before the balance
+/// (documented lock order orders → coupons → balances), like a late payment
+/// does. Deterministic interleaving: the late payment holds the coupon row
+/// when the release starts, then wants the balance row. Balance-first
+/// (the old order) made the release hold the balance while waiting for the
+/// coupon: a deadlock, PostgreSQL aborts one of the two.
+#[tokio::test]
+async fn release_holds_and_late_payment_do_not_deadlock() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = catalog_plan(&db, "dl", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let admin = admin_client(&state, &db).await;
+    create_coupon(
+        &admin,
+        json!({"code": "RACE", "kind": "fixed", "value": 100, "max_uses": 5}),
+    )
+    .await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    let extra = json!({"coupon": "RACE", "use_balance": true});
+
+    // Order 1 ends unpaid (balance part returned, coupon released): its
+    // payment will come late.
+    adjust(&db, u, 300).await.ok().unwrap();
+    let late = order_id(&buy_with(&c, plan, "month", extra.clone()).await);
+    let r = c
+        .post(&format!("/test/api/v1/me/orders/{late}/cancel"), json!({}))
+        .await;
+    assert_eq!(r.json()["status"], "cancelled");
+    assert_eq!(redemption(&db, late).await.unwrap().0, "released");
+    // Order 2 is pending with both holds.
+    let live = order_id(&buy_with(&c, plan, "month", extra).await);
+    assert_eq!(redemption(&db, live).await.unwrap().0, "reserved");
+    adjust(&db, u, 300).await.ok().unwrap();
+
+    let actor = crate::audit::Actor::test();
+    // The late payment: coupon first (re-reserve), balance second.
+    let mut payment = db.pool.begin().await.unwrap();
+    super::super::coupons::redeem(&mut payment, late)
+        .await
+        .unwrap();
+    let release = {
+        let pool = db.pool.clone();
+        let actor = actor.clone();
+        tokio::spawn(async move {
+            let mut tx = pool.begin().await.unwrap();
+            orders::release_holds(&mut tx, &actor, live).await?;
+            tx.commit().await?;
+            Ok::<_, crate::auth::ApiError>(())
+        })
+    };
+    // The release runs into the coupon row held by the payment.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let mut e = Entry::new(u, Kind::OrderPayment, -300);
+    e.order_id = Some(late);
+    ledger::apply_entry(&mut payment, &actor, &e)
+        .await
+        .expect("the late payment takes the balance without a deadlock");
+    payment.commit().await.unwrap();
+    release
+        .await
+        .unwrap()
+        .expect("the release finishes once the payment is done");
+
+    assert_eq!(balance(&db, u).await, 300, "300 taken, 300 returned");
+    assert_eq!(redemption(&db, late).await.unwrap().0, "redeemed");
+    assert_eq!(redemption(&db, live).await.unwrap().0, "released");
+    assert_eq!(coupon_used(&db, "RACE").await, 1);
+    assert_ledger_consistent(&db).await;
+    drop(state);
+    db.drop().await;
+}
+
 // ---------------------------------------------------------------------------
 // Balance
 // ---------------------------------------------------------------------------

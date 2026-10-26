@@ -739,6 +739,40 @@ impl Alipay {
     }
 }
 
+/// Whether an `alipay.trade.refund` error is a DEFINITE refusal — the gateway
+/// declined the request and moved no money — as opposed to an unknown
+/// outcome. Everything not listed is unknown: `20000`/`isp.unknow-error`
+/// (service unavailable), `ACQ.SYSTEM_ERROR` (Alipay: "retry with the same
+/// parameters"), an unrecognised code. An unknown outcome must stay pending
+/// and be asked about again with the same request number: marking it failed
+/// would let the admin refund by another route while the first refund may
+/// have gone through (a double payout). (`ACQ.DISCORDANT_REPEAT_REQUEST` and
+/// `ACQ.CONTEXT_INCONSISTENT` are unknown on purpose: both say an earlier
+/// request with this number exists, whose outcome is not known here.)
+pub fn refund_refused(code: &str, sub_code: &str) -> bool {
+    // 40001 missing / 40002 invalid parameters, 40006 no permission: the
+    // gateway rejected the call before any business processing.
+    if matches!(code, "40001" | "40002" | "40006") {
+        return true;
+    }
+    matches!(
+        sub_code,
+        "ACQ.SELLER_BALANCE_NOT_ENOUGH"
+            | "ACQ.REFUND_AMT_NOT_EQUAL_TOTAL"
+            | "ACQ.REASON_TRADE_BEEN_FREEZEN"
+            | "ACQ.TRADE_NOT_EXIST"
+            | "ACQ.TRADE_HAS_FINISHED"
+            | "ACQ.TRADE_STATUS_ERROR"
+            | "ACQ.TRADE_NOT_ALLOW_REFUND"
+            | "ACQ.NOT_ALLOW_PARTIAL_REFUND"
+            | "ACQ.REASON_TRADE_REFUND_FEE_ERR"
+            | "ACQ.REFUND_FEE_ERROR"
+            | "ACQ.EXIST_FORBIDDEN_WORD"
+            | "ACQ.INVALID_PARAMETER"
+            | "ACQ.ACCESS_FORBIDDEN"
+    )
+}
+
 /// Parse and verify a gateway response body for `method`.
 pub fn parse_response(keys: &Keys, method: &str, body: &[u8]) -> Result<Value, CallError> {
     let fields: BTreeMap<String, &RawValue> =

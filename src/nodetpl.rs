@@ -39,7 +39,7 @@ use crate::protocols::{security, transport};
 /// Hysteria 2's declared protocol/transport version.
 const HYSTERIA_VERSION: i64 = 2;
 
-/// REALITY targets known to work with the agent's xray (v26.3.27),
+/// REALITY targets known to work with the agent's xray (verified on v26.3.27; xray 26.10.21 not re-checked),
 /// checked 2026-10-01 (docs/DEPLOY.md §3b). The first is the default.
 /// Re-check after xray upgrades.
 pub const REALITY_DESTS: &[&str] = &[
