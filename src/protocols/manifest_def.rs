@@ -175,8 +175,6 @@ manifest_structs! {
         #[serde(default)]
         pub template_requires_tls: bool,
         #[serde(default)]
-        pub shrink_unsafe: bool,
-        #[serde(default)]
         pub alpn: Vec<String>,
         #[serde(default)]
         pub credential: Vec<Credential>,

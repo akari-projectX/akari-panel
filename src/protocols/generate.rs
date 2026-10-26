@@ -224,15 +224,10 @@ pub fn deploy_matrix(m: &Manifest) -> String {
             })
             .collect();
         out.push_str(&format!(
-            "- {} (agent protocol name `{}`): {}{}\n",
+            "- {} (agent protocol name `{}`): {}\n",
             p.label,
             p.wire,
             keys.join(", "),
-            if p.shrink_unsafe {
-                "; removed users stay as gate-refused tombstones (removal = delta, rotation = rebuild)"
-            } else {
-                ""
-            }
         ));
     }
     out.push_str("\nEnd-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed limit, revocation, re-add): ");

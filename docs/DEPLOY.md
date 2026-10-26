@@ -1095,7 +1095,7 @@ Per-user credentials (`account_json`, keys sorted):
 - VLESS (agent protocol name `vless`): `flow` (= the inbound's `flow`), `id` (UUID)
 - VMess (agent protocol name `vmess`): `id` (UUID)
 - Trojan (agent protocol name `trojan`): `password` (32 random bytes, hex)
-- Shadowsocks 2022 (agent protocol name `shadowsocks`): `password` (base64 key, length by `method`); removed users stay as gate-refused tombstones (removal = delta, rotation = rebuild)
+- Shadowsocks 2022 (agent protocol name `shadowsocks`): `password` (base64 key, length by `method`)
 - Hysteria 2 (agent protocol name `hysteria`): `auth` (32 random bytes, hex)
 
 End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed limit, revocation, re-add): VLESS-REALITY-Vision, VLESS-TLS-Vision, VLESS-REALITY-XHTTP, VLESS-XHTTP, VLESS-XHTTP-TLS, VLESS-HTTPUpgrade, VLESS-HTTPUpgrade-TLS, VLESS-WS-TLS, VLESS-gRPC-TLS, VLESS-REALITY-gRPC, VMess-TCP, VMess-WS, Trojan-WS-TLS, Trojan-gRPC-TLS, SS2022-AES128, SS2022-AES256, Hysteria2.
@@ -1107,12 +1107,11 @@ End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed
 `2022-blake3-chacha20-poly1305` 在 xray 中没有多用户服务端，旧式（非 2022）方法没有每用户密钥，二者都会被拒绝（400）。
 `settings.password` 是服务端 PSK（base64，aes-128 为 16 字节，aes-256 为 32 字节），`settings.clients` 必须是 `[]`；
 每个用户有自己的密钥，客户端用 `server_psk:user_key` 连接。更改方法会重新签发所有用户密钥（订阅必须刷新）。
-xray 的多用户 Shadowsocks 入站在运行时无法从其表中去掉用户，否则会与自己的连接路径产生竞争
-（被移除用户正在进行的握手可能以另一个用户的身份运行，或使 agent 崩溃）。因此协议 5 及以后的 agent（W9）从不去除：
-**被移除的用户在 agent 的 gate 中被吊销，其密钥作为墓碑留在 xray 的表里**，所以移除（以及重新加回同一密钥，例如续期的套餐）是实时增量，
-不影响其他用户的连接。**轮换某个用户的密钥仍会重建节点**（Snapshot：该节点上的所有连接断开一次），
-墓碑数量超过上限（每个入站 max(1024, 在线用户数)；重建时会压实）的移除也一样。
-对于较旧的 agent，从 Shadowsocks 入站移除任何用户都会重建节点。新增则始终是实时增量。
+协议 8 及以后的 agent（xray v26.10.21 起，多用户 Shadowsocks 2022 服务端按哈希/邮箱查用户，移除用户不再移动其他用户）
+原生移除用户：**移除、重新加回同一密钥（例如续期的套餐）以及轮换某个用户的密钥都是实时增量**，不影响其他用户的连接，没有墓碑。
+协议 5–7 的旧 agent（滚动升级期间的混合机群）仍沿用旧规则：被移除的用户在 agent 的 gate 中被吊销，其密钥作为墓碑留在 xray 的表里，
+移除与重新加回是实时增量，**轮换某个用户的密钥会重建节点**（Snapshot：该节点上的所有连接断开一次），
+墓碑数量超过上限（每个入站 max(1024, 在线用户数)；重建时会压实）的移除也一样；协议低于 5 的 agent 从 Shadowsocks 入站移除任何用户都会重建节点。新增则始终是实时增量。
 
 **Hysteria 2** 像 TLS 模板一样使用节点证书（设置 节点域名 时自动获得，§3f）；不得设置 `hysteriaSettings.auth`
 （共享密码会绕过每用户认证）；带宽/拥塞设置保持 xray 的默认值。
