@@ -64,7 +64,7 @@
   .notice .nt { font-size: 14.5px; font-weight: 500; }
   .notice .nd { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
   .notice .nx { display: flex; flex: none; align-items: center; gap: 6px; }
-  .notice.warn-bg { border-color: transparent; background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: none; }
+  .notice.warn-bg { padding-block: 16px; gap: 12px 16px; border-width: 0; background: color-mix(in srgb, var(--warn) 8%, transparent); box-shadow: none; }
   .ic-warn { color: var(--warn); } .ic-brand { color: var(--brand); } .ic-ok { color: var(--ok); } .ic-danger { color: var(--danger); }
 
   /* 翻页条 */

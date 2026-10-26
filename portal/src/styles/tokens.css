@@ -62,8 +62,9 @@
   --chart-area-opacity: .16;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .08);
   /* 订阅二维码：明暗两套主题下都是白底深色码（扫码器只认得这种） */
-  --qr-ink: #111317;
+  --qr-ink: #0d1526;
   --qr-paper: #fff;
+  --qr-mark: #1677ff;
   /* 页头那根账号线、卡片顶边线的灰轨（v1.4.0） */
   --line-track: rgb(10 10 10 / .16);
   --card-track: rgb(10 10 10 / .08);
