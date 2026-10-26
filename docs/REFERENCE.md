@@ -496,7 +496,7 @@ CLI 须以面板的服务用户身份运行，并指向面板所用的同一个 
 
 ## Roadmap
 
-权威计划见 `PLAN.md`（三仓库终态：`akari-panel` / `akari-agent` / `akari-client`）。战略决策：
+权威计划见工作区 `akari-workspace/PLAN-next.md`（三仓库终态：`akari-panel` / `akari-agent` / `akari-client`）。战略决策：
 
 - **第三方订阅由后台开关控制。** 各订阅格式与一键导入按客户端分别开关（默认开启）；自研客户端 akari-client 发布后，运营者可自行选择关闭第三方格式，不强制只保留自有客户端（2026-10-06 战略决策 2 修订）。
 - **设备限制采用席位绑定**（客户端登记其设备），而非基于 IP——随 akari-client 实现，现在刻意不做。
