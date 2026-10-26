@@ -126,10 +126,14 @@
       : t('提现以 USDT 打款到你填写的链上地址。'),
   );
 
-  const title = full ? t('邀请') : t('钱包');
-  const sub = full
-    ? t('把邀请链接发给需要的人，对方付费后你按比例拿佣金。佣金进入账户余额，可以抵扣订单或提现为 USDT。')
-    : t('账户余额与收支流水。余额可以在下单时抵扣。');
+  // $derived, not plain consts: the route can render before the English
+  // dictionary arrives (reload with locale en), and the title must follow it.
+  const title = $derived(full ? t('邀请') : t('钱包'));
+  const sub = $derived(
+    full
+      ? t('把邀请链接发给需要的人，对方付费后你按比例拿佣金。佣金进入账户余额，可以抵扣订单或提现为 USDT。')
+      : t('账户余额与收支流水。余额可以在下单时抵扣。'),
+  );
 </script>
 
 <div class="ph">
