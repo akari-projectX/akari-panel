@@ -74,7 +74,7 @@
 <Section>
   {#snippet title()}{t('订单记录')}{/snippet}
   {#snippet desc()}{#if list.length}{tp('共 {n} 笔订单', { n: list.length })}{/if}{/snippet}
-  <Tabs mb label={t('按状态筛选')} value={tab} onchange={(k) => (tab = k)} tabs={TABS.map((x) => ({ key: x.key, label: t(x.label) }))} />
+  <Tabs mb inline label={t('按状态筛选')} value={tab} onchange={(k) => (tab = k)} tabs={TABS.map((x) => ({ key: x.key, label: t(x.label) }))} />
 
   {#if !orders.data && orders.loading}
     <Loading />

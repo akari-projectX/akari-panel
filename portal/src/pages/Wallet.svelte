@@ -1,10 +1,15 @@
 <script lang="ts">
   import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
-  import { tick } from 'svelte';
-  import { MediaQuery } from 'svelte/reactivity';
+  import Share2 from '@lucide/svelte/icons/share-2';
+  import WalletIcon from '@lucide/svelte/icons/wallet';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import PaneHead from '../components/flat/PaneHead.svelte';
+  import Section from '../components/flat/Section.svelte';
+  import Split from '../components/flat/Split.svelte';
+  import Tabs from '../components/flat/Tabs.svelte';
   import { inviteApi, walletApi, type LedgerEntry } from '@/api';
   import { K } from '@/lib/cache';
-  import { formatMoney, yuan } from '@/lib/format';
+  import { formatMoney } from '@/lib/format';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
   import InviteDetails from '../components/wallet/InviteDetails.svelte';
@@ -31,7 +36,6 @@
   const PAGE = 30;
 
   const full = scope() === 'full';
-  const narrow = new MediaQuery('max-width: 720px');
 
   const balance = resource(() => ({ key: K.balance, fetch: () => walletApi.balance({ limit: PAGE }) }));
   const withdrawals = resource(() => ({ key: K.withdrawals, fetch: () => walletApi.withdrawals(), enabled: full }));
@@ -49,18 +53,6 @@
 
   function setTab(id: Tab) {
     navigate(`${R.wallet}?tab=${id}`, { replace: true, keepScroll: true });
-  }
-
-  async function tabKey(e: KeyboardEvent) {
-    const i = TABS.findIndex((x) => x.id === tab);
-    const next = e.key === 'ArrowRight' ? (i + 1) % TABS.length
-      : e.key === 'ArrowLeft' ? (i - 1 + TABS.length) % TABS.length
-      : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : null;
-    if (next === null) return;
-    e.preventDefault();
-    setTab(TABS[next].id);
-    await tick();
-    document.getElementById(`tab-${TABS[next].id}`)?.focus();
   }
 
   /* ── 流水按 id 倒序翻页（keyset：before = 已显示的最小 id） ── */
@@ -132,68 +124,66 @@
     : t('账户余额与收支流水。余额可以在下单时抵扣。'));
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{title}</h1>
-    <p>{sub}</p>
-  </div>
-</div>
+{#snippet balancePane()}
+  {@const cents = balance.data?.balance_cents ?? 0}
+  <PaneHead>
+    {#snippet title()}<WalletIcon size={16} strokeWidth={1.75} aria-hidden="true" />{t('账户余额')}{/snippet}
+    {#snippet desc()}{t('下单时可以选择抵扣')}{/snippet}
+  </PaneHead>
+  <div class="stat-v">{formatMoney(cents)}</div>
+  <dl class="mini-stats" style="margin-top: 20px">
+    <div><dt>{t('可提现')}</dt><dd>{formatMoney(withdrawable)}</dd></div>
+    {#if full}<div><dt>{t('审核中')}</dt><dd>{formatMoney(pendingCents)}</dd></div>{/if}
+    {#if min > 0}<div><dt>{t('最低提现')}</dt><dd>{formatMoney(min)}</dd></div>{/if}
+  </dl>
+  {#if full}
+    <div style="margin-top: 24px">
+      <button type="button" class="btn pri wd-btn" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} onclick={openDialog}>
+        <ArrowDownToLine size={16} strokeWidth={1.75} aria-hidden="true" />{t('申请提现')}
+      </button>
+      <!-- 按钮置灰时说清楚为什么（只说一条，按优先级）；否则说明打款方式 -->
+      <p class="wd-why">{why}</p>
+    </div>
+  {/if}
+{/snippet}
+
+<PageTitle {title} {sub} />
 
 {#if balance.loading && !balance.data}
-  <Loading rows={5} height={280} />
+  <Loading />
 {:else if balance.error && !balance.data}
   <LoadError error={balance.error} onretry={balance.reload} />
 {:else}
-  {@const cents = balance.data?.balance_cents ?? 0}
-  <div class={full ? 'cols over' : 'over'}>
-    <section class="sec" aria-labelledby="h-balance">
-      <div class="sh">
-        <div>
-          <h2 id="h-balance">{t('账户余额')}</h2>
-          <p>{t('下单时可以选择抵扣')}</p>
-        </div>
-      </div>
-      <div class="big num">{cents < 0 ? '−' : ''}<span class="ccy">¥</span>{yuan(Math.abs(cents), { always2: true })}</div>
-      <dl class="mini">
-        <div><dt>{t('可提现')}</dt><dd>{formatMoney(withdrawable)}</dd></div>
-        {#if full}<div><dt>{t('审核中')}</dt><dd>{formatMoney(pendingCents)}</dd></div>{/if}
-        {#if min > 0}<div><dt>{t('最低提现')}</dt><dd>{formatMoney(min)}</dd></div>{/if}
-      </dl>
-      {#if full}
-        <div class="wd">
-          <button type="button" class="btn pri" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} onclick={openDialog}>
-            <ArrowDownToLine size={15} strokeWidth={1.75} aria-hidden="true" />{t('申请提现')}
-          </button>
-          <p>{why}</p>
-        </div>
-      {/if}
-    </section>
-    {#if full}<InviteLink {codes} {invite} />{/if}
-  </div>
-
-  <section class="sec tabs-sec">
-    {#if TABS.length > 1}
-      <div class="ptabs" role="tablist" aria-label={title}>
-        {#each TABS as x (x.id)}
-          <button
-            type="button" role="tab" id="tab-{x.id}" aria-controls="panel-{x.id}" aria-selected={tab === x.id}
-            tabindex={tab === x.id ? 0 : -1} onclick={() => setTab(x.id)} onkeydown={tabKey}
-          >{t(x.label)}</button>
-        {/each}
-      </div>
+  <Section>
+    {#if full}
+      <Split left={balancePane}>
+        {#snippet right()}
+          <PaneHead>
+            {#snippet title()}<Share2 size={16} strokeWidth={1.75} aria-hidden="true" />{t('你的邀请链接')}{/snippet}
+            {#snippet desc()}{t('通过链接注册的人会记在你名下')}{/snippet}
+          </PaneHead>
+          <InviteLink {codes} {invite} />
+        {/snippet}
+      </Split>
     {:else}
-      <div class="sh"><div><h2>{t('收支流水')}</h2></div></div>
+      {@render balancePane()}
     {/if}
-    <div role={TABS.length > 1 ? 'tabpanel' : undefined} id="panel-{tab}" aria-labelledby={TABS.length > 1 ? `tab-${tab}` : undefined}>
+  </Section>
+
+  <Section>
+    {#if TABS.length > 1}
+      <Tabs mb7 px3 label={title} value={tab} onchange={(k) => setTab(k as Tab)} tabs={TABS.map((x) => ({ key: x.id, label: t(x.label) }))} />
+    {/if}
+    <div class="tp-sm" role={TABS.length > 1 ? 'tabpanel' : undefined} id="panel-{tab}" aria-labelledby={TABS.length > 1 ? `tab-${tab}` : undefined}>
       {#if tab === 'invite'}
-        <InviteDetails {codes} {invite} narrow={narrow.current} />
+        <InviteDetails {codes} {invite} />
       {:else if tab === 'ledger'}
-        <Ledger {entries} {more} busy={paging.busy} onmore={loadMore} narrow={narrow.current} />
+        <Ledger {entries} {more} busy={paging.busy} onmore={loadMore} />
       {:else}
-        <Withdrawals {withdrawals} cancelling={cancelling.busy} oncancel={cancel} narrow={narrow.current} />
+        <Withdrawals {withdrawals} cancelling={cancelling.busy} oncancel={cancel} />
       {/if}
     </div>
-  </section>
+  </Section>
 {/if}
 
 {#if dialogLoaded}
@@ -201,22 +191,3 @@
     <m.default bind:open={dialogOpen} invite={invite.data} {withdrawable} onsent={refresh} />
   {/await}
 {/if}
-
-<style>
-  .over > :global(.sec) { border-top: 0; padding-top: 4px; }
-  .big {
-    display: flex; align-items: baseline; color: var(--fg); font-size: 34px; line-height: 40px; font-weight: 600; letter-spacing: -.02em; white-space: nowrap;
-  }
-  .big .ccy { margin-right: 2px; font-size: 20px; }
-  .mini { margin-top: 20px; }
-  .wd { margin-top: 24px; }
-  .wd .btn { height: 40px; padding: 0 18px; }
-  .wd p { margin-top: 10px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
-  .tabs-sec { padding-top: 24px; }
-  @media (max-width: 960px) {
-    .over > :global(.sec + .sec) { border-top: 1px solid var(--line); padding-top: 28px; }
-  }
-  @media (max-width: 720px) {
-    .big { font-size: 34px; }
-  }
-</style>
