@@ -49,7 +49,7 @@
   });
 </script>
 
-<header class="top">
+<header class="topbar">
   <div class="wrap">
     <Logo />
     <nav bind:this={nav} class="topnav" aria-label={t('主导航')}>
