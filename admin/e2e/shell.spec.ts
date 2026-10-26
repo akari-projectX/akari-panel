@@ -32,7 +32,9 @@ test("SH-01 SH-06 SH-07 SH-08 SH-13 SH-18: sign-in page, non-admins refused, the
 }, info) => {
   const problems = watch(page);
   const res = await page.goto(LOGIN);
-  expect(res?.headers()["content-security-policy"]).toBe("default-src 'self'; style-src 'self' 'unsafe-inline'");
+  expect(res?.headers()["content-security-policy"]).toBe(
+    "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  );
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("登录");
   await expect(page.getByRole("main").getByText("管理后台", { exact: true })).toBeVisible();
   await expect(page).toHaveTitle(/管理后台登录/);

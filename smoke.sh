@@ -4963,7 +4963,7 @@ echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit
 # The portal's own stylesheet and script must be allowed by the CSP it is
 # served with; Turnstile is off here, so nothing beyond 'self'.
 CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
-[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'" ] || { echo "FAIL: portal CSP: $CSP"; exit 1; }
+[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" ] || { echo "FAIL: portal CSP: $CSP"; exit 1; }
 # Every client-side route answers the index (W36-b route table), deep paths too.
 for r in shop orders orders/x wallet invite nodes traffic tickets help announcements account login register forgot reset deleted terms privacy; do
   [ "$(code "$ROOT/$r")" = "200" ] || { echo "FAIL: portal route /$r"; exit 1; }
@@ -5011,7 +5011,7 @@ grep -qE '[`"'"'"']/auth/(login|logout)' /tmp/akari-smoke/app.js \
   && { echo "FAIL: bundle posts a bare /auth/* path (would be joined to /api/v1)"; exit 1; }
 # The sign-in page's stylesheet and script must be allowed by its CSP too.
 CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$BASE/app" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
-[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'" ] || { echo "FAIL: sign-in page CSP: $CSP"; exit 1; }
+[ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" ] || { echo "FAIL: sign-in page CSP: $CSP"; exit 1; }
 echo "spa: ok (portal $JS, sign-in $LJS)"
 
 echo "== R23: separate admin bundle, served to admin sessions only =="

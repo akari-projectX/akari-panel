@@ -58,6 +58,26 @@ async fn timezone_on_me_and_auth_options() {
     db.drop().await;
 }
 
+/// The exact policies (the constants are what every other test compares
+/// with, so a change here must be deliberate): framing, `<base>` and form
+/// posts are closed, and Turnstile adds only its own origin for scripts and
+/// frames on top of the same base.
+#[test]
+fn csp_header_text_is_exact() {
+    assert_eq!(
+        crate::web::CSP,
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+         frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    );
+    assert_eq!(
+        crate::web::CSP_TURNSTILE,
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+         frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
+         script-src 'self' https://challenges.cloudflare.com; \
+         frame-src https://challenges.cloudflare.com"
+    );
+}
+
 /// The portal page (`/` and every client-side route) carries the strict
 /// policy, plus exactly challenges.cloudflare.com for scripts and frames
 /// while Turnstile protects a form; API answers never get the exception.
