@@ -18,7 +18,7 @@ async function open(page: Page, path: string, title: string) {
 test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect now, status with a legend', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/nodes', '节点状态');
-  const shown = (text: string) => page.getByText(text, { exact: true }).first();
+  const shown = (text: string) => page.getByText(text, { exact: true }).locator('visible=true').first();
   await expect(shown('IPLC')).toBeVisible();
   await expect(shown('×2')).toBeVisible();
   /* 日本 01 的直连入口全天 0.5×（时段规则，按站点时区，面板 SQL 算好） */
@@ -29,7 +29,7 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   /* 图例说明三种状态与负载 / 延迟的来源；e2e 里没有 agent，线路都是离线 */
   await expect(page.locator('[data-node-legend]')).toContainText('维护中');
   await expect(page.locator('[data-node-legend]')).toContainText('每 30 秒自动刷新');
-  await expect(page.locator('[data-node-status="offline"]').first()).toBeVisible();
+  await expect(page.locator('[data-node-status="offline"]:visible').first()).toBeVisible();
   await expect(page.getByText('最低倍率')).toBeVisible();
   await expect(page.getByText('客户端会自动跳过')).toBeVisible();
 
@@ -38,8 +38,8 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
         UPDATE servers s SET traffic_quota_bytes = 1, traffic_quota_rx_bytes = 10 FROM nodes n WHERE n.server_id = s.id AND n.name = '日本 01';`);
   try {
     await page.getByRole('button', { name: '刷新' }).click();
-    await expect(page.locator('[data-node-status="maintenance"]').first()).toBeVisible();
-    await expect(page.locator('[data-node-status="online"]').first()).toBeVisible();
+    await expect(page.locator('[data-node-status="maintenance"]:visible').first()).toBeVisible();
+    await expect(page.locator('[data-node-status="online"]:visible').first()).toBeVisible();
     await expect(shown('IPLC')).toBeVisible();
     await expect(shown('直连')).toBeVisible();
     await shot(page, info, 'nodes-light');
@@ -54,7 +54,7 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
 test('lines: lowest multiplier first, the column header flips the order; search by name, region or tag; no match', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/nodes', '节点状态');
-  const rates = () => page.locator('main .mult').allTextContents();
+  const rates = () => page.locator('main .rate:visible').allTextContents();
   await expect.poll(rates).toContain('×2');
   const asc = await rates();
   expect(asc[0]).toBe('×0.5');
@@ -69,7 +69,7 @@ test('lines: lowest multiplier first, the column header flips the order; search 
   } else {
     await expect(page.getByText(/按倍率从低到高排列/)).toBeVisible();
   }
-  const search = page.getByRole('searchbox', { name: '搜索线路、地区或标签' });
+  const search = page.getByLabel('搜索线路、地区或标签');
   await search.fill('iplc');
   await expect.poll(rates).toEqual(['×2']);
   await search.fill('没有这条线路');
@@ -143,7 +143,6 @@ test('traffic: a range with no traffic says so; the panel keeps daily rows only 
     });
   });
   await open(page, '/traffic', '使用明细');
-  await page.getByRole('tab', { name: '近 7 天' }).click();
   await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
   await expect(page.getByText(/按天的明细只保留到 .*，更早的日子显示为 0。/)).toBeVisible();
   await expect(page.getByRole('slider')).toHaveCount(0);

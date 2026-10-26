@@ -94,7 +94,7 @@ test('#7 #10 registration with the proof of work; the trial plan is announced', 
   const before = await a.patch('signup', FIELDS.signup, { trial_plan_id: plans.find((p) => p.name === seed.plan)?.id, trial_days: 3, email_verify: false });
   try {
     await page.goto('/register');
-    await expect(page.getByRole('link', { name: '登录', exact: true })).toBeVisible();
+    await expect(page.locator('#main').getByRole('link', { name: '登录', exact: true })).toBeVisible();
     await expect(page.getByLabel('邮箱验证码')).toHaveCount(0);
     await page.getByLabel('邮箱', { exact: true }).fill(freshEmail('pow'));
     await page.getByLabel('密码', { exact: true }).fill('e2e-password-123');
