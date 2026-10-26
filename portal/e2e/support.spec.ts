@@ -161,8 +161,8 @@ test('#59 docs: categories wrap (none cut off), the device line, search, an arti
     expect((box?.x ?? -1) >= 0 && (box?.x ?? 0) + (box?.width ?? 0) <= width).toBe(true);
   }
   /* 没打开过的文档标蓝点 */
-  const first = page.locator('main button.li').filter({ hasText: 'E2E 第一篇' });
-  await expect(first.locator('.unread-dot')).toHaveCount(1);
+  const first = page.locator('main button.card').filter({ hasText: 'E2E 第一篇' });
+  await expect(first.locator('.ud')).toHaveCount(1);
   await shot(page, info, 'help-light');
   await dark(page);
   await shot(page, info, 'help-dark');
@@ -197,7 +197,7 @@ test('#59 docs: categories wrap (none cut off), the device line, search, an arti
   /* 面包屑回到列表；读过的文档不再标蓝点 */
   await page.getByRole('navigation', { name: '使用手册' }).getByRole('button', { name: '使用手册' }).click();
   await expect(page.getByRole('heading', { level: 1, name: '使用手册' })).toBeVisible();
-  await expect(first.locator('.unread-dot')).toHaveCount(0);
+  await expect(first.locator('.ud')).toHaveCount(0);
 });
 
 test('docs: a long article (code, quote, nested headings), copy the subscription link, no sideways scroll; screens', async ({ page, context }, info) => {
