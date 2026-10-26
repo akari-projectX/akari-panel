@@ -3,7 +3,6 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Copy from '@lucide/svelte/icons/copy';
   import Download from '@lucide/svelte/icons/download';
-  import LinkIcon from '@lucide/svelte/icons/link';
   import type { SubFormat } from '@/api';
   import { PLATFORMS } from '@/data/platforms';
   import { enabledFormats, importLinks, mySubUrl, withFormat, type ImportLink } from '@/lib/sub-links';
@@ -11,6 +10,7 @@
   import Qr from './Qr.svelte';
   import { auth, site, siteName } from '$lib/auth.svelte';
   import { t, tp } from '$lib/i18n.svelte';
+  import { navigate } from '$lib/router.svelte';
   import { R } from '$lib/routes';
   import { toast } from '$lib/toast.svelte';
 
@@ -40,13 +40,16 @@
   })));
   const clients = $derived<ImportLink[]>(base ? importLinks(base, siteName(), auth.me?.sub_import_clients ?? []) : []);
   const downloads = $derived(site.options?.branding?.client_downloads ?? []);
-
-  /** 打码显示：令牌只露头 4 位、尾 6 位 */
-  const masked = $derived.by(() => {
-    const m = /^(.*\/)([^/?#]+)(.*)$/.exec(url);
-    if (!m || m[2].length < 14) return url;
-    return `${m[1]}${m[2].slice(0, 4)}•••••••${m[2].slice(-6)}${m[3]}`;
-  });
+  const PRIMARY_COUNT = 3;
+  const primary = $derived(clients.slice(0, PRIMARY_COUNT));
+  const more = $derived(clients.slice(PRIMARY_COUNT));
+  const moreItems = $derived<MenuItem[]>(more.map((c) => ({ id: c.id, label: c.name, sub: c.platforms, onselect: () => importTo(c) })));
+  const dlItems = $derived<MenuItem[]>(downloads.length
+    ? downloads.map((d, i) => ({
+      id: `${d.platform}-${i}`, label: t(platformName(d.platform)), sub: d.label ?? t(PLATFORMS.find((p) => p.id === d.platform)?.client ?? ''),
+      tail: t('下载'), onselect: () => { window.open(d.url, '_blank', 'noopener'); },
+    }))
+    : PLATFORMS.map((p) => ({ id: p.id, label: t(p.name), sub: t(p.client), tail: t('看教程'), onselect: () => navigate(`${R.help}?q=${encodeURIComponent(p.name)}`) })));
 
   async function copy() {
     try {
@@ -70,85 +73,52 @@
 </script>
 
 {#if url}
-  <div class="access">
-    <div class="main">
-      <div class="row-actions">
-        <button type="button" class="btn pri copy" onclick={copy}>
-          {#if copied}<Check size={15} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={15} strokeWidth={1.75} aria-hidden="true" />{/if}
+  <div class="sub">
+    <div class="sub-l">
+      <div class="sub-acts">
+        <button type="button" class="btn pri sub-copy" onclick={copy}>
+          {#if copied}<Check size={16} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
           {copied ? t('已复制订阅链接') : t('复制订阅链接')}
         </button>
-        <Menu class="select" label={t('订阅格式')} items={formatItems}>
+        <!-- 格式：默认按客户端自动识别；认不出的客户端可以手动指定 -->
+        <Menu class="sub-fmt" label={t('订阅格式')} items={formatItems}>
           {t(FORMAT_LABEL[format])}<ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" />
         </Menu>
       </div>
-      <div class="sublink"><LinkIcon size={14} strokeWidth={1.75} aria-hidden="true" /><span class="mono">{masked}</span></div>
 
       {#if clients.length > 0}
-        <p class="k">{t('一键导入')}</p>
-        <div class="clients">
-          {#each clients as c (c.id)}
-            <button type="button" onclick={() => importTo(c)}><b>{c.name}</b><span>{c.platforms}</span><em>{t('导入')}</em></button>
-          {/each}
+        <div>
+          <div class="sub-k">{t('导入到客户端')}</div>
+          <div class="sub-cl">
+            {#each primary as c, i (c.id)}
+              <span>
+                {#if i > 0}<i class="sep" aria-hidden="true"></i>{/if}
+                <button type="button" class="sub-imp" title={c.platforms} onclick={() => importTo(c)}>{c.name}</button>
+              </span>
+            {/each}
+            {#if more.length > 0}
+              <i class="sep" aria-hidden="true"></i>
+              <Menu class="sub-more" label={t('更多')} items={moreItems}>{t('更多')}<ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" /></Menu>
+            {/if}
+          </div>
         </div>
       {/if}
+
+      <!-- 退路：站长在后台配了下载地址的平台直接给下载，没配的去文档页 -->
+      <div class="sub-fb">
+        <p>
+          <Download size={14} strokeWidth={1.75} aria-hidden="true" />{t('还没有客户端？')}
+          <Menu class="sub-dl" label={downloads.length ? t('下载客户端') : t('按平台查看教程')} items={dlItems}>
+            {downloads.length ? t('下载客户端') : t('按平台查看教程')}<ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />
+          </Menu>
+        </p>
+      </div>
     </div>
 
-    <div class="qr">
-      <div class="box"><Qr value={url} /></div>
-      <p>{t('扫码导入')}</p>
+    <div class="sub-qr">
+      <div class="sub-box"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><Qr value={url} /></div>
+      <div class="sub-qk">{t('扫码导入')}</div>
     </div>
-  </div>
-
-  <div class="help">
-    <span class="lead"><Download size={15} strokeWidth={1.75} aria-hidden="true" />{t('还没有客户端？')}{downloads.length ? t('下载客户端：') : t('按平台查看教程：')}</span>
-    {#if downloads.length}
-      {#each downloads as d, i (`${d.platform}-${i}`)}
-        <a href={d.url} target="_blank" rel="noopener noreferrer">{d.label ?? t(platformName(d.platform))}</a>
-      {/each}
-    {:else}
-      {#each PLATFORMS as p (p.id)}
-        <a href="{R.help}?q={encodeURIComponent(p.name)}">{t(p.name)}</a>
-      {/each}
-    {/if}
   </div>
 {/if}
 
-<style>
-  .access { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 32px; }
-  .main { min-width: 0; }
-  .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .copy { min-width: 148px; }
-  :global(.select) {
-    display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px 0 12px; border-radius: 8px;
-    border: 1px solid var(--line2); background: var(--surface); color: var(--body); font: inherit; font-size: 13.5px; cursor: pointer;
-  }
-  :global(.select svg) { color: var(--faint); }
-  :global(.select[aria-expanded='true']), :global(.select:hover) { border-color: color-mix(in srgb, var(--fg) 28%, transparent); }
-  .sublink { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--faint); min-width: 0; }
-  .sublink :global(svg) { flex: none; }
-  .mono { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .k { margin: 24px 0 4px; font-size: 12.5px; color: var(--faint); }
-  .clients { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-  .clients button {
-    display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 9px 0; border: 0; border-bottom: 1px solid var(--line);
-    background: none; font: inherit; text-align: left; cursor: pointer; border-radius: 0;
-  }
-  .clients b { color: var(--fg); font-weight: 500; white-space: nowrap; }
-  .clients span { flex: 1; min-width: 0; color: var(--faint); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .clients em { font-style: normal; color: var(--brand); font-size: 13px; }
-  .clients button:hover b { color: var(--brand); }
-  .qr { text-align: center; }
-  .box { width: 128px; height: 128px; padding: 10px; background: var(--qr-paper); border: 1px solid var(--line); border-radius: 8px; }
-  .qr p { margin-top: 8px; font-size: 12.5px; color: var(--faint); }
-  .help { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 20px; font-size: 13px; color: var(--muted); }
-  .help a { color: var(--body); }
-  .help a:hover { color: var(--brand); }
-  /* 引导语单独一行、平台链接在下面一行：左栏约 620px 放不下引导语 + 七个平台，同一行里会把最后一个（路由器）单独挤到下一行 */
-  .lead { display: inline-flex; align-items: center; gap: 6px; flex-basis: 100%; }
-
-  @media (max-width: 720px) {
-    .access { grid-template-columns: 1fr; }
-    .qr { display: none; }
-    .clients { grid-template-columns: 1fr; }
-  }
-</style>

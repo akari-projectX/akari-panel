@@ -16,7 +16,7 @@
 <section class="au-sec">
   <div class="au-col">
     {#if site.error}
-      <div role="alert" class="notice warn">
+      <div role="alert" class="au-alert">
         <TriangleAlert class="i" size={16} strokeWidth={1.75} aria-hidden="true" />
         <span>{t('站点设置没能加载，暂时无法登录或注册。')}</span>
         <button type="button" class="btn sm" disabled={retry.busy} onclick={() => retry.run(refreshOptions)}>{t('重试')}</button>
