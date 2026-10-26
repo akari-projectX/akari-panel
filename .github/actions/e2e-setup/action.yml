@@ -49,17 +49,30 @@ runs:
           | sudo tee /etc/apt/apt.conf.d/99akari-keep-debs >/dev/null
         sudo rm -f /etc/apt/apt.conf.d/docker-clean
         sudo cp -n ~/.cache/akari-apt/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+    # System libraries and fonts for Chromium, once for both apps. The
+    # runner's Azure apt mirror is sometimes extremely slow (~40 KB/s): give it
+    # 4 minutes, then switch to archive.ubuntu.com and try once more.
+    - shell: bash
+      working-directory: ${{ inputs.portal == 'true' && 'portal' || 'admin' }}
+      run: |
+        npm ci
+        deps() { timeout "$1" sudo env "PATH=$PATH" npx playwright install-deps chromium; }
+        if ! deps 240; then
+          echo "::warning::apt mirror slow or failing: retrying with archive.ubuntu.com"
+          sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' \
+            /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          sudo dpkg --configure -a || true
+          deps 480
+        fi
     # portal/ and admin/ pin their own Playwright versions; each needs its
-    # browser build. The system libraries (--with-deps) once: the same for both.
+    # browser build (downloaded from the Playwright CDN, cached above).
     # `timeout`: a stuck install fails the step instead of holding the runner.
     - if: ${{ inputs.portal == 'true' }}
       shell: bash
-      run: cd portal && npm ci && timeout 600 npx playwright install --with-deps chromium
+      run: cd portal && { [ -d node_modules ] || npm ci; } && timeout 600 npx playwright install chromium
     - if: ${{ inputs.admin == 'true' }}
       shell: bash
-      env:
-        DEPS: ${{ inputs.portal == 'true' && '' || '--with-deps' }}
-      run: cd admin && npm ci && timeout 600 npx playwright install $DEPS chromium
+      run: cd admin && { [ -d node_modules ] || npm ci; } && timeout 600 npx playwright install chromium
     - shell: bash
       run: cp -n /var/cache/apt/archives/*.deb ~/.cache/akari-apt/ 2>/dev/null || true
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
