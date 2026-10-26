@@ -12,8 +12,7 @@ html { background: var(--boot-bg); }
   position: fixed; inset: 0; z-index: 9999;
   display: none; flex-direction: column; align-items: center; justify-content: center; gap: 26px;
   background: var(--boot-bg); color: var(--boot-fg);
-  font: 400 13px/1.7 -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-        'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font: var(--fw-regular) 13px/1.7 var(--font-ui);
   /* 与 app.css 的 --ease-out 一致：页面入场在它开始淡出时同时开播 */
   transition: opacity .42s cubic-bezier(.22, 1, .36, 1);
 }
@@ -54,7 +53,7 @@ html.js #boot { display: flex; }
   max-width: 260px; text-align: center; opacity: 0; font-size: 12.5px; line-height: 1.9;
   animation: boot-slow .5s ease 8s forwards;
 }
-#boot .slow b { display: block; font-weight: 500; }
+#boot .slow b { display: block; font-weight: var(--fw-strong); }
 #boot .slow span { opacity: .55; }
 #boot .slow a { color: var(--boot-link); text-decoration: none; }
 /* 启动守护判定加载失败（src/boot/boot.js）：立即显示，附错误摘要 */
@@ -76,6 +75,6 @@ html.js #boot { display: flex; }
 }
 
 /* 禁用 JavaScript 时的提示（<noscript>） */
-.nojs { max-width: 520px; margin: 18vh auto; padding: 0 24px; color: var(--fg); font: 400 15px/1.9 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; }
+.nojs { max-width: 520px; margin: 18vh auto; padding: 0 24px; color: var(--fg); font: var(--fw-regular) 15px/1.9 var(--font-ui); }
 .nojs h1 { font-size: 22px; margin: 0 0 10px; }
 .nojs p { color: var(--muted); margin: 0; }

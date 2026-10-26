@@ -163,12 +163,12 @@
   .cats { display: flex; flex-wrap: wrap; gap: 8px; }
   .cats button {
     display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 14px; border: 1px solid var(--line); border-radius: 9999px;
-    background: var(--surface); color: var(--muted); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
+    background: var(--surface); color: var(--muted); font: inherit; font-size: 13px; font-weight: var(--fw-strong); text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
   }
   .cats button:hover { color: var(--fg); border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
   .cats button[aria-pressed='true'] { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
   .cats span { min-width: 0; overflow-wrap: anywhere; }
-  .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: 500; }
+  .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: var(--fw-strong); }
   .cats button[aria-pressed='true'] em { background: color-mix(in srgb, var(--on-brand) 20%, transparent); }
 
   .device { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13.5px; color: var(--muted); }
@@ -195,9 +195,9 @@
   .cn { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
   .cn :global(.ci) { color: var(--brand); }
   .ud { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
-  .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: 600; line-height: 1.375; transition: color .15s; }
+  .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: var(--fw-strong); line-height: 1.375; transition: color .15s; }
   .card:hover h4 { color: var(--brand); }
   .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 12px; line-height: 16px; color: var(--muted); }
-  .rd { display: flex; align-items: center; gap: 4px; font-weight: 500; color: var(--brand); transition: transform .15s; }
+  .rd { display: flex; align-items: center; gap: 4px; font-weight: var(--fw-strong); color: var(--brand); transition: transform .15s; }
   .card:hover .rd { transform: translateX(2px); }
 </style>

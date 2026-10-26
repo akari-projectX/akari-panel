@@ -99,7 +99,7 @@
 <style>
   .to { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border-radius: 8px; background: var(--secondary); font-size: 13px; line-height: 1.7; }
   .to span { color: var(--muted); }
-  .to b { color: var(--fg); font-weight: 500; overflow-wrap: anywhere; }
+  .to b { color: var(--fg); font-weight: var(--fw-strong); overflow-wrap: anywhere; }
   .form { margin-top: 16px; }
   .resend { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--brand); cursor: pointer; }
   .resend:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }

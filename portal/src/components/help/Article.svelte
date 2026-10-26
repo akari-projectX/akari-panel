@@ -239,7 +239,7 @@
   .pn .prev:hover .lb :global(svg) { transform: translateX(-4px); }
   .pn .next:hover .lb :global(svg) { transform: translateX(4px); }
   .pn button:hover .lb, .pn button:hover .tt { color: var(--brand); }
-  .pn .tt { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 20px; font-weight: 500; color: var(--fg); transition: color .15s; }
+  .pn .tt { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 20px; font-weight: var(--fw-strong); color: var(--fg); transition: color .15s; }
 
   .ask { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 32px; padding: 20px; border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--hover) 30%, transparent); font-size: 14px; }
   .ask-t { line-height: 20px; display: flex; align-items: center; gap: 12px; color: var(--muted); }
@@ -250,7 +250,7 @@
   .stick { position: sticky; top: 88px; }
   .blk { padding: 20px; border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-xs); }
   .blk + .blk { margin-top: 24px; }
-  .cap { font-size: 12px; line-height: 16px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .cap { font-size: 12px; line-height: 16px; font-weight: var(--fw-strong); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
   .side nav { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
   .sib { display: flex; flex-direction: column; gap: 4px; max-height: 300px; margin-top: 14px; padding-right: 4px; overflow-y: auto; }
   .side nav a, .sib button, .toc-m nav a {
@@ -259,11 +259,11 @@
   }
   .sib button { -webkit-line-clamp: 2; line-clamp: 2; }
   .side nav a:hover, .sib button:hover, .toc-m nav a:hover { background: var(--hover); color: var(--fg); }
-  .side nav a.on, .sib button.on, .toc-m nav a.on { background: color-mix(in srgb, var(--brand) 10%, transparent); color: var(--brand); font-weight: 500; }
+  .side nav a.on, .sib button.on, .toc-m nav a.on { background: color-mix(in srgb, var(--brand) 10%, transparent); color: var(--brand); font-weight: var(--fw-strong); }
 
   .toc-m { display: none; }
   .toc-m details { padding: 12px; border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 12px; background: var(--surface); }
-  .toc-m summary { display: flex; align-items: center; justify-content: space-between; font-size: 12px; line-height: 16px; font-weight: 500; color: var(--fg); list-style: none; cursor: pointer; }
+  .toc-m summary { display: flex; align-items: center; justify-content: space-between; font-size: 12px; line-height: 16px; font-weight: var(--fw-strong); color: var(--fg); list-style: none; cursor: pointer; }
   .toc-m summary::-webkit-details-marker { display: none; }
   .sm-l { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .sm-l :global(.bk) { color: var(--brand); }

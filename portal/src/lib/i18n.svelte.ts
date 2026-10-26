@@ -52,14 +52,6 @@ export function tp(s: string, vars: Record<string, string | number>): string {
   return t(s).replace(/\{(\w+)\}/g, (_, k: string) => String(vars[k] ?? `{${k}}`));
 }
 
-/** 英文译文 → 简体原文（英文界面预热中文字体用，见 fonts.ts） */
-let zh: Map<string, string> | null = null;
-export function sourceOf(en: string): string | undefined {
-  if (!i18n.en) return undefined;
-  zh ??= new Map(Object.entries(i18n.en).map(([k, v]) => [v, k]));
-  return zh.get(en);
-}
-
 function applyLang() {
   document.documentElement.lang = i18n.locale;
 }

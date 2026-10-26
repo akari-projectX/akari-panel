@@ -1,5 +1,5 @@
 .mini-stats > div { min-width: 0; }
-.wtbl th.med { font-weight: 500; }
+.wtbl th.med { font-weight: var(--fw-strong); }
 .wtbl thead tr, .wtbl tbody tr { border-bottom: 1px solid var(--line); }
 .wtbl tbody tr:last-child { border-bottom: 0; }
 .wtbl .nw { white-space: nowrap; }

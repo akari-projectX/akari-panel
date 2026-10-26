@@ -140,7 +140,7 @@
   .to { padding: 12px 14px; border-radius: 8px; background: var(--secondary); font-size: 13px; line-height: 1.7; }
   .to > span { color: var(--muted); }
   .row { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
-  .row b { font-weight: 500; color: var(--fg); overflow-wrap: anywhere; }
+  .row b { font-weight: var(--fw-strong); color: var(--fg); overflow-wrap: anywhere; }
   .plain { border: 0; background: none; padding: 0; font: inherit; font-size: 12.5px; cursor: pointer; }
   .plain:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 </style>

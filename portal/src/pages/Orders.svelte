@@ -94,7 +94,7 @@
           {#snippet desc()}{[typeText(o), periodText(o.period, o.period_days, t, tp), formatDateTime(o.created_at)].filter(Boolean).join(' · ')}{/snippet}
           {#snippet extra()}
             <span class="oend">
-              <span class="tnum" style="font-size: 15px; font-weight: 500">{formatMoney(o.amount_cents)}</span>
+              <span class="tnum" style="font-size: 15px; font-weight: var(--fw-strong)">{formatMoney(o.amount_cents)}</span>
               <span class={['bdg', st.tone]}>{t(st.text)}</span>
             </span>
           {/snippet}
@@ -117,7 +117,7 @@
               <td><span class="bdg brandbadge trunc" title={o.plan_name}><span>{o.plan_name}</span></span></td>
               <td style="font-size: 14px">{typeText(o)}</td>
               <td style="font-size: 14px">{periodText(o.period, o.period_days, t, tp)}</td>
-              <td class="tnum" style="font-weight: 500">{formatMoney(o.amount_cents)}</td>
+              <td class="tnum" style="font-weight: var(--fw-strong)">{formatMoney(o.amount_cents)}</td>
               <td><span class={['bdg', st.tone]}>{t(st.text)}</span></td>
               <td class="tnum" style="color: var(--muted); font-size: 14px">{formatDateTime(o.created_at)}</td>
               <td class="r">

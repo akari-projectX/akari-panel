@@ -280,9 +280,9 @@
   li.old .fp, li.old .nm span { opacity: .6; }
   li:last-child { border-bottom: 0; }
   .mid { flex: 1; min-width: 0; }
-  .nm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 14px; font-weight: 500; color: var(--fg); }
+  .nm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 14px; font-weight: var(--fw-strong); color: var(--fg); }
   .nm span { overflow-wrap: anywhere; }
-  .nm em { font-style: normal; font-size: 12px; font-weight: 400; color: var(--muted); }
+  .nm em { font-style: normal; font-size: 12px; font-weight: var(--fw-regular); color: var(--muted); }
   .when { display: flex; flex-wrap: wrap; gap: 0 10px; margin-top: 2px; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
   .when span { white-space: nowrap; }
   .old .when { color: var(--muted); }

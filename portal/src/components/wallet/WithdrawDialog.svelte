@@ -110,7 +110,7 @@
     {/if}
   </form>
   {#snippet footer()}
-    <div class="flow-sum">{t('可提现')} <b class="tnum" style="font-size: 15px; font-weight: 400; color: var(--fg)">{formatMoney(withdrawable)}</b></div>
+    <div class="flow-sum">{t('可提现')} <b class="tnum" style="font-size: 15px; font-weight: var(--fw-regular); color: var(--fg)">{formatMoney(withdrawable)}</b></div>
     <div class="flow-btns">
       <button type="button" class="btn" onclick={() => (open = false)}>{t('取消')}</button>
       <button type="submit" form="withdraw-form" class="btn pri" disabled={busy.busy}>{busy.busy ? t('提交中') : t('提交申请')}</button>

@@ -99,7 +99,7 @@
             {#snippet desc()}<span class="tnum">{formatDate(x.created_at)}</span>{' · '}{tp('订单 {v}', { v: formatMoney(x.base_cents) })}{#if x.status === 'pending'}{' · '}<span style="white-space: nowrap">{tp('{d} 入账', { d: formatDate(x.available_at) })}</span>{/if}{/snippet}
             {#snippet extra()}
               <span class="wcol g6">
-                <span class="tnum" style="font-weight: 500">{formatMoney(x.amount_cents)}</span>
+                <span class="tnum" style="font-weight: var(--fw-strong)">{formatMoney(x.amount_cents)}</span>
                 <span class={['bdg', bdgTone(commissionStatus(x).tone)]}>{t(commissionStatus(x).text)}</span>
               </span>
             {/snippet}
@@ -117,7 +117,7 @@
                 <td class="tnum nw mu">{formatDate(x.created_at)}</td>
                 <td>{x.invitee_label}</td>
                 <td class="tnum r mu">{formatMoney(x.base_cents)}</td>
-                <td class="tnum r fw">{formatMoney(x.amount_cents)} <span style="font-size: 12px; font-weight: 400; color: var(--muted)">({x.rate_percent}%)</span></td>
+                <td class="tnum r fw">{formatMoney(x.amount_cents)} <span style="font-size: 12px; font-weight: var(--fw-regular); color: var(--muted)">({x.rate_percent}%)</span></td>
                 <td class="pl6 nw">
                   <span class={['bdg', bdgTone(commissionStatus(x).tone)]}>{t(commissionStatus(x).text)}</span>{#if x.status === 'pending'}<span style="margin-left: 8px; font-size: 12.5px; color: var(--muted)">{tp('{d} 入账', { d: formatDate(x.available_at) })}</span>{/if}
                 </td>

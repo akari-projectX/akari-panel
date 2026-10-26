@@ -97,13 +97,13 @@
 .acc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 12px 14px 10px; }
 .acc-main { min-width: 0; }
 .acc-l1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
-.acc-left { margin-right: 3px; font-size: 18px; font-weight: 500; letter-spacing: -.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
+.acc-left { margin-right: 3px; font-size: 18px; font-weight: var(--fw-strong); letter-spacing: -.02em; color: var(--fg); font-variant-numeric: tabular-nums; }
 .acc-left.warn { color: var(--amber); }
 .acc-dot { margin-inline: 6px; opacity: .6; }
-.acc-none { font-size: 14.5px; font-weight: 500; color: var(--fg); }
+.acc-none { font-size: 14.5px; font-weight: var(--fw-strong); color: var(--fg); }
 .acc-l2 { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
 .acc-renew {
-  flex: none; margin-top: 2px; padding: 2px 6px; border-radius: calc(var(--radius) * .8); font-size: 13px; font-weight: 500; color: var(--brand);
+  flex: none; margin-top: 2px; padding: 2px 6px; border-radius: calc(var(--radius) * .8); font-size: 13px; font-weight: var(--fw-strong); color: var(--brand);
   outline: none; cursor: pointer;
 }
 .acc-renew:hover, .acc-renew:focus { background: var(--brand-soft); }
@@ -113,12 +113,12 @@
 .seg { display: flex; align-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 9999px; }
 .seg-b {
   display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 8px; border: 0; border-radius: 9999px;
-  background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 500; transition: color var(--dur-hover), background-color var(--dur-hover);
+  background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: var(--fw-strong); transition: color var(--dur-hover), background-color var(--dur-hover);
 }
 .seg-b.icon { width: 32px; padding: 0; }
 .seg-b:hover { color: var(--fg); }
 .seg-b[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
 
-.soft { font-weight: 400; color: var(--muted); }
+.soft { font-weight: var(--fw-regular); color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .card-line > b { animation: none; } }
 </style>

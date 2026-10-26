@@ -175,7 +175,7 @@
                 <td class="tnum">{d.day}</td>
                 <td class="tnum hide-sm-cell">{gb2(d.down)}</td>
                 <td class="tnum hide-sm-cell">{gb2(d.up)}</td>
-                <td class="tnum" style="font-weight: 500">{gb2(d.down + d.up)}</td>
+                <td class="tnum" style="font-weight: var(--fw-strong)">{gb2(d.down + d.up)}</td>
                 <td class="tnum">{gb2(d.billed)}</td>
                 <td>
                   <!-- 条长按当期最大单日归一，与右侧真实占比同向可比 -->

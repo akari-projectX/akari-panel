@@ -23,7 +23,7 @@
         {#snippet desc()}{[formatDateTime(e.created_at), e.out_trade_no ?? e.reason ?? ''].filter(Boolean).join(' · ')}{/snippet}
         {#snippet extra()}
           <span class="wcol">
-            <span class={['tnum', e.amount_cents < 0 ? 'amt-neg' : 'amt-pos']} style="font-weight: 500">{signedMoney(e.amount_cents)}</span>
+            <span class={['tnum', e.amount_cents < 0 ? 'amt-neg' : 'amt-pos']} style="font-weight: var(--fw-strong)">{signedMoney(e.amount_cents)}</span>
             <span class="tnum" style="font-size: 12px; color: var(--muted)">{formatMoney(e.balance_after_cents)}</span>
           </span>
         {/snippet}

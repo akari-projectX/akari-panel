@@ -242,7 +242,7 @@
   .seg { display: inline-flex; align-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 9999px; }
   .seg button {
     height: 24px; padding: 0 8px; border: 0; border-radius: 9999px; background: none; color: var(--muted);
-    font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+    font: inherit; font-size: 12px; font-weight: var(--fw-strong); cursor: pointer;
   }
   .seg button.ic { display: inline-grid; place-items: center; padding: 0; width: 32px; }
   .seg button:hover { color: var(--fg); }
