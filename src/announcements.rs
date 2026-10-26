@@ -33,6 +33,7 @@ use serde_json::json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use crate::announcement_tags::UserTag;
 use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, ShopUser, bad_request, conflict};
@@ -71,6 +72,9 @@ pub struct AnnouncementReq {
     pub visible_until: Option<DateTime<Utc>>,
     #[serde(default = "all")]
     pub audience: String,
+    /// The announcement's tag (`announcement_tags`); absent or null = none.
+    #[serde(default)]
+    pub tag_id: Option<Uuid>,
 }
 
 fn yes() -> bool {
@@ -153,6 +157,7 @@ pub struct Clean {
     pub visible_from: Option<DateTime<Utc>>,
     pub visible_until: Option<DateTime<Utc>>,
     pub audience: String,
+    pub tag_id: Option<Uuid>,
 }
 
 pub fn check(req: &AnnouncementReq) -> Result<Clean, ApiError> {
@@ -181,7 +186,37 @@ pub fn check(req: &AnnouncementReq) -> Result<Clean, ApiError> {
         visible_from: req.visible_from,
         visible_until: req.visible_until,
         audience: req.audience.clone(),
+        tag_id: req.tag_id,
     })
+}
+
+/// The tag may be set on an announcement: it exists and is enabled, or the
+/// announcement already carries it (a disabled tag stays where it is).
+/// Locks the tag row against a concurrent delete.
+async fn tag_pickable(
+    conn: &mut PgConnection,
+    tag: Option<Uuid>,
+    current: Option<Uuid>,
+) -> Result<(), ApiError> {
+    let Some(tag) = tag else {
+        return Ok(());
+    };
+    let enabled: Option<bool> =
+        sqlx::query_scalar("SELECT enabled FROM announcement_tags WHERE id = $1 FOR KEY SHARE")
+            .bind(tag)
+            .fetch_optional(conn)
+            .await?;
+    match enabled {
+        None => Err(bad_request!(
+            "announcement.tag_unknown",
+            "unknown announcement tag"
+        )),
+        Some(false) if current != Some(tag) => Err(bad_request!(
+            "announcement.tag_disabled",
+            "this announcement tag is disabled"
+        )),
+        Some(_) => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,7 +227,7 @@ fn snapshot(c: &Clean) -> serde_json::Value {
     json!({
         "title_zh": c.title_zh, "title_en": c.title_en, "pinned": c.pinned, "enabled": c.enabled,
         "visible_from": c.visible_from, "visible_until": c.visible_until, "audience": c.audience,
-        "body_zh_length": c.body_zh.chars().count(),
+        "tag_id": c.tag_id, "body_zh_length": c.body_zh.chars().count(),
         "body_en_length": c.body_en.as_ref().map(|b| b.chars().count()),
     })
 }
@@ -203,10 +238,12 @@ pub async fn apply_create(
     req: &AnnouncementReq,
 ) -> Result<Uuid, ApiError> {
     let c = check(req)?;
+    tag_pickable(conn, c.tag_id, None).await?;
     let id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO announcements (id, title_zh, title_en, body_zh, body_en, pinned, enabled, \
-           visible_from, visible_until, audience) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+           visible_from, visible_until, audience, tag_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(&c.title_zh)
@@ -218,6 +255,7 @@ pub async fn apply_create(
     .bind(c.visible_from)
     .bind(c.visible_until)
     .bind(&c.audience)
+    .bind(c.tag_id)
     .execute(&mut *conn)
     .await?;
     crate::audit::record(
@@ -246,10 +284,11 @@ async fn lock_row(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Clea
         visible_from: Option<DateTime<Utc>>,
         visible_until: Option<DateTime<Utc>>,
         audience: String,
+        tag_id: Option<Uuid>,
     }
     let row: Option<Locked> = sqlx::query_as(
         "SELECT title_zh, title_en, body_zh, body_en, pinned, enabled, visible_from, visible_until, \
-           audience FROM announcements WHERE id = $1 FOR UPDATE",
+           audience, tag_id FROM announcements WHERE id = $1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(conn)
@@ -264,6 +303,7 @@ async fn lock_row(conn: &mut PgConnection, id: Uuid) -> sqlx::Result<Option<Clea
         visible_from: r.visible_from,
         visible_until: r.visible_until,
         audience: r.audience,
+        tag_id: r.tag_id,
     }))
 }
 
@@ -281,10 +321,11 @@ pub async fn apply_update(
     if before == c {
         return Ok(true);
     }
+    tag_pickable(conn, c.tag_id, before.tag_id).await?;
     sqlx::query(
         "UPDATE announcements SET title_zh = $2, title_en = $3, body_zh = $4, body_en = $5, \
            pinned = $6, enabled = $7, visible_from = $8, visible_until = $9, audience = $10, \
-           updated_at = now() WHERE id = $1",
+           tag_id = $11, updated_at = now() WHERE id = $1",
     )
     .bind(id)
     .bind(&c.title_zh)
@@ -296,6 +337,7 @@ pub async fn apply_update(
     .bind(c.visible_from)
     .bind(c.visible_until)
     .bind(&c.audience)
+    .bind(c.tag_id)
     .execute(&mut *conn)
     .await?;
     crate::audit::record(
@@ -542,6 +584,11 @@ pub struct Row {
     pub visible_from: Option<DateTime<Utc>>,
     pub visible_until: Option<DateTime<Utc>>,
     pub audience: String,
+    pub tag_id: Option<Uuid>,
+    /// The tag's names and colour key (for the list; null without a tag).
+    pub tag_name_zh: Option<String>,
+    pub tag_name_en: Option<String>,
+    pub tag_color: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     /// Currently within its window and enabled (audience aside).
@@ -557,11 +604,13 @@ pub struct Row {
 }
 
 const ADMIN_SELECT: &str = "SELECT a.id, a.title_zh, a.title_en, a.body_zh, a.body_en, a.pinned, a.enabled, \
-       a.visible_from, a.visible_until, a.audience, a.created_at, a.updated_at, \
+       a.visible_from, a.visible_until, a.audience, a.tag_id, t.name_zh AS tag_name_zh, \
+       t.name_en AS tag_name_en, t.color AS tag_color, a.created_at, a.updated_at, \
        (a.enabled AND (a.visible_from IS NULL OR a.visible_from <= now()) \
          AND (a.visible_until IS NULL OR a.visible_until > now())) AS active, \
        (SELECT count(*) FROM announcement_reads r WHERE r.announcement_id = a.id) AS reads, \
-       a.mail_requested_at, a.mail_sent, a.mail_done_at FROM announcements a";
+       a.mail_requested_at, a.mail_sent, a.mail_done_at FROM announcements a \
+     LEFT JOIN announcement_tags t ON t.id = a.tag_id";
 
 /// What a user sees: both languages (the SPA picks), rendered.
 #[derive(Serialize, Debug)]
@@ -572,6 +621,8 @@ pub struct MyAnnouncement {
     pub html_zh: String,
     pub html_en: Option<String>,
     pub pinned: bool,
+    /// The tag (names in both languages and the colour key), if any.
+    pub tag: Option<UserTag>,
     pub created_at: DateTime<Utc>,
     pub read: bool,
 }
@@ -590,6 +641,10 @@ struct MyRow {
     body_zh: String,
     body_en: Option<String>,
     pinned: bool,
+    tag_id: Option<Uuid>,
+    tag_name_zh: Option<String>,
+    tag_name_en: Option<String>,
+    tag_color: Option<String>,
     created_at: DateTime<Utc>,
     read: bool,
 }
@@ -598,7 +653,9 @@ struct MyRow {
 pub async fn visible_to(conn: &mut PgConnection, user: Uuid) -> sqlx::Result<MyList> {
     let rows: Vec<MyRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT a.id, a.title_zh, a.title_en, a.body_zh, a.body_en, a.pinned, a.created_at, \
+           a.tag_id, t.name_zh AS tag_name_zh, t.name_en AS tag_name_en, t.color AS tag_color, \
            (r.user_id IS NOT NULL) AS read FROM announcements a \
+         LEFT JOIN announcement_tags t ON t.id = a.tag_id \
          LEFT JOIN announcement_reads r ON r.announcement_id = a.id AND r.user_id = $1 \
          WHERE {VISIBLE} ORDER BY a.pinned DESC, a.created_at DESC, a.id LIMIT {USER_LIMIT}"
     )))
@@ -616,6 +673,16 @@ pub async fn visible_to(conn: &mut PgConnection, user: Uuid) -> sqlx::Result<MyL
                 html_zh: crate::markdown::render(&r.body_zh),
                 html_en: r.body_en.as_deref().map(crate::markdown::render),
                 pinned: r.pinned,
+                tag: r
+                    .tag_id
+                    .zip(r.tag_name_zh)
+                    .zip(r.tag_color)
+                    .map(|((id, name_zh), color)| UserTag {
+                        id,
+                        name_zh,
+                        name_en: r.tag_name_en,
+                        color,
+                    }),
                 created_at: r.created_at,
                 read: r.read,
             })

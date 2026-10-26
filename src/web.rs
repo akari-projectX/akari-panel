@@ -134,6 +134,7 @@ fn inner_router(state: AppState) -> Router {
         // Ops: announcements, knowledge base, branding (logo/favicon served
         // publicly under the prefix with cache headers).
         .merge(crate::announcements::routes())
+        .merge(crate::announcement_tags::routes())
         .merge(crate::kb::routes())
         .merge(crate::branding::routes())
         .merge(crate::sysstatus::routes())

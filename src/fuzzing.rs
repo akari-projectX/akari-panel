@@ -325,15 +325,20 @@ pub fn branding_body(body: &[u8]) -> Result<Option<crate::branding::Fields>, Str
     Ok(crate::branding::check(&req).ok())
 }
 
-/// Announcement / help request bodies (strict), cleaned.
+/// Announcement / announcement tag / help request bodies (strict), cleaned.
 pub fn content_bodies(sel: u8, body: &[u8]) -> Result<(), String> {
-    match sel % 3 {
+    match sel % 4 {
         0 => {
             if let Some(r) = strict::<crate::announcements::AnnouncementReq>(body)? {
                 let _ = crate::announcements::check(&r);
             }
         }
         1 => {
+            if let Some(r) = strict::<crate::announcement_tags::TagReq>(body)? {
+                let _ = crate::announcement_tags::check(&r);
+            }
+        }
+        2 => {
             if let Some(r) = strict::<crate::kb::ArticleReq>(body)? {
                 let _ = crate::kb::check_article(&r);
             }
