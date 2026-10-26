@@ -1,0 +1,9 @@
+/* 节点页 */
+.srch { position: relative; margin-bottom: 18px; }
+@media (min-width: 768px) { .srch { max-width: 480px; }
+}
+.srch > svg { position: absolute; top: 50%; left: 12px; translate: 0 -50%; color: var(--faint); pointer-events: none; }
+.sortbtn { display: inline-flex; cursor: pointer; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: 2px; background: none; font: inherit; color: inherit; letter-spacing: inherit; }
+.md-hide-i { display: inline; } .md-only-i { display: none; }
+@media (min-width: 768px) { .md-hide-i { display: none; } .md-only-i { display: inline; }
+}

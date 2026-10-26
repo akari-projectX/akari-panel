@@ -236,6 +236,7 @@
 
   /* ========== 页面框架（v1.4.0） ========== */
   .page { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
+  .page.first { animation: none; }
   .page.out { opacity: 0; pointer-events: none; transition: opacity var(--dur-exit) var(--ease-in); }
   /* 定宽容器：两侧留出较宽边距（v1.4.0 的 .page-wrap） */
   .wrap { width: 100%; max-width: 1240px; margin-inline: auto; padding-inline: 56px; }

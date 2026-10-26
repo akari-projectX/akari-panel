@@ -1,5 +1,4 @@
 <script lang="ts">
-  import '../styles/pages.css';
   import Article from '../components/help/Article.svelte';
   import DocList from '../components/help/DocList.svelte';
   import { loc } from '$lib/router.svelte';

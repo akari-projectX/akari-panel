@@ -1,0 +1,90 @@
+@layer components {/* 用户中心各页的版式（v1.4.0 的仪表盘、接入配置、商店 / 订单、订单详情、钱包）：只有登录后的页面用到，
+   由这些页面的分包引入，不进首屏的 CSS（登录页、注册页因此少下 ~20KB）。外壳与共用零件在 flat.css。 */
+/*
+ * 用户中心页面的内容样式（样稿 design/portal-v2-2026-10/styles.css）：区块头、两栏、行式列表、提醒行、横幅、
+ * 公告标签、线路状态、空状态。仪表盘先用，之后的线路、公告、商店页共用。颜色只引用 tokens.css 的 var(--…)。
+ * main.ts 在 app.css 之后引入；层名与 Tailwind 的 components 层相同（工具类仍然优先）。
+ */
+  /* ── 区块头：标题 + 一行真实信息，右侧一个文字链接 ── */
+  .sh { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+  .sh h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--fg); }
+  .sh p { color: var(--muted); font-size: 13px; margin-top: 2px; }
+
+  /* ── 小数字一排（钱包的可提现 / 审核中、邀请收益）：标签在上、数字在下，竖细线分隔，不放大 ── */
+
+  /* ── 范围切换（7 天 / 30 天）：灰底小分段，选中的白底 ── */
+
+  /* ── 页内分页（role=tablist）：文字 + 当前项 2px 品牌色下划线，与顶栏同一语言 ── */
+
+  /* ── 表格：表头小号灰字 + 1px 细线分行，数字右对齐 tabular；窄屏改用 .li 行式列表 ── */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .tbl th {
+    padding: 0 20px 10px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12.5px; font-weight: 400; color: var(--muted); white-space: nowrap;
+  }
+  .tbl td { padding: 13px 20px 13px 0; border-bottom: 1px solid var(--line); color: var(--body); vertical-align: top; }
+  .tbl th:last-child, .tbl td:last-child { padding-right: 0; }
+}
+@layer components {
+  @media (min-width: 640px) { .set-row:not(.stack) { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); align-items: start; }
+}
+}
+@media (max-width: 720px) {
+  .sh { align-items: flex-start; }
+}
+.prog > i { display: block; width: 100%; height: 100%; flex: 1; background: var(--brand); transition: all .15s; }
+.tabs-pill.inl { display: inline-flex; }
+.tabs-pill > button { position: relative; display: inline-flex; flex: 1; height: calc(100% - 1px); align-items: center; justify-content: center; gap: 6px; padding: 2px 6px; border: 1px solid transparent; border-radius: calc(var(--radius) * .8); background: none; font: inherit; font-size: 14px; font-weight: 500; line-height: 20px; white-space: nowrap; color: var(--muted); transition: color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out); }
+.tabs-pill > button:hover { color: var(--fg); }
+.tabs-pill > button[aria-selected='true'] { background: var(--surface); color: var(--fg); box-shadow: var(--shadow-xs); }
+.tabs-pill > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.tbl thead tr, .tbl tbody tr { border-bottom: 1px solid var(--line); }
+.tbl tbody tr:last-child { border-bottom: 0; }
+.tbl tbody tr:hover { background: color-mix(in srgb, var(--brand) 3%, transparent); }
+.tbl th { height: 40px; padding: 0 8px; text-align: left; vertical-align: middle; font-weight: 500; white-space: nowrap; color: var(--fg); }
+.tbl td { padding: 8px; vertical-align: middle; white-space: nowrap; color: var(--fg); }
+.tbl th:first-child, .tbl td:first-child { padding-left: 0; }
+.tbl th:last-child, .tbl td:last-child { padding-right: 0; }
+.tbl.flat-head th { padding-bottom: 14px; font-size: 11.5px; font-weight: 500; letter-spacing: .05em; color: var(--muted); }
+.tbl.flat-head thead tr:hover { background: none; }
+.tbl code { font-size: 12.5px; }
+.md-hide { display: block; } .md-only { display: none; }
+@media (min-width: 768px) { .md-hide { display: none; } .md-only { display: block; }
+}
+
+/* ---- 第 4 组：钱包 / 邀请 / 提现（wallet.tsx、wallet-invite.tsx） ---- */
+.mini-stats { display: flex; flex-wrap: wrap; gap: 14px 40px; }
+.mini-stats dt { font-size: 12.5px; color: var(--muted); }
+.mini-stats dd { margin-top: 3px; font-size: 18px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.sub-title { font-size: 14px; font-weight: 600; color: var(--fg); }
+.wtbl { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.4286; }
+.wtbl th { padding: 12px 0; text-align: left; font-size: 12.5px; font-weight: 400; color: var(--muted); }
+.wtbl td { padding: 14px 0; }
+.amt-pos { color: var(--ok); } .amt-neg { color: var(--danger); }
+.wcol { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.wmono { display: inline-flex; max-width: 100%; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 12.5px; }
+.wmono button { flex: none; display: inline-flex; padding: 2px; border: 0; border-radius: 4px; background: none; color: var(--muted); transition: color var(--dur-hover) var(--ease-out); }
+.wdet { display: flex; min-width: 0; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--muted); }
+.wd-btn { height: 40px; padding: 0 20px; }
+.wd-why { margin-top: 10px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.cp-row { display: flex; flex-direction: column; gap: 10px; }
+@media (min-width: 640px) { .cp-row { flex-direction: row; }
+}
+.cp-code { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 10px; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+.hide-sm { display: none; } @media (min-width: 640px) { .hide-sm { display: inline; }
+}
+.stack12 > * + * { margin-top: 48px; }
+.tabs-pill.px3 > button { padding-inline: 12px; }
+.pt-note { margin-top: 12px; max-width: 72ch; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.pt-why { font-size: 13.5px; line-height: 1.8; color: var(--muted); }
+.tp-sm { flex: 1; font-size: 14px; line-height: 1.4286; }
+
+/* 下拉选择（ui/Select.svelte，shadcn Select 的外观） */
+.sel-trig { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 32px; line-height: 20px; padding: 0 8px 0 10px; text-align: left; cursor: pointer; white-space: nowrap; }
+.sel-trig > svg { flex: none; color: var(--muted); pointer-events: none; }
+.sel-val { overflow: hidden; text-overflow: ellipsis; }
+.sel-pop { z-index: 60; min-width: var(--bits-select-anchor-width); max-height: var(--bits-select-content-available-height); overflow: hidden auto; border-radius: 8px; background: var(--surface); color: var(--fg); box-shadow: var(--pop-shadow), 0 0 0 1px var(--line); }
+.sel-vp { padding: 4px; }
+.sel-item { position: relative; display: flex; align-items: center; width: 100%; padding: 4px 32px 4px 6px; border-radius: 6px; font-size: 14px; cursor: default; user-select: none; outline: none; }
+.sel-item[data-highlighted] { background: var(--hover); }
+.sel-item[data-disabled] { opacity: .5; pointer-events: none; }
+.sel-ck { position: absolute; right: 8px; pointer-events: none; }

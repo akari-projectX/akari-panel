@@ -14,13 +14,24 @@ export type PageProps = { title: string; params?: Record<string, string> };
 export type PageModule = { default: Component<PageProps> | Component<Record<string, never>> };
 export type Page = { path: string; title: string; layout: Layout; load: () => Promise<PageModule> };
 
-const dash = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'dash', load });
+/*
+ * 用户中心页面的共用样式（styles/pages/common.css、rest.css）：必须排在各页自己的样式表之前，层叠才与拆分前的 pages.css 一样。
+ * Vite 的分包预载不保证共用 CSS 先于页面 CSS 进 <head>，所以在这里先发起它们：预载助手在调用时就按调用顺序把 <link> 插进去，
+ * 页面分包的 CSS 随后插入；请求仍然并行。仪表盘不需要 rest.css（只有其余页面共用的）。
+ */
+const commonCss = () => import('../styles/pages/common.css');
+const restCss = () => import('../styles/pages/rest.css');
+const withCss = (css: (() => Promise<unknown>)[], load: Page['load']): Page['load'] => () => {
+  const started = css.map((c) => c());
+  return load().then(async (m) => { await Promise.all(started); return m; });
+};
+const dash = (path: string, title: string, load: Page['load'], css = [commonCss, restCss]): Page => ({ path, title, layout: 'dash', load: withCss(css, load) });
 const guest = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'guest', load });
 const pub = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'public', load });
 const legal = () => import('../pages/Legal.svelte');
 
 export const PAGES: Page[] = [
-  dash(R.dashboard, '仪表盘', () => import('../pages/Dashboard.svelte')),
+  dash(R.dashboard, '仪表盘', () => import('../pages/Dashboard.svelte'), [commonCss]),
   dash(R.shop, '商店', () => import('../pages/Shop.svelte')),
   dash(R.nodes, '线路', () => import('../pages/Nodes.svelte')),
   dash(R.traffic, '用量', () => import('../pages/Traffic.svelte')),

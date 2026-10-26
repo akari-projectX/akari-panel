@@ -9,6 +9,7 @@ import { t } from './i18n.svelte';
 import { toast } from './toast.svelte';
 import { navigate } from './router.svelte';
 import { match } from './pages';
+import { prefetchCurrent } from './prefetch';
 import { R, scopeOf, type Scope } from './routes';
 
 /**
@@ -175,7 +176,14 @@ export function startAuth() {
   const release = auth.booting ? holdBoot() : () => {};
   const found = match(location.pathname);
   fetchAccount(cached !== undefined || found?.page.layout === 'dash')
-    .then(apply)
+    .then((r) => {
+      apply(r);
+      /* 这一页的首屏数据在渲染之前就发出去（App 的同名预取是换页用的，请求在途表里同一个键只有一个请求）：渲染外壳要花几十毫秒，请求不必等它 */
+      if (r && !r.me.email_pending) {
+        const s = scopeOf(r.me);
+        if (s) prefetchCurrent(location.pathname, s);
+      }
+    })
     .catch(() => {
       /* 网络错误：有缓存就保留缓存里的账户；没有缓存时门禁显示「重试」，不当成没登录 */
       if (readCache<Me>(K.me) === undefined) auth.failed = true;

@@ -20,10 +20,11 @@ startRouter();
 watchPreloadErrors();
 startIntentPrefetch();
 startAuth();
-/* 这一页的分包与 /me 并行下载（要不要登录由 App 的门禁定；访客页本来就要这一包，仪表盘是登录后的落脚点，访客也会预载它） */
-const first = match(location.pathname);
-if (first) void preloadPage(first.page.load);
 loadFonts();
 
 const target = document.getElementById('app');
 if (target) mount(App, { target });
+/* 这一页的分包与 /me 并行下载（要不要登录由 App 的门禁定；访客页本来就要这一包，仪表盘是登录后的落脚点，访客也会预载它）。
+   在应用挂载之后才发：几十个小模块的响应会和应用自己的启动抢主线程，把挂载推后几十毫秒 */
+const first = match(location.pathname);
+if (first) void preloadPage(first.page.load);

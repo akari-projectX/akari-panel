@@ -15,6 +15,8 @@
 const PREFIX = 'akari.cache:';
 const mem = new Map<string, unknown>();
 const inflight = new Map<string, Promise<unknown>>();
+/* 本页面生命周期内每个键上一次成功取到数据的时间（只来自 load；sessionStorage 里读出来的不算，那些可能是上一个页面留下的旧数据） */
+const fetchedAt = new Map<string, number>();
 /*
  * 缓存的「代」。每次清空（退出、登录、换账号）加一。
  * 清空前已经发出的请求回来时代号对不上，结果就不再写进缓存——
@@ -38,6 +40,8 @@ export function readCache<T>(key: string): T | undefined {
 
 export function writeCache(key: string, value: unknown) {
   mem.set(key, value);
+  /* 不是从接口取回来的写入（本地改了、页面自己 set）：不再算「刚取到」；load 取到数据后会重新盖章 */
+  fetchedAt.delete(key);
   try {
     sessionStorage.setItem(PREFIX + key, JSON.stringify(value));
   } catch { /* 超出配额就只留在内存里，本次会话照样能用 */ }
@@ -47,6 +51,7 @@ export function clearCache() {
   generation++;
   mem.clear();
   inflight.clear();
+  fetchedAt.clear();
   try {
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
       const k = sessionStorage.key(i);
@@ -66,12 +71,23 @@ export function load<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
   const p = fetcher()
     .then((v) => {
       /* undefined 只来自 304（没有正文），不能把旧缓存覆盖成空；清空过的就是上一个账号的，丢掉 */
-      if (v !== undefined && gen === generation) writeCache(key, v);
+      if (v !== undefined && gen === generation) {
+        writeCache(key, v);
+        fetchedAt.set(key, Date.now());
+      }
       return v;
     })
     .finally(() => { if (inflight.get(key) === p) inflight.delete(key); });
   inflight.set(key, p);
   return p;
+}
+
+/**
+ * 这个键的数据是不是刚刚（ms 毫秒内）取到的：预取刚回来、页面随后挂载时，没必要立刻再请求一遍同样的数据。
+ */
+export function isFresh(key: string, ms = 3000): boolean {
+  const at = fetchedAt.get(key);
+  return at !== undefined && Date.now() - at < ms && mem.has(key);
 }
 
 /**

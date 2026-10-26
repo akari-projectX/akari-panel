@@ -10,7 +10,7 @@
 改外观时先对照 v1.4.0 源码（`git show v1.4.0:spa/src/...`），不要凭样稿。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
-  `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages.css`（用户中心各页的版式与表格 `.tbl` 等，只由登录后的页面分包引入，不进首屏 CSS）、`tokens.css`（颜色只能写在这里，`check:colors`）。
+  `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；各 `pages/*.svelte` 按 common → rest → 本页的顺序引入，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
   页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
 - 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
 - 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种：流程（图标 + 标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
@@ -55,7 +55,7 @@
   图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
   下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
-  线路状态、空状态）在 `src/styles/pages.css`。e2e `e2e/dashboard.spec.ts`。
+  线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
@@ -79,7 +79,7 @@
   （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
   `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
   `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。
-  设置行样式 `.set-row` 在 `styles/pages.css`。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。
+  设置行样式 `.set-row` 在 `styles/pages/` 下（account.css 或 rest.css）。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。
   e2e `e2e/support.spec.ts`（React support #57–#59、polish #57）、`e2e/account.spec.ts`（React account 的设置场景）、`auth.spec.ts` #3–#5 接着测设置页的通行密钥管理；
   账户 `v2-account-`、`v2-settings-`、`v2-legacy-`、`v2-delete-<视口>`（seed）。
 - 提示条 `lib/toast.svelte.ts`（`toast.success / error(标题, {description})`，手写，代替 sonner）：`components/Toaster.svelte` 在第一次弹提示时才下载、挂到 body。
@@ -142,4 +142,4 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
   加上体积（`size-svelte.json`），`e2e/perf/summary.mjs` 与 `e2e/perf/baseline/`（切换前 React 门户最后一次的数字，以及 v2.0.0 发布时同一套测法的数字 `perf-v2-*.json`）对比，Δ 列相对 v2.0.0；切页另给不含旧页面淡出（100 ms，v1.4.0 的刻意动效）的 `bare.*`；
   CI 写进任务摘要并上传工件 `portal-perf`。结论见 `docs/PORTAL-V2-PERF.md`。
 
-- 首屏性能（v2.0.0 起不得更慢）：①首帧样式表 `assets/head-<哈希>.css` = 令牌 + 启动画面（`src/boot/head.css`，`vite.config.ts` `headCss` 展开去空白后以阻塞 `<link>` 插在 `<head>` 最前），启动画面带 Logo 在 HTML + 这张小表到手时就画出来（FCP 不再等应用样式表）；应用样式表（入口分包 CSS）标成 `media="print" data-defer`（`deferAppCss`），`boot.js` 在文档解析完成时改成 `all`，`boot.svelte.ts` 收起启动画面前等它加载完。②`main.ts` 一启动就预载当前路由的分包（与 `/me` 并行）；`/me` 与 `/me/plan` 在多半已登录时并行（`auth.svelte.ts` `fetchAccount(speculative)`）；`prefetchCurrent`（App 一知道账户范围就调）在页面挂载前开始取仪表盘首屏数据（`lib/dash-data.ts` 与 Overview 共用键）。③`lib/error-toast.ts`：Rolldown 的命名空间小助手曾落在 bits-ui 的 Dialog 分包里，`import('./errors')` 把约 60 KB 对话框栈拖进每个页面的静态依赖；别在多个分包共享的模块上直接动态 `import()`。
+- 首屏性能（v2.0.0 起不得更慢）：①首帧样式表 `assets/head-<哈希>.css` = 令牌 + 启动画面（`src/boot/head.css`，`vite.config.ts` `headCss` 展开去空白后以阻塞 `<link>` 插在 `<head>` 最前），启动画面带 Logo 在 HTML + 这张小表到手时就画出来（FCP 不再等应用样式表）；应用样式表（入口分包 CSS）标成 `media="print" data-defer`（`deferAppCss`），`boot.js` 在文档解析完成时改成 `all`，`boot.svelte.ts` 收起启动画面前等它加载完。②`main.ts` 一启动就预载当前路由的分包（与 `/me` 并行）；`/me` 与 `/me/plan` 在多半已登录时并行（`auth.svelte.ts` `fetchAccount(speculative)`）；`prefetchCurrent`（App 一知道账户范围就调）在页面挂载前开始取仪表盘首屏数据（`lib/dash-data.ts` 与 Overview 共用键）。③`lib/error-toast.ts`：Rolldown 的命名空间小助手曾落在 bits-ui 的 Dialog 分包里，`import('./errors')` 把约 60 KB 对话框栈拖进每个页面的静态依赖；别在多个分包共享的模块上直接动态 `import()`。；⑤（桌面追平）刷新后的第一页的 `.page` 不播 `page-in` 淡入（`PageView` 在启动画面还在时给 `.first`；启动画面的淡出就是入场，淡入会让 Chrome 的 LCP 晚到动画结束，实测 LCP 492→312 ms）；⑥`lib/cache` 的 `isFresh`：预取刚取回的数据（3 秒内、非 reload）页面挂载时不再重复请求（原来每个首屏请求发两遍）；⑦`auth.startAuth` 在 /me 回来后立刻 `prefetchCurrent`（不等渲染外壳）；⑧`main.ts` 在 `mount(App)` 之后才预载当前页分包（几十个小模块的响应否则和应用启动抢主线程）；⑨首屏的订阅二维码 `Qr defer` 放到首帧绘制之后再编码，`TopBar` 的下划线不在 effect 里同步量（交给 ResizeObserver 的首次通知）

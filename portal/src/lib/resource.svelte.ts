@@ -1,5 +1,5 @@
 import { untrack } from 'svelte';
-import { load, readCache, writeCache } from '@/lib/cache';
+import { isFresh, load, readCache, writeCache } from '@/lib/cache';
 import { holdBoot } from './boot.svelte';
 
 /**
@@ -39,14 +39,16 @@ export function resource<T>(spec: () => Spec<T>): Resource<T> {
   });
   s.loading = (first.enabled ?? true) && s.data === undefined;
   let tick = $state(0);
+  let seenTick = 0;
 
   $effect(() => {
     const o = spec();
-    void tick;
-    return untrack(() => run(o));
+    const forced = tick !== seenTick;
+    seenTick = tick;
+    return untrack(() => run(o, forced));
   });
 
-  function run(o: Spec<T>): (() => void) | undefined {
+  function run(o: Spec<T>, forced: boolean): (() => void) | undefined {
     if (o.key !== s.key) {
       s.key = o.key;
       const cached = readCache<T>(o.key);
@@ -58,6 +60,11 @@ export function resource<T>(spec: () => Spec<T>): Resource<T> {
       return undefined;
     }
     const key = o.key;
+    /* 预取刚把这份数据取回来（页面是在预取完成之后才挂载的）：就是最新的，不再请求一遍；reload() 一律重取 */
+    if (!forced && s.data !== undefined && isFresh(key)) {
+      s.loading = false;
+      return undefined;
+    }
     const release = s.data === undefined ? holdBoot('soft') : () => {};
     s.loading = true;
     s.error = undefined;
