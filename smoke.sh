@@ -304,7 +304,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM cle
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates CASCADE; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates CASCADE; DELETE FROM announcement_tags WHERE name_zh LIKE '冒烟%'; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 # --- sections: run them all, report every failure ---------------------------
@@ -3695,6 +3695,49 @@ done
 [ "$(api_json "$JAR" POST "$BASE/api/v1/content/preview" '{"markdown":"[x](javascript:alert(1)) ![i](http://e/i.png)"}')" = "200" ] \
   && ! matches -F '<a ' </tmp/akari-smoke/last && ! matches -F '<img' </tmp/akari-smoke/last \
   || { echo "FAIL: preview let an unsafe link/image through"; cat /tmp/akari-smoke/last; exit 1; }
+# Announcement tags: the eight presets, a colour only from the palette, the tag
+# on the user's list (names in both languages + the colour key), in use = 409 with
+# the count (disable instead), a disabled tag cannot be picked, reorder is the
+# whole list, customers refused on the admin API.
+[ "$(code -b "$JAR" "$BASE/api/v1/announcement-tags")" = "200" ] \
+  && [ "$(last_json "[t['name_zh'] for t in d][:8] == ['活动','维护','调整','新功能','优惠','重要','新线路','通知'] and all(t['name_en'] and t['enabled'] for t in d[:8])")" = "True" ] \
+  || { echo "FAIL: preset announcement tags"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/announcement-tags")" = "403" ] || { echo "FAIL: customer reached the announcement tags"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcement-tags" '{"name_zh":"冒烟标签","color":"#ff0000"}')" = "400" ] && last_json "d['code']" | matches -x 'announcement_tag.color_invalid' \
+  || { echo "FAIL: free colour accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcement-tags" '{"name_zh":"冒烟标签","name_en":"Smoke","color":"teal"}')" = "201" ] \
+  || { echo "FAIL: create announcement tag"; cat /tmp/akari-smoke/last; exit 1; }
+ANN_TAG=$(last_json "d['id']")
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcements" "{\"title_zh\":\"冒烟带标签\",\"body_zh\":\"x\",\"tag_id\":\"$ANN_TAG\"}")" = "201" ] \
+  || { echo "FAIL: create tagged announcement"; cat /tmp/akari-smoke/last; exit 1; }
+ANN_T=$(last_json "d['id']")
+[ "$(code -b "$TJA" "$BASE/api/v1/me/announcements")" = "200" ] \
+  && [ "$(last_json "[a['tag'] for a in d['announcements'] if a['id'] == '$ANN_T'] == [{'id': '$ANN_TAG', 'name_zh': '冒烟标签', 'name_en': 'Smoke', 'color': 'teal'}]")" = "True" ] \
+  && [ "$(last_json "[a['tag'] for a in d['announcements'] if a['id'] == '$ANN'] == [None]")" = "True" ] \
+  || { echo "FAIL: the tag on the user's announcement list"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/announcement-tags/$ANN_TAG")" = "409" ] \
+  && [ "$(last_json "(d['code'], d['params']['count'])")" = "('announcement_tag.in_use', 1)" ] \
+  || { echo "FAIL: a tag in use was deleted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/announcement-tags/$ANN_TAG" '{"name_zh":"冒烟标签","name_en":"Smoke","color":"teal","enabled":false}')" = "204" ] \
+  || { echo "FAIL: disable the tag"; exit 1; }
+[ "$(api_json "$JAR" POST "$BASE/api/v1/announcements" "{\"title_zh\":\"冒烟停用标签\",\"body_zh\":\"x\",\"tag_id\":\"$ANN_TAG\"}")" = "400" ] && last_json "d['code']" | matches -x 'announcement.tag_disabled' \
+  || { echo "FAIL: a disabled tag was picked"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/announcements")" = "200" ] && [ "$(last_json "[a['tag']['color'] for a in d['announcements'] if a['id'] == '$ANN_T'] == ['teal']")" = "True" ] \
+  || { echo "FAIL: a disabled tag left its announcement"; exit 1; }
+# Reorder = the whole list: reversed, then back; a partial list is stale.
+[ "$(code -b "$JAR" "$BASE/api/v1/announcement-tags")" = "200" ] || { echo "FAIL: list tags"; exit 1; }
+TAG_IDS=$(last_json "json.dumps([t['id'] for t in d])")
+TAG_REV=$(python3 -c "import json,sys; print(json.dumps({'ids': json.loads(sys.argv[1])[::-1]}))" "$TAG_IDS")
+TAG_FWD=$(python3 -c "import json,sys; print(json.dumps({'ids': json.loads(sys.argv[1])}))" "$TAG_IDS")
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/announcement-tags/order" "$TAG_REV")" = "204" ] \
+  && [ "$(code -b "$JAR" "$BASE/api/v1/announcement-tags")" = "200" ] \
+  && [ "$(last_json "d[0]['id'] == '$ANN_TAG'")" = "True" ] \
+  || { echo "FAIL: reorder announcement tags"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/announcement-tags/order" "$TAG_FWD")" = "204" ] || { echo "FAIL: restore the tag order"; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/announcement-tags/order" '{"ids":[]}')" = "409" ] && last_json "d['code']" | matches -x 'announcement_tag.order_stale' \
+  || { echo "FAIL: a partial tag order was accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/announcements/$ANN_T")" = "204" ] || { echo "FAIL: delete the tagged announcement"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/announcement-tags/$ANN_TAG")" = "204" ] || { echo "FAIL: delete the unused tag"; cat /tmp/akari-smoke/last; exit 1; }
 echo "announcements: ok"
 
 # Knowledge base: published article searchable and readable; a draft is

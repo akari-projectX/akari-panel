@@ -376,6 +376,7 @@ async fn query_page(pg: &sqlx::PgPool, q: &AuditQuery) -> Result<AuditPage, ApiE
            WHEN 'coupon_batch' THEN (SELECT NULLIF(name, '') FROM coupon_batches WHERE id = t.tid) \
            WHEN 'ticket' THEN (SELECT subject FROM tickets WHERE id = t.tid) \
            WHEN 'announcement' THEN (SELECT title_zh FROM announcements WHERE id = t.tid) \
+           WHEN 'announcement_tag' THEN (SELECT name_zh FROM announcement_tags WHERE id = t.tid) \
            WHEN 'kb_article' THEN (SELECT title_zh FROM kb_articles WHERE id = t.tid) \
            WHEN 'kb_category' THEN (SELECT name_zh FROM kb_categories WHERE id = t.tid) \
            WHEN 'payment_method' THEN (SELECT display_name FROM payment_methods WHERE id = t.tid) \

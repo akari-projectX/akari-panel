@@ -5,6 +5,7 @@
 pub mod access;
 pub mod account;
 pub mod alerts;
+pub mod announcement_tags;
 pub mod announcements;
 pub mod api;
 pub mod audit;
