@@ -722,3 +722,42 @@ async fn batch_code_redemption_race() {
     drop(state);
     db.drop().await;
 }
+
+/// A holder of the plan without an end date has nothing to renew: a manual
+/// order is refused (409, nothing created, no revenue) instead of reporting
+/// success while granting nothing (audit billing P3-8).
+#[tokio::test]
+async fn manual_order_for_a_plan_without_expiry_is_refused() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let (_, plan) = catalog_plan(
+        &db,
+        "m5",
+        &[
+            (PeriodKind::Onetime, None, 1000),
+            (PeriodKind::Month, None, 500),
+        ],
+        |_| {},
+    )
+    .await;
+    let u = db.user().await;
+    manual(&db, &req(u, plan, PeriodKind::Onetime, false))
+        .await
+        .unwrap();
+    let expires: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT expires_at FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert!(expires.is_none(), "a permanent one-time purchase");
+    let before = count(&db, "SELECT count(*) FROM orders").await;
+    let e = manual(&db, &req(u, plan, PeriodKind::Month, false))
+        .await
+        .unwrap_err();
+    assert_eq!((e.status(), e.code()), (StatusCode::CONFLICT, "shop.nothing_to_renew"));
+    assert_eq!(count(&db, "SELECT count(*) FROM orders").await, before);
+    db.drop().await;
+}
