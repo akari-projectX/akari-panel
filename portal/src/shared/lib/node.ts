@@ -65,9 +65,9 @@ export function stripFlag(name: string): string {
 
 /** 倍率越低越划算，配色跟着这个语义走 */
 export function rateTone(rate: number): string {
-  if (rate <= 0.5) return 'bg-emerald-500/12 text-success';
-  if (rate > 1) return 'bg-amber-500/12 text-warning';
-  return 'bg-brand/10 text-brand-ink';
+  if (rate <= 0.5) return 'rate-lo';
+  if (rate > 1) return 'rate-hi';
+  return 'rate-mid';
 }
 
 /**

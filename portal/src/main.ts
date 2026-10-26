@@ -3,6 +3,7 @@ import './styles/tokens.css';
 import './boot/boot.css';
 import './app.css';
 import './styles/content.css';
+import './styles/flat.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { startAuth } from '$lib/auth.svelte';

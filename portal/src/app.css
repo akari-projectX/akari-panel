@@ -245,8 +245,6 @@
   .page-title, .ph h1 { font-size: 30px; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; color: var(--fg); }
   .page-sub, .ph p { margin-top: 10px; max-width: 620px; font-size: 15px; line-height: 1.75; letter-spacing: -.008em; color: var(--muted); overflow-wrap: anywhere; }
   /* 区块：靠留白分隔，不画线（只在相邻两块之间一道细线） */
-  .sec { padding-block: 44px; }
-  .sec + .sec { border-top: 1px solid var(--line); }
   .quiet { color: var(--faint); font-size: 13px; }
   .link { color: var(--brand); font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
   .link:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -395,10 +393,9 @@
   .callout p { font-size: 13px; line-height: 1.8; color: var(--fg); }
 
   /* 一行提醒（站点设置没取到）：单色图标 + 文字 + 按钮，不做彩色卡片 */
-  .notice { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; padding: 12px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 13px; line-height: 1.6; color: var(--fg); }
-  .notice > .i { flex: none; }
-  .notice > span { flex: 1; min-width: 0; }
-  .notice.warn > .i { color: var(--warn); }
+  .au-alert { display: flex; align-items: center; gap: 12px; margin-bottom: 32px; padding: 12px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 13px; line-height: 1.6; color: var(--fg); }
+  .au-alert > .i { flex: none; color: var(--warn); }
+  .au-alert > span { flex: 1; min-width: 0; }
 
   /* 防护：蜜罐移到屏幕外；Turnstile 与输入框同宽（interaction-only：平时是空的） */
   .trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; pointer-events: none; }

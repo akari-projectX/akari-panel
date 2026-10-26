@@ -187,7 +187,6 @@
   .cols { grid-template-columns: 1fr; }
 }
 @media (max-width: 720px) {
-  .sec { padding: 28px 0; }
   .sh { align-items: flex-start; }
   .banner { align-items: flex-start; margin-bottom: 24px; padding: 12px 12px 12px 16px; }
   .banner .tt { flex-wrap: wrap; row-gap: 4px; }
