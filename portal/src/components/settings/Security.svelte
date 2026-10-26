@@ -30,8 +30,8 @@
   }
 </script>
 
-<section id="security" class="part" aria-labelledby="h-security">
-  <h2 id="h-security">{t('登录与安全')}</h2>
+<section id="security" class="sec" aria-labelledby="h-security">
+  <div class="sec-head"><div><h2 id="h-security" class="sec-title">{t('登录与安全')}</h2></div></div>
 
   <div class="set-row">
     <div class="set-l">

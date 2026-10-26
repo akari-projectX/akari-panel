@@ -132,7 +132,7 @@
     </div>
     {#if !m || m.available}
       <div class="add">
-        <button type="button" class="btn" disabled={!m || adding.busy || full || !supported} onclick={add}>
+        <button type="button" class="btn pri add-b" disabled={!m || adding.busy || full || !supported} onclick={add}>
           <Plus size={14} strokeWidth={1.75} aria-hidden="true" />{adding.busy ? t('等待设备验证…') : t('添加通行密钥')}
         </button>
         {#if m && full}<span class="why">{tp('已达上限 {n} 个', { n: m.max })}</span>{/if}
@@ -155,7 +155,7 @@
       <ul>
         {#each items as k (k.id)}
           <li class:old={!k.current}>
-            <Fingerprint class="fp" size={16} strokeWidth={1.75} aria-hidden="true" />
+            <span class="fp"><Fingerprint size={16} strokeWidth={1.75} aria-hidden="true" /></span>
             <div class="mid">
               {#if editing?.id === k.id}
                 <form novalidate onsubmit={saveName} class="rename">
@@ -175,7 +175,7 @@
               {:else}
                 <div class="nm"><span>{k.name}</span>{#if !k.current}<em>{t('属于旧域名')}</em>{/if}</div>
                 {#if k.current}
-                  <p class="when num">
+                  <p class="when">
                     <span>{tp('添加于 {d}', { d: formatDate(k.created_at) })}</span>
                     <span>{k.last_used_at ? tp('最近使用 {d}', { d: formatDateTime(k.last_used_at) }) : t('还没用它登录过')}</span>
                   </p>
@@ -269,14 +269,16 @@
 <style>
   .pk-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px 24px; }
   .pk-head .set-l { max-width: 52ch; }
+  .add-b { height: 36px; }
   .add { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
   .why { max-width: 28ch; font-size: 12px; color: var(--muted); text-align: right; }
-  .pk-list { margin-top: 14px; }
+  .pk-list { margin-top: 16px; }
   .none { font-size: 13px; color: var(--muted); }
   ul { list-style: none; border-top: 1px solid var(--line); }
   li { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-  li :global(.fp) { flex: none; margin-top: 3px; color: var(--muted); }
-  li.old :global(.fp), li.old .nm span { opacity: .6; }
+  li .fp { display: grid; flex: none; place-items: center; width: 32px; height: 32px; margin-top: 2px; border-radius: var(--radius); background: var(--hover); color: var(--fg); }
+  li.old .fp, li.old .nm span { opacity: .6; }
+  li:last-child { border-bottom: 0; }
   .mid { flex: 1; min-width: 0; }
   .nm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 14px; font-weight: 500; color: var(--fg); }
   .nm span { overflow-wrap: anywhere; }
