@@ -1,4 +1,6 @@
 <script lang="ts">
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import BookOpen from '@lucide/svelte/icons/book-open';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Search from '@lucide/svelte/icons/search';
   import X from '@lucide/svelte/icons/x';
@@ -10,7 +12,8 @@
   import Empty from '../Empty.svelte';
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
-  import { PLATFORM_ICON } from '$lib/doc-icons';
+  import PageTitle from '../flat/PageTitle.svelte';
+  import { PLATFORM_ICON, iconOf } from '$lib/doc-icons';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { isUnread } from '$lib/read-state.svelte';
   import { resource } from '$lib/resource.svelte';
@@ -65,12 +68,7 @@
   const open = (a: KbArticle) => setParams({ id: a.id, cat: a.category, q: q || undefined });
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('使用手册')}</h1>
-    <p>{t('各设备的连接教程与常见问题。')}</p>
-  </div>
-</div>
+<PageTitle title={t('使用手册')} sub={t('各设备的连接教程与常见问题。')} />
 
 <div class="top-tools">
   <form novalidate role="search" class="search" onsubmit={submit}>
@@ -91,9 +89,10 @@
 
   {#if chapters.length > 0}
     <nav aria-label={t('文档分类')} class="cats">
-      <button type="button" aria-pressed={cat === 'all'} onclick={() => filter('all')}>{t('全部')}<em class="num">{total}</em></button>
+      <button type="button" aria-pressed={cat === 'all'} onclick={() => filter('all')}><BookOpen size={14} strokeWidth={1.75} aria-hidden="true" /><span>{t('全部')}</span><em class="tnum">{total}</em></button>
       {#each chapters as c (c.name)}
-        <button type="button" aria-pressed={cat === c.name} onclick={() => filter(c.name)}>{c.name}<em class="num">{c.articles.length}</em></button>
+        {@const CI = iconOf(c)}
+        <button type="button" aria-pressed={cat === c.name} onclick={() => filter(c.name)}><CI size={14} strokeWidth={1.75} aria-hidden="true" /><span>{c.name}</span><em class="tnum">{c.articles.length}</em></button>
       {/each}
     </nav>
   {/if}
@@ -129,22 +128,25 @@
   {:else if shown.length === 0}
     <Empty title={t('未找到相关文档')} desc={t('请尝试使用其他关键词，或在上方选择不同的平台分类。')} />
   {:else}
-    <h2 class="docs-h" data-testid="docs-heading">
+    <h2 class="sub-title docs-h" data-testid="docs-heading">
       {tp('{c} · {n} 篇', { c: q ? t('搜索结果') : cat === 'all' ? t('全部文档') : cat, n: shown.length })}
     </h2>
-    <div class="list">
+    <div class="grid">
       {#each shown as { a, c } (a.id)}
         {@const unread = isUnread(a.id)}
-        <button type="button" class="li" onclick={() => open(a)}>
-          <div class="main">
-            <div class="t">
-              <span class:read={!unread}>{a.title}</span>
-              {#if unread}<i class="unread-dot" title={t('未读')}></i>{/if}
+        {@const CI = iconOf(c)}
+        <button type="button" class="card" onclick={() => open(a)}>
+          <div>
+            <div class="ct">
+              <span class="cn"><CI size={14} strokeWidth={1.75} aria-hidden="true" class="ci" />{c.name}</span>
+              {#if unread}<i class="ud" title={t('未读')}></i>{/if}
             </div>
-            <p class="s">{c.name}</p>
+            <h4>{a.title}</h4>
           </div>
-          <span class="r">{formatMonthDay(a.updated_at)}</span>
-          <ChevronRight class="go" size={16} strokeWidth={1.75} aria-hidden="true" />
+          <div class="cf">
+            <span>{formatMonthDay(a.updated_at)}</span>
+            <span class="rd">{t('阅读教程')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></span>
+          </div>
         </button>
       {/each}
     </div>
@@ -159,29 +161,41 @@
   .search .input::-webkit-search-cancel-button { display: none; }
   .clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 
-  .cats { display: flex; flex-wrap: wrap; gap: 6px 22px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+  .cats { display: flex; flex-wrap: wrap; gap: 8px; }
   .cats button {
-    position: relative; display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 0 0 10px; border: 0; border-radius: 0;
-    background: none; color: var(--muted); font: inherit; font-size: 13.5px; text-align: left; overflow-wrap: anywhere; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 14px; border: 1px solid var(--line); border-radius: 9999px;
+    background: var(--surface); color: var(--muted); font: inherit; font-size: 13px; font-weight: 500; text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
   }
-  .cats button:hover { color: var(--fg); }
-  .cats button[aria-pressed='true'] { color: var(--fg); font-weight: 600; }
-  .cats button[aria-pressed='true']::after { content: ''; position: absolute; left: 0; right: 0; bottom: -3px; height: 2px; background: var(--brand); }
-  .cats em { flex: none; font-style: normal; font-weight: 400; font-size: 12px; color: var(--faint); }
+  .cats button:hover { color: var(--fg); border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
+  .cats button[aria-pressed='true'] { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
+  .cats span { min-width: 0; overflow-wrap: anywhere; }
+  .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: 500; }
+  .cats button[aria-pressed='true'] em { background: rgb(255 255 255 / .2); }
 
   .device { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13.5px; color: var(--muted); }
   .device :global(svg) { flex: none; }
   .dot-sep { color: var(--faint); }
   .found { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; font-size: 13px; color: var(--muted); }
 
-  .docs { margin-top: 40px; }
-  .docs-h { margin-bottom: 12px; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--fg); }
-  .li :global(.go) { flex: none; color: var(--faint); }
-  .li:hover :global(.go) { color: var(--brand); }
-  .li .s { white-space: normal; }
-
-  @media (max-width: 720px) {
-    .docs { margin-top: 32px; }
-    .li :global(.go) { display: none; }
+  .top-tools { margin-top: 36px; }
+  .docs { margin-top: 48px; }
+  .docs-h { margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  @media (min-width: 768px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (min-width: 1024px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .card {
+    display: flex; flex-direction: column; justify-content: space-between; padding: 16px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 16px;
+    background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: transform .2s, box-shadow .2s, border-color .2s;
   }
+  @media (min-width: 640px) { .card { padding: 20px; } }
+  .card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 35%, transparent); box-shadow: var(--shadow-plan); }
+  .ct { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .cn { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
+  .cn :global(.ci) { color: var(--brand); }
+  .ud { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
+  .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: 600; line-height: 1.375; transition: color .15s; }
+  .card:hover h4 { color: var(--brand); }
+  .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 12px; line-height: 16px; color: var(--muted); }
+  .rd { display: flex; align-items: center; gap: 4px; font-weight: 500; color: var(--brand); transition: transform .15s; }
+  .card:hover .rd { transform: translateX(2px); }
 </style>
