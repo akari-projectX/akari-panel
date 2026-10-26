@@ -503,7 +503,7 @@ pub async fn splits(conn: &mut PgConnection, input: &[SplitIn]) -> sqlx::Result<
 /// The credit the buyer's current subscription is worth now (switching
 /// plans), and the order it derives from. (0, None) without an active,
 /// expiring subscription with a paid order. All arithmetic in SQL
-/// (`akari_prorate`, DB clock).
+/// (DB clock).
 ///
 /// The value of an order is what was actually paid for it (ops-logic
 /// review High-2): the list price minus the coupon discount and the gift

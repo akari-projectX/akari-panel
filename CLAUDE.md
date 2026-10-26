@@ -170,7 +170,7 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户�
   - smoke：`agent_has unit:NAME`（agent 带该服务文件）闸门下的 W32 Alpine 段（`scripts/install-test-alpine/`，OpenRC 容器）+ R18-2 段断言 BBR 开启/卸载恢复/`--no-bbr`（CI 先 `modprobe tcp_bbr`）。
   - 说明见 DEPLOY §3h。
 - **支付（R18-3，`src/billing/`，`docs/PAYMENTS.md`）**：支付宝当面付（公钥模式 RSA2）与易支付（C1，`billing/epay.rs`），见下。**USDT 链上收款（C2）已整体移除**（2026-10-23 用户裁决，迁移 1114：删 `usdt_chain` 方式与 `chain_*` 表，`paid_via`/事件来源不再有 `chain`；USDT **提现**（R46）保留）。
-  - 金额一律整数分，订单金额在创建时由服务端算出并拷贝进订单（W7：`plan_period_prices` 的该周期价格 − 换套餐抵扣 `credit_cents`，抵扣只在 SQL `akari_prorate` 里算），**客户端从不提交金额**（只提交 `{plan_id, period}`），与支付宝比对的只有 `amount_cents`；抵扣覆盖全价的订单金额为 0，创建时即经 `apply_mark_paid`（`paid_via='credit'`）付清，从不发往支付宝。
+  - 金额一律整数分，订单金额在创建时由服务端算出并拷贝进订单（W7：`plan_period_prices` 的该周期价格 − 换套餐抵扣 `credit_cents`，抵扣只在 SQL `catalog::switch_credit` 里算），**客户端从不提交金额**（只提交 `{plan_id, period}`），与支付宝比对的只有 `amount_cents`；抵扣覆盖全价的订单金额为 0，创建时即经 `apply_mark_paid`（`paid_via='credit'`）付清，从不发往支付宝。
   - **付款只有一条路径** `billing::orders::apply_mark_paid`：`entitle::lock` → 条件 `UPDATE orders ... WHERE status <> 'paid'` → 通过 `plans::apply_set_user_plan`/`apply_update_user_plan` 开通（savepoint：业务失败只回滚套餐变更，订单仍为 paid + `fulfil_error`，绝不丢钱；**瞬时数据库错误**（`ApiError::is_transient`：40xxx/55P03/57014/连接类）不算业务失败，整个事务失败、通知不 ack、对账重查）→ 审计，同一事务；异步通知、轮询查询（`GET /me/orders/{id}`）、对账（每实例 10s，`SKIP LOCKED` + `last_query_at` 认领）、管理员人工确认都走它，所以重放/并发/多实例恰好开通一次（`billing::tests::concurrent_duplicates_fulfil_once`）。
   - 过期/取消的订单收到付款照样开通。
   - 通知端点 `/pay/alipay/notify`（D11：无前缀的公开路径）的**一切**拒绝（限速、未启用、超大/畸形、验签失败、app_id/seller_id 不符、未知订单、金额不符）都是 `reject::not_found()` 且写 `payment_events`；只有验签通过的本系统订单回 `success`。
