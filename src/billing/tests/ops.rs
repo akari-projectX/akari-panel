@@ -764,3 +764,36 @@ async fn manual_order_for_a_plan_without_expiry_is_refused() {
     assert_eq!(count(&db, "SELECT count(*) FROM orders").await, before);
     db.drop().await;
 }
+
+/// Coupon guesses are limited per client network across accounts too: five
+/// accounts behind one address share 120 attempts per window (audit billing
+/// P3-10), each still capped at 30.
+#[tokio::test]
+async fn coupon_guesses_are_limited_per_network() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let ip = rand_ip();
+    let mut clients = Vec::new();
+    for _ in 0..5 {
+        let u = db.user().await;
+        let mut c = user_client(&state, u).await;
+        c.ip = ip;
+        clients.push(c);
+    }
+    let mut ok = 0;
+    let mut limited = 0;
+    for _ in 0..25 {
+        for c in &clients {
+            let r = c.get("/test/api/v1/me/shop?coupon=GUESS").await;
+            match r.status {
+                StatusCode::OK => ok += 1,
+                StatusCode::TOO_MANY_REQUESTS => limited += 1,
+                s => panic!("{s}: {:?}", r.json()),
+            }
+        }
+    }
+    assert_eq!((ok, limited), (120, 5), "125 attempts from one network");
+    db.drop().await;
+}

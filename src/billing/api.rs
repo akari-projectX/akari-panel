@@ -45,6 +45,35 @@ const MAX_REASON: usize = 500;
 /// Shop previews with a coupon code per user per window (code guessing).
 const COUPON_RATE: i64 = 30;
 const COUPON_WINDOW_SECS: i64 = 600;
+/// The same, per client network across all accounts: open registration lets
+/// one party guess codes from many accounts at once.
+const COUPON_RATE_PER_NETWORK: i64 = 120;
+
+/// One coupon-code attempt of `user` from `client`: false = over a limit.
+async fn coupon_attempt(state: &AppState, user: Uuid, client: Option<std::net::IpAddr>) -> bool {
+    if !within_limit(
+        state,
+        format!("akari:rl:coupon:{user}"),
+        COUPON_RATE,
+        COUPON_WINDOW_SECS,
+    )
+    .await
+    {
+        return false;
+    }
+    match client {
+        Some(ip) => {
+            within_limit(
+                state,
+                format!("akari:rl:coupon:net:{}", crate::client_ip::bucket(ip)),
+                COUPON_RATE_PER_NETWORK,
+                COUPON_WINDOW_SECS,
+            )
+            .await
+        }
+        None => true,
+    }
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -382,6 +411,7 @@ pub struct ShopQuery {
 pub async fn shop(
     State(state): State<AppState>,
     ShopUser { user, .. }: ShopUser,
+    MaybeClientIp(client): MaybeClientIp,
     Query(q): Query<ShopQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let live = state.payments();
@@ -391,15 +421,7 @@ pub async fn shop(
         .map(|m| json!({ "id": m.id, "kind": m.kind, "display_name": m.display_name, "icon": m.icon }))
         .collect();
     let code = q.coupon.as_deref().map(str::trim).filter(|c| !c.is_empty());
-    if code.is_some()
-        && !within_limit(
-            &state,
-            format!("akari:rl:coupon:{}", user.id),
-            COUPON_RATE,
-            COUPON_WINDOW_SECS,
-        )
-        .await
-    {
+    if code.is_some() && !coupon_attempt(&state, user.id, client).await {
         return Err(ApiError::too_many());
     }
     let mut c = state.pg().acquire().await?;
@@ -649,6 +671,11 @@ pub async fn create_order(
         ORDER_WINDOW_SECS,
     )
     .await
+    {
+        return Err(ApiError::too_many());
+    }
+    if req.coupon.as_deref().is_some_and(|c| !c.trim().is_empty())
+        && !coupon_attempt(&state, user.id, client_ip).await
     {
         return Err(ApiError::too_many());
     }
