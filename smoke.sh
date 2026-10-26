@@ -231,9 +231,23 @@ p["sign_type"] = "RSA2"; p["sign"] = base64.b64encode(sig).decode()
 if len(sys.argv) > 5: p["total_amount"] = sys.argv[5]  # tamper after signing
 print(urllib.parse.urlencode(p), end="")
 PY
-start_panel() {  # $1 = log file
-  AKARI_TEST_LIMITS="$SMOKE_LIMITS" "$PANEL" -c "$LOG/panel.toml" serve >"$1" 2>&1 &
-  PANEL_PID=$!
+start_panel() {  # $1 = log file; the panel's exit status lands in "$1.exit"
+  # A section runs in a subshell, so a later section cannot `wait` for a panel
+  # an earlier one started: a wrapper records the exit status instead.
+  PANEL_LOG=$1
+  rm -f "$1.exit"
+  (
+    AKARI_TEST_LIMITS="$SMOKE_LIMITS" "$PANEL" -c "$LOG/panel.toml" serve >"$1" 2>&1
+    echo $? >"$1.exit"
+  ) &
+  local wrapper=$!
+  PANEL_PID=""
+  for _ in $(seq 1 50); do
+    PANEL_PID=$(pgrep -P "$wrapper" | sed -n 1p) || true
+    [ -n "$PANEL_PID" ] && break
+    sleep 0.1
+  done
+  [ -n "$PANEL_PID" ] || { echo "FAIL: the panel did not start"; cat "$1"; exit 1; }
   # Poll instead of a fixed sleep: migrations run before the listener binds.
   for _ in $(seq 1 100); do
     (exec 3<>/dev/tcp/127.0.0.1/8080) 2>/dev/null && break
@@ -5047,7 +5061,12 @@ grep -q "channel established" "$LOG/term-agent.log" || { echo "FAIL: term agent 
 kill -TERM $PANEL_PID
 EXIT=""
 for _ in $(seq 1 24); do
-  if ! kill -0 $PANEL_PID 2>/dev/null; then EXIT=0; wait $PANEL_PID || EXIT=$?; break; fi
+  if ! kill -0 $PANEL_PID 2>/dev/null; then
+    # start_panel's wrapper wrote the exit status (see there: no `wait` across sections).
+    for _ in $(seq 1 20); do [ -s "$PANEL_LOG.exit" ] && break; sleep 0.1; done
+    EXIT=$(cat "$PANEL_LOG.exit" 2>/dev/null || echo "no exit status")
+    break
+  fi
   sleep 0.5
 done
 [ "$EXIT" = "0" ] || { echo "FAIL: panel did not exit cleanly within 12 s after SIGTERM (exit '$EXIT')"; tail -5 "$LOG/panel.log"; exit 1; }
