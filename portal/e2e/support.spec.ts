@@ -50,7 +50,7 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
   /* 新工单直接打开：消息、分类与优先级、关联订单 */
   const thread = page.getByRole('dialog', { name: subject });
   await expect(thread.getByText('退款没收到，请帮忙看看。')).toBeVisible();
-  for (const m of ['账单与付款', '高优先级', '待处理']) await expect(thread.getByText(m, { exact: true })).toBeVisible();
+  for (const m of ['账单与付款', '高优先级', '待处理']) await expect(thread.getByText(m, { exact: true }).first()).toBeVisible();
   await expect(thread.getByText(/^关联订单 /)).toBeVisible();
   await thread.getByLabel('回复此工单…').fill('补充：订单号见关联订单。');
   await thread.getByRole('button', { name: '发送' }).click();
