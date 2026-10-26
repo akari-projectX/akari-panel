@@ -287,7 +287,7 @@ async fn honeypot_and_minimum_submit_time() {
     assert_eq!(seen(&r), seen(&wrong), "no guard object");
     // Each trap counted like a wrong password (5 traps + 1 wrong).
     let n: i64 =
-        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::keys("x", &email)[1])
+        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::name_key(&email))
             .await
             .unwrap();
     assert_eq!(n, 6);
@@ -338,7 +338,7 @@ async fn honeypot_and_minimum_submit_time() {
     assert_eq!(mails, 0, "a trapped request sends nothing");
     let _: i64 = fred::prelude::KeysInterface::del(
         st.valkey(),
-        crate::login_limit::keys(&crate::client_ip::bucket(c.ip), &email).to_vec(),
+        crate::login_limit::keys(Some(c.ip), &email),
     )
     .await
     .unwrap();
@@ -462,7 +462,7 @@ async fn turnstile_settings_and_login() {
     );
     // Captcha refusals are not credential failures: no login-limit slot.
     let n: Option<i64> =
-        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::keys("x", &email)[1])
+        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::name_key(&email))
             .await
             .unwrap();
     assert_eq!(n.unwrap_or(0), 0);
@@ -781,7 +781,7 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     assert!(grew(Outcome::Ok) >= 1);
     // Captcha refusals are not credential failures: no login-limit slot.
     let n: Option<i64> =
-        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::keys("x", &email)[1])
+        fred::prelude::KeysInterface::get(st.valkey(), &crate::login_limit::name_key(&email))
             .await
             .unwrap();
     assert_eq!(n.unwrap_or(0), 0);

@@ -79,11 +79,7 @@ pub async fn change_own_password(
             "the current password is required"
         ));
     }
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(&state, &bucket, &user.email)
+    let attempt = crate::login_limit::Attempt::reserve(&state, user.ip, &user.email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "login rate limit unavailable");
@@ -309,10 +305,7 @@ mod tests {
     async fn clear_limits(state: &AppState, ips: &[std::net::IpAddr], email: &str) {
         let mut keys = Vec::new();
         for ip in ips {
-            keys.extend(crate::login_limit::keys(
-                &crate::client_ip::bucket(*ip),
-                email,
-            ));
+            keys.extend(crate::login_limit::keys(Some(*ip), email));
         }
         let _: i64 = state.valkey().del(keys).await.unwrap();
     }
@@ -374,7 +367,7 @@ mod tests {
         unauthorized(c2.login(&user, PW).await);
         let n: i64 = state
             .valkey()
-            .get(&crate::login_limit::keys("x", &user)[1])
+            .get(&crate::login_limit::name_key(&user))
             .await
             .unwrap();
         assert_eq!(n, 2, "wrong password + disabled account");
@@ -510,7 +503,7 @@ mod tests {
         }
         let n: Option<i64> = state
             .valkey()
-            .get(&crate::login_limit::keys("x", &login)[1])
+            .get(&crate::login_limit::name_key(&login))
             .await
             .unwrap();
         assert_eq!(n.unwrap_or(0), 0, "parse errors are not attempts");

@@ -64,14 +64,13 @@ pub async fn login(
     let client = state.client_ip(addr.ip(), &headers);
     // Addresses are case-insensitive: one rate-limit bucket per address.
     let email = req.email.trim().to_lowercase();
-    let attempt =
-        crate::login_limit::Attempt::reserve(&state, &crate::client_ip::bucket(client), &email)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "login rate limit unavailable");
-                ApiError::internal()
-            })?
-            .ok_or_else(ApiError::too_many)?;
+    let attempt = crate::login_limit::Attempt::reserve(&state, Some(client), &email)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "login rate limit unavailable");
+            ApiError::internal()
+        })?
+        .ok_or_else(ApiError::too_many)?;
 
     // v0.4 bot protection: a trapped attempt is answered exactly like a
     // wrong password (same work: one argon2), and counts like one; a
@@ -124,12 +123,16 @@ pub async fn login(
             login_response(&state, jar, &row, policy.prompt)
         }
         Ok(Checked::Failed(account)) => {
-            let n = attempt.name_count;
+            let (name_count, pair_count) = (attempt.name_count, attempt.pair_count);
             attempt.fail();
+            // The first failure of the window, and the one that fills
+            // either lockout bucket (network or all networks).
             if let Some(id) = account
-                && (n == 1 || n == crate::login_limit::PER_LOGIN)
+                && (name_count == 1
+                    || pair_count == crate::login_limit::PER_NAME_NETWORK
+                    || name_count == crate::login_limit::PER_NAME)
             {
-                audit_login_failure(&state, id, client, n);
+                audit_login_failure(&state, id, client, name_count, pair_count);
             }
             Err(ApiError::unauthorized())
         }
@@ -299,7 +302,13 @@ async fn login_ok_due(state: &AppState, user: Uuid) -> bool {
 
 /// Record a failed login of an existing account, off the request path (its
 /// cost must not tell an attacker that the account exists).
-fn audit_login_failure(state: &AppState, id: Uuid, ip: std::net::IpAddr, failures_in_window: i64) {
+fn audit_login_failure(
+    state: &AppState,
+    id: Uuid,
+    ip: std::net::IpAddr,
+    failures_in_window: i64,
+    failures_from_network: i64,
+) {
     let state = state.clone();
     tokio::spawn(async move {
         let r = async {
@@ -314,7 +323,9 @@ fn audit_login_failure(state: &AppState, id: Uuid, ip: std::net::IpAddr, failure
                 Some(json!({
                     "reason": "credentials",
                     "failures_in_window": failures_in_window,
-                    "window_limit": crate::login_limit::PER_LOGIN,
+                    "window_limit": crate::login_limit::PER_NAME,
+                    "failures_from_network": failures_from_network,
+                    "network_limit": crate::login_limit::PER_NAME_NETWORK,
                 })),
             )
             .await
@@ -3936,6 +3947,13 @@ mod tests {
         std::net::IpAddr::V4(std::net::Ipv4Addr::from(0x2d00_0000 | (x & 0x00ff_ffff)))
     }
 
+    fn rand_v4_octets() -> [u8; 4] {
+        match rand_v4() {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            std::net::IpAddr::V6(_) => unreachable!("rand_v4 makes IPv4 addresses"),
+        }
+    }
+
     async fn try_login(
         state: &AppState,
         peer: std::net::IpAddr,
@@ -3971,7 +3989,7 @@ mod tests {
         let mut keys = Vec::new();
         for ip in ips {
             for l in logins {
-                keys.extend(crate::login_limit::keys(&crate::client_ip::bucket(*ip), l));
+                keys.extend(crate::login_limit::keys(Some(*ip), l));
             }
         }
         let _: i64 = state.valkey().del(keys).await.unwrap();
@@ -4027,7 +4045,8 @@ mod tests {
 
     /// Behind a trusted proxy each forwarded client has its own bucket, a
     /// spoofed left-hand XFF entry does not help, and the per-login bucket
-    /// still caps a distributed guesser.
+    /// still caps a distributed guesser while a lockout stays on the attacker's
+    /// network.
     #[tokio::test]
     async fn login_limit_per_client_behind_trusted_proxy() {
         let Some(db) = TestDb::new().await else {
@@ -4082,14 +4101,58 @@ mod tests {
             .await,
             StatusCode::OK
         );
-        // Per-login bucket: failures from many clients add up.
+        // Per (login, network) bucket: failures sent for somebody's address
+        // from the addresses of one /24 lock that network out of the
+        // account, not the owner elsewhere.
         let victim = account(&db, "victim-password").await;
         let mut ips = vec![proxy, c1, c2];
-        for _ in 0..crate::login_limit::PER_LOGIN {
-            let c = rand_v4();
+        let octets = rand_v4_octets();
+        let in_net = |host: u8| std::net::IpAddr::from([45, octets[1], octets[2], host]);
+        for host in 0..crate::login_limit::PER_NAME_NETWORK as u8 {
+            let c = in_net(host);
             assert_eq!(
                 try_login(&state, proxy, Some(&c.to_string()), &victim, "guess").await,
                 StatusCode::UNAUTHORIZED
+            );
+            ips.push(c);
+        }
+        let neighbour = in_net(250);
+        ips.push(neighbour);
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&neighbour.to_string()),
+                &victim,
+                "victim-password"
+            )
+            .await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "the attacker's /24 is locked out of this account"
+        );
+        let home = rand_v4();
+        ips.push(home);
+        assert_eq!(
+            try_login(
+                &state,
+                proxy,
+                Some(&home.to_string()),
+                &victim,
+                "victim-password"
+            )
+            .await,
+            StatusCode::OK,
+            "the owner on another network is not"
+        );
+        // Per-login bucket: failures from many networks still add up
+        // (the loose cap against distributed guessing).
+        let spread = account(&db, "spread-password").await;
+        for i in 0..crate::login_limit::PER_NAME {
+            let c = std::net::IpAddr::from([46, (i / 250) as u8, (i % 250) as u8, 1]);
+            assert_eq!(
+                try_login(&state, proxy, Some(&c.to_string()), &spread, "guess").await,
+                StatusCode::UNAUTHORIZED,
+                "failure {i}"
             );
             ips.push(c);
         }
@@ -4100,13 +4163,13 @@ mod tests {
                 &state,
                 proxy,
                 Some(&fresh.to_string()),
-                &victim,
-                "victim-password"
+                &spread,
+                "spread-password"
             )
             .await,
             StatusCode::TOO_MANY_REQUESTS
         );
-        clear_rl(&state, &ips, &[&login, &victim]).await;
+        clear_rl(&state, &ips, &[&login, &victim, &spread]).await;
         drop(state);
         db.drop().await;
     }
