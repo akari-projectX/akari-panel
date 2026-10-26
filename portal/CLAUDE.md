@@ -139,5 +139,7 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
 - 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-screens`；每个 PR 的终版截图另存到工作区
   `design/portal-v2-2026-10/impl/<pr>/`。
 - 性能：`e2e/perf/perf.spec.ts`（`playwright.perf.config.ts`；桌面 + 限速中端手机，各 5 次取中位：FCP、LCP、TTI、内容就绪、站内切页）
-  加上体积（`size-svelte.json`），`e2e/perf/summary.mjs` 与 `e2e/perf/baseline/`（切换前 React 门户最后一次的数字）对比；
+  加上体积（`size-svelte.json`），`e2e/perf/summary.mjs` 与 `e2e/perf/baseline/`（切换前 React 门户最后一次的数字，以及 v2.0.0 发布时同一套测法的数字 `perf-v2-*.json`）对比，Δ 列相对 v2.0.0；切页另给不含旧页面淡出（100 ms，v1.4.0 的刻意动效）的 `bare.*`；
   CI 写进任务摘要并上传工件 `portal-perf`。结论见 `docs/PORTAL-V2-PERF.md`。
+
+- 首屏性能（v2.0.0 起不得更慢）：①首帧样式表 `assets/head-<哈希>.css` = 令牌 + 启动画面（`src/boot/head.css`，`vite.config.ts` `headCss` 展开去空白后以阻塞 `<link>` 插在 `<head>` 最前），启动画面带 Logo 在 HTML + 这张小表到手时就画出来（FCP 不再等应用样式表）；应用样式表（入口分包 CSS）标成 `media="print" data-defer`（`deferAppCss`），`boot.js` 在文档解析完成时改成 `all`，`boot.svelte.ts` 收起启动画面前等它加载完。②`main.ts` 一启动就预载当前路由的分包（与 `/me` 并行）；`/me` 与 `/me/plan` 在多半已登录时并行（`auth.svelte.ts` `fetchAccount(speculative)`）；`prefetchCurrent`（App 一知道账户范围就调）在页面挂载前开始取仪表盘首屏数据（`lib/dash-data.ts` 与 Overview 共用键）。③`lib/error-toast.ts`：Rolldown 的命名空间小助手曾落在 bits-ui 的 Dialog 分包里，`import('./errors')` 把约 60 KB 对话框栈拖进每个页面的静态依赖；别在多个分包共享的模块上直接动态 `import()`。

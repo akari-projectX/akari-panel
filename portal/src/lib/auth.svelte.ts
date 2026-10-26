@@ -8,6 +8,7 @@ import { holdBoot } from './boot.svelte';
 import { t } from './i18n.svelte';
 import { toast } from './toast.svelte';
 import { navigate } from './router.svelte';
+import { match } from './pages';
 import { R, scopeOf, type Scope } from './routes';
 
 /**
@@ -53,13 +54,19 @@ function drop() {
   auth.passkeyPrompt = false;
 }
 
-/** 取账户与套餐；401 / 404 = 没登录，返回 null */
-async function fetchAccount(): Promise<{ me: Me; plan?: MyPlan } | null> {
+/**
+ * 取账户与套餐；401 / 404 = 没登录，返回 null。
+ * speculative：多半已登录（刷新用户中心的页面、刚登录成功）时 /me 与 /me/plan 同时发出，省一个往返（限速的手机网络上约一个 RTT 加上排队）；
+ * /me 说这个账户拿不到套餐（banned、待绑定邮箱）时丢掉套餐那份的结果与错误。访客页（/login 等）不投机：多发一个必然 401 的请求没有意义。
+ */
+async function fetchAccount(speculative = false): Promise<{ me: Me; plan?: MyPlan } | null> {
   try {
+    const early = speculative ? meApi.plan() : undefined;
+    early?.catch(() => {});
     const m = await meApi.get();
     const s = scopeOf(m);
     /* 套餐：banned 拿不到（面板答 403）；待绑定邮箱的账户只能到 /me */
-    const p = (s === 'full' || s === 'renewal') && !m.email_pending ? await meApi.plan() : undefined;
+    const p = (s === 'full' || s === 'renewal') && !m.email_pending ? await (early ?? meApi.plan()) : undefined;
     return { me: m, plan: p };
   } catch (e) {
     if (e instanceof ApiError && (e.status === 401 || e.status === 404)) return null;
@@ -88,7 +95,7 @@ export async function refresh() {
 export async function signIn(result: LoginResult) {
   clearCache();
   auth.passkeyPrompt = !!result.passkey_prompt;
-  apply(await fetchAccount());
+  apply(await fetchAccount(true));
   auth.failed = false;
 }
 
@@ -102,7 +109,7 @@ export async function signOut() {
     await authApi.logout();
     toast.success(t('已退出'), { description: t('所有设备上的登录都已结束') });
   } catch (e) {
-    void import('./errors').then((m) => toast.error(m.errorText(e)));
+    void import('./error-toast').then((m) => m.toastError(e));
   } finally {
     drop();
     navigate(R.login, { replace: true });
@@ -166,7 +173,8 @@ export function refreshOptions(): Promise<void> {
 /** 启动：取 /me（没有缓存时拖住启动画面）、取站点配置、订阅全站会话事件 */
 export function startAuth() {
   const release = auth.booting ? holdBoot() : () => {};
-  fetchAccount()
+  const found = match(location.pathname);
+  fetchAccount(cached !== undefined || found?.page.layout === 'dash')
     .then(apply)
     .catch(() => {
       /* 网络错误：有缓存就保留缓存里的账户；没有缓存时门禁显示「重试」，不当成没登录 */

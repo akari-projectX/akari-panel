@@ -1,0 +1,8 @@
+/*
+ * 首帧样式表（index.html 以 <link rel=stylesheet> 直接引用，阻塞首帧）：只有颜色令牌与启动画面——
+ * 启动画面（带 Logo 与活动指示器）因此在 HTML 与这一张小表到手时就能画出来，不必等整张应用样式表。
+ * 应用样式表（main.ts 引入）不阻塞首帧：vite.config.ts 的 deferAppCss 把它标成 data-defer，src/boot/boot.js 在解析完成时启用，
+ * 启动画面要等它加载完才收起（lib/boot.svelte.ts）。顺序仍是：令牌 → 启动画面 → 应用样式。
+ */
+@import '../styles/tokens.css';
+@import './boot.css';

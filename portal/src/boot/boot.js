@@ -28,6 +28,19 @@
     root.style.colorScheme = dark ? 'dark' : 'light';
   } catch { /* 隐私模式下 localStorage 会抛错：交给 CSS 的 prefers-color-scheme */ }
 
+  /* ---------- 1b. 应用样式表不挡首帧（vite.config.ts deferAppCss）：文档解析完成（模块脚本执行之前）时启用 ---------- */
+  function enableAppCss() {
+    var l = document.querySelector('link[data-defer]');
+    if (l) l.media = 'all';
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('readystatechange', function () {
+      if (document.readyState !== 'loading') enableAppCss();
+    });
+  } else {
+    enableAppCss();
+  }
+
   /* ---------- 2. 启动守护 ---------- */
   var RETRY_KEY = 'akari.boot-retry';
   var errs = [];

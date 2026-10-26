@@ -46,7 +46,7 @@ const OBSERVE = () => {
 const READY = (path: string) =>
   location.pathname === path &&
   !document.querySelector('#boot:not(.boot-out)') &&
-  !document.querySelector('[aria-busy], .page-out') &&
+  !document.querySelector('[aria-busy], .page-out, .page.out') &&
   !!document.querySelector('main h1, h1');
 
 async function throttle(ctx: BrowserContext, page: Page, t: Throttle) {
@@ -88,7 +88,7 @@ async function coldLoad(page: Page, path: string) {
 
 /* 一次客户端切页：pushState + popstate（门户的路由照常接手），页内计时到内容就绪。
    就绪条件同 READY，另要求标题换了一个节点；写在页内（CSP 不许 eval，不能把函数文本传进去再构造） */
-async function routeSwitch(page: Page, path: string) {
+async function routeSwitch(page: Page, path: string): Promise<{ total: number; bare: number }> {
   return page.evaluate(async (to) => {
     /* 新页面重新挂载，标题是新节点：旧页面在原地（切页还没开始或在过渡里被保留）时不算就绪 */
     const before = document.querySelector('main h1, h1');
@@ -96,16 +96,25 @@ async function routeSwitch(page: Page, path: string) {
       location.pathname === to &&
       document.querySelector('main h1, h1') !== before &&
       !document.querySelector('#boot:not(.boot-out)') &&
-      !document.querySelector('[aria-busy], .page-out') &&
+      !document.querySelector('[aria-busy], .page-out, .page.out') &&
       !!document.querySelector('main h1, h1');
     const t0 = performance.now();
+    /* 旧页面淡出（v1.4.0 的刻意动效，约 100 ms）占用的时间：另报「不含动画」的数字 */
+    let outFrom = 0;
+    let outTo = 0;
     history.pushState({}, '', to);
     dispatchEvent(new PopStateEvent('popstate', { state: {} }));
     await new Promise<void>((done) => {
-      const tick = () => (ready() ? done() : requestAnimationFrame(tick));
+      const tick = () => {
+        const now = performance.now();
+        if (document.querySelector('.page-out, .page.out')) { outFrom ||= now; outTo = now; }
+        if (ready()) done();
+        else requestAnimationFrame(tick);
+      };
       requestAnimationFrame(tick);
     });
-    return performance.now() - t0;
+    const total = performance.now() - t0;
+    return { total, bare: total - (outFrom ? outTo - outFrom : 0) };
   }, path);
 }
 
@@ -146,7 +155,11 @@ test('portal performance report', async ({ browser }, info) => {
       const m = await coldLoad(page, path);
       for (const [k, v] of Object.entries(m)) add(`${name}.${k}`, v);
       if (name === 'dashboard') {
-        for (const r of ROUTES) add(`switch.${r}`, await routeSwitch(page, r));
+        for (const r of ROUTES) {
+          const sw = await routeSwitch(page, r);
+          add(`switch.${r}`, sw.total);
+          add(`bare.${r}`, sw.bare);
+        }
       }
       await ctx.close();
     }

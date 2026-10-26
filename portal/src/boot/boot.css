@@ -2,7 +2,7 @@
  * 启动画面（index.html 的 #boot）与禁用 JavaScript 时的提示。
  *
  * 面板的 CSP 不允许内联样式表：随应用样式表一起加载（那张样式表在 <head> 里本来就挡首帧）。
- * 颜色一律来自 src/styles/tokens.css（main.ts 先引它；v1.4.0 的启动画面是纯白 / 夜蓝底，只有活动指示器，没有 Logo），明暗由 boot.js 在首帧前加的 .dark / .light 决定，
+ * 颜色一律来自 src/styles/tokens.css（main.ts 先引它），明暗由 boot.js 在首帧前加的 .dark / .light 决定，
  * 没加上时令牌文件自己退回系统设置。
  */
 
@@ -20,6 +20,10 @@ html { background: var(--boot-bg); }
 /* 只在启动脚本跑过时显示：禁用 JavaScript 时它永远收不起来，还会盖住 <noscript> 的提示 */
 html.js #boot { display: flex; }
 #boot.boot-out { opacity: 0; pointer-events: none; }
+
+/* 默认 Logo（akari 字标）在指示器上方 */
+#boot .mark { display: block; height: 28px; width: auto; color: var(--logo-ink); stroke: currentColor; }
+#boot .mark .dot { fill: var(--logo-dot); stroke: none; }
 
 /* 12 根锥形短棒的活动指示器（与 React 门户相同）；序号用 :nth-child（CSP 下不能写 style="--i:n"） */
 #boot .sp { position: relative; width: 30px; height: 30px; }
