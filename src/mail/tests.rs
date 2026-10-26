@@ -717,7 +717,7 @@ fn smtp_errors_are_logged_without_addresses() {
 }
 
 async fn admin_client(state: &crate::state::AppState, db: &TestDb) -> Client {
-    let admin = db.admin().await;
+    let admin = db.owner().await;
     let mut c = Client::new(state, rand_ip());
     c.cookie = Some(crate::auth::issue_token(state, admin, "admin", 0).unwrap());
     c

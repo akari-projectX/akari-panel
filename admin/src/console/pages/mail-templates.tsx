@@ -72,7 +72,7 @@ type Rendered = { subject: string; text: string; html: string };
 type Locale = "zh" | "en";
 type Mode = "auto" | "source";
 
-/** The 16 kinds by purpose (the server's labels are Chinese; English here). */
+/** The 17 kinds by purpose (the server's labels are Chinese; English here). */
 const GROUPS: { zh: string; en: string; kinds: [string, string][] }[] = [
   {
     zh: "账户",
@@ -82,6 +82,7 @@ const GROUPS: { zh: string; en: string; kinds: [string, string][] }[] = [
       ["email_code", "Email code"],
       ["register_exists", "Sign-up: address taken"],
       ["password_reset", "Password reset"],
+      ["security_notice", "Security alert"],
     ],
   },
   {

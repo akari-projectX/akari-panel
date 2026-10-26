@@ -241,6 +241,21 @@ pub fn valid_chat_id(s: &str) -> bool {
     }
 }
 
+/// A literal IP host of an operator URL must be public (plain http: or
+/// loopback); a NAME is checked when it is resolved, at send time
+/// (`outbound`: every address public).
+fn literal_host_ok(host: &str, plain_http: bool) -> bool {
+    match host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+    {
+        Ok(ip) if plain_http => ip.to_canonical().is_loopback(),
+        Ok(ip) => crate::outbound::public_address(ip),
+        Err(_) => true,
+    }
+}
+
 /// Telegram Bot API origin (a self-hosted Bot API server): https, or http
 /// on a loopback host; scheme + host (+ port) only.
 pub fn valid_telegram_api_url(s: &str) -> bool {
@@ -251,7 +266,7 @@ pub fn valid_telegram_api_url(s: &str) -> bool {
         return false;
     };
     let scheme_ok = match u.scheme_str() {
-        Some("https") => true,
+        Some("https") => literal_host_ok(host, false),
         Some("http") => matches!(host, "127.0.0.1" | "localhost" | "[::1]"),
         _ => false,
     };
@@ -297,7 +312,8 @@ pub fn check_webhook_url(s: &str) -> Result<(), ApiError> {
         return bad("credentials in the URL are not allowed (sign with the secret instead)");
     }
     match uri.scheme_str() {
-        Some("https") => Ok(()),
+        Some("https") if literal_host_ok(host, false) => Ok(()),
+        Some("https") => bad("the address is not public"),
         Some("http") if crate::billing::http::is_loopback_host(host) => Ok(()),
         _ => bad("must be https (http only to localhost)"),
     }

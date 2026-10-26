@@ -56,6 +56,7 @@ use webauthn_rs::prelude::{
 use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, ShopUser, bad_request, conflict};
+use crate::mail::templates::SecurityEvent;
 use crate::state::AppState;
 
 /// Ceremony state lifetime (also the browser timeout).
@@ -744,9 +745,17 @@ pub async fn confirm_holder(
         attempt.release(state).await;
         return Err(ApiError::unauthorized());
     };
-    if !crate::auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
-        attempt.fail();
-        return Err(bad_request!("account.invalid_password", "invalid password"));
+    match crate::auth::verify_password_async(pw, hash.as_deref().unwrap_or_default()).await {
+        Ok(true) => {}
+        Ok(false) => {
+            attempt.fail();
+            return Err(bad_request!("account.invalid_password", "invalid password"));
+        }
+        Err(busy) => {
+            // Load, not a wrong password.
+            attempt.release(state).await;
+            return Err(busy.into());
+        }
     }
     attempt.release(state).await;
     Ok(())
@@ -902,6 +911,25 @@ pub async fn register(
         req.disable_password,
     )
     .await?;
+    let portal = crate::mail::portal_url(&state);
+    notify(
+        &mut tx,
+        me.id,
+        SecurityEvent::PasskeyAdded,
+        me.ip,
+        portal.as_deref(),
+    )
+    .await;
+    if req.disable_password {
+        notify(
+            &mut tx,
+            me.id,
+            SecurityEvent::PasswordLoginDisabled,
+            me.ip,
+            portal.as_deref(),
+        )
+        .await;
+    }
     tx.commit().await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -1055,6 +1083,15 @@ pub async fn delete(
         None,
     )
     .await?;
+    let portal = crate::mail::portal_url(&state);
+    notify(
+        &mut tx,
+        me.id,
+        SecurityEvent::PasskeyDeleted,
+        me.ip,
+        portal.as_deref(),
+    )
+    .await;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -1121,6 +1158,13 @@ pub async fn set_password_login(
             Some(json!({ "password_login": req.enabled })),
         )
         .await?;
+        let event = if req.enabled {
+            SecurityEvent::PasswordLoginEnabled
+        } else {
+            SecurityEvent::PasswordLoginDisabled
+        };
+        let portal = crate::mail::portal_url(&state);
+        notify(&mut tx, me.id, event, me.ip, portal.as_deref()).await;
     }
     tx.commit().await?;
     Ok(Json(methods_view(&state, me.id).await?))
@@ -1153,10 +1197,25 @@ pub async fn apply_reset_login(
         .execute(&mut *conn)
         .await?
         .rows_affected() as i64;
-    sqlx::query("UPDATE users SET password_login_disabled_at = NULL WHERE id = $1")
-        .bind(user)
-        .execute(&mut *conn)
-        .await?;
+    // Every session of the account ends: the reset is the answer to a lost
+    // device or a leaked credential (the 0009 trigger watches neither the
+    // passkeys nor `password_login_disabled_at`).
+    sqlx::query(
+        "UPDATE users SET password_login_disabled_at = NULL, session_ver = session_ver + 1 \
+         WHERE id = $1",
+    )
+    .bind(user)
+    .execute(&mut *conn)
+    .await?;
+    crate::mailhook::security_notice(
+        conn,
+        user,
+        SecurityEvent::LoginMethodReset,
+        None,
+        None,
+        None,
+    )
+    .await;
     crate::audit::record(
         conn,
         actor,
@@ -1188,6 +1247,17 @@ pub async fn admin_list(
         return Ok(crate::reject::not_found());
     }
     Ok(Json(methods_view(&state, id).await?).into_response())
+}
+
+/// Queue a security notice for `user` (see `mailhook::security_notice`).
+async fn notify(
+    conn: &mut PgConnection,
+    user: Uuid,
+    event: SecurityEvent,
+    ip: Option<std::net::IpAddr>,
+    portal: Option<&str>,
+) {
+    crate::mailhook::security_notice(conn, user, event, ip, portal, None).await;
 }
 
 /// POST /api/v1/users/{id}/login-method/reset (admin).

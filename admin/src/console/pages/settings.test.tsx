@@ -345,7 +345,7 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-function mount(path: string) {
+function mount(path: string, isOwner = true) {
   const qc = makeQueryClient();
   invalidateOnWrite(qc);
   const router = createMemoryRouter(
@@ -359,7 +359,9 @@ function mount(path: string) {
     <QueryClientProvider client={qc}>
       <LangProvider initial="zh">
         <ConfirmProvider>
-          <MeContext.Provider value={{ id: "u", email: "a@b.c", role: "admin", email_verified: true, is_owner: true }}>
+          <MeContext.Provider
+            value={{ id: "u", email: "a@b.c", role: "admin", email_verified: true, is_owner: isOwner }}
+          >
             <RouterProvider router={router} />
           </MeContext.Provider>
         </ConfirmProvider>
@@ -398,6 +400,19 @@ for (const id of IDS)
     mount(`/settings/${id}`);
     await waitFor(() => expect(screen.queryAllByRole("status", { name: "加载中" })).toHaveLength(0), { timeout: 3000 });
     expect(document.body.textContent).not.toContain("加载失败");
+  });
+
+// R47 + audit batch 2: mail, domains, retention and sign-in policies are the
+// owner's; another admin sees them read-only under the owner-only note.
+for (const id of ["mail", "domains", "login", "retention"])
+  test(`${id} is read-only for an admin who is not the owner`, async () => {
+    mount(`/settings/${id}`, false);
+    await screen.findByText("仅所有者可修改");
+    await waitFor(() => expect(screen.queryAllByRole("status", { name: "加载中" })).toHaveLength(0), { timeout: 3000 });
+    const frozen = document.querySelector("fieldset[disabled]");
+    expect(frozen).not.toBeNull();
+    // Every switch of the section sits inside the disabled fieldset.
+    for (const sw of screen.queryAllByRole("switch")) expect(sw.closest("fieldset[disabled]")).not.toBeNull();
   });
 
 test("overview", async () => {

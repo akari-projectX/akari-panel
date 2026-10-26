@@ -26,6 +26,7 @@ import { fresh, useSettings, type SettingsView } from "./settings-data";
 import {
   FieldRow,
   Loaded,
+  OwnerOnly,
   Panel,
   SRow,
   SwitchRow,
@@ -936,7 +937,7 @@ function KeysForm({ d }: { d: SettingsView }) {
     ...keys.filter((k) => !saved.includes(k)).map((line) => ({ line, gone: false, fresh: true })),
   ];
   return (
-    <>
+    <OwnerOnly what={tr("发布公钥", "the release keys")}>
       <Panel
         title={tr("验签公钥", "Signing keys")}
         action={
@@ -1051,7 +1052,7 @@ function KeysForm({ d }: { d: SettingsView }) {
           }}
         />
       )}
-    </>
+    </OwnerOnly>
   );
 }
 

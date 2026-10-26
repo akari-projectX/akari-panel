@@ -43,6 +43,7 @@ import type { MailS } from "./settings-overview";
 import {
   FieldRow,
   Loaded,
+  OwnerOnly,
   Panel,
   SRow,
   SwitchRow,
@@ -249,179 +250,192 @@ function TransportForm({ m, onDiagnose }: { m: Mail; onDiagnose: () => void }) {
     <>
       <StatusStrip m={m} onDiagnose={onDiagnose} />
       <Warnings items={m.warnings} />
-      <Group>
-        <SwitchRow
-          label={tr("启用邮件发送", "Mail sending on")}
-          description={tr("关闭时验证码、找回密码与通知邮件都不发送", "When off no codes, resets or notices are sent")}
-          checked={v.enabled}
-          onChange={(x) => f.set("enabled", x)}
-          changed={f.isEdited("enabled")}
-        />
-      </Group>
-      <Panel title={tr("发信方式", "Transport")}>
-        <RadioCards
-          label={tr("发信方式", "Transport")}
-          value={v.provider}
-          onChange={(x) => f.set("provider", x)}
-          cols={2}
-          items={m.providers.map((p) =>
-            p === "smtp"
-              ? {
-                  value: p,
-                  title: "SMTP",
-                  desc: tr("任何邮箱服务商；需要主机、端口与账号", "Any mail provider; needs a host, port and account"),
-                  icon: <Server />,
-                }
-              : p === "resend"
+      <OwnerOnly what={tr("发信设置", "the mail settings")}>
+        <Group>
+          <SwitchRow
+            label={tr("启用邮件发送", "Mail sending on")}
+            description={tr(
+              "关闭时验证码、找回密码与通知邮件都不发送",
+              "When off no codes, resets or notices are sent",
+            )}
+            checked={v.enabled}
+            onChange={(x) => f.set("enabled", x)}
+            changed={f.isEdited("enabled")}
+          />
+        </Group>
+        <Panel title={tr("发信方式", "Transport")}>
+          <RadioCards
+            label={tr("发信方式", "Transport")}
+            value={v.provider}
+            onChange={(x) => f.set("provider", x)}
+            cols={2}
+            items={m.providers.map((p) =>
+              p === "smtp"
                 ? {
                     value: p,
-                    title: "Resend",
-                    desc: tr("HTTP API，只需一个 API key", "An HTTP API; only an API key"),
-                    icon: <Send />,
+                    title: "SMTP",
+                    desc: tr(
+                      "任何邮箱服务商；需要主机、端口与账号",
+                      "Any mail provider; needs a host, port and account",
+                    ),
+                    icon: <Server />,
                   }
-                : { value: p, title: p },
-          )}
-        />
-      </Panel>
-      {smtp ? (
-        <Group title="SMTP" footer={tr("密码只写不读。", "The password is write-only.")}>
-          <FieldRow label={tr("SMTP 服务器", "SMTP host")} error={shown(hostError)} changed={f.isEdited("host")}>
+                : p === "resend"
+                  ? {
+                      value: p,
+                      title: "Resend",
+                      desc: tr("HTTP API，只需一个 API key", "An HTTP API; only an API key"),
+                      icon: <Send />,
+                    }
+                  : { value: p, title: p },
+            )}
+          />
+        </Panel>
+        {smtp ? (
+          <Group title="SMTP" footer={tr("密码只写不读。", "The password is write-only.")}>
+            <FieldRow label={tr("SMTP 服务器", "SMTP host")} error={shown(hostError)} changed={f.isEdited("host")}>
+              {(a) => (
+                <Input
+                  {...a}
+                  className="font-mono text-footnote sm:w-64"
+                  value={v.host}
+                  onChange={(e) => f.set("host", e.target.value)}
+                />
+              )}
+            </FieldRow>
+            <FieldRow
+              label={tr("端口", "Port")}
+              description={tr("1–65535", "1–65535")}
+              error={portError}
+              changed={f.isEdited("port")}
+            >
+              {(a) => (
+                <UnitInput
+                  {...a}
+                  invalid={!!portError}
+                  value={v.port}
+                  onChange={(e) => f.set("port", e.target.value)}
+                />
+              )}
+            </FieldRow>
+            <SRow label={tr("加密方式", "Security")} changed={f.isEdited("security")} wide>
+              <Segmented
+                label={tr("加密方式", "Security")}
+                value={v.security}
+                onChange={(x) => f.set("security", x)}
+                options={[
+                  { value: "tls", label: tr("隐式 TLS（465）", "Implicit TLS (465)") },
+                  { value: "starttls", label: tr("STARTTLS（587）", "STARTTLS (587)") },
+                  { value: "none", label: tr("不加密", "None") },
+                ]}
+              />
+            </SRow>
+            <FieldRow label={tr("用户名", "User name")} changed={f.isEdited("username")}>
+              {(a) => (
+                <Input
+                  {...a}
+                  className="sm:w-64"
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  data-bwignore="true"
+                  data-form-type="other"
+                  value={v.username}
+                  onChange={(e) => f.set("username", e.target.value)}
+                />
+              )}
+            </FieldRow>
+            <FieldRow
+              label={tr("密码（只写）", "Password (write-only)")}
+              description={m.password_set ? tr("已设置 · 留空表示不修改", "Set · empty = keep") : undefined}
+              changed={f.isEdited("password")}
+            >
+              {(a) => (
+                <SecretInput
+                  {...a}
+                  className="sm:w-64"
+                  placeholder={m.password_set ? tr("••••••••（已设置）", "•••••••• (set)") : undefined}
+                  value={v.password}
+                  onChange={(e) => f.set("password", e.target.value)}
+                />
+              )}
+            </FieldRow>
+          </Group>
+        ) : (
+          <Group
+            title="Resend"
+            footer={tr(
+              "在 resend.com › API Keys 创建，只需要「发送」权限。",
+              "Create one at resend.com › API Keys; sending access is enough.",
+            )}
+          >
+            <FieldRow
+              label={tr("Resend API key（只写）", "Resend API key (write-only)")}
+              description={m.api_key_set ? tr("已设置 · 留空表示不修改", "Set · empty = keep") : undefined}
+              changed={f.isEdited("api_key")}
+            >
+              {(a) => (
+                <SecretInput
+                  {...a}
+                  className="sm:w-64"
+                  value={v.api_key}
+                  onChange={(e) => f.set("api_key", e.target.value)}
+                />
+              )}
+            </FieldRow>
+          </Group>
+        )}
+        <Group title={tr("发件人", "Sender")}>
+          <FieldRow label={tr("发件地址", "From address")} error={shown(fromError)} changed={f.isEdited("from_addr")}>
             {(a) => (
               <Input
                 {...a}
-                className="font-mono text-footnote sm:w-64"
-                value={v.host}
-                onChange={(e) => f.set("host", e.target.value)}
+                type="email"
+                className="sm:w-64"
+                value={v.from_addr}
+                onChange={(e) => f.set("from_addr", e.target.value)}
               />
             )}
           </FieldRow>
           <FieldRow
-            label={tr("端口", "Port")}
-            description={tr("1–65535", "1–65535")}
-            error={portError}
-            changed={f.isEdited("port")}
+            label={tr("发件人名称", "From name")}
+            description={tr("收件箱里显示的名字；留空 = 站点名称", "Shown in inboxes; empty = the site name")}
+            changed={f.isEdited("from_name")}
           >
-            {(a) => (
-              <UnitInput {...a} invalid={!!portError} value={v.port} onChange={(e) => f.set("port", e.target.value)} />
-            )}
-          </FieldRow>
-          <SRow label={tr("加密方式", "Security")} changed={f.isEdited("security")} wide>
-            <Segmented
-              label={tr("加密方式", "Security")}
-              value={v.security}
-              onChange={(x) => f.set("security", x)}
-              options={[
-                { value: "tls", label: tr("隐式 TLS（465）", "Implicit TLS (465)") },
-                { value: "starttls", label: tr("STARTTLS（587）", "STARTTLS (587)") },
-                { value: "none", label: tr("不加密", "None") },
-              ]}
-            />
-          </SRow>
-          <FieldRow label={tr("用户名", "User name")} changed={f.isEdited("username")}>
             {(a) => (
               <Input
                 {...a}
                 className="sm:w-64"
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                data-bwignore="true"
-                data-form-type="other"
-                value={v.username}
-                onChange={(e) => f.set("username", e.target.value)}
-              />
-            )}
-          </FieldRow>
-          <FieldRow
-            label={tr("密码（只写）", "Password (write-only)")}
-            description={m.password_set ? tr("已设置 · 留空表示不修改", "Set · empty = keep") : undefined}
-            changed={f.isEdited("password")}
-          >
-            {(a) => (
-              <SecretInput
-                {...a}
-                className="sm:w-64"
-                placeholder={m.password_set ? tr("••••••••（已设置）", "•••••••• (set)") : undefined}
-                value={v.password}
-                onChange={(e) => f.set("password", e.target.value)}
+                value={v.from_name}
+                onChange={(e) => f.set("from_name", e.target.value)}
               />
             )}
           </FieldRow>
         </Group>
-      ) : (
-        <Group
-          title="Resend"
-          footer={tr(
-            "在 resend.com › API Keys 创建，只需要「发送」权限。",
-            "Create one at resend.com › API Keys; sending access is enough.",
-          )}
-        >
-          <FieldRow
-            label={tr("Resend API key（只写）", "Resend API key (write-only)")}
-            description={m.api_key_set ? tr("已设置 · 留空表示不修改", "Set · empty = keep") : undefined}
-            changed={f.isEdited("api_key")}
-          >
-            {(a) => (
-              <SecretInput
-                {...a}
-                className="sm:w-64"
-                value={v.api_key}
-                onChange={(e) => f.set("api_key", e.target.value)}
-              />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <EntryCard
+            to="/settings/templates"
+            tint="#0891b2"
+            icon={<MailOpen />}
+            title={tr("邮件模板", "Mail templates")}
+            sub={
+              kinds === undefined
+                ? "…"
+                : tr(`${kinds} 种 · ${custom} 种已自定义`, `${kinds} kinds · ${custom} customised`)
+            }
+          />
+          <EntryCard
+            to="/settings/notices"
+            tint="#f59e0b"
+            icon={<Bell />}
+            title={tr("通知种类", "Notices")}
+            sub={tr(
+              `${notices.filter(Boolean).length} / ${notices.length} 开启`,
+              `${notices.filter(Boolean).length} of ${notices.length} on`,
             )}
-          </FieldRow>
-        </Group>
-      )}
-      <Group title={tr("发件人", "Sender")}>
-        <FieldRow label={tr("发件地址", "From address")} error={shown(fromError)} changed={f.isEdited("from_addr")}>
-          {(a) => (
-            <Input
-              {...a}
-              type="email"
-              className="sm:w-64"
-              value={v.from_addr}
-              onChange={(e) => f.set("from_addr", e.target.value)}
-            />
-          )}
-        </FieldRow>
-        <FieldRow
-          label={tr("发件人名称", "From name")}
-          description={tr("收件箱里显示的名字；留空 = 站点名称", "Shown in inboxes; empty = the site name")}
-          changed={f.isEdited("from_name")}
-        >
-          {(a) => (
-            <Input
-              {...a}
-              className="sm:w-64"
-              value={v.from_name}
-              onChange={(e) => f.set("from_name", e.target.value)}
-            />
-          )}
-        </FieldRow>
-      </Group>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <EntryCard
-          to="/settings/templates"
-          tint="#0891b2"
-          icon={<MailOpen />}
-          title={tr("邮件模板", "Mail templates")}
-          sub={
-            kinds === undefined
-              ? "…"
-              : tr(`${kinds} 种 · ${custom} 种已自定义`, `${kinds} kinds · ${custom} customised`)
-          }
-        />
-        <EntryCard
-          to="/settings/notices"
-          tint="#f59e0b"
-          icon={<Bell />}
-          title={tr("通知种类", "Notices")}
-          sub={tr(
-            `${notices.filter(Boolean).length} / ${notices.length} 开启`,
-            `${notices.filter(Boolean).length} of ${notices.length} on`,
-          )}
-        />
-      </div>
+          />
+        </div>
+      </OwnerOnly>
     </>
   );
 }
@@ -671,7 +685,7 @@ function NoticesForm({ m }: { m: Mail }) {
     </SRow>
   );
   return (
-    <>
+    <OwnerOnly what={tr("邮件通知", "the mail notices")}>
       {!m.enabled ? (
         <Banner
           tone="warning"
@@ -746,7 +760,7 @@ function NoticesForm({ m }: { m: Mail }) {
         )}
         {row("notify_refund", tr("退款通知", "Refund notice"), tr("退款完成后", "After a refund"), ["refund"])}
       </Group>
-    </>
+    </OwnerOnly>
   );
 }
 

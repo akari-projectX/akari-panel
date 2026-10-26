@@ -86,7 +86,11 @@ pub async fn login(
     {
         Ok(crate::botguard::Verdict::Pass) => {}
         Ok(crate::botguard::Verdict::Trap) => {
-            auth::scrub_password_async(&req.password).await;
+            if let Err(busy) = auth::scrub_password_async(&req.password).await {
+                // Load, not a credential failure.
+                attempt.release(&state).await;
+                return Err(busy.into());
+            }
             attempt.fail();
             return Err(ApiError::unauthorized());
         }
@@ -226,11 +230,11 @@ async fn check_credentials(
     // (`auth::PortalUser`: ban reason and tickets, W28-c). Disabled admins
     // do not log in at all.
     let Some(row) = row.filter(|r| may_sign_in(r) && r.password_hash.is_some()) else {
-        auth::scrub_password_async(password).await;
+        auth::scrub_password_async(password).await?;
         return Ok(Checked::Failed(account));
     };
     if !auth::verify_password_async(password, row.password_hash.as_deref().unwrap_or_default())
-        .await
+        .await?
     {
         return Ok(Checked::Failed(account));
     }
@@ -1606,6 +1610,19 @@ pub async fn update_user(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_update_user(&mut tx, &Actor::of(&user), id, &req).await?;
+    // Another account's password changed by an admin: its holder is told
+    // (verified address; the admin's own address stays out of the mail).
+    if id != user.id && matches!(req.password, Some(Some(_))) {
+        crate::mailhook::security_notice(
+            &mut tx,
+            id,
+            crate::mail::templates::SecurityEvent::PasswordChanged,
+            None,
+            crate::mail::portal_url(&state).as_deref(),
+            None,
+        )
+        .await;
+    }
     // An admin changing their own password (or role) revokes their own
     // sessions too; this one carries on with a fresh token. Read in the
     // same transaction, so the token matches exactly what was committed.
@@ -1916,10 +1933,29 @@ pub async fn regenerate_sub_token(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let (token, outcome) =
-        crate::sub::apply_reset(&mut tx, state.master_key(), &Actor::of(&user), id)
-            .await?
-            .ok_or_else(ApiError::not_found)?;
+    // Like every admin mutator whose target is an account: another admin's
+    // account is the owner's business (and has no subscription at all), a
+    // deleted account is gone (audit batch 2, P3-1).
+    let actor = Actor::of(&user);
+    crate::owner::guard_target(&mut tx, &actor, id).await?;
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match role.as_deref() {
+        None => return Err(ApiError::not_found()),
+        Some("user") => {}
+        Some(_) => {
+            return Err(bad_request!(
+                "user.admin_no_subscription",
+                "admin accounts have no subscription"
+            ));
+        }
+    }
+    refuse_erased(&mut tx, id).await?;
+    let (token, outcome) = crate::sub::apply_reset(&mut tx, state.master_key(), &actor, id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
     let sub_url = state.sub_link(id, &token);
     Ok(Json(json!({

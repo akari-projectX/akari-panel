@@ -48,6 +48,7 @@ import {
   DangerZone,
   FieldRow,
   Loaded,
+  OwnerOnly,
   OwnerNotice,
   Panel,
   SRow,
@@ -504,7 +505,11 @@ function RetentionForm({ d }: { d: SettingsView }) {
     traffic: numText(sec.traffic_daily_retention_days.value),
   });
   const v = f.value!;
-  const auditError = intError(v.audit, 0, 36500, tr, true);
+  const auditError =
+    intError(v.audit, 0, 36500, tr, true) ??
+    (intOf(v.audit) !== null && intOf(v.audit)! > 0 && intOf(v.audit)! < 90
+      ? tr("0（永久）或 90–36500", "0 (forever) or 90–36500")
+      : undefined);
   const trafficError =
     intError(v.traffic, 0, 36500, tr, true) ??
     (intOf(v.traffic) !== null && intOf(v.traffic)! > 0 && intOf(v.traffic)! < 32
@@ -571,7 +576,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
     <span className="text-warning">{tr(" · 保存后将删除更早的数据", " · older data is deleted after saving")}</span>
   );
   return (
-    <>
+    <OwnerOnly what={tr("保留设置", "the retention settings")}>
       <Group
         title={tr("保留天数", "Days kept")}
         footer={tr(
@@ -584,8 +589,8 @@ function RetentionForm({ d }: { d: SettingsView }) {
           description={
             <>
               {tr(
-                `0–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${days(a0)}`,
-                `0–36500; default ${sec.audit_retention_days.default}, in effect ${days(a0)}`,
+                `0 或 90–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${days(a0)}`,
+                `0 or 90–36500; default ${sec.audit_retention_days.default}, in effect ${days(a0)}`,
               )}
               {auditShorter && later}
             </>
@@ -646,7 +651,7 @@ function RetentionForm({ d }: { d: SettingsView }) {
           )}
         />
       </Group>
-    </>
+    </OwnerOnly>
   );
 }
 

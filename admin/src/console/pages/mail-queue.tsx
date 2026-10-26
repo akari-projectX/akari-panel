@@ -70,6 +70,7 @@ function mailKindName(k: string, tr: Tr): string {
     admin_notice: ["管理员群发", "Admin notice"],
     announcement: ["公告", "Announcement"],
     refund: ["退款通知", "Refund notice"],
+    security_notice: ["账号安全提醒", "Security alert"],
   };
   const n = names[k];
   return n ? tr(n[0], n[1]) : k;

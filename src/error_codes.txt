@@ -321,6 +321,7 @@ release.rollout_open
 release.signature_invalid
 release.upload_interrupted
 request.body_too_large
+request.busy
 request.field_not_null
 request.field_required
 request.field_too_long
@@ -355,7 +356,9 @@ settings.allowlist_excludes_you
 settings.allowlist_invalid
 settings.allowlist_too_long
 settings.audit_retention_invalid
+settings.audit_retention_too_short
 settings.cloudflare_range_invalid
+settings.cloudflare_range_not_public
 settings.cloudflare_ranges_too_many
 settings.confirm_required
 settings.domain_conflict

@@ -116,21 +116,36 @@ async fn change_password_inner(
     user: &AuthUser,
     req: &ChangePasswordReq,
 ) -> Result<Option<(String, i64)>, ApiError> {
-    let mut tx = state.pg().begin().await?;
+    // Audit batch 2: both argon2 runs (verify the current password, hash the
+    // new one) happen BEFORE the transaction: a connection and the row lock
+    // were held across them, and a login flood queueing for a permit
+    // exhausted the 16-connection pool (agents and the flush share it).
     let hash: Option<Option<String>> =
-        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(user.id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(state.pg())
             .await?;
     let Some(hash) = hash else {
         return Err(ApiError::unauthorized());
     };
     let current = req.current_password.as_deref().unwrap_or_default();
-    if !auth::verify_password_async(current, hash.as_deref().unwrap_or_default()).await {
+    if !auth::verify_password_async(current, hash.as_deref().unwrap_or_default()).await? {
         return Ok(None);
     }
     let new_hash = auth::hash_password_async(&req.new_password).await?;
-    let out = write_password(&mut tx, user, &new_hash, false).await?;
+    let mut tx = state.pg().begin().await?;
+    // Still the password that was verified? (A concurrent change makes the
+    // proof stale: answered like a wrong password.)
+    let now: Option<Option<String>> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if now.as_ref() != Some(&hash) {
+        return Ok(None);
+    }
+    let portal = crate::mail::portal_url(state);
+    let out = write_password(&mut tx, user, &new_hash, false, portal.as_deref()).await?;
     tx.commit().await?;
     Ok(Some(out))
 }
@@ -145,7 +160,8 @@ async fn set_password(
 ) -> Result<(String, i64), ApiError> {
     let new_hash = auth::hash_password_async(password).await?;
     let mut tx = state.pg().begin().await?;
-    let out = write_password(&mut tx, user, &new_hash, first).await?;
+    let portal = crate::mail::portal_url(state);
+    let out = write_password(&mut tx, user, &new_hash, first, portal.as_deref()).await?;
     tx.commit().await?;
     Ok(out)
 }
@@ -155,6 +171,7 @@ async fn write_password(
     user: &AuthUser,
     new_hash: &str,
     first: bool,
+    portal: Option<&str>,
 ) -> Result<(String, i64), ApiError> {
     let (role, sv): (String, i64) = sqlx::query_as(
         "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING role, session_ver",
@@ -173,6 +190,15 @@ async fn write_password(
         Some(json!({ "password": crate::audit::CHANGED, "self_service": true, "first": first })),
     )
     .await?;
+    crate::mailhook::security_notice(
+        conn,
+        user.id,
+        crate::mail::templates::SecurityEvent::PasswordChanged,
+        user.ip,
+        portal,
+        None,
+    )
+    .await;
     Ok((role, sv))
 }
 

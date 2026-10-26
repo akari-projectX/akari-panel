@@ -49,6 +49,7 @@ import {
   DangerZone,
   FieldRow,
   Loaded,
+  OwnerOnly,
   Panel,
   SRow,
   SwitchRow,
@@ -421,7 +422,7 @@ function Domains({ d }: { d: SettingsView }) {
 
   const preferredMain = base.main[0];
   return (
-    <>
+    <OwnerOnly what={tr("域名设置", "the domain settings")}>
       {certDays !== null && certDays <= 14 && (
         <Banner
           tone="danger"
@@ -466,7 +467,7 @@ function Domains({ d }: { d: SettingsView }) {
           }}
         />
       )}
-    </>
+    </OwnerOnly>
   );
 }
 

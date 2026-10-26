@@ -2,16 +2,18 @@
 //! notifications): one POST (or, for the EPay query API, one GET) per
 //! connection over rustls (ring provider, webpki roots) and hyper http1.
 //! `http://` is accepted only for loopback hosts (tests, local mock
-//! gateways; config_check enforces it). No proxy support: the panel
-//! reaches the gateway directly. Response bodies are capped.
+//! gateways, a self-hosted webhook). Every request goes through the SSRF
+//! guard `outbound` (https only to public addresses, redirects not
+//! followed). No proxy support: the panel reaches the gateway directly.
+//! Response bodies are capped.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Bytes;
 use hyper::header;
-use hyper_util::rt::TokioIo;
+
+use crate::outbound;
 
 const MAX_RESPONSE: usize = 256 * 1024;
 
@@ -92,85 +94,24 @@ async fn request(
     headers: &[(&str, String)],
     body: Vec<u8>,
 ) -> Result<(u16, Bytes), String> {
-    let uri: hyper::Uri = url.parse().map_err(|_| "bad url".to_string())?;
-    let host = uri.host().ok_or("url without host")?.to_string();
-    let tls = match uri.scheme_str() {
-        Some("https") => true,
-        Some("http") if is_loopback_host(&host) => false,
-        _ => return Err("url must be https".into()),
-    };
-    let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
-    let path = uri
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| "/".into());
-    let connect_host = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), port))
-        .await
-        .map_err(|e| format!("connect: {}", e.kind()))?;
-    let _ = tcp.set_nodelay(true);
-    let authority = match uri.port_u16() {
-        Some(p) => format!("{host}:{p}"),
-        None => host.clone(),
-    };
-    let mut req = hyper::Request::builder()
-        .method(method)
-        .uri(path)
-        .header(header::HOST, authority)
-        .header(header::ACCEPT, "application/json")
-        .header(header::USER_AGENT, "akari-panel");
+    // The SSRF guard: https to public addresses (every resolved address
+    // checked, the connection goes to the checked one), plain http only to
+    // loopback; redirects are not followed.
+    let target = outbound::target(url, outbound::OPERATOR).map_err(|e| e.to_string())?;
+    let mut hs = vec![(header::ACCEPT, "application/json".to_string())];
     if let Some(ct) = content_type {
-        req = req
-            .header(header::CONTENT_TYPE, ct)
-            .header(header::CONTENT_LENGTH, body.len());
+        hs.push((header::CONTENT_TYPE, ct.to_string()));
     }
     for (k, v) in headers {
-        req = req.header(*k, v.as_str());
+        let name = header::HeaderName::from_bytes(k.as_bytes()).map_err(|_| "bad header")?;
+        hs.push((name, v.clone()));
     }
-    let req = req
-        .body(Full::new(Bytes::from(body)))
-        .map_err(|_| "bad request".to_string())?;
-    if tls {
-        let name = rustls::pki_types::ServerName::try_from(connect_host)
-            .map_err(|_| "bad host name".to_string())?;
-        let stream = tokio_rustls::TlsConnector::from(tls_config()?)
-            .connect(name, tcp)
-            .await
-            .map_err(|e| format!("tls: {e}"))?;
-        send(TokioIo::new(stream), req).await
-    } else {
-        send(TokioIo::new(tcp), req).await
-    }
-}
-
-async fn send<T>(io: T, req: hyper::Request<Full<Bytes>>) -> Result<(u16, Bytes), String>
-where
-    T: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
-{
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+    let res = outbound::send(&target, method, &hs, Bytes::from(body))
         .await
-        .map_err(|e| format!("http: {e}"))?;
-    let driver = tokio::spawn(async move {
-        let _ = conn.await;
-    });
-    let res = sender
-        .send_request(req)
+        .map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let body = outbound::read_capped(res, MAX_RESPONSE)
         .await
-        .map_err(|e| format!("http: {e}"));
-    let out = match res {
-        Ok(res) => {
-            let status = res.status().as_u16();
-            Limited::new(res.into_body(), MAX_RESPONSE)
-                .collect()
-                .await
-                .map(|b| (status, b.to_bytes()))
-                .map_err(|_| "response body too large or broken".to_string())
-        }
-        Err(e) => Err(e),
-    };
-    driver.abort();
-    out
+        .map_err(|e| e.to_string())?;
+    Ok((status, body))
 }
