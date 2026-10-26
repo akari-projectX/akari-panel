@@ -3,6 +3,13 @@
   import { K } from '@/lib/cache';
   import { daysLeft, formatDate, formatMoney, formatSpeed, trafficUsage } from '@/lib/format';
   import { REFUSAL_TEXT, offerKey } from '@/lib/shop';
+  import Crown from '@lucide/svelte/icons/crown';
+  import Ticket from '@lucide/svelte/icons/ticket';
+  import Wallet from '@lucide/svelte/icons/wallet';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import Row from '../components/flat/Row.svelte';
+  import Section from '../components/flat/Section.svelte';
+  import Switch from '../components/ui/Switch.svelte';
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
@@ -109,79 +116,79 @@
   const meta = $derived(p
     ? [
         myPlan?.expires_at ? tp('到期 {d}', { d: formatDate(myPlan.expires_at) }) : t('长期有效'),
-        left !== null ? tp('还剩 {n} 天', { n: left }) : '',
         t(formatSpeed(p.speed_limit_mbps)),
         data && data.credit_cents > 0 ? tp('换套餐时可折算 {v}', { v: formatMoney(data.credit_cents) }) : '',
       ].filter(Boolean).join(' · ')
     : t('还没有订阅，选一个套餐即可开始使用。'));
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('商店')}</h1>
-    <p>{t('管理当前订阅，随时续费或更换套餐。')}</p>
-  </div>
-</div>
+<PageTitle title={t('商店')} sub={t('管理当前订阅，随时续费或更换套餐。')} />
 
-{#if pending}<PendingOrder order={pending} onchange={() => orders.reload()} />{/if}
+{#if pending}<PendingOrder order={pending} onchange={() => orders.reload()} className="mt5" />{/if}
 
-<section class="cur" aria-label={t('当前套餐')}>
-  <div>
-    <div class="lb">{t('当前套餐')}</div>
-    <h2>
-      {p ? p.name : t('未订阅')}
-      {#if p}
-        {#if me?.expired}<span class="st warn">{t('已过期')}</span>
-        {:else if me?.quota_exhausted}<span class="st warn">{t('流量已用完')}</span>
-        {:else}<span class="st ok">{t('生效中')}</span>{/if}
-      {/if}
-    </h2>
-    <p class="meta num">{meta}</p>
-  </div>
-  {#if p}
-    <div class="tm">
-      <div class="top-l">
-        <span>{t('流量用量')}</span>
-        <span class="num"><b>{usage.used.toFixed(1)}</b>{usage.unlimited ? ' GB' : ` / ${Math.round(usage.total)} GB`}</span>
+<!-- ── 当前订阅 ── -->
+<Section>
+  <div class="sec-head">
+    <div>
+      <div class="sec-title">
+        <Crown size={16} strokeWidth={1.75} aria-hidden="true" />
+        {t('当前套餐')}{p ? ` · ${p.name}` : ''}
+        {#if p}
+          {#if me?.expired}<span class="bdg warn12 ml">{t('已过期')}</span>
+          {:else if me?.quota_exhausted}<span class="bdg warn12 ml">{t('流量已用完')}</span>
+          {:else}<span class="bdg ok12 ml">{t('生效中')}</span>{/if}
+        {:else}<span class="bdg sec-b ml">{t('未订阅')}</span>{/if}
       </div>
-      {#if !usage.unlimited}
-        <div class={['meter', usage.leftPct < 10 && 'warn']} role="meter" aria-label={t('流量用量')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usage.usedPct)}>
-          <i style:width="{usage.usedPct}%"></i>
+      <div class="sec-desc">{meta}</div>
+    </div>
+  </div>
+
+  {#if p}
+    <div class="shop-cur">
+      <div>
+        <div class="shop-cap">{t('套餐剩余')}</div>
+        <div class="hero-line" style="margin-top: 6px">
+          <span class="hero-num">{left === null ? t('长期') : left}</span>
+          {#if left !== null}<span class="shop-cap" style="font-size: inherit">{t('天')}</span>{/if}
         </div>
-      {/if}
-      <p class="sub num">
-        {usage.unlimited
-          ? t('套餐不限流量')
-          : p.next_reset_at
-            ? tp('{d} 重置流量，剩余 {g} GB', { d: formatDate(p.next_reset_at), g: usage.left.toFixed(1) })
-            : tp('剩余 {g} GB，此套餐不重置流量', { g: usage.left.toFixed(1) })}
-      </p>
+      </div>
+      <div class="shop-use">
+        <div class="shop-use-h">
+          <span>{t('流量用量')}</span>
+          <span><b>{usage.used.toFixed(1)}</b><span class="shop-cap" style="font-size: inherit">{usage.unlimited ? ' GB' : ` / ${Math.round(usage.total)} GB`}</span></span>
+        </div>
+        {#if !usage.unlimited}
+          <div class="prog" role="progressbar" aria-label={t('流量用量')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usage.usedPct)}><i style:transform="translateX(-{100 - Math.min(100, Math.max(0, usage.usedPct))}%)"></i></div>
+        {/if}
+        <div class="shop-use-x">
+          {usage.unlimited
+            ? t('套餐不限流量')
+            : p.next_reset_at
+              ? tp('{d} 重置流量，剩余 {g} GB', { d: formatDate(p.next_reset_at), g: usage.left.toFixed(1) })
+              : tp('剩余 {g} GB，此套餐不重置流量', { g: usage.left.toFixed(1) })}
+        </div>
+      </div>
     </div>
   {/if}
-</section>
+</Section>
 
+<!-- ── 余额：面板按它重新给每一档报价（优惠码在确认订单里填） ── -->
 {#if data && data.balance_cents > 0}
-  <div class="setting balance">
-    <div class="tx">
-      <b id="balance-label">{t('用余额抵扣')}</b>
-      <p class="num">{tp('余额 {v}。开启后下单时先扣余额，不足部分再用所选方式支付。', { v: formatMoney(data.balance_cents) })}</p>
-    </div>
-    <button
-      type="button" class="switch" role="switch" aria-checked={useBalance} aria-labelledby="balance-label"
-      data-state={useBalance ? 'checked' : 'unchecked'} onclick={() => (useBalance = !useBalance)}
-    ><span class="switch-thumb"></span></button>
-  </div>
+  <Section>
+    <label class="shop-bal">
+      <Wallet size={16} strokeWidth={1.75} aria-hidden="true" />
+      <span>{tp('用余额抵扣（余额 {v}）', { v: formatMoney(data.balance_cents) })}</span>
+      <Switch bind:checked={useBalance} label={t('用余额抵扣')} />
+    </label>
+  </Section>
 {/if}
 
-<section class="sec" aria-labelledby="h-plans">
-  <div class="sh">
-    <div>
-      <h2 id="h-plans">{t('选择套餐')}</h2>
-      <p>{t('价格为各周期按月折算后的最低价；购买时长在确认订单时选择')}</p>
-    </div>
-  </div>
+<!-- ── 套餐列表 ── -->
+<Section>
+  {#snippet title()}{t('选择套餐')}{/snippet}
+  {#snippet desc()}{t('价格为各周期按月折算后的最低价；购买时长在确认订单时选择')}{/snippet}
   {#if !data && shop.loading}
-    <Loading rows={6} height={420} />
+    <Loading block={420} />
   {:else if !data && shop.error}
     <LoadError error={shop.error} onretry={shop.reload} />
   {:else if plans.length === 0}
@@ -189,27 +196,24 @@
   {:else}
     <PlanGrid {plans} {me} onbuy={openBuy} />
   {/if}
-</section>
+</Section>
 
+<!-- ── 流量重置包：当前套餐配了才有 ── -->
 {#if currentPlan && resetOffer}
   {@const cp = currentPlan}
   {@const ro = resetOffer}
-  <section class="sec" aria-labelledby="h-addon">
-    <div class="sh">
-      <div>
-        <h2 id="h-addon">{t('流量重置包')}</h2>
-        <p>{t('不改变套餐与到期时间，立即把本周期已用流量清零')}</p>
-      </div>
-    </div>
-    <div class="addon">
-      <div class="tx">
-        <b>{tp('重置「{n}」的流量', { n: cp.name })}</b>
-        <p>{ro.refusal ? t(REFUSAL_TEXT[ro.refusal]) : t('付款后立即生效')}</p>
-      </div>
-      <span class="price num">{formatMoney(ro.amount_cents ?? ro.price_cents)}</span>
-      <button type="button" class="btn sm" disabled={!ro.action} onclick={() => openBuy(cp, ro, true)}>{t('购买')}</button>
-    </div>
-  </section>
+  <Section>
+    {#snippet title()}{t('流量重置包')}{/snippet}
+    {#snippet desc()}{t('不改变套餐与到期时间，立即把本周期已用流量清零')}{/snippet}
+    <Row first>
+      {#snippet title()}<span class="rl"><Ticket size={16} strokeWidth={1.75} aria-hidden="true" />{tp('重置「{n}」的流量', { n: cp.name })}</span>{/snippet}
+      {#snippet desc()}{ro.refusal ? t(REFUSAL_TEXT[ro.refusal]) : t('付款后立即生效')}{/snippet}
+      {#snippet extra()}
+        <span class="tnum" style="font-size: 20px; font-weight: 500">{formatMoney(ro.amount_cents ?? ro.price_cents)}</span>
+        <button type="button" class="btn sm" disabled={!ro.action} onclick={() => openBuy(cp, ro, true)}>{t('购买')}</button>
+      {/snippet}
+    </Row>
+  </Section>
 {/if}
 
 {#if dialogLoaded}
@@ -225,34 +229,3 @@
     />
   {/await}
 {/if}
-
-<style>
-  .cur { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; align-items: end; padding-bottom: 32px; }
-  .lb { font-size: 13px; color: var(--muted); }
-  .cur h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: 22px; line-height: 30px; font-weight: 600; color: var(--fg); }
-  .cur h2 .st { font-size: 12.5px; font-weight: 500; }
-  .cur h2 .st.ok { color: var(--ok); }
-  .meta { margin-top: 4px; color: var(--muted); }
-  .top-l { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; color: var(--muted); }
-  .top-l b { font-size: 15px; font-weight: 600; color: var(--fg); }
-  .meter { height: 4px; margin-top: 10px; border-radius: 2px; overflow: hidden; background: var(--secondary); }
-  .meter i { display: block; height: 100%; border-radius: 2px; background: var(--brand); }
-  .meter.warn i { background: var(--warn); }
-  .sub { margin-top: 8px; font-size: 12.5px; color: var(--faint); }
-  .balance { align-items: center; padding: 20px 0; border-bottom: 0; }
-  .balance .tx { flex: 1; }
-  .balance b { font-weight: 500; color: var(--fg); }
-  .balance p { font-size: 13px; }
-  .addon { display: flex; align-items: center; gap: 16px; padding: 16px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-  .addon .tx { flex: 1; min-width: 0; }
-  .addon b { font-weight: 500; color: var(--fg); }
-  .addon p { font-size: 13px; color: var(--muted); }
-  .addon .price { font-size: 18px; font-weight: 600; color: var(--fg); }
-
-  @media (max-width: 720px) {
-    .cur { grid-template-columns: 1fr; gap: 24px; }
-    .addon { flex-wrap: wrap; }
-    .addon .tx { flex-basis: 100%; }
-    .addon .price { margin-right: auto; }
-  }
-</style>

@@ -24,6 +24,7 @@
   --hover: #eef0f4;
   /* 品牌蓝：唯一的强调色 */
   --brand: #2563eb;
+  --brand-ink: #1d4ed8;
   --brand-hover: color-mix(in srgb, var(--brand) 90%, var(--bg));
   --on-brand: #fff;
   --brand-soft: color-mix(in srgb, var(--brand) 10%, transparent);
@@ -91,6 +92,7 @@
   --secondary: #272a32;
   --hover: #22242b;
   --brand: #4a9dff;
+  --brand-ink: #4a9dff;
   --on-brand: #06101f;
   --ok: #4ade80;
   --warn: #fbbf24;
@@ -135,6 +137,7 @@
     --secondary: #272a32;
     --hover: #22242b;
     --brand: #4a9dff;
+    --brand-ink: #4a9dff;
     --on-brand: #06101f;
     --ok: #4ade80;
     --warn: #fbbf24;

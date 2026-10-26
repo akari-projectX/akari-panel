@@ -181,7 +181,7 @@
           <Row first={i === 0} onclick={() => openNotice(a)}>
             {#snippet title()}
               <span class="rt">
-                {#if a.pinned}<span class="pinb"><Pin size={11} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+                {#if a.pinned}<span class="pinb"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
                 <span class={['trunc', !a.read && 'mid']}>{at.title}</span>
               </span>
             {/snippet}

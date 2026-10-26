@@ -6,14 +6,17 @@
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import Undo2 from '@lucide/svelte/icons/undo-2';
   import Wallet from '@lucide/svelte/icons/wallet';
-  import X from '@lucide/svelte/icons/x';
+  import FileText from '@lucide/svelte/icons/file-text';
+  import XCircle from '@lucide/svelte/icons/circle-x';
   import { untrack } from 'svelte';
   import { orderApi, type MyOrder, type RefundEffect, type RefundRoute } from '@/api';
   import { K } from '@/lib/cache';
   import { ORDER_ACTION, formatDate, formatDateTime, formatMoney, formatTime, orderState, periodText } from '@/lib/format';
   import { outcomeOf, type PayOutcome } from '@/lib/shop';
   import LoadError from '../components/LoadError.svelte';
-  import Loading from '../components/Loading.svelte';
+  import DashSkeleton from '../components/DashSkeleton.svelte';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import Section from '../components/flat/Section.svelte';
   import Qr from '../components/dash/Qr.svelte';
   import { refresh } from '$lib/auth.svelte';
   import { Copied } from '$lib/copy.svelte';
@@ -23,7 +26,7 @@
   import { resource } from '$lib/resource.svelte';
   import { loc, navigate } from '$lib/router.svelte';
   import { R } from '$lib/routes';
-  import { IN_WECHAT, IS_MOBILE, alipayScheme, isAlipayQr, safeUrl, toneClass } from '$lib/shop';
+  import { IN_WECHAT, IS_MOBILE, alipayScheme, isAlipayQr, safeUrl } from '$lib/shop';
   import { toast } from '$lib/toast.svelte';
 
   /*
@@ -170,91 +173,91 @@
   });
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('订单详情')}</h1>
-    {#if data}<p class="num">{tp('{p} · {n}', { p: data.plan_name, n: data.out_trade_no })}</p>{/if}
-  </div>
-  <a class="link quiet-link" href={R.orders}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('返回订单列表')}</a>
-</div>
-
 {#if !data && order.loading}
-  <Loading rows={6} height={360} />
+  <DashSkeleton />
 {:else if !data && order.error}
+  <PageTitle title={t('订单详情')} />
   <LoadError error={order.error} onretry={order.reload} />
 {:else if data && view}
-  <ol class="steps" aria-label={t('订单进度')}>
-    {#each view.steps as st, i (st.label)}
-      <li class={st.state} aria-current={st.state === 'current' ? 'step' : undefined}>
-        <span class="dot" aria-hidden="true">
-          {#if st.state === 'done'}<Check size={13} strokeWidth={2.6} />{:else if st.state === 'failed'}<X size={13} strokeWidth={2.4} />{:else}{i + 1}{/if}
-        </span>
-        <div>
-          <b>{t(st.label)}</b>
-          <span class="num">{st.time ?? (st.state === 'current' ? t('等待付款') : '')}</span>
-        </div>
-      </li>
-    {/each}
-  </ol>
+  <PageTitle title={t('订单详情')} sub={tp('{p} · {n}', { p: data.plan_name, n: data.out_trade_no })}>
+    {#snippet extra()}<a class="btn" style="height: 36px" href={R.orders}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('返回订单列表')}</a>{/snippet}
+  </PageTitle>
+
+  <!-- ── 进度条：一眼看出这笔订单走到哪一步 ── -->
+  <Section>
+    <ol class="od-steps" aria-label={t('订单进度')}>
+      {#each view.steps as st, i (st.label)}
+        <li aria-current={st.state === 'current' ? 'step' : undefined}>
+          {#if i < view.steps.length - 1}
+            <span aria-hidden="true" class={['od-link', st.state === 'done' && view.steps[i + 1].state !== 'todo' && 'on']}></span>
+          {/if}
+          <span class={['od-dot', st.state]}>
+            {#if st.state === 'done'}<Check size={14} strokeWidth={2.6} aria-hidden="true" />{:else if st.state === 'failed'}<XCircle size={14} strokeWidth={1.75} aria-hidden="true" />{:else}{i + 1}{/if}
+          </span>
+          <div class={['od-lb', st.state === 'todo' && 'todo']}>{t(st.label)}</div>
+          <div class="od-tm tnum">{st.time ?? (st.state === 'current' && pending ? t('等待付款') : ' ')}</div>
+        </li>
+      {/each}
+    </ol>
+  </Section>
 
   {#if data.refunded_at || data.refund_pending || view.unfulfilled}
-    <div class="notes refund">
-      <div class={['note', !data.refunded_at && !data.refund_pending && 'warn']} role="status">
-        {#if data.refunded_at || data.refund_pending}<Undo2 size={16} strokeWidth={1.75} aria-hidden="true" />{:else}<Wallet size={16} strokeWidth={1.75} aria-hidden="true" />{/if}
-        <div class="tx">
-          {#if data.refunded_at}
-            <b>{tp('这笔订单已于 {d} 退款', { d: formatDate(data.refunded_at) })}</b>
-            <ul>{#each refundLines(data) as l (l)}<li>{l}</li>{/each}</ul>
-          {:else if data.refund_pending}
-            <b>{t('退款处理中')}</b>
-            <p>{t('已向支付渠道发起原路退款，渠道确认后款项按原支付方式退回，通常几分钟到几个工作日。')}</p>
-          {:else}
-            <b>{t('付款成功，但套餐没能开通')}</b>
-            <p>{t('付款时套餐已售罄、已下架，或你已经换了别的套餐。款项会退回账户余额，可以用来重新下单或申请提现；有疑问请提交工单。')}</p>
-          {/if}
-        </div>
-        {#if (data.refund_balance_cents ?? 0) > 0}
-          <div class="acts"><a class="btn sm" href={R.walletTab('ledger')}>{t('查看钱包')}</a></div>
+    <div role="status" class="notice od-refund">
+      {#if data.refunded_at || data.refund_pending}<Undo2 size={16} strokeWidth={1.75} class="ic-brand" aria-hidden="true" />{:else}<Wallet size={16} strokeWidth={1.75} class="ic-warn" aria-hidden="true" />{/if}
+      <div class="grow od-rtx">
+        {#if data.refunded_at}
+          <div class="od-b">{tp('这笔订单已于 {d} 退款', { d: formatDate(data.refunded_at) })}</div>
+          <ul>{#each refundLines(data) as l (l)}<li>{l}</li>{/each}</ul>
+        {:else if data.refund_pending}
+          <div class="od-b">{t('退款处理中')}</div>
+          <div class="od-m">{t('已向支付渠道发起原路退款，渠道确认后款项按原支付方式退回，通常几分钟到几个工作日。')}</div>
+        {:else}
+          <div class="od-b">{t('付款成功，但套餐没能开通')}</div>
+          <div class="od-m">{t('付款时套餐已售罄、已下架，或你已经换了别的套餐。款项会退回账户余额，可以用来重新下单或申请提现；有疑问请提交工单。')}</div>
         {/if}
       </div>
+      {#if (data.refund_balance_cents ?? 0) > 0}
+        <a class="btn sm" href={R.walletTab('ledger')}>{t('查看钱包')}</a>
+      {/if}
     </div>
   {/if}
 
-  <div class="layout">
-    <!-- 金额单：宽屏在右边跟着滚；窄屏在最前（先看到要付多少、还剩几分钟） -->
-    <aside class="bill" aria-labelledby="h-bill">
-      <div class="bill-in">
-        <div class="bill-head">
-          <h2 id="h-bill">{t('金额明细')}</h2>
-          <span class={toneClass(view.state.tone)}>{t(view.state.text)}</span>
+  <!-- 宽屏两栏：左边付款方式 + 订单信息，右边金额单吊在侧边跟着滚；手机上一栏：金额单 → 付款 → 订单信息 -->
+  <div class="od-grid">
+    <aside class="od-aside">
+      <div class="od-bill">
+        <div class="od-bh">
+          <span>{t('金额明细')}</span>
+          <span class={['bdg', view.state.tone]}>{t(view.state.text)}</span>
         </div>
-        <div class="bill-lines num">
+        <div class="od-lines">
           {#each view.lines as [k, v] (k)}
-            <div><span>{t(k)}</span><span>{v < 0 ? `−${formatMoney(-v)}` : formatMoney(v)}</span></div>
+            <div><span>{t(k)}</span><span class="tnum">{v < 0 ? `−${formatMoney(-v)}` : formatMoney(v)}</span></div>
           {/each}
         </div>
-        <div class="bill-total">
+        <hr class="od-sep" />
+        <div class="od-tot">
           <span>{pending ? t('应付金额') : t('实付金额')}</span>
-          <b class="num">{formatMoney(data.amount_cents)}</b>
+          <span class="tnum">{formatMoney(data.amount_cents)}</span>
         </div>
         {#if pending}
-          <p class="bill-note">
+          <p class="od-note">
             <Clock size={14} strokeWidth={1.75} aria-hidden="true" />
             <span>
               {view.minutesLeft > 0
-                  ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: view.minutesLeft })
-                  : t('订单即将超时关闭，请尽快完成支付')}
+                ? tp('请在 {t} 前完成支付（还剩 {m} 分钟），超时订单会自动关闭', { t: formatTime(data.expires_at), m: view.minutesLeft })
+                : t('订单即将超时关闭，请尽快完成支付')}
             </span>
           </p>
-          <button type="button" class="btn btn-block ghost" disabled={cancelling.busy} onclick={cancel}>{t('取消订单')}</button>
+          <button type="button" class="btn ghost muted od-cancel" disabled={cancelling.busy} onclick={cancel}><XCircle size={14} strokeWidth={1.75} aria-hidden="true" />{t('取消订单')}</button>
         {:else}
-          <p class="bill-note plain">
+          <p class="od-note plain">
             {view.closed ? t('这笔订单已关闭，可以重新选购套餐。')
               : data.refunded_at ? t('这笔订单已退款。')
               : view.unfulfilled ? t('款项已退回账户余额。')
               : t('订单已完成。')}
           </p>
-          <div class="bill-acts">
+          <div class="od-acts">
             <a class="btn pri" href={R.dashboard}>{t('回到仪表盘')}</a>
             <a class="btn" href={R.shop}>{t('继续选购')}</a>
           </div>
@@ -262,18 +265,15 @@
       </div>
     </aside>
 
-    <div class="main">
+    <div class="od-main">
+      <!-- ── 待支付：二维码 / 收银台 ── -->
       {#if pending && (qr || payUrl)}
-        <section class="sec" aria-labelledby="h-pay">
-          <div class="sh">
-            <div>
-              <h2 id="h-pay">{payUrl && !qr ? t('前往收银台') : alipayJump ? t('支付宝付款') : t('扫码支付')}</h2>
-              <p>{t('支付完成后本页会自动更新，无需手动刷新')}</p>
-            </div>
-          </div>
-          <div class="pay">
+        <Section>
+          {#snippet title()}{payUrl && !qr ? t('前往收银台') : alipayJump ? t('支付宝付款') : t('扫码支付')}{/snippet}
+          {#snippet desc()}{t('支付完成后本页会自动更新，无需手动刷新')}{/snippet}
+          <div class="od-pay">
             {#if payUrl && !qr}
-              <a class="btn pri go" href={payUrl} data-external><ExternalLink size={16} strokeWidth={1.75} aria-hidden="true" />{t('去付款')}</a>
+              <a class="btn pri od-go" href={payUrl} data-external><ExternalLink size={16} strokeWidth={1.75} aria-hidden="true" />{t('去付款')}</a>
             {/if}
             {#if qr}
               <!--
@@ -281,50 +281,55 @@
                 没装支付宝时系统会弹「地址无效」，而且那时已不算用户手势，不少浏览器会直接拦下。
               -->
               {#if alipayJump}
-                <div class="jump">
+                <div class="od-jump">
                   {#if IN_WECHAT}
-                    <p class="wechat">{t('微信里无法打开支付宝。请点右上角「…」，选择「在浏览器打开」后再付款。')}</p>
+                    <p class="od-wechat">{t('微信里无法打开支付宝。请点右上角「…」，选择「在浏览器打开」后再付款。')}</p>
                   {:else}
-                    <a class="btn pri go" href={alipayScheme(qr)} data-external><Wallet size={16} strokeWidth={1.75} aria-hidden="true" />{t('打开支付宝付款')}</a>
+                    <a class="btn od-go od-ali" href={alipayScheme(qr)} data-external><Wallet size={16} strokeWidth={1.75} aria-hidden="true" />{t('打开支付宝付款')}</a>
                     <!-- 唤起失败（部分安卓浏览器不认 alipays://）时的退路：支付宝官方的二维码页会再引导打开 App -->
-                    <a class="retry" href={qr} data-external>{t('没有自动打开？点这里再试一次')}</a>
+                    <a class="od-retry" href={qr} data-external>{t('没有自动打开？点这里再试一次')}</a>
                   {/if}
-                  <p class="or">{t('或用另一台设备扫码')}</p>
+                  <div class="od-or"><span></span>{t('或用另一台设备扫码')}<span></span></div>
                 </div>
               {/if}
-              <div class={['qr', alipayJump && 'small']}><Qr value={qr} label={t('付款二维码')} /></div>
+              <div class={['od-qr', alipayJump && 'small']}><Qr value={qr} label={t('付款二维码')} /></div>
               {#if !alipayJump}
-                <p class="hint">{isAlipayQr(qr) ? t('打开支付宝，扫描上方二维码完成付款') : t('用对应 App 扫描上方二维码完成付款')}</p>
+                <p class="od-h13">{isAlipayQr(qr) ? t('打开支付宝，扫描上方二维码完成付款') : t('用对应 App 扫描上方二维码完成付款')}</p>
               {/if}
             {/if}
-            <p class="hint">{t('想换一种支付方式：取消这一单，回商店重新下单。')}</p>
+            <p class="od-h12">{t('想换一种支付方式：取消这一单，回商店重新下单。')}</p>
           </div>
-        </section>
+        </Section>
       {/if}
       {#if pending && !qr && !payUrl}
-        <section class="sec" aria-labelledby="h-wait">
-          <div class="sh"><div><h2 id="h-wait">{t('等待付款')}</h2></div></div>
-          <p class="hint left">{t('这笔订单没有在线付款方式，请提交工单联系客服完成付款。')}</p>
-        </section>
+        <Section>
+          {#snippet title()}{t('等待付款')}{/snippet}
+          <p class="od-wait">{t('这笔订单没有在线付款方式，请提交工单联系客服完成付款。')}</p>
+        </Section>
       {/if}
+    </div>
 
-      <section class="sec" aria-labelledby="h-info">
-        <div class="sh"><div><h2 id="h-info">{t('订单信息')}</h2></div></div>
-        <dl class="info">
+    <!-- 与上面隔一条线（手机上上面是付款区或金额单；宽屏上面是付款区，没有付款区时不画） -->
+    <div class={['od-info', !pending && 'nob']}>
+      <Section>
+        {#snippet title()}<FileText size={16} strokeWidth={1.75} aria-hidden="true" />{t('订单信息')}{/snippet}
+        <div class="od-dl">
           <div>
-            <dt>{t('订单号')}</dt>
-            <dd class="no">
-              <code>{data.out_trade_no}</code>
-              <button type="button" class="iconbtn" aria-label={t('复制订单号')} onclick={() => copied.copy(data.out_trade_no, 'no')}>
-                {#if copied.which === 'no'}<Check size={14} strokeWidth={1.75} aria-hidden="true" class="ok" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
-              </button>
-            </dd>
+            <span class="k">{t('订单号')}</span>
+            <span class="v">
+              <span class="no">
+                <code>{data.out_trade_no}</code>
+                <button type="button" aria-label={t('复制订单号')} onclick={() => copied.copy(data.out_trade_no, 'no')}>
+                  {#if copied.which === 'no'}<Check size={14} strokeWidth={1.75} aria-hidden="true" class="ic-ok" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
+                </button>
+              </span>
+            </span>
           </div>
           {#each view.info as [k, v] (k)}
-            <div><dt>{t(k)}</dt><dd>{#if k === '优惠码'}<code>{v}</code>{:else}{v}{/if}</dd></div>
+            <div><span class="k">{t(k)}</span><span class="v">{#if k === '优惠码'}<code>{v}</code>{:else}{v}{/if}</span></div>
           {/each}
-        </dl>
-      </section>
+        </div>
+      </Section>
     </div>
   </div>
 
@@ -334,73 +339,3 @@
     {/await}
   {/if}
 {/if}
-
-<style>
-  .ph .link { margin-bottom: 4px; }
-  .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 32px; padding: 0; list-style: none; }
-  .steps li { position: relative; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-  .steps li:not(:last-child)::after { content: ''; position: absolute; top: 11px; left: 30px; right: 4px; height: 1px; background: var(--line2); }
-  .steps li.done:not(:last-child)::after { background: var(--ok); }
-  .dot {
-    position: relative; z-index: 1; display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 50%;
-    font-size: 12px; font-weight: 600; color: var(--muted); background: var(--bg); border: 1px solid var(--line2); font-variant-numeric: tabular-nums;
-  }
-  .done .dot { color: var(--ok); border-color: var(--ok); }
-  .current .dot { color: var(--on-brand); background: var(--brand); border-color: var(--brand); }
-  .steps div { display: flex; flex-direction: column; min-width: 0; }
-  .steps b { font-size: 13.5px; font-weight: 600; color: var(--fg); }
-  .todo b { color: var(--muted); font-weight: 500; }
-  .failed b { color: var(--muted); }
-  .steps span.num { min-height: 18px; margin-top: 2px; font-size: 12px; color: var(--muted); }
-
-  .refund { margin: -8px 0 24px; }
-  .refund .tx ul, .refund .tx p { margin-top: 2px; padding: 0; list-style: none; color: var(--muted); }
-
-  .layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 0 56px; align-items: start; border-top: 1px solid var(--line); }
-  .main { grid-column: 1; grid-row: 1; min-width: 0; }
-  .main > .sec:first-child { border-top: 0; }
-  .bill { grid-column: 2; grid-row: 1; position: sticky; top: 84px; padding-top: 32px; }
-  .bill-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .bill-head h2 { font-size: 15px; line-height: 24px; font-weight: 600; color: var(--fg); }
-  .bill-lines { margin-top: 12px; font-size: 13.5px; }
-  .bill-lines div { display: flex; justify-content: space-between; gap: 16px; padding: 4px 0; color: var(--muted); }
-  .bill-lines span:last-child { color: var(--body); }
-  .bill-total { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-top: 10px; padding-top: 14px; border-top: 1px solid var(--line); }
-  .bill-total span { font-size: 13px; color: var(--muted); }
-  .bill-total b { font-size: 28px; line-height: 1; font-weight: 600; letter-spacing: -.02em; color: var(--fg); }
-  .bill-note { display: flex; align-items: flex-start; gap: 6px; margin: 16px 0 12px; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
-  .bill-note :global(svg) { flex: none; margin-top: 3px; }
-  .bill-note.plain { display: block; }
-  .bill-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-
-  .pay { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 4px 0; }
-  .go { height: 44px; padding: 0 22px; font-size: 15px; }
-  .jump { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 320px; }
-  .jump .go { width: 100%; }
-  .retry { font-size: 12.5px; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line2); }
-  .wechat { font-size: 13px; line-height: 1.8; color: var(--warn); text-align: center; }
-  .or { display: flex; align-items: center; gap: 12px; width: 100%; margin-top: 4px; font-size: 12px; color: var(--faint); }
-  .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
-  .qr { width: 212px; height: 212px; padding: 12px; border-radius: 8px; background: var(--qr-paper); border: 1px solid var(--line); }
-  .qr.small { width: 172px; height: 172px; }
-  .hint { font-size: 12.5px; color: var(--muted); text-align: center; }
-  .hint.left { margin-top: 16px; text-align: left; }
-
-  .info { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
-  .info div { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 46px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
-  .info dt { flex: none; color: var(--muted); }
-  .info dd { min-width: 0; color: var(--fg); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .info dd.no { display: flex; align-items: center; gap: 2px; }
-  .info code { font-family: var(--font-mono); font-size: 12.5px; }
-  .info :global(.ok) { color: var(--ok); }
-
-  @media (max-width: 960px) {
-    .layout { grid-template-columns: minmax(0, 1fr); }
-    .bill { grid-column: 1; grid-row: 1; position: static; padding-bottom: 28px; }
-    .main { grid-row: 2; border-top: 1px solid var(--line); }
-  }
-  @media (max-width: 720px) {
-    .steps { gap: 8px; }
-    .info { grid-template-columns: 1fr; }
-  }
-</style>

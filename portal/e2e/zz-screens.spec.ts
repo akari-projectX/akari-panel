@@ -18,7 +18,7 @@ const VP = {
 } as const;
 
 /** run 返回一个元素时只截它，返回 'viewport' 时截可见区域，否则截整页 */
-type Shot = { name: string; account: string; run: (page: Page, device: Device) => Promise<Locator | 'viewport' | void> };
+type Shot = { name: string; account: string; /** 只拍浅色，文件名不带主题（参照图 pay-success-desktop.png 这样命名） */ plain?: boolean; run: (page: Page, device: Device) => Promise<Locator | 'viewport' | void> };
 
 /** 每一步最多等这么久：拍不到就记一条注解，接着拍下一张 */
 const WAIT = 10_000;
@@ -38,8 +38,9 @@ async function shotsFor(device: Device, theme: Theme, browser: Browser, shots: S
           if (s.account) await signIn(page, s.account);
           who = s.account;
         }
+        if (s.plain && theme !== 'light') continue;
         const what = await s.run(page, device);
-        const path = `test-results/screens/${s.name}-${device}-${theme}.png`;
+        const path = `test-results/screens/${s.name}-${device}${s.plain ? '' : `-${theme}`}.png`;
         if (what === 'viewport') await page.screenshot({ path });
         else if (what) await what.screenshot({ path });
         else await page.screenshot({ path, fullPage: true });
@@ -101,6 +102,29 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
         return sec;
       },
     })),
+    /* 商店：整页、套餐卡片一列 */
+    { name: 'shop', account: 'user@e2e.test', run: (page) => ready(page, '/shop', '选择套餐') },
+    {
+      name: 'shop-cards', account: 'user@e2e.test',
+      run: async (page) => { await ready(page, '/shop', '选择套餐'); const c = page.locator('.plan-cols'); await c.waitFor({ timeout: WAIT }); return c; },
+    },
+    /* 付款成功弹窗：商店当场付清后带着 paid 跳到订单页的那一刻（这里用一张已付款的订单模拟，只拍浅色） */
+    {
+      name: 'pay-success', account: 'user@e2e.test', plain: true,
+      run: async (page) => {
+        await ready(page, '/orders');
+        const res = await page.request.get('/api/v1/me/orders');
+        const paid = ((await res.json()) as { id: string; status: string; refunded_at: string | null }[]).find((o) => o.status === 'paid' && !o.refunded_at);
+        if (!paid) throw new Error('no paid order to show');
+        await page.evaluate((id) => {
+          history.pushState({ paid: true }, '', `/orders/${id}`);
+          dispatchEvent(new PopStateEvent('popstate'));
+        }, paid.id);
+        await page.getByRole('dialog').waitFor({ timeout: WAIT });
+        await page.waitForTimeout(900);
+        return 'viewport';
+      },
+    },
     /* 加载态：订单列表的请求挂住不回，拍骨架（拍完上下文就关，拦截随之消失） */
     {
       name: 'loading-skeleton', account: 'user@e2e.test',
