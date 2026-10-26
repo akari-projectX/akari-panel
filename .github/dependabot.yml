@@ -1,16 +1,19 @@
 # Dependency version updates (rule 2026-10-22: every dependency stays on its
-# latest version). Weekly, grouped: one PR per ecosystem/directory for
+# latest version). Monthly (2026-10-26), grouped: one PR per ecosystem for
 # minor+patch, majors in their own PR so breaking changes are reviewed alone.
+# Minor/patch PRs are auto-merged into the merge queue by
+# .github/workflows/dependabot-automerge.yml; majors never are.
 # A 3-day cooldown skips releases younger than that (supply-chain hygiene).
-# Security updates are separate (repo setting) and are not delayed.
+# Security updates are separate (repo setting), unaffected by this schedule.
 version: 2
 updates:
+  # Admin and portal share one PR for minor+patch.
   - package-ecosystem: npm
-    directory: /admin
-    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    directories: [/admin, /portal]
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
-    commit-message: { prefix: "deps(admin)" }
+    commit-message: { prefix: "deps(npm)" }
     # TypeScript 7 (the Go compiler) ships no compiler API: typescript-eslint
     # (admin) and svelte-check (portal) still require TypeScript < 7. Remove
     # this once they support it (user rule: deps on latest, blockers documented).
@@ -18,33 +21,15 @@ updates:
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
     groups:
-      admin-minor:
+      npm-minor:
         update-types: [minor, patch]
-      admin-major:
-        update-types: [major]
-
-  - package-ecosystem: npm
-    directory: /portal
-    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
-    cooldown: { default-days: 3 }
-    open-pull-requests-limit: 5
-    commit-message: { prefix: "deps(portal)" }
-    # TypeScript 7 (the Go compiler) ships no compiler API: typescript-eslint
-    # (admin) and svelte-check (portal) still require TypeScript < 7. Remove
-    # this once they support it (user rule: deps on latest, blockers documented).
-    ignore:
-      - dependency-name: typescript
-        update-types: ["version-update:semver-major"]
-    groups:
-      portal-minor:
-        update-types: [minor, patch]
-      portal-major:
+      npm-major:
         update-types: [major]
 
   # Root crate, bench/ and fuzz/ (separate lockfiles) move together.
   - package-ecosystem: cargo
     directories: [/, /bench, /fuzz]
-    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(rust)" }
@@ -56,7 +41,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly, day: monday, time: "03:00", timezone: Asia/Shanghai }
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "ci" }
