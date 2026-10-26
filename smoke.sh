@@ -231,6 +231,17 @@ p["sign_type"] = "RSA2"; p["sign"] = base64.b64encode(sig).decode()
 if len(sys.argv) > 5: p["total_amount"] = sys.argv[5]  # tamper after signing
 print(urllib.parse.urlencode(p), end="")
 PY
+# stop_proc PID: SIGTERM and wait until the process is gone. Sections run in
+# subshells, so `wait` cannot reap a process an earlier section started (it
+# returns at once): poll instead, so a restarted agent never overlaps the old
+# one (identity files, finals.json written on graceful stop). 30 s, then KILL.
+stop_proc() {
+  [ -n "${1:-}" ] || return 0
+  kill "$1" 2>/dev/null || return 0
+  for _ in $(seq 1 300); do kill -0 "$1" 2>/dev/null || { wait "$1" 2>/dev/null || true; return 0; }; sleep 0.1; done
+  kill -KILL "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
 start_panel() {  # $1 = log file; the panel's exit status lands in "$1.exit"
   # A section runs in a subshell, so a later section cannot `wait` for a panel
   # an earlier one started: a wrapper records the exit status instead.
@@ -3393,7 +3404,7 @@ OLD_SRC="$LOG/old-agent-src"
 mkdir -p "$OLD_SRC"
 if git -C "$AGENT_DIR" archive 2b3e7e3 2>/dev/null | tar -x -C "$OLD_SRC" \
     && (cd "$OLD_SRC" && go build -o "$LOG/old-agent" . ) >"$LOG/old-build.log" 2>&1; then
-  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  stop_proc "$AGENT_PID"
   # The old agent only reads v1 bootstrap files (key inside): build one from
   # the enrolled identity — the same shape as pre-M1c bootstrap files.
   python3 - "$BOOT" "$LOG/state-main/identity.pem" "$LOG/v1-bootstrap.toml" <<'PY'
@@ -3416,7 +3427,7 @@ PY
   grep '"msg":"applying config snapshot"' "$LOG/old-agent.log" | tail -1 | matches '"config_version":0' \
     || { echo "FAIL: old agent did not get the empty state"; cat "$LOG/old-agent.log"; exit 1; }
   wait_port closed 10
-  kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+  stop_proc "$AGENT_PID"
   "$AGENT" -config "$BOOT" -state-dir "$LOG/state-main" >>"$LOG/agent.log" 2>&1 &
   AGENT_PID=$!
   for _ in $(seq 1 15); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
@@ -3654,7 +3665,7 @@ last_json "(d['webhook_secret_set'], 'webhook_secret' in d)" | matches -Fx '(Tru
   || { echo "FAIL: webhook test"; cat /tmp/akari-smoke/last; exit 1; }
 # Stop the agent: the node goes offline, the alert fires (one evaluator),
 # the webhook gets a signed "firing" for this node.
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 cat >"$LOG/hook-check.py" <<'PY'
 import hashlib, hmac, json, sys
 path, secret, node, event = sys.argv[1:5]
@@ -3782,7 +3793,7 @@ done
 # with the row.
 [ "$(psql_q "SELECT count(*) FROM revoked_certs WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: pending server left a tombstone"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM server_enrollments WHERE server_id='$SPARE_ID'")" = "0" ] || { echo "FAIL: enrollment token outlived its server"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 echo "server delete: ok (empty state, revoked, closed; $COUNTERS_BEFORE billing rows kept)"
 
@@ -3917,9 +3928,9 @@ while IFS= read -r f; do
   [ "$(stat -c %a "$f")" = "$want" ] || { echo "FAIL: $f is not 0$want"; exit 1; }
 done < <(find "$LOG/state-renew" -mindepth 1)
 grep -q 'PRIVATE KEY' "$LOG/renew-agent.log" "$LOG/panel-b.log" && { echo "FAIL: key material in a log"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
-kill $PANEL_B 2>/dev/null; wait $PANEL_B 2>/dev/null || true
+stop_proc "$PANEL_B"
 PANEL_B=""
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/servers/$API_SERVER")" = "202" ] || { echo "FAIL: delete api-node's server"; exit 1; }
 echo "enrollment + renewal: ok"
@@ -4541,7 +4552,7 @@ grep -q '^server_name = "127.0.0.1"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI b
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent.log" || { echo "FAIL: r22-old agent never connected"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 [ "$(psql_q "SELECT server_name FROM servers WHERE name='r22-old'")" = "127.0.0.1" ] || { echo "FAIL: enrolled server name not recorded"; exit 1; }
 
@@ -4740,7 +4751,7 @@ docker rm -f akari-smoke-r22 >/dev/null
 AGENT_PID=$!
 for _ in $(seq 1 30); do grep -q "channel established" "$LOG/r22-old-agent2.log" && break; sleep 0.5; done
 grep -q "channel established" "$LOG/r22-old-agent2.log" || { echo "FAIL: old-server-name agent lost after the change"; tail -5 "$LOG/r22-old-agent2.log"; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 # The current node name cannot be removed; the built-in one neither.
 for n in grpc.akari.test localhost; do
@@ -5074,7 +5085,7 @@ for m in "SIGTERM received" "agent sessions ended" "final traffic flush done" "s
   grep -q "$m" "$LOG/panel.log" || { echo "FAIL: shutdown log lacks '$m'"; tail -8 "$LOG/panel.log"; exit 1; }
 done
 grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent stream not ended with 'panel shutting down'"; grep 'channel closed' "$LOG/term-agent.log" | tail -2; exit 1; }
-kill $AGENT_PID 2>/dev/null; wait $AGENT_PID 2>/dev/null || true
+stop_proc "$AGENT_PID"
 AGENT_PID=""
 # Back to no node domain: the restart below must not bring grpc.advertise back.
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node (S4-3)"; exit 1; }
@@ -5148,5 +5159,5 @@ for p in "$PREFIX" "${OLD_BASE##*/}" smoke-door-2026; do
   grep -qF "$p" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: an admin prefix appears in the panel log"; exit 1; }
 done
 grep -qF "$NEW_TOKEN" "$LOG/panel.log" "$LOG/panel2.log" && { echo "FAIL: a subscription token appears in the panel log"; exit 1; }
-kill $PANEL_PID 2>/dev/null; wait $PANEL_PID 2>/dev/null || true
+stop_proc "$PANEL_PID"
 echo "admin prefix, allowlist, subscription path: ok"
