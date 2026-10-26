@@ -74,7 +74,7 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
-    font-synthesis: none;
+    font-synthesis: weight; /* 系统汉字字体没有粗体时（部分安卓 / Linux）合成 600，否则标题会退成常规；不合成斜体 */
     overflow-x: hidden;
   }
   /* 英文界面打开字体的比例宽度：中文字体的 ’ “ ” … 是全角的，英文里会把 month’s 撑出两道空；中文界面不动 */
