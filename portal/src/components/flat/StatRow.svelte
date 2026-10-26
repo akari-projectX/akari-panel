@@ -8,7 +8,7 @@
   let { items }: { items: Stat[] } = $props();
 </script>
 
-<div class="statrow">
+<div class={['statrow', items.length === 3 && 'n3', items.length === 2 && 'n2']}>
   {#each items as s (s.k)}
     <div>
       <div class="stat-v">{s.v}{#if s.unit}<span class="stat-unit">{s.unit}</span>{/if}</div>

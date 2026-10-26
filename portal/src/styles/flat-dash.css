@@ -13,12 +13,16 @@
   .page-notices { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 
   /* 指标：数字在上、标签在下、无分隔线 */
-  .statrow { display: flex; flex-wrap: wrap; gap: 56px 72px; }
-  .statrow > div { min-width: 0; }
+  /* 等宽栅格：列在各行之间对齐；同一行的卡片等高，说明最多两行。手机 2 列，宽屏 4 列（3 项时 3 列，避免留空洞） */
+  .statrow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 48px; }
+  .statrow.n3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .statrow.n2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .statrow > div { display: flex; min-width: 0; flex-direction: column; }
   .stat-v { font-size: 36px; font-weight: var(--fw-strong); letter-spacing: -.025em; line-height: 1.02; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .stat-unit { margin-left: .22em; font-size: .42em; font-weight: var(--fw-regular); letter-spacing: 0; color: var(--muted); }
   .stat-k { margin-top: 12px; font-size: 13px; letter-spacing: -.004em; color: var(--muted); }
-  .stat-x { margin-top: 10px; max-width: 210px; font-size: 12.5px; color: var(--muted); }
+  .stat-x { margin-top: 10px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+  .stat-x:has(.stat-arrow) { display: block; }
   .stat-bar { display: block; height: 4px; margin-bottom: 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--brand) 20%, transparent); }
   .stat-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--brand); }
 
@@ -52,12 +56,17 @@
   .split2 { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 991px) {
-  .statrow { gap: 36px 48px; }
   .stat-v { font-size: 32px; }
   .split2 { gap: 44px; }
 }
+@media (max-width: 900px) {
+  .statrow, .statrow.n3 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 24px; }
+}
 @media (max-width: 640px) {
-  .statrow { gap: 28px 40px; }
+  .stat-v { font-size: 28px; }
+}
+@media (max-width: 380px) {
+  .stat-v { font-size: 24px; }
 }
 .wk { --wk-down: var(--brand); --wk-up: var(--brand-2); --wk-h: 200px; --wk-y: 34px; }
 .wk-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 18px; font-size: 12.5px; color: var(--muted); }

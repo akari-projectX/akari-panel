@@ -64,9 +64,9 @@
 
 <Section>
   <StatRow items={[
-    { k: t('累计消费'), v: formatMoney(paidTotal), x: t('已付款、未退款的订单（含余额支付）') },
+    { k: t('累计消费'), v: formatMoney(paidTotal), x: t('已付款且未退款') },
     { k: t('订单总数'), v: String(all.length), unit: t(' 笔').trim(), x: last ? tp('最近一笔 {d}', { d: formatDateTime(last.created_at) }) : t('还没有下过单') },
-    { k: t('待支付'), v: String(pendingCount), unit: t(' 笔').trim(), x: t('超时未支付将自动关闭') },
+    { k: t('待支付'), v: String(pendingCount), unit: t(' 笔').trim(), x: t('超时自动关闭') },
     { k: t('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—', x: t('下单时可以选择抵扣') },
   ]} />
 </Section>
