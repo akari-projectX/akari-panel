@@ -1,5 +1,5 @@
 <script lang="ts" module>
-  export type MenuItem = { id: string; label: string; selected?: boolean; onselect: () => void };
+  export type MenuItem = { id: string; label: string; selected?: boolean; onselect: () => void; /** 第二行小字 */ sub?: string; /** 右侧品牌色小字（「下载」「看教程」） */ tail?: string };
 </script>
 
 <script lang="ts">
@@ -103,7 +103,12 @@
           data-selected={item.selected ? '' : undefined}
           onclick={() => choose(item)}
         >
-          <span>{item.label}</span>
+          {#if item.sub || item.tail}
+            <span class="mi"><span class="mi-t">{item.label}</span>{#if item.sub}<span class="mi-s">{item.sub}</span>{/if}</span>
+            {#if item.tail}<span class="mi-x">{item.tail}</span>{/if}
+          {:else}
+            <span>{item.label}</span>
+          {/if}
           {#if item.selected}<Check size={14} strokeWidth={2} aria-hidden="true" />{/if}
         </button>
       {/each}
@@ -114,16 +119,20 @@
 <style>
   .menu-wrap { position: relative; display: inline-flex; }
   .menu-pop {
-    position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; min-width: 200px; padding: 6px 0;
-    background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--pop-shadow);
+    position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; min-width: 208px; padding: 4px;
+    background: var(--popover); border: 1px solid var(--line); border-radius: calc(var(--radius) * .8); box-shadow: var(--pop-shadow);
     animation: pop-in var(--dur-hover) var(--ease-out);
   }
   .menu-pop.end { left: auto; right: 0; }
   [role='menuitem'] {
-    display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 7px 14px;
-    border: 0; border-radius: 0; background: none; color: var(--body); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 6px 8px;
+    border: 0; border-radius: calc(var(--radius) * .6); background: none; color: var(--fg); font: inherit; font-size: 14px; text-align: left; cursor: pointer;
   }
-  [role='menuitem']:hover, [role='menuitem']:focus-visible { background: var(--hover); color: var(--fg); box-shadow: none; }
+  [role='menuitem']:hover, [role='menuitem']:focus-visible { background: var(--hover); color: var(--fg); box-shadow: none; outline: none; }
+  .mi { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 2px; }
+  .mi-t { font-size: 13.5px; font-weight: 500; }
+  .mi-s { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
+  .mi-x { flex: none; font-size: 11.5px; font-weight: 500; color: var(--brand); }
   [role='menuitem'] :global(svg) { color: var(--brand); }
   @media (prefers-reduced-motion: reduce) {
     .menu-pop { animation: none; }

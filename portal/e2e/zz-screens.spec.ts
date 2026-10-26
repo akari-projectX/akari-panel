@@ -86,6 +86,21 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
       run: (page: Page) => ready(page, path),
     })),
+    /* 仪表盘的「近 7 日流量趋势」：整块、以及点开今天那一根的提示 */
+    ...(['dashboard-chart', 'dashboard-chart-tip'] as const).map((name) => ({
+      name, account: 'user@e2e.test',
+      run: async (page: Page, device: Device) => {
+        await ready(page, '/');
+        const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量趋势' }) });
+        await sec.scrollIntoViewIfNeeded();
+        if (name === 'dashboard-chart-tip') {
+          if (device === 'desktop') await sec.locator('.wk-col').last().hover();
+          else await sec.locator('.wk-col').last().tap();
+          await sec.locator('.wk-tip').waitFor({ timeout: WAIT });
+        }
+        return sec;
+      },
+    })),
     /* 加载态：订单列表的请求挂住不回，拍骨架（拍完上下文就关，拦截随之消失） */
     {
       name: 'loading-skeleton', account: 'user@e2e.test',

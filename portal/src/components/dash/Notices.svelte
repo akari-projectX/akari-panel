@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Megaphone from '@lucide/svelte/icons/megaphone';
   import Clock from '@lucide/svelte/icons/clock';
   import Headphones from '@lucide/svelte/icons/headphones';
   import Mail from '@lucide/svelte/icons/mail';
@@ -18,12 +19,13 @@
    * 页面提醒按急迫程度在后：没付完的订单（components/pending-order.tsx）→ 客服回复了工单 → 流量快用完了（样稿新增）。
    * 最新公告是上面单独的横幅（Overview）。
    */
-  let { order, onorderchange, replied, low }: {
+  let { order, onorderchange, replied, latest, onopen }: {
     order: MyOrder | null;
     onorderchange: () => void;
     replied: TicketRow[];
-    /** 有额度的套餐剩下不到一成：剩余字节、百分比、下次重置（可无） */
-    low: { left: string; pct: number; reset: string | null } | null;
+    /** 最新一条没读过的公告：标题与摘要；onopen = 点「查看详情」 */
+    latest: { title: string; brief: string } | null;
+    onopen: () => void;
   } = $props();
 
   const NUDGE_KEY = 'akari.verify-nudge';
@@ -67,76 +69,71 @@
     });
   }
 
-  const any = $derived(renewal || (me && !me.email_verified && !hidden) || order || replied.length > 0 || low);
 </script>
 
-{#if me && any}
-  <div class="notes" data-page-notices>
-    {#if renewal}
-      <div class="note warn" role="status">
-        <TriangleAlert size={16} strokeWidth={1.75} aria-hidden="true" />
-        <p class="tx">
-          <b>{me.quota_exhausted ? t('本期流量已用完，服务已暂停') : t('套餐已到期，服务已暂停')}</b><span class="gap"></span>
-          <span>{me.quota_exhausted
-            ? t('购买流量重置包或续费后立即恢复；订阅链接和节点在恢复前不可用。')
-            : t('续费后立即恢复；订阅链接和节点在恢复前不可用。')}</span>
-        </p>
-        <div class="acts"><a class="btn sm pri" href={R.shop}>{me.quota_exhausted ? t('去恢复') : t('去续费')}</a></div>
+{#if me}
+  {#if renewal}
+    <div role="status" class="notice">
+      <TriangleAlert size={16} strokeWidth={1.75} class="ic-warn" aria-hidden="true" />
+      <div class="grow">
+        <div class="nt">{me.quota_exhausted ? t('本期流量已用完，服务已暂停') : t('套餐已到期，服务已暂停')}</div>
+        <div class="nd wrap2">{me.quota_exhausted
+          ? t('购买流量重置包或续费后立即恢复；订阅链接和节点在恢复前不可用。')
+          : t('续费后立即恢复；订阅链接和节点在恢复前不可用。')}</div>
       </div>
-    {/if}
+      <a class="btn sm pri" href={R.shop}>{me.quota_exhausted ? t('去恢复') : t('去续费')}</a>
+    </div>
+  {/if}
 
-    {#if !me.email_verified && !hidden}
-      <div class="note" role="status">
-        <Mail size={16} strokeWidth={1.75} aria-hidden="true" />
-        <p class="tx">
-          <b>{t('邮箱还没有验证')}</b><span class="gap"></span>
-          <span>{t('到期提醒、流量提醒和付款收据只发到已验证的邮箱，找回密码也需要它。')}</span>
-        </p>
-        <div class="acts">
-          <button type="button" class="btn sm ghost" onclick={later}>{t('稍后')}</button>
-          <button type="button" class="btn sm" onclick={verify}>{t('去验证')}</button>
-        </div>
+  {#if !me.email_verified && !hidden}
+    <div role="status" class="notice">
+      <Mail size={16} strokeWidth={1.75} class="ic-brand" aria-hidden="true" />
+      <div class="grow">
+        <div class="nt">{t('邮箱还没有验证')}</div>
+        <div class="nd wrap2">{t('到期提醒、流量提醒和付款收据只发到已验证的邮箱，找回密码也需要它。')}</div>
       </div>
-    {/if}
+      <div class="nx">
+        <button type="button" class="btn sm ghost muted" onclick={later}>{t('稍后')}</button>
+        <button type="button" class="btn sm" onclick={verify}>{t('去验证')}</button>
+      </div>
+    </div>
+  {/if}
 
-    {#if order}
-      <div class="note" role="status">
-        <Clock size={16} strokeWidth={1.75} aria-hidden="true" />
-        <p class="tx">
-          <b>{t('你有一笔待支付的订单')}</b><span class="gap"></span>
-          <span class="num">{summary} · {expired ? t('即将自动关闭') : tp('{t} 前未支付将自动关闭', { t: formatTime(order.expires_at) })}</span>
-        </p>
-        <div class="acts">
-          <button type="button" class="btn sm ghost" disabled={cancelling.busy} onclick={() => cancel(order)}>{t('取消订单')}</button>
-          <a class="btn sm pri" href={R.order(order.id)}>{t('去支付')}</a>
-        </div>
+  {#if order}
+    <div role="status" class="notice warn-bg">
+      <Clock size={16} strokeWidth={1.75} class="ic-warn" aria-hidden="true" />
+      <div class="grow">
+        <div class="nt">{t('你有一笔待支付的订单')}</div>
+        <div class="nd">{summary} · {expired ? t('即将自动关闭') : tp('{t} 前未支付将自动关闭', { t: formatTime(order.expires_at) })}</div>
       </div>
-    {/if}
+      <div class="nx">
+        <button type="button" class="btn sm ghost muted" disabled={cancelling.busy} onclick={() => cancel(order)}>{t('取消订单')}</button>
+        <a class="btn sm pri" href={R.order(order.id)}>{t('去支付')}</a>
+      </div>
+    </div>
+  {/if}
 
-    {#if replied.length > 0}
-      <div class="note">
-        <Headphones size={16} strokeWidth={1.75} aria-hidden="true" />
-        <p class="tx">
-          <b>{t('管理员已回复你的工单')}</b><span class="gap"></span>
-          <span>{replied[0].subject}{#if replied.length > 1}&nbsp;{tp('等 {n} 张', { n: replied.length })}{/if}</span>
-        </p>
-        <div class="acts"><a class="btn sm" href={R.ticket(replied[0].id)}>{t('查看回复')}</a></div>
+  {#if replied.length > 0}
+    <div class="notice">
+      <Headphones size={16} strokeWidth={1.75} class="ic-ok" aria-hidden="true" />
+      <div class="grow">
+        <div class="nt">{t('管理员已回复你的工单')}</div>
+        <div class="nd">{replied[0].subject}{#if replied.length > 1}&nbsp;{tp('等 {n} 张', { n: replied.length })}{/if}</div>
       </div>
-    {/if}
+      <a class="btn sm" href={R.ticket(replied[0].id)}>{t('查看回复')}</a>
+    </div>
+  {/if}
 
-    {#if low}
-      <div class="note warn" role="status">
-        <TriangleAlert size={16} strokeWidth={1.75} aria-hidden="true" />
-        <p class="tx">
-          <b>{t('流量快用完了')}</b><span class="gap"></span>
-          <span class="num">{low.reset
-            ? tp('只剩 {v}（{p}%），{d} 重置。', { v: low.left, p: low.pct, d: low.reset })
-            : tp('只剩 {v}（{p}%）。', { v: low.left, p: low.pct })}</span>
-        </p>
-        <div class="acts"><a class="btn sm" href={R.shop}>{t('购买重置包')}</a></div>
+  {#if latest}
+    <div class="notice">
+      <Megaphone size={16} strokeWidth={1.75} class="ic-brand" aria-hidden="true" />
+      <div class="grow">
+        <div class="nt">{latest.title}</div>
+        {#if latest.brief}<div class="nd">{latest.brief}</div>{/if}
       </div>
-    {/if}
-  </div>
+      <button type="button" class="btn sm" onclick={onopen}>{t('查看详情')}</button>
+    </div>
+  {/if}
 {/if}
 
 {#if verifyLoaded}

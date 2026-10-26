@@ -1,24 +1,28 @@
 <script lang="ts">
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Zap from '@lucide/svelte/icons/zap';
   import type { MyNode } from '@/api';
   import { formatRate } from '@/lib/format';
-  import { LOAD_TEXT, NODES_REFRESH_MS, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, sortTags, stripFlag } from '@/lib/node';
+  import { LOAD_TEXT, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
   import Empty from '../Empty.svelte';
+  import Flag from '../Flag.svelte';
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
+  import PaneHead from '../flat/PaneHead.svelte';
+  import Pager from '../flat/Pager.svelte';
+  import Row from '../flat/Row.svelte';
+  import NodeLegend from '../NodeLegend.svelte';
   import { t, tp } from '$lib/i18n.svelte';
-  import { multClass, stClass } from '$lib/lines';
   import type { Resource } from '$lib/resource.svelte';
   import { R } from '$lib/routes';
 
   /*
-   * 订阅内的线路（样稿：地区码等宽灰字代替国旗、状态 = 色点 + 文字、倍率纯文字右对齐）。
-   * 行为同 React 门户：能连的排前面（延迟低的在上），维护中 / 离线的沉底、置灰——也列出来，用户才知道哪条暂时用不了；
-   * 每页 6 条可翻页；每 30 秒刷新（Overview 里的 autoReload）。续费范围：线路暂不可用。
+   * 订阅内的线路（v1.4.0 pages/dash/dashboard.tsx 的右栏）：汇总三格（可用 / 平均延迟 / 覆盖地区）、状态图例、
+   * 每页 5 条的线路行（国旗 + 名称 + 标签、状态 · 延迟 · 负载、倍率徽标）。能连的排前面（延迟低的在上），维护中 / 离线的沉底置灰。
+   * 每 30 秒刷新（Overview 里的 autoReload）。续费范围：线路暂不可用。
    */
   let { nodes, full }: { nodes: Resource<MyNode[]>; full: boolean } = $props();
 
-  const PAGE = 6;
+  const PAGE = 5;
   let page = $state(1);
 
   const list = $derived.by(() => {
@@ -30,64 +34,69 @@
   const pages = $derived(Math.max(1, Math.ceil(list.length / PAGE)));
   const cur = $derived(Math.min(page, pages));
   const paged = $derived(list.slice((cur - 1) * PAGE, cur * PAGE));
+  const regions = $derived([...new Set(list.map(nodeCC).filter((c): c is string => !!c))]);
+  const avg = $derived.by(() => {
+    const xs = list.filter(nodeUp).map(nodeLatency).filter((x): x is number => x != null);
+    return xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+  });
 </script>
 
-<section class="sec" aria-labelledby="h-lines">
-  <div class="sh">
+<PaneHead>
+  {#snippet title()}<Zap size={16} strokeWidth={1.75} aria-hidden="true" />{t('订阅内的线路')}{/snippet}
+  {#snippet desc()}{full && nodes.data ? tp('{on} 条可用，共 {n} 条', { on: online, n: nodes.data.length }) : t('订阅可用的线路')}{/snippet}
+  {#snippet extra()}{#if full}<a class="btn link-btn" href={R.nodes}>{t('全部线路')}</a>{/if}{/snippet}
+</PaneHead>
+
+{#if !full}
+  <Empty title={t('线路暂不可用')} desc={t('续费或购买流量重置包后，线路会自动恢复。')} />
+{:else if nodes.loading && !nodes.data}
+  <Loading />
+{:else if nodes.error && !nodes.data}
+  <LoadError error={nodes.error} onretry={nodes.reload} />
+{:else if list.length === 0}
+  <Empty title={t('订阅里还没有可用线路')} desc={t('套餐生效后线路会自动出现。')} />
+{:else}
+  <div class="ns">
     <div>
-      <h2 id="h-lines">{t('订阅内的线路')}</h2>
-      <p>
-        {#if full && nodes.data}
-          {tp('{on} 条可用，共 {n} 条', { on: online, n: nodes.data.length })} · {tp('延迟为面板测得，每 {n} 秒刷新', { n: NODES_REFRESH_MS / 1000 })}
-        {:else}
-          {t('订阅可用的线路')}
-        {/if}
-      </p>
+      <div class="ns-n">{online}<span class="stat-unit">/ {list.length}</span></div>
+      <div class="ns-k">{t('可用')}</div>
+      {#if list.length <= 24}
+        <div class="ns-bars">{#each list as n, i (nodeKey(n, i))}<i class={nodeUp(n) ? 'on' : ''}></i>{/each}</div>
+      {:else}
+        <div class="ns-prog"><i style:width="{(online / list.length) * 100}%"></i></div>
+      {/if}
     </div>
-    {#if full}<a class="link" href={R.nodes}>{t('全部线路')}<ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" /></a>{/if}
-  </div>
-
-  {#if !full}
-    <Empty title={t('线路暂不可用')} desc={t('续费或购买流量重置包后，线路会自动恢复。')} />
-  {:else if nodes.loading && !nodes.data}
-    <Loading rows={4} />
-  {:else if nodes.error && !nodes.data}
-    <LoadError error={nodes.error} onretry={nodes.reload} />
-  {:else if list.length === 0}
-    <Empty title={t('订阅里还没有可用线路')} desc={t('套餐生效后线路会自动出现。')} />
-  {:else}
-    <div class="list">
-      {#each paged as n, i (nodeKey(n, (cur - 1) * PAGE + i))}
-        {@const up = nodeUp(n)}
-        {@const ms = nodeLatency(n)}
-        <div class={up ? 'li' : 'li dim'} data-node-status={n.status}>
-          <span class="rc">{nodeCC(n) ?? '—'}</span>
-          <div class="main">
-            <div class="t"><span>{stripFlag(n.entrance)}</span>{#each sortTags(n.tags) as tag (tag)}<i class="ntag">{tag}</i>{/each}</div>
-          </div>
-          <span class="st {stClass(n)}">
-            {t(STATUS_TEXT[n.status])}{#if up && ms != null}&nbsp;· {ms} ms{/if}{#if up && n.load}<span class="ld">&nbsp;· <span class="load-{n.load}" data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span></span>{/if}
-          </span>
-          <span class="mult {up ? multClass(n.rate) : ''}">×{formatRate(n.rate)}</span>
-        </div>
-      {/each}
+    <div>
+      <div class="ns-n">{avg ?? '—'}{#if avg != null}<span class="stat-unit">ms</span>{/if}</div>
+      <div class="ns-k">{t('平均延迟')}</div>
     </div>
-    {#if pages > 1}
-      <div class="pager">
-        <span class="num">{tp('第 {a} / {b} 页 · 共 {n} 条线路', { a: cur, b: pages, n: list.length })}</span>
-        <div>
-          <button type="button" class="btn sm" disabled={cur <= 1} onclick={() => (page = cur - 1)}>{t('上一页')}</button>
-          <button type="button" class="btn sm" disabled={cur >= pages} onclick={() => (page = cur + 1)}>{t('下一页')}</button>
-        </div>
+    <div>
+      <div class="ns-n">{regions.length}<span class="stat-unit">{t('地区')}</span></div>
+      <div class="ns-k">{t('覆盖')}</div>
+      <div class="ns-flags">
+        {#each regions.slice(0, 6) as cc (cc)}<Flag {cc} w={18} h={12} />{/each}
+        {#if regions.length > 6}<span class="tnum">+{regions.length - 6}</span>{/if}
       </div>
-    {/if}
-  {/if}
-</section>
-
-<style>
-  .t .ntag { font-style: normal; }
-  /* 窄屏：线路名优先，标签与负载让位（线路页有完整信息） */
-  @media (max-width: 720px) {
-    .t .ntag, .ld { display: none; }
-  }
-</style>
+    </div>
+  </div>
+  <NodeLegend />
+  {#each paged as n, i (nodeKey(n, i))}
+    {@const cc = nodeCC(n)}
+    {@const up = nodeUp(n)}
+    <Row off={!up}>
+      {#snippet avatar()}{#if cc}<Flag {cc} w={22} h={15} />{:else}<span class="flag ph" style:width="22px" style:height="15px"></span>{/if}{/snippet}
+      {#snippet title()}
+        <span class="nt">{stripFlag(n.entrance)}{#if n.tags.length}<span class="tags">{#each sortTags(n.tags) as tg (tg)}<span>{tg}</span>{/each}</span>{/if}</span>
+      {/snippet}
+      {#snippet desc()}
+        <span class="nd">
+          <span class="nstate" data-node-status={n.status}><i></i>{t(STATUS_TEXT[n.status])}</span>
+          {#if up && nodeLatency(n) != null}<span class="tnum">· {nodeLatency(n)} ms</span>{/if}
+          {#if up && n.load}<span class={['nload', n.load]} data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span>{/if}
+        </span>
+      {/snippet}
+      {#snippet extra()}<span class={['rate', up ? rateTone(n.rate) : 'off']}>×{formatRate(n.rate)}</span>{/snippet}
+    </Row>
+  {/each}
+  <Pager page={cur} {pages} onchange={(p) => (page = p)} meta={tp('第 {a} / {b} 页 · 共 {n} 条线路', { a: cur, b: pages, n: list.length })} />
+{/if}

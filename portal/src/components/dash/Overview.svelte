@@ -1,13 +1,20 @@
 <script lang="ts">
-  import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import Pin from '@lucide/svelte/icons/pin';
-  import X from '@lucide/svelte/icons/x';
   import { contentApi, meApi, orderApi, ticketApi, walletApi, type Announcement, type Announcements } from '@/api';
   import { summarize } from '@/lib/content-text';
   import { K } from '@/lib/cache';
-  import { daysLeft, formatBytes, formatDate, formatMoney, formatMonthDay, fromNow, resetPeriodText, trafficUsage, yuan } from '@/lib/format';
-  import { NODES_REFRESH_MS, nodeUp } from '@/lib/node';
+  import { addDays, daysLeft, formatBytes, formatDate, formatMoney, fromNow, siteToday, trafficUsage } from '@/lib/format';
+  import { trafficDays } from '@/lib/traffic';
+  import { NODES_REFRESH_MS } from '@/lib/node';
+  import TrendingUp from '@lucide/svelte/icons/trending-up';
+  import Megaphone from '@lucide/svelte/icons/megaphone';
+  import PageTitle from '../flat/PageTitle.svelte';
+  import PaneHead from '../flat/PaneHead.svelte';
+  import Row from '../flat/Row.svelte';
+  import Pin from '@lucide/svelte/icons/pin';
+  import Section from '../flat/Section.svelte';
+  import Split from '../flat/Split.svelte';
+  import StatRow, { type Stat } from '../flat/StatRow.svelte';
+  import WeekChart from './WeekChart.svelte';
   import Empty from '../Empty.svelte';
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
@@ -15,7 +22,6 @@
   import DocsPreview from './DocsPreview.svelte';
   import NodesPreview from './NodesPreview.svelte';
   import Notices from './Notices.svelte';
-  import TrafficSection from './TrafficSection.svelte';
   import { announcementText } from '$lib/announcement';
   import { att } from '$lib/attention.svelte';
   import { auth } from '$lib/auth.svelte';
@@ -70,25 +76,50 @@
     markRead(a);
   }
 
-  /* ── 页面提醒 ── */
+  /* ── 页面提醒（按急迫程度：账户提醒 → 没付完的订单 → 客服回复了工单 → 最新公告） ── */
   const openOrder = $derived((orders.data ?? []).find((o) => o.status === 'pending') ?? null);
   const replied = $derived((tickets.data ?? []).filter((x) => x.unread && x.status !== 'closed'));
+  const latestInfo = $derived(latest ? { title: text(latest).title, brief: summarize(text(latest).html, 80) } : null);
+
+  /* ── 近 7 天（全站时区的日历日，今天算一天；续费范围的账户面板不给流量记录） ── */
+  const to = siteToday();
+  const from = addDays(to, -6);
+  const traffic = resource(() => ({ key: K.traffic(from, to), fetch: () => meApi.traffic(from, to), enabled: full }));
+  const week = $derived(trafficDays(traffic.data));
+  const totalDown = $derived(week.reduce((n, d) => n + d.downBytes, 0));
+  const totalUp = $derived(week.reduce((n, d) => n + d.upBytes, 0));
 
   /* ── 关键数字 ── */
   const usage = $derived(trafficUsage(plan?.traffic_used_bytes ?? me?.traffic_used_bytes, plan?.traffic_limit_bytes ?? null));
   const expiresAt = $derived(plan?.expires_at ?? me?.expires_at ?? null);
   const left = $derived(daysLeft(expiresAt));
-  const nextReset = $derived(plan?.plan?.next_reset_at ? formatMonthDay(plan.plan.next_reset_at) : null);
-  const limited = $derived(hasPlan && !usage.unlimited);
-  const lowPct = $derived(limited && usage.leftPct < 10);
-  const low = $derived(full && lowPct
-    ? { left: formatBytes(Math.max(0, (plan?.traffic_limit_bytes ?? 0) - (plan?.traffic_used_bytes ?? 0))), pct: Math.floor(usage.leftPct), reset: nextReset }
-    : null);
   const nodeList = $derived(nodes.data ?? []);
-  const online = $derived(nodeList.filter(nodeUp).length);
-  const maint = $derived(nodeList.filter((n) => n.status === 'maintenance').length);
-  const offline = $derived(nodeList.filter((n) => n.status === 'offline').length);
-  const subtitle = $derived(plan?.plan ? `${plan.plan.name} · ${resetPeriodText(plan.plan.period, t, tp)}` : t('还没有套餐'));
+  const online = $derived(nodeList.filter((n) => n.status === 'online').length);
+  const stats = $derived.by((): Stat[] => [
+    hasPlan && !usage.unlimited
+      ? {
+          k: t('剩余流量'), v: usage.left.toFixed(1), unit: 'GB',
+          bar: { pct: usage.leftPct, low: usage.leftPct < 10 },
+          x: tp('共 {t} GB，已用 {u} GB', { t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) }),
+        }
+      : { k: t('已用流量'), v: usage.used.toFixed(1), unit: 'GB', x: hasPlan ? t('套餐不限流量') : t('购买套餐后可用') },
+    /* 线路还没取到 / 没取到时写横杠，不写 0：0 条是「全部不可用」的意思 */
+    full
+      ? {
+          k: t('可用线路'), v: nodes.data ? String(online) : '—', unit: nodes.data ? t('条') : '',
+          x: nodes.data ? tp('共 {n} 条线路在订阅内', { n: nodes.data.length }) : nodes.error ? t('线路列表没能加载') : t('正在获取线路列表'),
+        }
+      : { k: t('可用线路'), v: '0', unit: t('条'), x: t('续费后恢复') },
+    {
+      k: t('套餐剩余'), v: !hasPlan ? '—' : left === null ? t('长期') : String(left), unit: hasPlan && left !== null ? t('天') : '',
+      x: expiresAt ? tp('到期 {d}', { d: formatDate(expiresAt) }) : hasPlan ? t('无到期时间') : t('还没有套餐'),
+    },
+    {
+      /* 单一余额：佣金入账就进余额（佣金追回后可以是负数），可提现的是其中一部分 */
+      k: t('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—',
+      x: balance.data ? tp('其中可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) }) : t('下单时可以抵扣'),
+    },
+  ]);
 
   /* 地址带 #subscribe（付款结果的「查看订阅」）：内容画好后滚过去 */
   $effect(() => {
@@ -100,135 +131,77 @@
   });
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('仪表盘')}</h1>
-    <p>{subtitle}</p>
-  </div>
-  <a class="link" href={R.shop}>{hasPlan ? t('续费或更换套餐') : t('去选套餐')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></a>
-</div>
+<PageTitle title={t('仪表盘')} sub={t('你的账号状态、流量走势与订阅信息一览。')}>
+  {#snippet notices()}
+    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} />
+  {/snippet}
+</PageTitle>
 
-{#if latest}
-  {@const lt = text(latest)}
-  <div class="banner" role="region" aria-label={t('最新公告')}>
-    <div class="tx">
-      <div class="tt"><span>{lt.title}</span></div>
-      {#if summarize(lt.html, 80)}<p class="sm">{summarize(lt.html, 80)}</p>{/if}
-    </div>
-    <button type="button" class="link go" onclick={() => openNotice(latest)}>{t('查看详情')}</button>
-    <button type="button" class="iconbtn" aria-label={t('不再显示这条公告')} onclick={() => markRead(latest)}>
-      <X size={16} strokeWidth={1.75} aria-hidden="true" />
-    </button>
-  </div>
+<Section>
+  <StatRow items={stats} />
+</Section>
+
+<!-- 流量走势（续费范围没有） -->
+{#if full}
+  <Section>
+    {#snippet title()}<TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" />{t('近 7 日流量趋势')}{/snippet}
+    {#snippet desc()}{#if traffic.data}<span class="tnum">{tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(totalDown + totalUp), d: formatBytes(totalDown), u: formatBytes(totalUp) })}</span>{/if}{/snippet}
+    {#snippet extra()}{#if traffic.data}<span class="sec-x">{t('计费')} <span class="tnum">{formatBytes(traffic.data.total.billed_bytes)}</span></span>{/if}{/snippet}
+    {#if traffic.loading && !traffic.data}
+      <Loading block={268} />
+    {:else if traffic.error && !traffic.data}
+      <LoadError error={traffic.error} onretry={traffic.reload} />
+    {:else if totalDown + totalUp === 0}
+      <Empty title={t('近 7 天还没有流量记录')} desc={t('连上节点跑一会儿，这里就会有走势了。')} />
+    {:else}
+      <WeekChart {week} />
+    {/if}
+  </Section>
 {/if}
 
-<Notices order={openOrder} onorderchange={() => orders.reload()} {replied} {low} />
-
-<section class="kpis" aria-label={t('账户概况')}>
-  <div class="kpi">
-    {#if limited}
-      <div class="lb">{t('剩余流量')}</div>
-      <div class="v">{usage.left.toFixed(1)}<small>GB</small></div>
-      <div class={lowPct ? 'meter warn' : 'meter'} role="meter" aria-label={t('剩余流量')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usage.leftPct)}>
-        <i style:width="{usage.leftPct}%"></i>
-      </div>
-      <div class="sub">
-        {tp('共 {t} GB，已用 {u} GB', { t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) })}{#if nextReset}&nbsp;· {tp('{d} 重置', { d: nextReset })}{/if}
-      </div>
-    {:else}
-      <div class="lb">{t('已用流量')}</div>
-      <div class="v">{usage.used.toFixed(1)}<small>GB</small></div>
-      <div class="sub">{hasPlan ? t('套餐不限流量') : t('购买套餐后可用')}</div>
-    {/if}
-  </div>
-  <div class="kpi">
-    <div class="lb">{t('套餐剩余')}</div>
-    <div class="v">{#if !hasPlan}—{:else if left === null}{t('长期')}{:else}{left}<small>{t('天')}</small>{/if}</div>
-    <div class="sub">{expiresAt ? tp('到期 {d}', { d: formatDate(expiresAt) }) : hasPlan ? t('无到期时间') : t('还没有套餐')}</div>
-  </div>
-  <div class="kpi">
-    <div class="lb">{t('可用线路')}</div>
-    {#if !full}
-      <div class="v">0<small>{t('条')}</small></div>
-      <div class="sub">{t('续费后恢复')}</div>
-    {:else if nodes.data}
-      <div class="v">{online}<small>/ {tp('{n} 条', { n: nodeList.length })}</small></div>
-      <div class="sub">
-        {#if maint || offline}
-          {[maint ? tp('{n} 维护', { n: maint }) : '', offline ? tp('{n} 离线', { n: offline }) : ''].filter(Boolean).join(' · ')}
-        {:else}
-          {tp('共 {n} 条线路在订阅内', { n: nodeList.length })}
-        {/if}
-      </div>
-    {:else}
-      <!-- 线路还没取到 / 没取到时写横杠，不写 0：0 条是「全部不可用」的意思 -->
-      <div class="v">—</div>
-      <div class="sub">{nodes.error ? t('线路列表没能加载') : t('正在获取线路列表')}</div>
-    {/if}
-  </div>
-  <div class="kpi">
-    <div class="lb">{t('账户余额')}</div>
-    {#if balance.data}
-      {@const cents = balance.data.balance_cents}
-      <div class="v">{cents < 0 ? '−' : ''}<span class="ccy">¥</span>{yuan(Math.abs(cents), { always2: true })}</div>
-      <div class="sub">{tp('其中可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) })}</div>
-    {:else}
-      <div class="v">—</div>
-      <div class="sub">{t('下单时可以抵扣')}</div>
-    {/if}
-  </div>
-</section>
-
-{#if full}<TrafficSection />{/if}
-
-<div class="cols">
-  <Access {full} />
-
-  <section class="sec" aria-labelledby="h-news">
-    <div class="sh">
-      <div>
-        <h2 id="h-news">{t('公告与动态')}</h2>
-        <p>{announcements.data?.unread ? tp('{n} 条未读', { n: announcements.data.unread }) : t('节点变更、维护与活动通知')}</p>
-      </div>
-      <a class="link" href={R.announcements}>{t('全部公告')}<ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" /></a>
-    </div>
-    {#if announcements.loading && !announcements.data}
-      <Loading />
-    {:else if announcements.error && !announcements.data}
-      <LoadError error={announcements.error} onretry={announcements.reload} />
-    {:else if ann.length === 0}
-      <Empty title={t('暂时没有公告')} />
-    {:else}
-      <div class="list">
-        {#each ann.slice(0, 5) as a (a.id)}
+<!-- 订阅 + 公告（#subscribe：付款结果弹窗的「查看订阅」直达这里） -->
+<Section id="subscribe">
+  <Split>
+    {#snippet left()}<Access {full} />{/snippet}
+    {#snippet right()}
+      <PaneHead>
+        {#snippet title()}<Megaphone size={16} strokeWidth={1.75} aria-hidden="true" />{t('公告与动态')}{/snippet}
+        {#snippet desc()}{t('节点变更、维护与活动通知')}{/snippet}
+        {#snippet extra()}<a class="btn link-btn" href={R.announcements}>{t('全部公告')}</a>{/snippet}
+      </PaneHead>
+      {#if announcements.loading && !announcements.data}
+        <Loading />
+      {:else if announcements.error && !announcements.data}
+        <LoadError error={announcements.error} onretry={announcements.reload} />
+      {:else if ann.length === 0}
+        <Empty title={t('暂时没有公告')} />
+      {:else}
+        {#each ann.slice(0, 3) as a, i (a.id)}
           {@const at = text(a)}
-          <button type="button" class="li" onclick={() => openNotice(a)}>
-            <div class="main">
-              <div class="t">
-                <span class={a.read ? 'read' : ''}>{at.title}</span>
-                {#if !a.read}<i class="unread-dot" aria-label={t('未读')}></i>{/if}
-              </div>
-              <p class="s">{summarize(at.html, 60)}</p>
-            </div>
-            <span class="r">
-              {#if a.pinned}<span class="pin"><Pin size={13} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{:else}{fromNow(a.created_at, tp)}{/if}
-            </span>
-          </button>
+          <Row first={i === 0} onclick={() => openNotice(a)}>
+            {#snippet title()}
+              <span class="rt">
+                {#if a.pinned}<span class="pinb"><Pin size={11} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+                <span class={['trunc', !a.read && 'mid']}>{at.title}</span>
+              </span>
+            {/snippet}
+            {#snippet desc()}<span class="clamp1">{summarize(at.html, 60)}</span>{/snippet}
+            {#snippet extra()}<span class="tnum rx">{fromNow(a.created_at, tp)}</span>{/snippet}
+          </Row>
         {/each}
-      </div>
-    {/if}
-  </section>
-</div>
+      {/if}
+    {/snippet}
+  </Split>
+</Section>
 
-<div class="cols">
-  <NodesPreview {nodes} {full} />
-  <DocsPreview />
-</div>
+<!-- 文档 + 节点 -->
+<Section>
+  <Split>
+    {#snippet left()}<DocsPreview />{/snippet}
+    {#snippet right()}<NodesPreview {nodes} {full} />{/snippet}
+  </Split>
+</Section>
 
 {#if dialogLoaded}
   {#await import('../AnnouncementDialog.svelte') then m}<m.default item={notice} onclose={() => (notice = null)} />{/await}
 {/if}
-
-<style>
-  .ph .link { margin-bottom: 4px; }
-</style>
