@@ -1933,10 +1933,29 @@ pub async fn regenerate_sub_token(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
-    let (token, outcome) =
-        crate::sub::apply_reset(&mut tx, state.master_key(), &Actor::of(&user), id)
-            .await?
-            .ok_or_else(ApiError::not_found)?;
+    // Like every admin mutator whose target is an account: another admin's
+    // account is the owner's business (and has no subscription at all), a
+    // deleted account is gone (audit batch 2, P3-1).
+    let actor = Actor::of(&user);
+    crate::owner::guard_target(&mut tx, &actor, id).await?;
+    let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match role.as_deref() {
+        None => return Err(ApiError::not_found()),
+        Some("user") => {}
+        Some(_) => {
+            return Err(bad_request!(
+                "user.admin_no_subscription",
+                "admin accounts have no subscription"
+            ));
+        }
+    }
+    refuse_erased(&mut tx, id).await?;
+    let (token, outcome) = crate::sub::apply_reset(&mut tx, state.master_key(), &actor, id)
+        .await?
+        .ok_or_else(ApiError::not_found)?;
     tx.commit().await?;
     let sub_url = state.sub_link(id, &token);
     Ok(Json(json!({
