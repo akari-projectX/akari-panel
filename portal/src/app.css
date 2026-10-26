@@ -115,11 +115,11 @@
   /* ========== 顶栏（v1.4.0 layouts/dash-layout） ========== */
   .shell { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
   /* 底色 95% 不透明，模糊只给一档：sticky 页头上的大半径 backdrop-filter 每次滚动都要重新模糊下面整条内容，是中低端机滚动掉帧的主因 */
-  .top {
+  .topbar {
     position: sticky; top: 0; z-index: 30; height: 64px; border-bottom: 1px solid var(--line);
     background: color-mix(in srgb, var(--bg) 95%, transparent); backdrop-filter: blur(4px);
   }
-  .top .wrap { display: flex; align-items: center; gap: 32px; height: 100%; }
+  .topbar .wrap { display: flex; align-items: center; gap: 32px; height: 100%; }
   /* Logo 占 146px 宽、左对齐（v1.4.0 的印章位）：导航的起点不随 Logo 的宽窄挪动 */
   .logo { display: inline-flex; align-items: center; flex: none; min-width: 146px; color: var(--logo-ink); }
   .logo img { display: block; height: 28px; width: auto; max-width: 200px; object-fit: contain; }
