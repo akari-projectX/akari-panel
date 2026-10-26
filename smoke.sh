@@ -119,7 +119,8 @@ TOML
 # downloads from the loopback list host.
 # rule_set_fetch_loopback=1: remote rule-sets may come from the local list
 # host below (plain http to 127.0.0.1; refused in production).
-SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1"
+# cloudflare_mock_port=18206: the DNS management talks to the local mock API.
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1,cloudflare_mock_port=18206"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -1085,6 +1086,120 @@ subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^    url: \"$
 kill "$RS_PID" 2>/dev/null || true
 subrl
 echo "remote rule-sets: ok"
+
+echo "== DNS management: Cloudflare tokens (owner), zones and records against a mock API =="
+# The panel talks to a local Cloudflare mock (AKARI_TEST_LIMITS
+# cloudflare_mock_port=18206 points the API root at it; production only ever
+# uses https://api.cloudflare.com).
+CF_TOKEN="smoke-cf-token-0123456789abcdef0123"
+CF_ZONE=$(printf 'a%.0s' $(seq 1 32))
+CF_DIR="$LOG/cf"; mkdir -p "$CF_DIR"
+cat >"$CF_DIR/mock.py" <<'PY'
+import json, re, sys, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+TOKEN, ZONE = sys.argv[1], sys.argv[2]
+recs, seq = [], [0]
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def out(self, code, result=None, errors=None, info=None):
+        body = {"success": not errors, "errors": errors or [], "result": result}
+        if info: body["result_info"] = info
+        b = json.dumps(body).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def handle_any(self):
+        if self.headers.get("Authorization") != "Bearer " + TOKEN:
+            return self.out(401, errors=[{"code": 9109, "message": "Invalid access token"}])
+        u = urllib.parse.urlparse(self.path); q = dict(urllib.parse.parse_qsl(u.query))
+        n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n)) if n else None
+        p = u.path
+        if p == "/client/v4/zones":
+            z = {"id": ZONE, "name": "smoke.test", "status": "active", "paused": False,
+                 "permissions": ["#zone:read", "#dns_records:edit"]}
+            return self.out(200, [z], info={"page": 1, "per_page": 50, "total_count": 1, "total_pages": 1})
+        m = re.fullmatch(r"/client/v4/zones/%s/dns_records(?:/([0-9a-f]{32}))?" % ZONE, p)
+        if not m: return self.out(404, errors=[{"code": 7003, "message": "no route"}])
+        rid = m.group(1)
+        if rid is None and self.command == "GET":
+            rows = [r for r in recs if q.get("type", r["type"]) == r["type"] and q.get("search", "") in r["name"]]
+            return self.out(200, rows, info={"page": 1, "per_page": 50, "total_count": len(rows), "total_pages": 1})
+        if rid is None and self.command == "POST":
+            if any(r["name"] == body["name"] and r["type"] == body["type"] and r["content"] == body["content"] for r in recs):
+                return self.out(400, errors=[{"code": 81058, "message": "A record with those settings already exists."}])
+            seq[0] += 1; r = dict(body, id="c%031x" % seq[0], zone_id=ZONE, zone_name="smoke.test", proxiable=True)
+            recs.append(r); return self.out(200, r)
+        r = next((x for x in recs if x["id"] == rid), None)
+        if r is None: return self.out(404, errors=[{"code": 81044, "message": "Record does not exist."}])
+        if self.command == "GET": return self.out(200, r)
+        if self.command == "PATCH": r.update(body); return self.out(200, r)
+        recs.remove(r); return self.out(200, {"id": rid})
+    do_GET = do_POST = do_PATCH = do_DELETE = handle_any
+ThreadingHTTPServer(("127.0.0.1", 18206), H).serve_forever()
+PY
+python3 -c "$TIE_PY"'
+import runpy, sys
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$CF_DIR/mock.py" "$CF_TOKEN" "$CF_ZONE" >"$LOG/mock-cloudflare.log" 2>&1 &
+CF_PID=$!
+for _ in $(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/18206) 2>/dev/null && break; sleep 0.1; done
+DNS="$BASE/api/v1/dns"
+JSON='Content-Type: application/json'
+# Admin only; a user and no session are refused before anything happens.
+[ "$(code "$DNS/accounts")" = "401" ] && [ "$(code -b "$UJAR" "$DNS/accounts")" = "403" ] \
+  || { echo "FAIL: dns accounts are not admin-only"; cat /tmp/akari-smoke/last; exit 1; }
+# Add the token (owner): the response, the list, the audit and the log never show it.
+[ "$(code -b "$JAR" -X POST "$DNS/accounts" -H "$JSON" -d "{\"name\":\"smoke\",\"token\":\"$CF_TOKEN\"}")" = "201" ] \
+  || { echo "FAIL: add dns token"; cat /tmp/akari-smoke/last; exit 1; }
+CF_ACC=$(last_json "d['id']")
+! matches "$CF_TOKEN" </tmp/akari-smoke/last || { echo "FAIL: token echoed"; exit 1; }
+[ "$(code -b "$JAR" "$DNS/accounts")" = "200" ] && ! matches "$CF_TOKEN" </tmp/akari-smoke/last \
+  && [ "$(last_json "d['accounts'][0]['token_set']")" = "True" ] \
+  || { echo "FAIL: dns token listing"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'dns.account.create' AND after->>'token' = 'changed'")" = "1" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE after::text LIKE '%$CF_TOKEN%'")" = "0" ] \
+  || { echo "FAIL: dns token audit"; exit 1; }
+# Test connection and zones.
+[ "$(code -b "$JAR" -X POST "$DNS/accounts/$CF_ACC/test" -H "$JSON" -d '{}')" = "200" ] \
+  && [ "$(last_json "(d['ok'], d['zones'], d['editable'])")" = "(True, 1, 1)" ] \
+  || { echo "FAIL: dns test connection"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$DNS/zones")" = "200" ] && [ "$(last_json "d['zones'][0]['name']")" = "smoke.test" ] \
+  || { echo "FAIL: dns zones"; cat /tmp/akari-smoke/last; exit 1; }
+# Records: create, duplicate (coded 409), list, orange cloud, batch, delete.
+CF_REC="$DNS/accounts/$CF_ACC/zones/$CF_ZONE/records"
+[ "$(code -b "$JAR" -X POST "$CF_REC" -H "$JSON" -d '{"type":"A","name":"a.smoke.test","content":"192.0.2.10","ttl":300}')" = "201" ] \
+  || { echo "FAIL: create dns record"; cat /tmp/akari-smoke/last; exit 1; }
+CF_ID=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$CF_REC" -H "$JSON" -d '{"type":"A","name":"a.smoke.test","content":"192.0.2.10","ttl":300}')" = "409" ] \
+  && [ "$(last_json "d['code']")" = "dns.record_conflict" ] \
+  || { echo "FAIL: duplicate dns record"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$CF_REC" -H "$JSON" -d '{"type":"A","name":"b.smoke.test","content":"192.0.2.11"}')" = "201" ] \
+  || { echo "FAIL: create second dns record"; exit 1; }
+CF_ID2=$(last_json "d['id']")
+[ "$(code -b "$JAR" "$CF_REC?type=A&search=a.smoke")" = "200" ] && [ "$(last_json "len(d['records'])")" = "1" ] \
+  || { echo "FAIL: list dns records"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$CF_REC/$CF_ID" -H "$JSON" -d '{"type":"A","name":"a.smoke.test","content":"192.0.2.10","proxied":true}')" = "200" ] \
+  && [ "$(last_json "d['proxied']")" = "True" ] \
+  || { echo "FAIL: orange cloud"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$CF_REC/batch" -H "$JSON" -d "{\"action\":\"content\",\"content\":\"198.51.100.7\",\"ids\":[\"$CF_ID\",\"$CF_ID2\"]}")" = "200" ] \
+  && [ "$(last_json "(d['ok'], d['failed'])")" = "(2, 0)" ] \
+  || { echo "FAIL: dns batch"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$CF_REC/$CF_ID?confirm=true")" = "204" ] \
+  && [ "$(code -b "$JAR" -X DELETE "$CF_REC/$CF_ID2")" = "204" ] \
+  && [ "$(code -b "$JAR" -X DELETE "$CF_REC/$CF_ID2")" = "404" ] \
+  || { echo "FAIL: delete dns records"; cat /tmp/akari-smoke/last; exit 1; }
+# A bad zone id never reaches the request path.
+[ "$(code -b "$JAR" "$DNS/accounts/$CF_ACC/zones/..%2f..%2fuser/records")" = "404" ] \
+  || { echo "FAIL: bad zone id"; exit 1; }
+# Audit: one row per write, with before/after, and never the token.
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'dns.record.%'")" = "7" ] \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'dns.%' AND (before::text LIKE '%$CF_TOKEN%' OR after::text LIKE '%$CF_TOKEN%')")" = "0" ] \
+  || { echo "FAIL: dns audit"; psql_q "SELECT action FROM audit_log WHERE action LIKE 'dns.%'"; exit 1; }
+! matches "$CF_TOKEN" <"$LOG/panel.log" || { echo "FAIL: the Cloudflare token reached the panel log"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$DNS/accounts/$CF_ACC")" = "204" ] \
+  || { echo "FAIL: delete dns token"; exit 1; }
+kill "$CF_PID" 2>/dev/null || true
+echo "dns management: ok"
 
 echo "== start agent: initial snapshot =="
 # W11: frequent heartbeats here (production default 15 s) when supported.

@@ -376,6 +376,9 @@ pub const ENTRANCE_HEALTH_FAILURES: i32 = 3;
 /// release was uploaded (系统设置 → 节点通信 → 备用下载地址 overrides it).
 pub const DEFAULT_FALLBACK_BINARY_URL: &str = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
 
+/// The Cloudflare API root every DNS call goes to (`dns::cloudflare`).
+pub const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";
+
 /// Environment variable of the TEST-ONLY timer overrides (smoke/e2e):
 /// "name=value,name=value" over `Limits::TEST_TUNABLE`. Logged at startup;
 /// never set it in production.
@@ -414,6 +417,10 @@ pub struct Limits {
     /// (smoke's fixture server; `sub::rulesets::fetch`). Never in
     /// production: the SSRF guard refuses loopback otherwise.
     pub rule_set_fetch_loopback: bool,
+    /// The Cloudflare API root (`dns::cloudflare`). Tests point it at a
+    /// loopback mock through `cloudflare_mock_port`; production never
+    /// leaves the default.
+    pub cloudflare_api_base: String,
     /// Test overrides applied (logged at startup).
     pub test_overrides: Vec<String>,
 }
@@ -446,6 +453,7 @@ impl Default for Limits {
             turnstile_verify_url: TURNSTILE_VERIFY_URL.to_string(),
             entrance_health_interval_secs: ENTRANCE_HEALTH_INTERVAL_SECS,
             rule_set_fetch_loopback: false,
+            cloudflare_api_base: CLOUDFLARE_API_BASE.to_string(),
             test_overrides: Vec::new(),
         }
     }
@@ -465,6 +473,9 @@ impl Limits {
             ENTRANCE_HEALTH_INTERVAL_SECS,
         ),
         ("rule_set_fetch_loopback", 0, 1),
+        // 0 = off; otherwise the Cloudflare API is the mock on
+        // http://127.0.0.1:<port> (`dns::cloudflare`).
+        ("cloudflare_mock_port", 0, 65_535),
     ];
 
     /// The fail-closed lease actually granted: [1h, 30d].
@@ -496,6 +507,10 @@ impl Limits {
                 "sub_rate_per_token" => self.sub_rate_per_token = v as i64,
                 "entrance_health_interval_secs" => self.entrance_health_interval_secs = v,
                 "rule_set_fetch_loopback" => self.rule_set_fetch_loopback = v == 1,
+                "cloudflare_mock_port" if v > 0 => {
+                    self.cloudflare_api_base = format!("http://127.0.0.1:{v}/client/v4");
+                }
+                "cloudflare_mock_port" => {}
                 _ => anyhow::bail!("{TEST_LIMITS_ENV}: {name:?} cannot be overridden"),
             }
             self.test_overrides.push(format!("{name}={v}"));
