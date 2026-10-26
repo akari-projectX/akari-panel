@@ -11,6 +11,10 @@
 pub const MAX_LEN: usize = 254;
 const MAX_LOCAL: usize = 64;
 
+/// The reserved domain of the placeholder address of an account registered
+/// with a passkey that has not bound an address yet.
+pub const PENDING_DOMAIN: &str = "pending.invalid";
+
 /// atext of RFC 5322 (without the quoted forms).
 fn atext(c: u8) -> bool {
     c.is_ascii_alphanumeric() || b"!#$%&'*+-/=?^_`{|}~".contains(&c)
@@ -60,6 +64,11 @@ pub fn parse(raw: &str) -> Option<String> {
         return None;
     }
     let domain = parse_domain(domain)?;
+    // The placeholder of a passkey-registered account that has not bound an
+    // address yet (`pending-<id>@pending.invalid`): never a real address.
+    if domain == PENDING_DOMAIN {
+        return None;
+    }
     let out = format!("{}@{domain}", local.to_ascii_lowercase());
     (out.len() <= MAX_LEN).then_some(out)
 }
@@ -142,6 +151,7 @@ mod tests {
             "a@example-.com",
             "a@exa_mple.com",
             "ä@example.com",
+            "pending-0f0f@pending.invalid",
         ] {
             assert_eq!(parse(bad), None, "{bad:?}");
         }

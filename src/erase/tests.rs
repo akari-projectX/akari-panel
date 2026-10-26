@@ -202,11 +202,12 @@ async fn erase_deletes_or_anonymizes() {
         assert_eq!(r.json()["code"], "user.erased");
     }
     // The admin read did not issue a link for the anonymized account.
-    let issued: bool = sqlx::query_scalar("SELECT sub_token_hash IS NOT NULL FROM users WHERE id = $1")
-        .bind(u)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    let issued: bool =
+        sqlx::query_scalar("SELECT sub_token_hash IS NOT NULL FROM users WHERE id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert!(!issued, "no subscription token for an erased account");
     let list = admin.get("/test/api/v1/users?status=erased").await.json();
     assert_eq!(list["total"], 1);

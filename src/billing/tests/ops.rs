@@ -757,7 +757,10 @@ async fn manual_order_for_a_plan_without_expiry_is_refused() {
     let e = manual(&db, &req(u, plan, PeriodKind::Month, false))
         .await
         .unwrap_err();
-    assert_eq!((e.status(), e.code()), (StatusCode::CONFLICT, "shop.nothing_to_renew"));
+    assert_eq!(
+        (e.status(), e.code()),
+        (StatusCode::CONFLICT, "shop.nothing_to_renew")
+    );
     assert_eq!(count(&db, "SELECT count(*) FROM orders").await, before);
     db.drop().await;
 }

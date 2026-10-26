@@ -2035,11 +2035,12 @@ async fn the_last_passkey_of_a_passwordless_account_stays() {
     let r = del(ids[1]).await;
     assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.json());
     assert_eq!(r.json()["code"], "account.passkey_last");
-    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM webauthn_credentials WHERE user_id = $1")
-        .bind(u)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM webauthn_credentials WHERE user_id = $1")
+            .bind(u)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert_eq!(left, 1);
     db.drop().await;
 }
