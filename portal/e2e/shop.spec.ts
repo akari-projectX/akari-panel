@@ -116,7 +116,7 @@ test('#31 the current plan: quota, reset period and next reset, expiry, speed', 
   await signIn(page, 'user@e2e.test');
   await shop(page);
   const cur = page.locator('main section.sec').first();
-  await expect(cur.getByRole('heading', { name: /E2E 标准/ })).toBeVisible();
+  await expect(cur).toContainText(/当前套餐 · E2E 标准/);
   await expect(cur).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
   await expect(cur).toContainText('300 Mbps');
   await expect(cur).toContainText(/\/ 100 GB/);
@@ -361,7 +361,7 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
   }
   await page.goto('/orders');
   await ready(page, '我的订单');
-  await page.getByRole('button', { name: '已退款', exact: true }).click();
+  await page.getByRole('tab', { name: '已退款', exact: true }).click();
   const list = isMobile(info) ? page.locator('.md-hide button') : page.locator('tbody tr');
   await expect(list).toHaveCount(3);
 });
