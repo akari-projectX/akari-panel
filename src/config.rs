@@ -314,16 +314,6 @@ impl Legacy {
                 .map_err(|e: toml::de::Error| e.message().to_string()),
         )
     }
-
-    /// For tests: a config whose file held these obsolete keys.
-    pub fn from_pairs(pairs: &[(&str, toml::Value)]) -> Self {
-        Self {
-            keys: pairs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.clone()))
-                .collect(),
-        }
-    }
 }
 
 /// Sections of the kept schema (the strict parse knows them).
