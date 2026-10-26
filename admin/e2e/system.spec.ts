@@ -211,6 +211,11 @@ test("AUD-01 AUD-02: the audit timeline — actor (by email) and action pills in
   await page.getByLabel("操作者邮箱或标签").fill(ADMIN);
   await page.getByLabel("操作者邮箱或标签").press("Enter");
   await expect(page).toHaveURL(/actor=/);
+  // The actor popover must be gone before the next pill opens: its focus
+  // return to the trigger runs a tick after it unmounts, and a popover opened
+  // in that tick sees the focus leave and dismisses itself (the input was
+  // "detached from the DOM" under the Enter press).
+  await expect(page.getByLabel("操作者邮箱或标签")).toBeHidden();
   await page.getByRole("button", { name: "动作", exact: true }).click();
   await page.getByLabel("动作代码或前缀").fill("user.ban");
   await page.getByLabel("动作代码或前缀").press("Enter");
