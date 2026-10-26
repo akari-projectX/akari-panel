@@ -955,6 +955,14 @@ for bad in 's/\["www.apple.com"\]/["x: y"]/' 's/\["www.apple.com"\]/["a#b"]/' 's
   [ "$(put_inbound "$(reality_inbound '' | sed "$bad")")" = "400" ] \
     || { echo "FAIL: hostile REALITY string accepted ($bad)"; cat /tmp/akari-smoke/last; exit 1; }
 done
+# Audit batch 4 P2-2: an IPv6 entrance address is bracketed in share links
+# (RFC 3986) and quoted in the Clash document.
+[ "$(entrance_patch '{"connect_host":"2001:db8::1"}')" = "200" ] || { echo "FAIL: IPv6 connect_host"; cat /tmp/akari-smoke/last; exit 1; }
+curl -s --noproxy '*' "$FP_SUB" | base64 -d 2>/dev/null | matches -E '@\[2001:db8::1\]:[0-9]+\?' \
+  || { echo "FAIL: IPv6 share link lacks brackets"; exit 1; }
+curl -s --noproxy '*' -A "clash-meta/1.19" "$FP_SUB" | matches '^    server: "2001:db8::1"$' \
+  || { echo "FAIL: IPv6 clash server not quoted"; exit 1; }
+[ "$(entrance_patch '{"connect_host":"node1.example.test"}')" = "200" ] || { echo "FAIL: restore connect_host"; exit 1; }
 # 中-7: a user delete shows its impact first and needs confirm=true.
 [ "$(code -b "$JAR" "$BASE/api/v1/users/$FP_USER/delete-impact")" = "200" ] \
   && [ "$(last_json "d['balance_cents']")/$(last_json "d['pending_orders']")" = "0/0" ] \
