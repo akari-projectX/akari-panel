@@ -1059,6 +1059,29 @@ pub async fn delete(
         return Ok(crate::reject::not_found());
     };
     let mut tx = state.pg().begin().await?;
+    // An account without a password (registered with a passkey) signs in
+    // with nothing else: its last passkey stays. The row lock makes two
+    // concurrent deletes see each other.
+    let passwordless: Option<bool> =
+        sqlx::query_scalar("SELECT password_hash IS NULL FROM users WHERE id = $1 FOR UPDATE")
+            .bind(me.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if passwordless == Some(true) {
+        let others: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM webauthn_credentials WHERE user_id = $1 AND id <> $2",
+        )
+        .bind(me.id)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if others == 0 {
+            return Err(conflict!(
+                "account.passkey_last",
+                "set a password before deleting the only passkey of this account"
+            ));
+        }
+    }
     let gone: Option<String> = sqlx::query_scalar(
         "DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2 RETURNING name",
     )

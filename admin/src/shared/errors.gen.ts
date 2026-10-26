@@ -16,6 +16,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "account.passkey_confirm_required": ["这个账户只用通行密钥登录，请用通行密钥确认", "This account signs in with passkeys only: please confirm with a passkey"],
   "account.passkey_exists": ["这个通行密钥已经绑定过", "This passkey is already registered"],
   "account.passkey_failed": ["通行密钥验证失败，请重试", "The passkey could not be verified, please try again"],
+  "account.passkey_last": ["这个账户没有密码，最后一个通行密钥不能删除：请先设置密码", "This account has no password: set one before deleting its only passkey"],
   "account.passkey_limit": ["每个账户最多 {max} 个通行密钥", "At most {max} passkeys per account"],
   "account.passkey_name_invalid": ["名称须为 1–{max} 个字符", "The name must be 1–{max} characters"],
   "account.passkey_none": ["这个账户还没有本站可用的通行密钥", "This account has no passkey for this site yet"],

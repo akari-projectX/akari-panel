@@ -554,6 +554,7 @@ export const EN: Record<string, string> = {
   "此账户只能使用通行密钥登录": "This account signs in with a passkey",
   "名称须为 1–{max} 个字符": "The name must be 1–{max} characters",
   "请先绑定一个通行密钥，再关闭密码登录": "Add a passkey before turning off password sign-in",
+  "这个账户没有密码，最后一个通行密钥不能删除：请先设置密码": "This account has no password: set one before deleting its only passkey",
   "本站暂不支持通行密钥（需要 https 主域名）": "Passkeys are not available on this site (needs an https main domain)",
   "密码过长": "The password is too long",
   "密码至少需要 8 位": "The password must be at least 8 characters",
