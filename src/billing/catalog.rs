@@ -25,10 +25,12 @@
 //! - The credit and the amount are computed by the server when the order
 //!   is created and copied into it (the client never sends amounts); the
 //!   shop shows the same computation beforehand.
-//! - Capacity (max active subscribers) is checked here and again at
-//!   fulfilment under `entitle::lock` (orders.rs): pending orders reserve
-//!   nothing, so two buyers can pay for the last slot — one is fulfilled,
-//!   the other stays paid with `fulfil_error` for an admin to resolve.
+//! - Capacity (max active subscribers) is checked here, at order creation
+//!   under `entitle::lock` (a pending `new`/`switch` order holds a slot
+//!   until it expires: `taken_sql`), and again at fulfilment (orders.rs),
+//!   which is authoritative: a payment that can no longer be fulfilled
+//!   (sold out, plan disabled or deleted, the replaced subscription gone)
+//!   is refunded to the balance automatically unless it was paid by hand.
 
 use crate::auth::{bad_request, conflict};
 use axum::Json;
