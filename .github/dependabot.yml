@@ -10,7 +10,7 @@ updates:
   # Admin and portal share one PR for minor+patch.
   - package-ecosystem: npm
     directories: [/admin, /portal]
-    schedule: { interval: monthly, day: 1, time: "03:00", timezone: Asia/Shanghai }
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(npm)" }
@@ -29,7 +29,7 @@ updates:
   # Root crate, bench/ and fuzz/ (separate lockfiles) move together.
   - package-ecosystem: cargo
     directories: [/, /bench, /fuzz]
-    schedule: { interval: monthly, day: 1, time: "03:00", timezone: Asia/Shanghai }
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(rust)" }
@@ -41,7 +41,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: monthly, day: 1, time: "03:00", timezone: Asia/Shanghai }
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "ci" }
