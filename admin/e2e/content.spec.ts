@@ -230,18 +230,20 @@ test("CNT-07: announcement tags — the preset eight, create with a preset colou
   // Reorder: up one, and it stays there.
   await page.getByRole("button", { name: `上移 ${renamed}` }).click();
   await expect(rows.nth(7)).toContainText(renamed);
-  // Disable, enable.
-  await mine(renamed)
-    .getByRole("button", { name: `${renamed} 的操作` })
-    .click();
-  await page.getByRole("menuitem", { name: "停用" }).click();
-  await toast(page, "已停用");
+  // Disable, enable (the menu is re-opened if a refetch replaced the row under it).
+  const flip = async (item: string, done: string) => {
+    await expect(async () => {
+      await page.keyboard.press("Escape");
+      await mine(renamed)
+        .getByRole("button", { name: `${renamed} 的操作` })
+        .click();
+      await page.getByRole("menuitem", { name: item }).click({ timeout: 3000 });
+    }).toPass({ timeout: 15000 });
+    await toast(page, done);
+  };
+  await flip("停用", "已停用");
   await expect(mine(renamed)).toContainText("已停用");
-  await mine(renamed)
-    .getByRole("button", { name: `${renamed} 的操作` })
-    .click();
-  await page.getByRole("menuitem", { name: "启用" }).click();
-  await toast(page, "已启用");
+  await flip("启用", "已启用");
   // In use: the delete item is off (disable instead); the API says 409 with the count.
   const tag = (await apiJson<{ id: string; name_zh: string }[]>("GET", "/announcement-tags")).find(
     (t) => t.name_zh === renamed,
