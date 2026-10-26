@@ -150,13 +150,16 @@ fn ensure_state(data_dir: &Path) -> Result<String> {
     let path = data_dir.join("state.json");
     match fs::read_to_string(&path) {
         Ok(s) => Ok(serde_json::from_str::<StateFile>(&s)?.route_prefix),
-        Err(_) => {
+        // Only a missing file starts a new prefix: a permission or I/O error
+        // must not replace the prefix the operator already uses.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let st = StateFile {
                 route_prefix: new_prefix(),
             };
             write_secret(&path, &serde_json::to_vec_pretty(&st)?)?;
             Ok(st.route_prefix)
         }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -463,6 +466,22 @@ pub(crate) fn write_secret(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use x509_parser::prelude::{FromDer, X509Certificate, parse_x509_pem};
+
+    /// Audit auth P3-19: only a missing state.json is regenerated.
+    #[test]
+    fn state_json_is_regenerated_only_when_missing() {
+        let dir = std::env::temp_dir().join(format!("akari-state-{}", random_hex(8)));
+        fs::create_dir_all(&dir).unwrap();
+        let first = ensure_state(&dir).unwrap();
+        assert_eq!(ensure_state(&dir).unwrap(), first, "stable once written");
+        // An unreadable state.json (here: a directory) is an error, not a
+        // reason to pick a new prefix.
+        fs::remove_file(dir.join("state.json")).unwrap();
+        fs::create_dir(dir.join("state.json")).unwrap();
+        assert!(ensure_state(&dir).is_err());
+        assert!(dir.join("state.json").is_dir(), "left alone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn test_ca() -> (String, String) {
         let key = KeyPair::generate().unwrap();
