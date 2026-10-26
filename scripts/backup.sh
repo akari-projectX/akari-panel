@@ -186,13 +186,21 @@ trap - EXIT
 echo "backup: done: $out ($(du -sh "$out" | cut -f1))"
 
 # Retention: drop backups older than KEEP_DAYS, never below KEEP_MIN newest.
+# The age is the timestamp in the directory name (what the backup recorded),
+# not the directory's mtime (which a later look inside would refresh).
+cutoff="$(date -u -d "@$(($(date +%s) - KEEP_DAYS * 86400))" +%Y%m%dT%H%M%SZ)"
 mapfile -t all < <(find "$AKARI_BACKUP_DIR" -maxdepth 1 -type d -name 'akari-????????T??????Z' | sort -r)
 idx=0
 for d in "${all[@]}"; do
   idx=$((idx + 1))
   [ "$idx" -le "$KEEP_MIN" ] && continue
-  if [ -n "$(find "$d" -maxdepth 0 -mtime "+$KEEP_DAYS")" ]; then
+  stamp="${d##*/akari-}"
+  if [ "$stamp" \< "$cutoff" ]; then
     echo "backup: retention: removing $d"
     rm -rf "$d"
   fi
 done
+# A run killed before its trap (SIGKILL) leaves a .partial directory behind;
+# a day is longer than any backup takes.
+find "$AKARI_BACKUP_DIR" -maxdepth 1 -type d -name 'akari-????????T??????Z.partial' -mmin +1440 \
+  -exec rm -rf {} + 2>/dev/null || true
