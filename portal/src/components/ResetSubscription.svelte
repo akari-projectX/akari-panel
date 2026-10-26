@@ -19,7 +19,7 @@
 </script>
 
 {#if look === 'link'}
-  <button type="button" class="link warn-link" onclick={show}>
+  <button type="button" class="btn link-btn warn-link" onclick={show}>
     <RefreshCw size={14} strokeWidth={1.75} aria-hidden="true" />{t('重置订阅')}
   </button>
 {:else}

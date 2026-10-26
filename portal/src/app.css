@@ -33,7 +33,7 @@
   --color-transparent: transparent;
   --color-current: currentColor;
   --font-sans: 'Inter Akari', 'Noto Sans SC Variable', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
 }
 
 /*
@@ -262,7 +262,7 @@
 
   /* 按钮 */
   .btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: var(--radius);
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: var(--radius);
     border: 1px solid var(--btn-line); background: var(--btn-bg); color: var(--fg); font-size: 14px; font-weight: 500; white-space: nowrap; box-shadow: var(--shadow-xs);
   }
   .btn:hover { background: var(--hover); }
@@ -517,7 +517,7 @@
   .dlg-head .dlg-icon { box-sizing: content-box; flex: none; width: 18px; height: 18px; padding: 9px; border-radius: calc(var(--radius) * 1.4); color: var(--brand); background: var(--brand-soft); }
   .dlg[data-tone='warn'] .dlg-icon { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
   .dlg[data-tone='danger'] .dlg-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-  .dlg h2 { font-size: 17px; line-height: 1.4; font-weight: 500; letter-spacing: -.015em; color: var(--fg); }
+  .dlg [data-dialog-title] { font-size: 17px; line-height: 1.4; font-weight: 500; letter-spacing: -.015em; color: var(--fg); }
   .dlg header [data-dialog-description] { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 2px; }
   .dlg-x {
     position: absolute; top: 14px; right: 14px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
@@ -529,7 +529,7 @@
   .dlg footer .btn { height: 40px; }
   /* 确认：窄、按钮等宽并排；「会发生什么」在最前面 */
   .dlg.confirm header { padding-top: 24px; padding-bottom: 0; }
-  .dlg.confirm h2 { padding-top: 4px; font-size: 16.5px; line-height: 1.45; letter-spacing: -.01em; }
+  .dlg.confirm [data-dialog-title] { padding-top: 4px; font-size: 16.5px; line-height: 1.45; letter-spacing: -.01em; }
   .dlg.confirm header [data-dialog-description] { margin-top: 6px; font-size: 13.5px; line-height: 1.75; }
   .dlg.confirm .dlg-head .dlg-icon { padding: 11px; border-radius: 9999px; }
   .dlg.confirm .bd { flex: none; padding-top: 0; padding-bottom: 0; overflow: visible; }
