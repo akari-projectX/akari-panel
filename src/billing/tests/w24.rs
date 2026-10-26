@@ -983,3 +983,40 @@ async fn payment_channel_keys_are_the_owners() {
     assert_eq!(r.json()["code"], "user.owner_only");
     db.drop().await;
 }
+
+/// A customer can cancel their pending order after its method was disabled
+/// (audit billing P3-11): it ends without asking the gateway
+/// (`close_state = method_unavailable`) instead of answering 503.
+#[tokio::test]
+async fn cancel_works_when_the_method_was_disabled() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = db_state(&db).await;
+    add_method(&state, &mock.url, "支付宝").await;
+    let (_, plan) = priced_plan(&db, "cancel-off", 500, 30).await;
+    let buyer = db.user().await;
+    let (oid, _) = order_row(&db, buyer, plan, 500, 30).await;
+    sqlx::query("UPDATE payment_methods SET enabled = false, version = version + 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    crate::settings::reload(&state).await.unwrap();
+    assert!(!state.payments().any_usable());
+    let cb = user_client(&state, buyer).await;
+    let r = cb
+        .post(&format!("/test/api/v1/me/orders/{oid}/cancel"), json!({}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["status"], "cancelled");
+    let close_state: String = sqlx::query_scalar("SELECT close_state FROM orders WHERE id = $1")
+        .bind(oid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(close_state, "method_unavailable");
+    assert_eq!(mock.calls("alipay.trade.close"), 0);
+    drop((state, mock));
+    db.drop().await;
+}

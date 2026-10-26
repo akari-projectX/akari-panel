@@ -996,11 +996,20 @@ pub async fn cancel_order(
         my_order_view(&state, user.id, id).await?;
         return Err(conflict!("order.not_pending", "order is not pending"));
     };
-    let Some(p) = orders::provider_of(&state, &o) else {
-        return Err(payments_off());
-    };
-    let st =
-        orders::end_order(&state, Some(&*p), &o, "cancelled", &Actor::of(&user), false).await?;
+    // The order's method may be disabled or gone since: nothing can be asked
+    // of the gateway then, and the customer can still drop their own order
+    // (`close_state = method_unavailable`; a payment made later is still
+    // fulfilled, like after the expiry grace).
+    let provider = orders::provider_of(&state, &o);
+    let st = orders::end_order(
+        &state,
+        provider.as_deref(),
+        &o,
+        "cancelled",
+        &Actor::of(&user),
+        provider.is_none(),
+    )
+    .await?;
     if st == "pending" {
         return Err(gateway_unavailable());
     }
