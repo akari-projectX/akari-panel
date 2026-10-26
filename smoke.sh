@@ -948,6 +948,13 @@ grant "$FP_USER"
 check_fp chrome
 [ "$(put_inbound "$(reality_inbound ',"fingerprint":"firefox"')")" = "200" ] || { echo "FAIL: put reality inbound with fingerprint"; exit 1; }
 check_fp firefox
+# Audit batch 4 P2-1: TLS/REALITY strings that subscriptions copy into client
+# configs are validated when the inbound is saved (a newline or ": " would
+# add keys to the Clash document, "&" parameters to the share links).
+for bad in 's/\["www.apple.com"\]/["x: y"]/' 's/\["www.apple.com"\]/["a#b"]/' 's/"shortId":"ab12"/"shortId":"zz"/' 's/"publicKey":"[^"]*"/"publicKey":"k: v"/'; do
+  [ "$(put_inbound "$(reality_inbound '' | sed "$bad")")" = "400" ] \
+    || { echo "FAIL: hostile REALITY string accepted ($bad)"; cat /tmp/akari-smoke/last; exit 1; }
+done
 # 中-7: a user delete shows its impact first and needs confirm=true.
 [ "$(code -b "$JAR" "$BASE/api/v1/users/$FP_USER/delete-impact")" = "200" ] \
   && [ "$(last_json "d['balance_cents']")/$(last_json "d['pending_orders']")" = "0/0" ] \

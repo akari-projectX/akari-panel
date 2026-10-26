@@ -1284,6 +1284,57 @@ mod tests {
         assert!(sb.contains("\"server_port\":30443"), "{sb}");
     }
 
+    fn plain_proxy(protocol: &'static str, server: &str, inbound: Value) -> Proxy {
+        Proxy {
+            name: "n".into(),
+            entrance: None,
+            region: None,
+            tags: vec![],
+            protocol,
+            id_or_password: "6ba7b810-9dad-11d1-80b4-00c04fd430c8".into(),
+            flow: String::new(),
+            method: "2022-blake3-aes-128-gcm".into(),
+            udp: false,
+            server: server.into(),
+            net: net_from_inbound(&inbound).unwrap(),
+        }
+    }
+
+    /// Audit P2-1 (defence in depth): rows saved before the save-time
+    /// validation, or written by hand, cannot add keys to a Clash document
+    /// or parameters to a share link.
+    #[test]
+    fn hostile_security_strings_stay_inside_their_value() {
+        let inbound = json!({
+            "port": 443,
+            "streamSettings": {"network": "ws", "security": "reality",
+                "wsSettings": {"path": "/ws", "host": "[a]"},
+                "realitySettings": {
+                    "serverNames": ["a.example\n    udp: true\nrules: [x]"],
+                    "publicKey": "k: v #c",
+                    "shortId": "ab&flow=x"}},
+        });
+        let p = [plain_proxy("vless", "s.example", inbound)];
+        let clash = render_clash(&p, &routing::Routing::default());
+        let doc: Vec<&str> = clash.lines().collect();
+        assert!(
+            !doc.iter().any(|l| l.trim_start().starts_with("udp:")),
+            "{clash}"
+        );
+        assert!(!doc.iter().any(|l| l.starts_with("rules: [x]")), "{clash}");
+        assert!(clash.contains("      public-key: \"k: v #c\"\n"), "{clash}");
+        assert!(clash.contains("      short-id: \"ab&flow=x\"\n"), "{clash}");
+        assert!(clash.contains("        Host: \"[a]\"\n"), "{clash}");
+        let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
+        assert!(!links.contains("&flow=x"), "{links}");
+        assert!(links.contains("sid=ab%26flow%3Dx"), "{links}");
+        assert!(links.contains("pbk=k%3A%20v%20%23c"), "{links}");
+        assert!(
+            links.contains("sni=a.example%0A%20%20%20%20udp%3A%20true"),
+            "{links}"
+        );
+    }
+
     #[test]
     fn yaml_scalars() {
         assert_eq!(yaml("/ws"), "/ws");

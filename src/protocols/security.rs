@@ -2,7 +2,7 @@
 //! for the templates; the client-side REALITY fingerprint. Kernel-neutral.
 
 use super::manifest;
-use super::model::{Certificate, Reality, Security, Tls};
+use super::model::{Certificate, Fault, Reality, Security, Tls};
 
 /// uTLS fingerprints a client library accepts for REALITY (manifest
 /// security `reality`, field `fingerprint`).
@@ -55,4 +55,66 @@ pub fn reality(
         short_id: Some(short_id),
         fingerprint: Some(fingerprint.to_string()),
     })
+}
+
+/// A name clients put in the TLS handshake: letters, digits and `-._*`
+/// (a REALITY server name may be a wildcard), at most 253 bytes.
+fn valid_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._*".contains(&b))
+}
+
+/// REALITY short ids: 0-16 hex digits, an even number of them.
+fn valid_short_id(id: &str) -> bool {
+    id.len() <= 16 && id.len().is_multiple_of(2) && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// An x25519 public key as REALITY clients take it: 32 bytes, unpadded
+/// base64url (43 characters).
+fn valid_public_key(key: &str) -> bool {
+    key.len() == 43
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+}
+
+/// The strings of the security layer that subscriptions copy into client
+/// configurations. Absent or empty values are fine (clients fall back);
+/// anything present must be plain (subscription injection, audit P2-1).
+pub fn check(security: &Security) -> Result<(), Fault> {
+    match security {
+        Security::Tls(t) => {
+            if t.server_name
+                .as_deref()
+                .is_some_and(|n| !n.is_empty() && !valid_server_name(n))
+            {
+                return Err(Fault::ServerName);
+            }
+        }
+        Security::Reality(r) => {
+            if r.server_names
+                .iter()
+                .flatten()
+                .any(|n| !n.is_empty() && !valid_server_name(n))
+            {
+                return Err(Fault::ServerName);
+            }
+            if r.public_key
+                .as_deref()
+                .is_some_and(|k| !k.is_empty() && !valid_public_key(k))
+            {
+                return Err(Fault::RealityPublicKey);
+            }
+            if !r.short_ids.iter().all(|id| valid_short_id(id))
+                || r.short_id.as_deref().is_some_and(|id| !valid_short_id(id))
+            {
+                return Err(Fault::RealityShortId);
+            }
+        }
+        Security::None | Security::Other { .. } => {}
+    }
+    Ok(())
 }

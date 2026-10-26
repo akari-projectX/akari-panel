@@ -92,7 +92,7 @@ fn xray_inbound(
             ss.insert(
                 "realitySettings".into(),
                 json!({"dest": "www.apple.com:443", "serverNames": ["www.apple.com"], "privateKey": "K",
-                       "shortIds": ["ab"], "publicKey": "P", "shortId": "ab", "fingerprint": "chrome"}),
+                       "shortIds": ["ab"], "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "shortId": "ab", "fingerprint": "chrome"}),
             );
         }
         other => panic!("security {other} has no test mapping: extend xray_inbound"),
