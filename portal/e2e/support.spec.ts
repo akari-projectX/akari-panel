@@ -35,9 +35,11 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
   const subject = `E2E v2 工单 ${info.project.name} ${Date.now()}`;
   await form.getByLabel('问题标题').fill(subject);
   await expect(form.getByText('请填写问题标题')).toHaveCount(0);
-  await form.getByLabel('分类').selectOption({ label: '账单与付款' });
-  await expect(form.getByLabel('关联订单').locator('option')).not.toHaveCount(1);
-  await form.getByLabel('关联订单').selectOption({ index: 1 });
+  await form.getByLabel('分类').click();
+  await page.getByRole('option', { name: '账单与付款' }).click();
+  await form.getByLabel('关联订单').click();
+  await expect(page.getByRole('option')).not.toHaveCount(1);
+  await page.getByRole('option').nth(1).click();
   await form.getByText('高', { exact: true }).click();
   await expect(form.getByText('无法正常使用')).toBeVisible();
   await form.getByLabel('详细描述').fill('退款没收到，请帮忙看看。');
@@ -64,7 +66,7 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
   await expect(thread).toHaveCount(0);
   await page.reload();
   await ready(page, '工单');
-  const row = page.locator('main button.li').filter({ hasText: subject });
+  const row = page.locator('main button.rowline').filter({ hasText: subject });
   await expect(row.getByText('已回复')).toBeVisible();
   await expect(row.getByText('客服有新回复')).toHaveCount(1);
   await shot(page, info, 'tickets-light');

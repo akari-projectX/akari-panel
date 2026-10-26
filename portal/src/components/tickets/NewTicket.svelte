@@ -7,6 +7,7 @@
   import { K } from '@/lib/cache';
   import TextField from '../TextField.svelte';
   import Dialog from '../ui/Dialog.svelte';
+  import Select from '../ui/Select.svelte';
   import { scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { FieldErrors, Pending, fieldOf } from '$lib/forms.svelte';
@@ -79,17 +80,12 @@
     <div class="two">
       <div class="field">
         <div class="field-label"><label for="ticket-category">{t('分类')}</label></div>
-        <select id="ticket-category" class="input" bind:value={category}>
-          {#each TICKET_CATEGORIES as c (c)}<option value={c}>{t(CATEGORY[c])}</option>{/each}
-        </select>
+        <Select id="ticket-category" bind:value={category} items={TICKET_CATEGORIES.map((c) => ({ value: c, label: t(CATEGORY[c]) }))} />
       </div>
       {#if !banned}
         <div class="field">
           <div class="field-label"><label for="ticket-order">{t('关联订单')}</label></div>
-          <select id="ticket-order" class="input" bind:value={orderId}>
-            <option value="none">{t('不关联')}</option>
-            {#each (orders.data ?? []).slice(0, 20) as o (o.id)}<option value={o.id}>{o.plan_name} · {o.out_trade_no}</option>{/each}
-          </select>
+          <Select id="ticket-order" bind:value={orderId} items={[{ value: 'none', label: t('不关联') }, ...(orders.data ?? []).slice(0, 20).map((o) => ({ value: o.id, label: `${o.plan_name} · ${o.out_trade_no}` }))]} />
         </div>
       {/if}
     </div>
@@ -118,9 +114,11 @@
     </div>
   </form>
   {#snippet footer()}
-    <span class="left num">{tp('还能写 {n} 字', { n: TICKET_MAX_BODY - message.length })}</span>
-    <button type="button" class="btn" onclick={() => change(false)}>{t('取消')}</button>
-    <button type="submit" form="ticket-form" class="btn pri" disabled={busy.busy}>{busy.busy ? t('提交中') : t('提交工单')}</button>
+    <div class="flow-sum tnum">{tp('还能写 {n} 字', { n: TICKET_MAX_BODY - message.length })}</div>
+    <div class="flow-btns">
+      <button type="button" class="btn" onclick={() => change(false)}>{t('取消')}</button>
+      <button type="submit" form="ticket-form" class="btn pri" disabled={busy.busy}>{busy.busy ? t('提交中') : t('提交工单')}</button>
+    </div>
   {/snippet}
 </Dialog>
 
@@ -138,12 +136,8 @@
   .opts label.on { border-color: var(--brand); color: var(--brand); font-weight: 500; box-shadow: inset 0 0 0 1px var(--brand); }
   .opts label:has(:focus-visible) { box-shadow: var(--focus); }
   .hint { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
-  .left { margin-right: auto; align-self: center; font-size: 12.5px; color: var(--muted); }
   @media (max-width: 720px) {
     .two { grid-template-columns: 1fr; }
-    /* 手机上字数单独占一行（在等宽按钮上方），footer 换行 */
-    :global(.dlg footer:has(> .left)) { flex-wrap: wrap; row-gap: 6px; }
-    .left { flex: 1 0 100%; margin: 0; text-align: right; }
   }
   @media (prefers-reduced-motion: reduce) {
     .opts label { transition: none; }
