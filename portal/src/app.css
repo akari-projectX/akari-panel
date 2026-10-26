@@ -419,23 +419,32 @@
   /* 面板下发的内容（固定标签集：p br h3–h6 strong em code pre ul ol li blockquote hr a img；没有 class / style） */
   .rich { font-size: 14.5px; line-height: 1.9; color: var(--body); overflow-wrap: anywhere; }
   .rich > * + * { margin-top: 13px; }
-  .rich strong { color: var(--fg); font-weight: 600; }
-  .rich h3, .rich h4, .rich h5, .rich h6 { color: var(--fg); font-weight: 600; line-height: 1.45; margin-top: 24px; }
+  .rich strong { color: var(--fg); font-weight: 500; }
+  .rich h3, .rich h4, .rich h5, .rich h6 { color: var(--fg); font-weight: 500; line-height: 1.45; letter-spacing: -.015em; margin-top: 22px; }
   .rich h3 { font-size: 17px; }
-  .rich h3[id], .rich h4[id] { scroll-margin-top: 80px; }
+  .rich h3, .rich h4 { scroll-margin-top: 92px; }
   .rich h4 { font-size: 15.5px; }
   .rich h5, .rich h6 { font-size: 14.5px; }
-  .rich ul, .rich ol { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+  .rich ul, .rich ol { padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
   .rich ul { list-style: disc; }
   .rich ol { list-style: decimal; }
-  .rich li::marker { color: var(--faint); }
+  .rich li::marker { color: color-mix(in srgb, var(--brand) 70%, transparent); }
   .rich a { color: var(--brand); text-decoration: underline; text-underline-offset: 3px; }
-  .rich code { font-family: var(--font-mono); font-size: .9em; padding: 1px 5px; border-radius: 4px; background: var(--secondary); color: var(--fg); }
-  .rich pre { padding: 12px 14px; border-radius: 8px; background: var(--secondary); overflow-x: auto; font-size: 12.5px; line-height: 1.7; }
+  .rich code { font-size: .92em; padding: 1.5px 5px; border-radius: 5px; background: var(--secondary); color: var(--fg); }
+  .rich pre { padding: 12px 14px; border-radius: 12px; background: var(--secondary); overflow-x: auto; font-size: 12.5px; line-height: 1.7; }
   .rich pre code { padding: 0; background: none; }
-  .rich blockquote { padding-left: 14px; border-left: 2px solid var(--line2); color: var(--muted); }
-  .rich img { max-width: 100%; height: auto; border-radius: 8px; }
+  .rich blockquote { padding-left: 14px; border-left: 2px solid color-mix(in srgb, var(--brand) 45%, transparent); color: var(--muted); }
+  .rich img { max-width: 100%; height: auto; border-radius: 12px; }
   .rich hr { border: 0; border-top: 1px solid var(--line); }
+  /* 文档正文（v1.4.0 .rich-article）：比通用内容大一号、行距更松，h3 章节之间留出章节感 */
+  .rich-article { font-size: 15.5px; line-height: 1.95; color: color-mix(in srgb, var(--fg) 78%, transparent); }
+  .rich-article > * + * { margin-top: 16px; }
+  .rich-article h3 { font-size: 20px; margin-top: 40px; padding-top: 24px; border-top: 1px solid var(--line); }
+  .rich-article > h3:first-child { padding-top: 0; border-top: 0; margin-top: 0; }
+  .rich-article h4 { font-size: 17px; margin-top: 28px; }
+  .rich-article h5, .rich-article h6 { font-size: 15.5px; margin-top: 22px; }
+  .rich-article img { border-radius: 14px; border: 1px solid var(--line); }
+  .rich-article pre { font-size: 13px; }
 
   /* 骨架条（v1.4.0 .sk，与后台 .skeleton 同一观感）：灰底 + 一道渐变来回流动，1.4s；.lines 里的 <i> 是同一种条 */
   .sk, .lines i {
