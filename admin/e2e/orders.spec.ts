@@ -204,3 +204,59 @@ test("ORD-04 ORD-08: mark an unpaid order paid (reason), payment events in words
   expect((await dl).suggestedFilename()).toMatch(/\.csv$/);
   await toast(page, /已开始下载/);
 });
+
+test("ORD-09: a refund the provider confirmed but the panel could not record is shown and can only be recorded for that amount", async ({
+  page,
+}, info) => {
+  const tag = uniq(info, "ordcf");
+  const { email, planId } = await setup(tag);
+  const no = `E2E${Date.now()}${info.project.name.slice(0, 1)}`;
+  const request = JSON.stringify({
+    out_request_no: `${no}R1`,
+    cents: 1500,
+    state: "confirmed",
+    attempts: 2,
+    last_error: "e2e: the user no longer exists",
+    reason: "e2e original refund",
+    keep_plan: true,
+    actor_id: null,
+    actor_label: "e2e",
+    requested_at: new Date().toISOString(),
+    next_at: null,
+    done_at: null,
+  });
+  sql(
+    `INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_id, plan_name, amount_cents, period, list_price_cents, ` +
+      `credit_cents, discount_cents, balance_cents, balance_state, subject, expires_at, action, status, paid_via, paid_at, ` +
+      `paid_amount_cents, fulfilled_at, refund_request) ` +
+      `SELECT gen_random_uuid(), '${no}', u.id, 'u-' || left(replace(u.id::text, '-', ''), 8), '${planId}', '${tag}-plan', 1500, 'month', 1500, ` +
+      `0, 0, 0, 'none', 'e2e', now() + interval '15 minutes', 'new', 'paid', 'notify', now(), 1500, now(), '${request}'::jsonb ` +
+      `FROM users u WHERE u.email = '${email}'`,
+  );
+  await openConsole(page, `/orders?email=${encodeURIComponent(email)}`);
+  // The list says the provider already refunded it.
+  await expect(row(page, "¥15.00")).toContainText("待登记退款");
+  await expect(row(page, "¥15.00")).toContainText("渠道已退 ¥15.00，待登记");
+  await openRow(page, "¥15.00");
+  const d = dialog(page, /^订单 /);
+  await expect(d.getByText(/支付渠道已退款 ¥15\.00，面板还没记账/)).toBeVisible();
+  await expect(d.getByText("e2e: the user no longer exists")).toBeHidden(); // folded away
+  await d.getByRole("button", { name: "退款", exact: true }).click();
+  const r = refundDialog(page);
+  // The badge and the hint; the other routes are off, the amount is fixed.
+  await expect(r.getByText("渠道已退款", { exact: true })).toBeVisible();
+  await expect(r.getByText(/这里只能「仅登记」同样的金额/)).toBeVisible();
+  await expect(r.getByRole("radio", { name: /原路退回/ })).toBeDisabled();
+  await expect(r.getByRole("radio", { name: /退到余额/ })).toBeDisabled();
+  await expect(r.getByRole("radio", { name: /仅登记/ })).toBeChecked();
+  await expect(r.getByLabel("实际已退金额")).toHaveValue("15.00");
+  await expect(r.getByLabel("实际已退金额")).toHaveJSProperty("readOnly", true);
+  await r.getByLabel("原因").fill("recorded after the provider refunded");
+  await confirmTail(r);
+  await r.getByRole("button", { name: /^登记退款 ¥15\.00/ }).click();
+  await toast(page, "已退款");
+  await r.getByRole("button", { name: "完成" }).click();
+  await expect(row(page, "¥15.00")).toContainText("已退款");
+  await expect(row(page, "¥15.00")).not.toContainText("待登记");
+  await page.keyboard.press("Escape");
+});
