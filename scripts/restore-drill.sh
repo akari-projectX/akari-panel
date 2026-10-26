@@ -110,7 +110,9 @@ echo "prefix=$PREFIX server=$SERVER_ID"
 echo "== 2. backup =="
 age-keygen -o "$W/age.key" 2>"$W/age.pub.txt"
 RECIP="$(awk '/Public key:/{print $3}' "$W/age.pub.txt")"
-AGE_RECIPIENT="$RECIP" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
+openssl ecparam -name prime256v1 -genkey -noout -out "$W/sign.pem" 2>/dev/null
+openssl ec -in "$W/sign.pem" -pubout -out "$W/sign.pub" 2>/dev/null
+AGE_RECIPIENT="$RECIP" AKARI_BACKUP_SIGN_KEY="$W/sign.pem" AKARI_DATA_DIR="$W/data" AKARI_BACKUP_DIR="$W/backups" \
   AKARI_PG_DUMP_CMD="docker compose exec -T postgres pg_dump -U akari -Fc $DRILL_DB" \
   scripts/backup.sh
 BACKUP="$(find "$W/backups" -maxdepth 1 -name 'akari-*' -type d | sed -n 1p)"
@@ -129,7 +131,7 @@ wipe_db
   || fail "wipe did not empty the database"
 
 echo "== 4. restore =="
-AGE_IDENTITY_FILE="$W/age.key" AKARI_DATA_DIR="$W/data" \
+AGE_IDENTITY_FILE="$W/age.key" AKARI_BACKUP_VERIFY_KEY="$W/sign.pub" AKARI_DATA_DIR="$W/data" \
   AKARI_PG_RESTORE_CMD="docker compose exec -T postgres pg_restore -U akari -d $DRILL_DB --no-owner --single-transaction" \
   scripts/restore.sh "$BACKUP"
 

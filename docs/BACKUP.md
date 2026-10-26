@@ -69,7 +69,7 @@ agent 的密钥和证书保存在它自己的状态目录中（按随附 unit �
 `scripts/backup.sh` 把 `pg_dump --format=custom` 的输出和 `data/` 的 `tar` 通过
 [age](https://github.com/FiloSottile/age) 加密给**公钥**接收方：备份主机上没有任何能读取自己备份的密钥
 （gpg 需要在主机上放密钥环；age 只是一个静态二进制）。敏感内容不会以明文落盘。每次备份的输出：
-`akari-<UTC>/{db.dump.age,data.tar.age,[config.tar.age,]MANIFEST,SHA256SUMS[,SHA256SUMS.sig]}`
+`akari-<UTC>/{db.dump.age,data.tar.age,[config.tar.age,]MANIFEST,SHA256SUMS,SHA256SUMS.sig}`
 （设置了 `AKARI_CONFIG_FILES` 才有 `config.tar.age`）。明文模式（`AKARI_BACKUP_PLAINTEXT=1`，须显式指定；
 也是安装器在没有接收方时的回退）改为写出 `db.dump`、`data.tar`、`config.tar`，目录 0700、文件 0600，并给出警告；
 `restore.sh` 两种都能读（仅 `.age` 文件需要 `AGE_IDENTITY_FILE`）。
@@ -88,30 +88,36 @@ DATABASE_URL=postgres://... scripts/backup.sh
 `AKARI_VERIFY_IDENTITY` 用于在备份完成后立即解密并校验。
 请用 cron / systemd timer 定时执行，并把目录复制到主机之外（文件均为密文）。
 
-## Authenticity（真实性：校验和与签名）
+## Authenticity（真实性：校验和与签名，默认开启）
 
-`SHA256SUMS`（现在也包含 `MANIFEST`）与备份文件放在同一目录，**只能证明备份完好（未损坏），不能证明它出自你的备份主机**。
+`SHA256SUMS`（也包含 `MANIFEST`）与备份文件放在同一目录，**只能证明备份完好（未损坏），不能证明它出自你的备份主机**。
 age 的接收方是**公钥**：任何能写备份目录或对象存储、并且知道公钥的人，都可以加密出自己的 `data.tar`（含 `ca.key`、
 `jwt.key`、`master.key`）和 `db.dump`，再重算 `SHA256SUMS`，恢复时它们完全合法。把校验和也放进 age 信封没有用，
-因为攻击者同样能加密出一份。想要真实性，必须有只在备份主机上的**签名私钥**，并在恢复一侧持有对应的公钥：
+因为攻击者同样能加密出一份。所以备份**默认签名**：
+
+- **安装器自动处理**：`install.sh` 安装（以及升级、`backup`、`migrate`）时，如果还没有签名密钥，就在 `/etc/akari/backup-sign.pem`
+  生成一把（EC prime256v1，root、0600，与 `install.env` 同目录；不进备份、不进命令行、不进日志），路径记在
+  `install.env` 的 `BACKUP_SIGN_KEY`。此后 `akari-ctl backup`、升级前备份、`migrate` 的备份目录里都有 `SHA256SUMS.sig`
+  （对 `SHA256SUMS` 的 ECDSA-SHA256 签名）。**不要把私钥放到备份存储上**：能写备份存储的人拿不到它，才有意义。
+- **验证公钥**：`akari-ctl info` 会打印（`/etc/akari/backup-sign.pub` 是同一份，公钥不是机密）。**请离线保存一份**
+  （与 age 私钥放在一起）：灾难恢复到新主机时，旧主机和它的私钥可能都没了，新主机会生成自己的新密钥。
+  换签名密钥（删除 `backup-sign.pem` 后再运行 `akari-ctl backup`）之后，旧备份仍须用旧公钥验证，请一并保留。
+- **恢复时验证**：
 
 ```bash
-openssl ecparam -name prime256v1 -genkey -noout -out backup-sign.pem          # 备份主机上；0600，远离备份存储
-openssl ec -in backup-sign.pem -pubout -out backup-sign.pub                    # 公钥：离线保存，随 age 私钥一起带去恢复现场
-echo 'BACKUP_SIGN_KEY=/etc/akari/backup-sign.pem' >>/etc/akari/install.env    # akari-ctl backup / upgrade / migrate 都会签名
-# 手动：AKARI_BACKUP_SIGN_KEY=/etc/akari/backup-sign.pem scripts/backup.sh
-```
-
-备份目录里多出 `SHA256SUMS.sig`（对 `SHA256SUMS` 的 ECDSA-SHA256 签名）。恢复时给出公钥才会验证：
-
-```bash
-AKARI_BACKUP_VERIFY_KEY=backup-sign.pub AGE_IDENTITY_FILE=akari-backup.key scripts/restore.sh <备份目录>
 akari-ctl ... --restore <备份目录> --age-identity akari-backup.key --backup-verify-key backup-sign.pub
+AKARI_BACKUP_VERIFY_KEY=backup-sign.pub AGE_IDENTITY_FILE=akari-backup.key scripts/restore.sh <备份目录>
 ```
 
-给了公钥时：没有 `SHA256SUMS.sig`、签名不符、或校验和不符，一律**拒绝恢复**。没给公钥时仍只检查校验和，
-并明确提示“只证明完好、不证明出处”（安装器的 `--restore` 同样提示）。威胁模型：能写备份存储但拿不到签名私钥的人
-无法伪造能通过验证的备份；备份主机本身被攻破则不在此列（它本来就能写任何内容）。
+给了公钥就是**强制验证**：没有 `SHA256SUMS.sig`、签名不符、或校验和不符，一律**拒绝恢复**。
+没给公钥时恢复仍会继续，但会打印醒目的警告“备份未经验证：只证明完好（integrity only），不证明出处（not authenticity）”——
+备份存储可能被别人写过时，请停下来用公钥重试。恢复会装入备份里的 CA 私钥、`jwt.key` 和 `master.key`。
+威胁模型：能写备份存储但拿不到签名私钥的人无法伪造能通过验证的备份；备份主机本身被攻破则不在此列（它本来就能写任何内容）。
+
+直接使用 `scripts/backup.sh`（cron）时同样必须指定签名密钥：`AKARI_BACKUP_SIGN_KEY=/etc/akari/backup-sign.pem`
+（手动生成：`openssl ecparam -name prime256v1 -genkey -noout -out backup-sign.pem && chmod 600 backup-sign.pem`，
+公钥 `openssl ec -in backup-sign.pem -pubout -out backup-sign.pub`）。没有密钥时脚本**停止**；确实不要签名要显式写
+`AKARI_BACKUP_UNSIGNED=1`（与 `AKARI_BACKUP_PLAINTEXT=1` 一样是明确的选择，会打印警告）。
 
 ## Restore（恢复）
 

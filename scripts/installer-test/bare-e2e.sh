@@ -277,6 +277,14 @@ cx sh -c 'ls /root/moved/akari-*/db.dump' >/dev/null 2>&1 && fail "plain dump ne
 cx sh -c 'grep -qx agent_releases=excluded /root/moved/akari-*/MANIFEST' || fail "MANIFEST does not say the releases were left out"
 echo "ok: age-encrypted backup"
 
+log "backups are signed by default; akari-ctl info prints the verification key"
+# shellcheck disable=SC2016 # expanded by the container's shell
+cx sh -c 'test -s /root/moved/akari-*/SHA256SUMS.sig && test "$(stat -c %a /etc/akari/backup-sign.pem)" = 600' || fail "the backup is not signed with a 0600 key"
+cx sh -c 'akari-ctl info | sed -n "/BEGIN PUBLIC KEY/,/END PUBLIC KEY/p" >/root/backup-sign.pub && openssl dgst -sha256 -verify /root/backup-sign.pub -signature /root/moved/akari-*/SHA256SUMS.sig /root/moved/akari-*/SHA256SUMS' >/dev/null \
+	|| fail "the public key printed by akari-ctl info does not verify the backup"
+cx sh -c 'grep -rl "BEGIN EC PRIVATE KEY" /var/log/akari-install.log /root/moved' && fail "the signing key leaked into the log or the backup"
+echo "ok: signed backup, key printed by akari-ctl info"
+
 log "uninstall --purge"
 inst "$c" akari-ctl uninstall --yes --purge && fail "purge without confirmation succeeded"
 inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge"
@@ -291,7 +299,7 @@ echo "ok: purged (backups kept)"
 log "host move: fresh install from the encrypted backup (--restore)"
 moved=$(cx sh -c 'ls -d /root/moved/akari-* | tail -n 1')
 inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" \
-	--restore "$moved" --age-identity /root/move.key || fail "install --restore"
+	--restore "$moved" --age-identity /root/move.key --backup-verify-key /root/backup-sign.pub || fail "install --restore"
 check_panel "$new"
 [ "$(prefix)" = "$PREFIX" ] || fail "the prefix changed across the move"
 [ "$(https_code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription after the move"
