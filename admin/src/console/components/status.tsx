@@ -41,7 +41,15 @@ function StatusChip({ chip, className }: { chip: Chip; className?: string }) {
 /* ---------- Orders ---------- */
 
 export type OrdState =
-  "pending" | "completed" | "unfulfilled" | "refunding" | "partial_refund" | "refunded" | "expired" | "cancelled";
+  | "pending"
+  | "completed"
+  | "unfulfilled"
+  | "refunding"
+  | "refund_unrecorded"
+  | "partial_refund"
+  | "refunded"
+  | "expired"
+  | "cancelled";
 
 export type OrderLike = {
   status: string;
@@ -49,8 +57,18 @@ export type OrderLike = {
   fulfilled_at?: string | null;
   refunded_at?: string | null;
   refund_cents?: number | null;
-  refund_request?: { state: string } | null;
+  refund_request?: { state: string; cents?: number } | null;
 };
+
+/**
+ * The provider already refunded the order but the panel could not record it
+ * (refund request state `confirmed`): the amount it confirmed, else null.
+ * Only a record-only refund of exactly that amount is accepted.
+ */
+export function confirmedRefundCents(o: OrderLike): number | null {
+  const r = o.refund_request;
+  return r?.state === "confirmed" && !o.refunded_at ? (r.cents ?? 0) : null;
+}
 
 /**
  * One state for the whole order, the most pressing first: refund in
@@ -59,6 +77,7 @@ export type OrderLike = {
  */
 export function orderState(o: OrderLike): OrdState {
   if (o.refund_request?.state === "pending") return "refunding";
+  if (confirmedRefundCents(o) !== null) return "refund_unrecorded";
   if (o.refunded_at)
     return o.amount_cents != null && o.refund_cents != null && o.refund_cents < o.amount_cents
       ? "partial_refund"
@@ -75,6 +94,7 @@ export function ordChip(s: OrdState, tr: Tr): Chip {
     completed: { label: tr("已完成", "Completed"), tone: "success", icon: CircleCheck },
     unfulfilled: { label: tr("未开通", "Not fulfilled"), tone: "danger", icon: CircleX },
     refunding: { label: tr("退款中", "Refunding"), tone: "warning", icon: LoaderCircle },
+    refund_unrecorded: { label: tr("待登记退款", "Record the refund"), tone: "warning", icon: Undo2 },
     partial_refund: { label: tr("部分退款", "Partly refunded"), tone: "warning", icon: Undo2 },
     refunded: { label: tr("已退款", "Refunded"), tone: "neutral", icon: Undo2 },
     expired: { label: tr("已过期", "Expired"), tone: "outline", icon: TimerOff },
