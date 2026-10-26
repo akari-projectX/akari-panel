@@ -853,11 +853,16 @@ WITH input AS (
     SELECT server_id, entrance_id, user_id, departed_at, departed_billed, rate, traffic_tat,
            floor, start, raw, up_raw,
            CASE WHEN departed_at IS NULL THEN
-               $8::numeric * COALESCE(
-                   GREATEST(extract(epoch FROM statement_timestamp() - GREATEST(old_at, floor)), 0)
-                     + $10::numeric,
+               -- CASE, not COALESCE(GREATEST(old_at, floor) …): GREATEST ignores
+               -- NULL, so for a new row (old_at NULL) it returned `floor` and the
+               -- age branch was never taken (audit 2026-10 P2-1).
+               $8::numeric * CASE WHEN old_at IS NULL THEN
                    LEAST(GREATEST(age_secs::numeric, $9::numeric),
-                         GREATEST(extract(epoch FROM statement_timestamp() - floor), 0)))
+                         GREATEST(extract(epoch FROM statement_timestamp() - floor), 0))
+               ELSE
+                   GREATEST(extract(epoch FROM statement_timestamp() - GREATEST(old_at, floor)), 0)
+                     + $10::numeric
+               END
            ELSE
                $8::numeric * GREATEST(extract(epoch FROM
                    departed_at + make_interval(secs => $14) - start), 0)
@@ -3693,6 +3698,49 @@ mod db_tests {
             billed <= MAX_DIRTY_SESSIONS_PER_SERVER as i128 * (cap + RATE as i128),
             "{billed}"
         );
+        assert_history(&db).await;
+        db.drop().await;
+    }
+
+    /// Audit 2026-10 P2-1: the cap of a NEW row is key rate x (time since
+    /// first seen, at least MIN_PLAUSIBLE_SECS, at most the burst window) —
+    /// not key rate x (window + slack), which is what the dead COALESCE
+    /// branch gave. The key rate is far below the server rate here, so the
+    /// server (GCRA) cap cannot mask the per-row cap.
+    #[tokio::test]
+    async fn new_row_cap_follows_its_age() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let rates = Rates {
+            key: RATE / 100,
+            ..RATES
+        };
+        let key = rates.key;
+        let n = db.node().await;
+        let cases: [(f64, i64); 4] = [(0.0, 60), (1.0, 60), (100.0, 100), (3600.0, 120)];
+        let mut users = vec![];
+        for _ in cases {
+            let u = db.user().await;
+            db.assign(n, u).await;
+            users.push(u);
+        }
+        let rows: Vec<FlushRow> = users
+            .iter()
+            .zip(cases)
+            .map(|(&u, (age, _))| row(n, u, "fresh", TB, age))
+            .collect();
+        let rows = direct_rows(&db, &rows).await;
+        write_rows(&db.pool, &rows, rates, DEFAULT_DEPARTED_GRACE_SECS, None)
+            .await
+            .unwrap();
+        for (&u, (age, secs)) in users.iter().zip(cases) {
+            let billed = db.used(u).await;
+            assert!(
+                (key * (secs - 1)..=key * secs).contains(&billed),
+                "age {age}: billed {billed}, want about {secs} s x {key}"
+            );
+        }
         assert_history(&db).await;
         db.drop().await;
     }
