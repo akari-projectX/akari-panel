@@ -147,8 +147,6 @@
   .note .tx span { color: var(--muted); }
   .note .gap { display: inline-block; width: 1em; }
   .note .acts { display: flex; flex: none; align-items: center; gap: 4px; }
-  .btn.ghost { border-color: transparent; background: none; color: var(--muted); }
-  .btn.ghost:hover { color: var(--fg); background: var(--hover); border-color: transparent; }
 
   /* ── 最新公告横幅：左边 3px 标签色 ── */
   .banner {

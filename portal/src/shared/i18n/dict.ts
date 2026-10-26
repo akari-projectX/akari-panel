@@ -143,8 +143,8 @@ export const EN: Record<string, string> = {
   /* ── 补齐 ── */
   '简体中文': '简体中文',
   /* 门户 v2：线路、用量、钱包 */
-  '线路概况': 'Lines at a glance',
-  '分钟一次': 'min interval',
+  ' 分钟一次': ' min interval',
+  ' 条': ' lines',
   '用量概况': 'Usage at a glance',
   /* 门户 v2 仪表盘 */
   '时间范围': 'Range',
