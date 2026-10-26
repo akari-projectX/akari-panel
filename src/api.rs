@@ -1306,6 +1306,15 @@ pub(crate) async fn apply_update_user(
             "password must be at least 8 characters"
         ));
     }
+    // Your own password changes through POST /me/password, which asks for
+    // the current one: a stolen admin session must not be able to set a new
+    // password and keep the account.
+    if password.is_some() && actor.id == Some(id) {
+        return Err(bad_request!(
+            "user.password_self",
+            "change your own password with the current password (POST /me/password)"
+        ));
+    }
     // Hashed before any lock is taken (and off the async workers).
     let password_hash = match &password {
         Some(v) => Some(auth::hash_password_async(v).await?),

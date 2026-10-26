@@ -511,6 +511,7 @@ user.owner_confirm_required
 user.owner_only
 user.owner_protected
 user.owner_target
+user.password_self
 user.plan_filter_invalid
 user.promote_banned
 user.query_too_long
