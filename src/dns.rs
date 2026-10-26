@@ -19,6 +19,7 @@
 
 pub mod accounts;
 pub mod cloudflare;
+pub mod link;
 pub mod records;
 
 #[cfg(test)]
@@ -71,9 +72,14 @@ async fn client_of(state: &AppState, id: Uuid) -> Result<(accounts::Row, Client)
         .await?
         .ok_or_else(ApiError::not_found)?;
     drop(conn);
-    let token = accounts::open_token(state.master_key(), &row).ok_or_else(token_unreadable)?;
-    let client = Client::new(&state.cfg().limits.cloudflare_api_base, token);
+    let client = client_of_row(state, &row)?;
     Ok((row, client))
+}
+
+/// A client for the token of `row`.
+fn client_of_row(state: &AppState, row: &accounts::Row) -> Result<Client, ApiError> {
+    let token = accounts::open_token(state.master_key(), row).ok_or_else(token_unreadable)?;
+    Ok(Client::new(&state.cfg().limits.cloudflare_api_base, token))
 }
 
 async fn managed(state: &AppState) -> Result<Managed, ApiError> {
@@ -189,13 +195,17 @@ struct ZoneView {
     can_edit: Option<bool>,
 }
 
-/// GET /dns/zones (admin): the zones of every token. A token that fails
-/// is reported next to the zones of the others.
-async fn list_zones(
-    State(state): State<AppState>,
-    user: AuthUser,
-) -> Result<Json<Value>, ApiError> {
-    user.require_admin()?;
+/// Every token's zones, fetched concurrently (a token that fails is its own
+/// error; the others still answer). `None` = the stored token cannot be opened.
+async fn fetch_zones(
+    state: &AppState,
+) -> Result<
+    Vec<(
+        accounts::Row,
+        Option<Result<Vec<cloudflare::Zone>, DnsError>>,
+    )>,
+    ApiError,
+> {
     let mut conn = state.pg().acquire().await?;
     let rows = accounts::load_all(&mut conn).await?;
     drop(conn);
@@ -213,17 +223,32 @@ async fn list_zones(
             answers.insert(index, result);
         }
     }
+    Ok(rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| (row, answers.remove(&i)))
+        .collect())
+}
+
+/// GET /dns/zones (admin): the zones of every token. A token that fails
+/// is reported next to the zones of the others.
+async fn list_zones(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Value>, ApiError> {
+    user.require_admin()?;
+    let fetched = fetch_zones(&state).await?;
     let (mut zones, mut errors) = (Vec::new(), Vec::new());
-    for (index, row) in rows.iter().enumerate() {
-        match answers.remove(&index) {
+    for (row, answer) in fetched {
+        match answer {
             Some(Ok(list)) => zones.extend(list.into_iter().map(|zone| ZoneView {
                 account_id: row.id,
                 account_name: row.name.clone(),
                 can_edit: zone.can_edit(),
                 zone,
             })),
-            Some(Err(e)) => errors.push(error_entry(row, ApiError::from(e))),
-            None => errors.push(error_entry(row, token_unreadable())),
+            Some(Err(e)) => errors.push(error_entry(&row, ApiError::from(e))),
+            None => errors.push(error_entry(&row, token_unreadable())),
         }
     }
     zones.sort_by(|a, b| a.zone.name.cmp(&b.zone.name));
@@ -327,7 +352,11 @@ struct Written<'a> {
 }
 
 /// The audit row of one record write.
-async fn audit_record(state: &AppState, user: &AuthUser, w: Written<'_>) -> Result<(), ApiError> {
+async fn audit_record_inner(
+    state: &AppState,
+    user: &AuthUser,
+    w: Written<'_>,
+) -> Result<(), ApiError> {
     let wrap = |r: &Record| json!({ "account": w.account.name, "zone": r.zone_name, "record": records::audit_view(r) });
     let mut tx = state.pg().begin().await?;
     audit::record(
@@ -342,6 +371,25 @@ async fn audit_record(state: &AppState, user: &AuthUser, w: Written<'_>) -> Resu
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// [`audit_record_inner`] for a write Cloudflare already accepted: when the
+/// audit row cannot be written the change is live without a trace, so the
+/// failure is logged with what changed (never a token) before the 500.
+async fn audit_record(state: &AppState, user: &AuthUser, w: Written<'_>) -> Result<(), ApiError> {
+    let (action, zone, record_id) = (w.action, w.zone.to_string(), w.record_id.to_string());
+    let name = w.after.or(w.before).map(|r| r.name.clone());
+    let result = audit_record_inner(state, user, w).await;
+    if result.is_err() {
+        tracing::error!(
+            action,
+            zone,
+            record_id,
+            record = name.as_deref().unwrap_or(""),
+            "the DNS change was accepted by Cloudflare but its audit row could not be written"
+        );
+    }
+    result
 }
 
 /// POST /dns/accounts/{account}/zones/{zone}/records (admin).
@@ -649,8 +697,10 @@ async fn batch(
 
 pub fn routes() -> axum::Router<AppState> {
     use axum::routing::{get, post};
+    let linking = link::routes();
     const ZONE: &str = "/{prefix}/api/v1/dns/accounts/{account}/zones/{zone}/records";
     axum::Router::new()
+        .merge(linking)
         .route(
             "/{prefix}/api/v1/dns/accounts",
             get(list_accounts).post(create_account),

@@ -1074,7 +1074,7 @@ pub async fn init(state: &AppState) -> anyhow::Result<()> {
     reload(state).await
 }
 
-async fn reload_logged(state: &AppState) {
+pub(crate) async fn reload_logged(state: &AppState) {
     if let Err(e) = reload(state).await {
         tracing::warn!(error = %e, "settings reload failed");
     }

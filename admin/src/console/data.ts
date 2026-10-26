@@ -52,11 +52,22 @@ const NODES = [
   "traffic",
   "agent-updates",
   "inbound-templates",
+  "dns-server",
 ];
 const PLANS = ["plans", "plan", "plan-prices", "node-groups", "users", "user"];
 const FINANCE = ["withdrawals", "commissions", "commission-settings", "balances", "balance", "users", "user"];
 const CONTENT = ["announcements", "kb"];
-const SETTINGS = ["settings", "outbox", "mail-templates", "me", "admins", "commission-settings", "alert-settings"];
+const SETTINGS = [
+  "dns-domains",
+  "dns-panel",
+  "settings",
+  "outbox",
+  "mail-templates",
+  "me",
+  "admins",
+  "commission-settings",
+  "alert-settings",
+];
 const RELEASES = ["releases", "rollouts", "agent-updates", "servers", "server", "nodes"];
 
 /** API path's first segment → the query-key roots a write there can change. */
@@ -86,7 +97,7 @@ const ENTITIES: Record<string, string[]> = {
   rollouts: RELEASES,
   "agent-updates": RELEASES,
   settings: [...SETTINGS, "servers", "nodes", "plans"],
-  dns: ["dns-accounts", "dns-zones", "dns-records", "dns-domains"],
+  dns: ["dns-accounts", "dns-zones", "dns-records", "dns-domains", "dns-panel", "dns-server"],
   mail: SETTINGS,
   me: ["me", "passkeys", "account"],
   logout: [],

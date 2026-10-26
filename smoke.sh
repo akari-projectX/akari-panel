@@ -1191,8 +1191,34 @@ CF_ID2=$(last_json "d['id']")
 # A bad zone id never reaches the request path.
 [ "$(code -b "$JAR" "$DNS/accounts/$CF_ACC/zones/..%2f..%2fuser/records")" = "404" ] \
   || { echo "FAIL: bad zone id"; exit 1; }
+# Linking: the panel's public address (owner, public only), "point at" a name
+# (created grey for a node/passkey use, address given), the unchanged repeat,
+# the domain listing.
+[ "$(code -b "$JAR" "$DNS/panel-addresses")" = "200" ] && CF_PV=$(last_json "d['version']") \
+  || { echo "FAIL: dns panel addresses"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/public-addresses" -H "$JSON" -d "{\"version\":$CF_PV,\"public_ipv4\":\"10.1.2.3\"}")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "settings.public_address_invalid" ] \
+  || { echo "FAIL: private public address accepted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$DNS/link" -H "$JSON" -d '{"hosts":[{"host":"link.smoke.test"}]}')" = "409" ] \
+  && [ "$(last_json "d['code']")" = "dns.panel_address_unset" ] \
+  || { echo "FAIL: link without a panel address"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/public-addresses" -H "$JSON" -d "{\"version\":$CF_PV,\"public_ipv4\":\"8.8.8.8\"}")" = "200" ] \
+  || { echo "FAIL: set the panel address"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.public_addresses.update'")" = "1" ] \
+  || { echo "FAIL: panel address audit"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$DNS/link" -H "$JSON" -d '{"hosts":[{"host":"link.smoke.test"}]}')" = "200" ] \
+  && [ "$(last_json "(d['ok'], d['results'][0]['changes'][0]['action'])")" = "(1, 'created')" ] \
+  || { echo "FAIL: link a name"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$DNS/link" -H "$JSON" -d '{"hosts":[{"host":"link.smoke.test"},{"host":"203.0.113.9"}]}')" = "200" ] \
+  && [ "$(last_json "(d['ok'], d['failed'], d['results'][0]['changes'][0]['action'], d['results'][1]['code'])")" = "(1, 1, 'unchanged', 'dns.link_not_a_name')" ] \
+  || { echo "FAIL: link repeat"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$DNS/domains")" = "200" ] && [ "$(last_json "d['panel']['public_ipv4']")" = "8.8.8.8" ] \
+  || { echo "FAIL: dns domains"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$CF_REC?search=link.smoke")" = "200" ] && CF_LINK=$(last_json "d['records'][0]['id']") \
+  && [ "$(code -b "$JAR" -X DELETE "$CF_REC/$CF_LINK")" = "204" ] \
+  || { echo "FAIL: delete the linked record"; exit 1; }
 # Audit: one row per write, with before/after, and never the token.
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'dns.record.%'")" = "7" ] \
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'dns.record.%'")" = "9" ] \
   && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action LIKE 'dns.%' AND (before::text LIKE '%$CF_TOKEN%' OR after::text LIKE '%$CF_TOKEN%')")" = "0" ] \
   || { echo "FAIL: dns audit"; psql_q "SELECT action FROM audit_log WHERE action LIKE 'dns.%'"; exit 1; }
 ! matches "$CF_TOKEN" <"$LOG/panel.log" || { echo "FAIL: the Cloudflare token reached the panel log"; exit 1; }

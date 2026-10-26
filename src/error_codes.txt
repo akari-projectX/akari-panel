@@ -528,3 +528,13 @@ withdrawal.not_pending
 withdrawal.open
 withdrawal.txid_invalid
 withdrawal.usdt_amount_invalid
+dns.link_address_invalid
+dns.link_ambiguous
+dns.link_cname_conflict
+dns.link_no_zone
+dns.link_not_a_name
+dns.link_read_only
+dns.panel_address_unset
+dns.server_address_unknown
+dns.server_no_names
+settings.public_address_invalid
