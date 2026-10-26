@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
 
-  /* 没有「登录 / 注册」标签的那几页（找回、重设密码、暂停注册、注销结果）：标题 + 一行真实信息 */
+  /* 标题 + 一行说明（v1.4.0 的 Title：27px / 600，说明 14.5px 辅助灰）；icon = 标题上面的图标方块 */
   let { title, lead, icon }: { title: string; lead?: string; icon?: Snippet } = $props();
 </script>
 
-<div class="auth-head">
-  {@render icon?.()}
+{#if icon}<div class="au-icon">{@render icon()}</div>{/if}
+<div class="au-title">
   <h1>{title}</h1>
-  {#if lead}<p class="lead">{lead}</p>{/if}
+  {#if lead}<p>{lead}</p>{/if}
 </div>

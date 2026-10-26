@@ -73,7 +73,8 @@
     if (!auth.me) return whenIdle(prefetchSite);
   });
 
-  const dash = $derived(found ? found.page.layout === 'dash' : !!auth.me);
+  /* 公开页（条款、隐私、重设密码……）：登录了就用用户中心的页头（v1.4.0 SiteLayout），没登录用访客页头 */
+  const dash = $derived(found ? found.page.layout === 'dash' || !!auth.me : !!auth.me);
 
   onMount(startBoot);
 </script>
@@ -95,5 +96,5 @@
 {:else if dash && auth.me}
   <DashLayout>{@render content()}</DashLayout>
 {:else}
-  <GuestLayout wide={!!found?.page.wide}>{@render content()}</GuestLayout>
+  <GuestLayout>{@render content()}</GuestLayout>
 {/if}

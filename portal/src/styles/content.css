@@ -163,12 +163,6 @@
   .banner .iconbtn { color: var(--faint); }
   .banner .go { flex: none; white-space: nowrap; }
 
-  /* ── 空状态：一句标题 + 一句说明 + 可选按钮，不画插图 ── */
-  .empty { padding: 20px 0 8px; }
-  .empty b { display: block; color: var(--fg); font-weight: 500; }
-  .empty p { margin-top: 4px; color: var(--muted); font-size: 13px; line-height: 1.7; }
-  .empty .btn { margin-top: 14px; }
-
   /* ── 翻页（上一页 / 下一页 + 页码说明） ── */
   .pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; font-size: 12.5px; color: var(--faint); }
   .pager div { display: flex; gap: 4px; }
