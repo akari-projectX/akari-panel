@@ -3932,17 +3932,18 @@ mod tests {
         db.drop().await;
     }
 
-    /// An admin changing their own password keeps working (fresh cookie);
-    /// their other sessions die.
+    /// An admin cannot set their own password through PATCH /users/{self}
+    /// (it goes through /me/password with the current one, audit auth
+    /// P3-2): refused, and the session stays as it was.
     #[tokio::test]
-    async fn own_password_change_reissues_the_cookie() {
+    async fn own_password_patch_is_refused() {
         let Some(db) = TestDb::new().await else {
             return;
         };
         let a = db.admin().await;
         let state = AppState::for_test(db.pool.clone()).await;
         let old = token_for(&state, a).await;
-        let (jar, _) = update_user(
+        let Err(err) = update_user(
             State(state.clone()),
             admin_user(a),
             CookieJar::new(),
@@ -3953,11 +3954,11 @@ mod tests {
             }),
         )
         .await
-        .unwrap();
-        assert!(!live(&state, &old).await);
-        let fresh = jar.get(COOKIE_NAME).expect("reissued cookie");
-        assert!(live(&state, fresh.value()).await);
-        assert_eq!(fresh.secure(), Some(true), "cookie_secure defaults to true");
+        else {
+            panic!("the admin's own password was changed through PATCH");
+        };
+        assert_eq!(err.code(), "user.password_self");
+        assert!(live(&state, &old).await);
         drop(state);
         db.drop().await;
     }
