@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # W37 tiered CI: which heavy job groups a change needs.
 #
-#   scripts/ci-changes.sh full              every group (push to main, nightly,
+#   scripts/ci-changes.sh full              every group (merge queue, nightly,
 #                                           dispatch, release, `full-ci` label)
+#   scripts/ci-changes.sh none              no group (plain PRs and pushes to
+#                                           main: the queue already ran full)
 #   scripts/ci-changes.sh <base> <head>     groups touched by `git diff base head`
 #
 # Prints `<group>=true|false` lines (appended to $GITHUB_OUTPUT in Actions).
@@ -65,8 +67,10 @@ groups_of() {
 
 if [ "${1:-}" = full ]; then
   selected="$GROUPS_ALL"
+elif [ "${1:-}" = none ]; then
+  selected=""
 else
-  [ $# -eq 2 ] || { echo "usage: $0 full | <base> <head>" >&2; exit 2; }
+  [ $# -eq 2 ] || { echo "usage: $0 full | none | <base> <head>" >&2; exit 2; }
   files="$(git diff --name-only "$1" "$2")"
   selected=""
   while IFS= read -r f; do

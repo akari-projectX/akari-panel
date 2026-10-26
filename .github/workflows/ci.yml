@@ -1,16 +1,24 @@
 name: ci
 
-# W37 tiered CI. Fast checks (rust, portal, admin, cargo-deny, release keys,
-# shellcheck) run on every PR. Heavy jobs (coverage, bench tooling, smoke,
-# e2e, docker, installer) run only when the `changes` job finds a path they
-# cover (scripts/ci-changes.sh); otherwise they are skipped by their
-# job-level `if:`, which reports success, so the required checks never wait.
-# Everything runs on pushes to main, nightly, on dispatch, from release.yml
-# (workflow_call, before anything is published), and on PRs labelled
-# `full-ci`.
+# W37 tiered CI + merge queue. Tiers (decided in `changes` below):
+#   pull_request             fast: rust, portal, admin, cargo-deny, release
+#                            keys, shellcheck run for real; every heavy job
+#                            (coverage, bench tooling, smoke, e2e, docker,
+#                            build, installer) is skipped by its job-level
+#                            `if:` (a skipped required check is a success)
+#                            unless the PR has the `full-ci` label.
+#   merge_group              full: the merge queue tests the PR on top of the
+#                            latest main, every heavy job really runs.
+#   push to main             light: the queue already tested this commit; only
+#                            the fast jobs and `image cache (main)` run.
+#   schedule, dispatch, tag  full (release.yml calls this file via
+#                            workflow_call on a tag push).
+# Every required check exists, with the same name, in every tier.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   schedule:
@@ -37,7 +45,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; merge-queue, main, nightly and release
+  # runs never are.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Swatinem/rust-cache: each job restores its own key (job id + lockfile +
@@ -51,9 +61,8 @@ env:
 
 jobs:
   changes:
-    # Which heavy job groups this run needs (scripts/ci-changes.sh). A PR
-    # checkout is GitHub's merge commit: its first parent is the base
-    # branch head, so `HEAD^1 HEAD` is exactly what merging would change.
+    # Which heavy job groups this run needs (scripts/ci-changes.sh): all of
+    # them (full tier) or none (fast / light tier), see the header.
     # Fail-safe: when this job fails, the gated jobs run (their `if:` only
     # skips on an explicit "false").
     name: changes
@@ -67,13 +76,13 @@ jobs:
       docker: ${{ steps.c.outputs.docker }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
       - id: c
         env:
-          FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          # Plain PR (no label) and push to main (refs/heads/main; a tag push
+          # reaching here through release.yml has another ref) are not full.
+          FULL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
         run: |
-          if [ "$FULL" = true ]; then scripts/ci-changes.sh full; else scripts/ci-changes.sh HEAD^1 HEAD; fi
+          if [ "$FULL" = true ]; then scripts/ci-changes.sh full; else scripts/ci-changes.sh none; fi
 
   rust:
     name: rust (fmt, clippy, test)
@@ -153,7 +162,7 @@ jobs:
           cache: npm
           cache-dependency-path: portal/package-lock.json
       - run: npm ci
-      - run: npm audit --audit-level=high
+      - run: ../scripts/npm-audit.sh
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run check:colors
@@ -181,7 +190,7 @@ jobs:
           cache: npm
           cache-dependency-path: admin/package-lock.json
       - run: npm ci
-      - run: npm audit --audit-level=high
+      - run: ../scripts/npm-audit.sh
       - run: npm run check
       - run: npm run build
       # Report-only gzip sizes (scripts/bundle-report.mjs; also in the step summary).
