@@ -2,7 +2,7 @@
 // zone e2e-dns.test (editable, 58 records) and e2e-ro.test (read-only).
 import { expect, test } from "@playwright/test";
 
-import { apiJson, confirmDialog, dialog, must, openConsole, openRow, row, sql, toast, uniq } from "./helpers";
+import { apiJson, confirmDialog, dialog, must, openConsole, row, sql, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -27,6 +27,11 @@ async function addRecord(account: string, name: string, content: string, extra: 
     ...extra,
   });
   return r.id;
+}
+
+/** Open a record by clicking its name (the middle of a phone card can be the cloud button). */
+async function openRecord(page: import("@playwright/test").Page, name: string) {
+  await row(page, name).getByText(name, { exact: true }).first().click();
 }
 
 async function search(page: import("@playwright/test").Page, text: string) {
@@ -139,7 +144,7 @@ test("DNS-03: a record — create (checked fields), switch the cloud, edit, dupl
   await page.getByTestId(`dns-cloud-${name}`).filter({ visible: true }).click();
   await expect(row(page, name)).toContainText("仅 DNS");
   // Edit.
-  await openRow(page, name);
+  await openRecord(page, name);
   const e = dialog(page, "编辑 DNS 记录");
   await e.getByLabel("IPv4 地址").fill("203.0.113.78");
   await e.getByLabel("备注").fill("e2e comment");
@@ -155,7 +160,7 @@ test("DNS-03: a record — create (checked fields), switch the cloud, edit, dupl
   await toast(page, "记录已存在或与现有记录冲突");
   await dup.getByRole("button", { name: "取消" }).click();
   // Delete.
-  await openRow(page, name);
+  await openRecord(page, name);
   await dialog(page, "编辑 DNS 记录").getByRole("button", { name: "删除" }).click();
   await confirmDialog(page, undefined, /删除记录/);
   await toast(page, "记录已删除");
@@ -174,7 +179,7 @@ test("DNS-04: a record the panel depends on is marked and needs a confirmation t
     await openConsole(page, `/dns?zone=${account}:${ZONE}&q=${name}`);
     await expect(row(page, name)).toContainText("面板使用中");
     // Changing the address asks first; declining leaves the record alone.
-    await openRow(page, name);
+    await openRecord(page, name);
     const e = dialog(page, "编辑 DNS 记录");
     await expect(e.getByText("通行密钥中心域名")).toBeVisible();
     await e.getByLabel("IPv4 地址").fill("203.0.113.91");
@@ -190,12 +195,12 @@ test("DNS-04: a record the panel depends on is marked and needs a confirmation t
     await toast(page, "记录已保存");
     await expect(row(page, name)).toContainText("203.0.113.91");
     // Changing only the comment needs no confirmation.
-    await openRow(page, name);
+    await openRecord(page, name);
     await dialog(page, "编辑 DNS 记录").getByLabel("备注").fill("only a comment");
     await dialog(page, "编辑 DNS 记录").getByRole("button", { name: "保存" }).click();
     await toast(page, "记录已保存");
     // Deleting asks twice: the usual confirmation, then the impact.
-    await openRow(page, name);
+    await openRecord(page, name);
     await dialog(page, "编辑 DNS 记录").getByRole("button", { name: "删除" }).click();
     await confirmDialog(page, undefined, /删除记录/);
     await confirmDialog(page, undefined, /仍然删除/);
