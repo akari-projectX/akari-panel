@@ -375,7 +375,7 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 早期版本拒绝 xray 的 gRPC 传输，因为 agent 的 grpc-go（< v1.85.0）被列在 GO-2026-6443 之下（对没有 `:authority` 的请求会使服务端 panic）。
 现在 agent 把 grpc-go 固定到已修复的上游提交（`v1.85.0-dev.0.20260825072537-93e31b48545e`，待 v1.85.0 打标签后替换），gRPC 入站重新被接受；协议/传输矩阵见 docs/DEPLOY.md §3d。
 
-固定的版本：xray-core `v1.260327.0`（发布版 v26.3.27 的 Go 模块写法——Xray 用日历标签，Go 需要 semver）、axum 0.8、tonic 0.14、SQLx 0.9、fred 10（Valkey 客户端）、Go 1.27。
+固定的版本：xray-core 发布版 v26.10.21（Go 模块写法：上游尚未打 `v1.261021.0` 标签时用该提交的伪版本 `v1.260327.1-0.20261021115930-1b1647cd9ddf`——Xray 用日历标签，Go 需要 semver）、axum 0.8、tonic 0.14、SQLx 0.9、fred 10（Valkey 客户端）、Go 1.27。
 
 ## Design notes
 
