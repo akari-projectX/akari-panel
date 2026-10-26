@@ -605,6 +605,11 @@ done
 [ "$(code -c "$JAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d "{\"email\":\"root@smoke.test\",\"password\":\"$ADMIN_PW\"}")" = "200" ] || { echo "FAIL: good login failed"; exit 1; }
 grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response missing role"; exit 1; }
+echo "login: ok"
+
+echo "== D1/D7: email login, no second factor =="
+last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
+  || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }
 # Audit auth P3-2: an admin's own password changes only through /me/password
 # (with the current one), never through PATCH /users/{self}.
 [ "$(code -b "$JAR" -X PATCH "$BASE/api/v1/users/$ROOT_ID" -H 'Content-Type: application/json' \
@@ -614,11 +619,6 @@ grep -q '"role":"admin"' /tmp/akari-smoke/last || { echo "FAIL: login response m
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
     -d '{"email":"pending-x@pending.invalid","password":"placeholder-pass-1"}')" = "400" ] \
   || { echo "FAIL: pending.invalid accepted as an address"; cat /tmp/akari-smoke/last; exit 1; }
-echo "login: ok"
-
-echo "== D1/D7: email login, no second factor =="
-last_json "d['email'] == 'root@smoke.test' and 'login' not in d and 'stage' not in d" | matches '^True$' \
-  || { echo "FAIL: login response shape"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/users")" = "200" ] || { echo "FAIL: admin cannot list users"; exit 1; }
 # A5: the login body is strict JSON (400 + JSON error, not axum's 415/422);
 # the removed fields (`login`, the TOTP `code`) are unknown fields.
