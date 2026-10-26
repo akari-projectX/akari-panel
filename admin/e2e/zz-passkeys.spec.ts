@@ -5,7 +5,7 @@
 // the IP literal (always served), and puts the domains back afterwards.
 import { expect, request, test, type APIRequestContext, type Page } from "@playwright/test";
 
-import { ADMIN, ADMIN_PW, LOGIN, PREFIX, apiJson, confirmDialog, toast, uniq } from "./helpers";
+import { ADMIN, ADMIN_PW, LOGIN, MAILPIT, PREFIX, SMTP_PORT, apiJson, confirmDialog, toast, uniq } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -53,6 +53,39 @@ async function authPolicy(patch: Record<string, unknown>) {
     passkey_prompt: a.passkey_prompt,
     ...patch,
   });
+}
+
+/** Mail goes to the Mailpit sink. */
+async function smtpToMailpit() {
+  const m = await call("GET", "/settings/mail");
+  await call("PUT", "/settings/mail", {
+    version: m.version,
+    enabled: true,
+    provider: "smtp",
+    host: "127.0.0.1",
+    port: SMTP_PORT,
+    security: "none",
+    username: null,
+    from_addr: "panel@e2e.test",
+    from_name: "Akari",
+    notify_order_paid: m.notify_order_paid,
+    notify_expiry_days: m.notify_expiry_days,
+    notify_expired: m.notify_expired,
+    notify_quota: m.notify_quota,
+    notify_refund: m.notify_refund,
+  });
+}
+
+/** The newest message to `to` (Mailpit) whose subject matches: its text. */
+async function mailText(to: string, subject: RegExp): Promise<string> {
+  let text = "";
+  await expect(async () => {
+    const found = await (await fetch(`${MAILPIT}/search?query=${encodeURIComponent(`to:${to}`)}`)).json();
+    const hit = (found.messages ?? []).find((m: { Subject: string }) => subject.test(m.Subject));
+    expect(hit).toBeTruthy();
+    text = (await (await fetch(`${MAILPIT}/message/${hit.ID}`)).json()).Text as string;
+  }).toPass({ timeout: 30_000 });
+  return text;
 }
 
 /** A CDP virtual authenticator; the returned function forgets its credentials. */
@@ -183,6 +216,29 @@ test("SH-04 SH-02 SH-03 ACC-03: bind after a password sign-in, sign in with the 
   await expect(p2.getByRole("button", { name: "使用通行密钥登录" })).toBeVisible();
   await expect(p2.getByText(/akari admin reset-login/)).toBeVisible();
   await expect(p2.locator("#password")).toHaveCount(0);
+  // Passkeys unusable: password + a code mailed to the verified address.
+  if (MAILPIT && SMTP_PORT) {
+    await smtpToMailpit();
+    await p2.getByRole("button", { name: "通行密钥用不了？改用密码 + 邮箱验证码" }).click();
+    const fb = p2.getByTestId("passkey-fallback");
+    await expect(fb.locator("#fallback-email")).toHaveValue(email);
+    await fb.locator("#fallback-password").fill("wrong-pass-1");
+    await fb.getByRole("button", { name: "发送邮箱验证码" }).click();
+    await expect(p2.getByText("邮箱或密码不正确")).toBeVisible();
+    await fb.locator("#fallback-password").fill("passkey-pass-1");
+    await fb.getByRole("button", { name: "发送邮箱验证码" }).click();
+    await expect(fb.getByText("验证码已发送到账户的已验证邮箱")).toBeVisible();
+    const code = /\b(\d{6})\b/.exec(await mailText(email, /登录验证码/))![1];
+    await fb.locator("#fallback-code").fill(code === "000000" ? "111111" : "000000");
+    await fb.getByRole("button", { name: "登录", exact: true }).click();
+    await expect(p2.getByText("验证码不正确或已失效")).toBeVisible();
+    await fb.locator("#fallback-code").fill(code);
+    await fb.getByRole("button", { name: "登录", exact: true }).click();
+    await p2.waitForURL(new RegExp(`/${PREFIX}/admin`));
+    await expect(p2.getByRole("button", { name: "账户菜单" })).toBeVisible();
+    // The fallback sign-in is announced to the verified address.
+    await mailText(email, /账号安全提醒/);
+  }
   await other.close();
   await authPolicy({ passkey_only_admins: false });
   // ACC-03: passkey-only for this account (on, off), then delete both passkeys.
@@ -212,4 +268,16 @@ test("SH-04 SH-02 SH-03 ACC-03: bind after a password sign-in, sign in with the 
     await expect(list.getByText(n)).toHaveCount(0);
   }
   await expect(list.getByText("还没有通行密钥。")).toBeVisible();
+});
+
+test("SH-03b: a browser that refuses the site's passkeys gets the emailed-code fallback up front", async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.credentials.get = () => Promise.reject(new DOMException("related origin not allowed", "SecurityError"));
+  });
+  await page.goto(L_LOGIN);
+  await page.getByRole("button", { name: "使用通行密钥登录" }).click();
+  const fb = page.getByTestId("passkey-fallback");
+  await expect(page.getByText("这个浏览器无法使用本站的通行密钥").first()).toBeVisible();
+  await expect(fb.getByRole("button", { name: "发送邮箱验证码" })).toBeVisible();
+  await expect(fb.getByRole("button", { name: "使用通行密钥登录" })).toHaveCount(0);
 });

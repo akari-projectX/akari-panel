@@ -39,7 +39,7 @@ const NOTICES_EVERY: Duration = Duration::from_secs(60);
 /// Expiry/retention housekeeping cadence.
 const MAINTAIN_EVERY: Duration = Duration::from_secs(600);
 /// Kinds whose body holds a secret (cleared on any settle).
-pub const SECRET_KINDS: &str = "('register_code', 'email_code', 'password_reset')";
+pub const SECRET_KINDS: &str = "('register_code', 'email_code', 'login_code', 'password_reset')";
 
 /// Seconds before retry number `attempts` (1-based count of attempts made):
 /// 30 s doubling, capped at 1 h.

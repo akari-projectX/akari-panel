@@ -81,6 +81,8 @@ announcement_tag.order_stale
 auth.captcha_failed
 auth.captcha_unavailable
 auth.credentials_required
+auth.fallback_unavailable
+auth.fallback_unneeded
 auth.forbidden
 auth.passkey_required
 auth.unauthorized

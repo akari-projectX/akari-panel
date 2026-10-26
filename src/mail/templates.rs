@@ -64,6 +64,12 @@ pub enum Template {
         code: String,
         minutes: i64,
     },
+    /// The one-time code of a passkey-only account's password fallback
+    /// sign-in (sent to its verified address).
+    LoginCode {
+        code: String,
+        minutes: i64,
+    },
     PasswordReset {
         link: String,
         minutes: i64,
@@ -163,6 +169,9 @@ pub enum SecurityEvent {
     /// An administrator (or the server's operator) deleted every passkey
     /// and switched the password login back on.
     LoginMethodReset,
+    /// A passkey-only account signed in with its password and an emailed
+    /// code (passkeys unusable).
+    PasskeyFallbackLogin,
 }
 
 impl SecurityEvent {
@@ -192,6 +201,12 @@ impl SecurityEvent {
             (Self::LoginMethodReset, true) => {
                 "管理员重置了你的登录方式：所有通行密钥已删除，密码登录已重新开启。"
             }
+            (Self::PasskeyFallbackLogin, true) => {
+                "你的账号刚刚用密码 + 邮箱验证码登录（该账号设为仅通行密钥）。"
+            }
+            (Self::PasskeyFallbackLogin, false) => {
+                "Your account just signed in with its password and an emailed code (it is set to passkey-only)."
+            }
             (Self::LoginMethodReset, false) => {
                 "An administrator reset your sign-in method: every passkey was removed and password sign-in is on again."
             }
@@ -218,7 +233,7 @@ pub enum RefundPlan {
 }
 
 /// Every template kind (= `mail_outbox.kind` / `mail_templates.kind`).
-pub const KINDS: [&str; 17] = [
+pub const KINDS: [&str; 18] = [
     "register_code",
     "register_exists",
     "email_code",
@@ -236,6 +251,7 @@ pub const KINDS: [&str; 17] = [
     "admin_notice",
     "refund",
     "security_notice",
+    "login_code",
 ];
 
 impl Template {
@@ -244,6 +260,7 @@ impl Template {
             Template::RegisterCode { .. } => "register_code",
             Template::RegisterExists { .. } => "register_exists",
             Template::EmailCode { .. } => "email_code",
+            Template::LoginCode { .. } => "login_code",
             Template::PasswordReset { .. } => "password_reset",
             Template::OrderPaid { .. } => "order_paid",
             Template::ExpirySoon { .. } => "expiry_soon",
@@ -277,6 +294,10 @@ impl Template {
                 login_url: portal,
             },
             "email_code" => Template::EmailCode {
+                code: "123456".into(),
+                minutes: 10,
+            },
+            "login_code" => Template::LoginCode {
                 code: "123456".into(),
                 minutes: 10,
             },
@@ -496,7 +517,7 @@ const ANNOUNCEMENT_PH: [Placeholder; 3] = [
 /// template must contain. None = unknown kind.
 pub fn spec(kind: &str) -> Option<(&'static [Placeholder], &'static [&'static str])> {
     Some(match kind {
-        "register_code" | "email_code" => (&CODE_PH, &["code"]),
+        "register_code" | "email_code" | "login_code" => (&CODE_PH, &["code"]),
         "register_exists" => (&REGISTER_EXISTS_PH, &[]),
         "password_reset" => (&RESET_PH, &["link"]),
         "order_paid" => (&ORDER_PH, &["order_no"]),
@@ -520,6 +541,7 @@ pub fn kind_label(kind: &str) -> &'static str {
         "register_code" => "注册验证码",
         "register_exists" => "注册：邮箱已注册",
         "email_code" => "邮箱验证码",
+        "login_code" => "登录验证码（通行密钥回退）",
         "password_reset" => "重置密码",
         "order_paid" => "支付回执",
         "expiry_soon" => "套餐即将到期",
@@ -579,7 +601,9 @@ impl Template {
     pub fn values(&self, locale: Locale) -> Vec<Value> {
         let zh = locale == Locale::Zh;
         match self {
-            Template::RegisterCode { code, minutes } | Template::EmailCode { code, minutes } => {
+            Template::RegisterCode { code, minutes }
+            | Template::EmailCode { code, minutes }
+            | Template::LoginCode { code, minutes } => {
                 vec![
                     Value {
                         name: "code",
@@ -928,6 +952,14 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ("email_code", false) => (
             "Your {site} email verification code",
             "Use this code to confirm this address for your account:\n\n{code}\n\nThe code is valid for {minutes} minutes and can be used once. If you did not request it, ignore this message.",
+        ),
+        ("login_code", true) => (
+            "{site} 登录验证码",
+            "你的账号只能用通行密钥登录，但有人（可能是你）用密码申请了改用邮箱验证码登录，验证码：\n\n{code}\n\n验证码 {minutes} 分钟内有效，只能使用一次。如果不是你本人操作，请不要把验证码告诉任何人，并尽快修改密码。",
+        ),
+        ("login_code", false) => (
+            "Your {site} sign-in code",
+            "Your account normally signs in with a passkey, but someone (probably you) asked to sign in with the password plus an emailed code instead. Code:\n\n{code}\n\nThe code is valid for {minutes} minutes and can be used once. If this was not you, do not share the code with anyone and change your password.",
         ),
         ("password_reset", true) => (
             "{site} 重置密码",
@@ -1757,6 +1789,10 @@ mod tests {
                 subject: "<b>no connection</b>".into(),
                 portal_url: Some("https://p.example/x/app".into()),
             },
+            Template::LoginCode {
+                code: code.into(),
+                minutes: 10,
+            },
         ]
     }
 
@@ -1844,7 +1880,8 @@ mod tests {
                 "quota_80",
                 "quota_100",
                 "test",
-                "ticket_reply"
+                "ticket_reply",
+                "login_code"
             ]
         );
         assert_eq!(Locale::parse("en"), Locale::En);

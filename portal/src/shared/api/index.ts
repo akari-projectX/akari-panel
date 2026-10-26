@@ -24,8 +24,12 @@ export const authApi = {
   },
 
   /** 所有失败都是统一的 401；仅通行密钥账户用密码登录是 403 auth.passkey_required */
-  login: (email: string, password: string, guard: FormGuard) =>
-    auth.post<LoginResult>('/login', { email, password, guard }),
+  login: (email: string, password: string, guard: FormGuard, fallbackCode?: string) =>
+    auth.post<LoginResult>('/login', fallbackCode ? { email, password, guard, fallback_code: fallbackCode } : { email, password, guard }),
+
+  /** 仅通行密钥账户的回退：密码正确时把一次性验证码发到已验证邮箱（之后 login 带 fallbackCode） */
+  loginFallbackCode: (email: string, password: string) =>
+    auth.post<{ ok: true }>('/login/fallback/code', { email, password }),
 
   /** 结束这个账户的**所有**会话 */
   logout: () => auth.post<void>('/logout'),

@@ -1789,3 +1789,204 @@ async fn sign_in_changes_are_mailed_to_the_verified_address() {
     let _ = loose;
     db.drop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Passkey-only fallback: password + a code mailed to the verified address
+// ---------------------------------------------------------------------------
+
+async fn mail_on(db: &TestDb) {
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', port = 1025, \
+         security = 'none', from_addr = 'noreply@example.com' WHERE id = 1",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+}
+
+/// The newest sign-in code mailed to `to`.
+async fn login_code(db: &TestDb, to: &str) -> Option<String> {
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT body_text FROM mail_outbox WHERE kind = 'login_code' AND to_addr = $1 \
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(to)
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap();
+    let body = body?;
+    let digits: Vec<char> = body.chars().collect();
+    digits
+        .windows(6)
+        .find(|w| w.iter().all(char::is_ascii_digit))
+        .map(|w| w.iter().collect())
+}
+
+fn fallback_body(email: &str, pw: &str, code: &str) -> Value {
+    json!({ "email": email, "password": pw, "fallback_code": code })
+}
+
+/// A passkey-only account whose passkeys are unusable signs in with the
+/// password plus the code mailed to its verified address: the code is
+/// single use, five wrong tries burn it, a wrong password gets nothing, and
+/// a success is audited and mailed as a security notice.
+#[tokio::test]
+async fn password_and_mailed_code_replace_an_unusable_passkey() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    mail_on(&db).await;
+    let pw = random_pw();
+    let (id, email) = account(&db, "user", &pw).await;
+    sqlx::query("UPDATE users SET email_verified_at = now(), locale = 'en' WHERE id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut c = Client::new(&st, rand_ip());
+    assert_eq!(c.login(&email, &pw).await.status, StatusCode::OK);
+    let mut key = SoftKey::new();
+    bind(&c, &mut key, "phone", true).await;
+
+    let probe = Client::new(&st, rand_ip());
+    let r = probe
+        .post("/test/auth/login", login_body(&email, &pw))
+        .await;
+    assert_eq!(r.json()["code"], "auth.passkey_required");
+    // No code request without the right password: the login's 401, no mail.
+    let r = probe
+        .post(
+            "/test/auth/login/fallback/code",
+            login_body(&email, "wrong-password-1"),
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::UNAUTHORIZED, json!("auth.unauthorized"))
+    );
+    assert!(login_code(&db, &email).await.is_none());
+    // Without a code the password alone is still refused.
+    let r = probe
+        .post("/test/auth/login", fallback_body(&email, &pw, "000000"))
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "no code was issued yet");
+
+    let r = probe
+        .post("/test/auth/login/fallback/code", login_body(&email, &pw))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let code = login_code(&db, &email).await.expect("the code mail");
+    // A wrong code and a wrong password with the right code: 401.
+    let wrong = if code == "999999" { "000000" } else { "999999" };
+    let r = probe
+        .post("/test/auth/login", fallback_body(&email, &pw, wrong))
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = probe
+        .post(
+            "/test/auth/login",
+            fallback_body(&email, "wrong-password-1", &code),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    // The right pair signs in once.
+    let r = probe
+        .post("/test/auth/login", fallback_body(&email, &pw, &code))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert!(r.headers.contains_key("set-cookie"));
+    let r = probe
+        .post("/test/auth/login", fallback_body(&email, &pw, &code))
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "single use");
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE action = 'user.login.passkey_fallback' \
+         AND target_id = $1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+    let notice = notices(&db, &email).await;
+    let last = notice.last().expect("the security notice");
+    assert!(last.contains("emailed code"), "{last}");
+    assert!(last.contains(&probe.ip.to_string()), "{last}");
+    assert!(!notice.iter().any(|n| n.contains(&code)));
+
+    // Five wrong tries burn a fresh code.
+    let r = probe
+        .post("/test/auth/login/fallback/code", login_body(&email, &pw))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let code = login_code(&db, &email).await.unwrap();
+    let wrong = if code == "999999" { "000000" } else { "999999" };
+    for _ in 0..5 {
+        let r = probe
+            .post("/test/auth/login", fallback_body(&email, &pw, wrong))
+            .await;
+        assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    }
+    let r = probe
+        .post("/test/auth/login", fallback_body(&email, &pw, &code))
+        .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED, "burnt after five tries");
+    db.drop().await;
+}
+
+/// The code request only answers differently after a correct password:
+/// an account whose password works needs no fallback; one without a
+/// verified address (or with mail off) is pointed at the operator's reset.
+#[tokio::test]
+async fn fallback_code_is_refused_without_need_or_a_verified_address() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = state_with_domain(&db, RP).await;
+    mail_on(&db).await;
+    let pw = random_pw();
+    let (id, email) = account(&db, "user", &pw).await;
+    let probe = Client::new(&st, rand_ip());
+    let r = probe
+        .post("/test/auth/login/fallback/code", login_body(&email, &pw))
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::BAD_REQUEST, json!("auth.fallback_unneeded"))
+    );
+
+    let mut c = Client::new(&st, rand_ip());
+    assert_eq!(c.login(&email, &pw).await.status, StatusCode::OK);
+    let mut key = SoftKey::new();
+    bind(&c, &mut key, "phone", true).await;
+    // Passkey-only, address not verified.
+    let r = probe
+        .post("/test/auth/login/fallback/code", login_body(&email, &pw))
+        .await;
+    assert_eq!(
+        (r.status, r.json()["code"].clone()),
+        (StatusCode::CONFLICT, json!("auth.fallback_unavailable"))
+    );
+    // Verified, but mail sending is off.
+    sqlx::query("UPDATE users SET email_verified_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE mail_settings SET enabled = false WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let r = probe
+        .post("/test/auth/login/fallback/code", login_body(&email, &pw))
+        .await;
+    assert_eq!(r.json()["code"], "auth.fallback_unavailable");
+    let sent: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mail_outbox WHERE kind = 'login_code'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(sent, 0);
+    db.drop().await;
+}

@@ -51,6 +51,7 @@ sqlx 迁移，经 `db::migrate`（先校验 PostgreSQL ≥ 18，再拒绝 v0.3.x
 - **1113（#132 后续）**：`plans.recommended` boolean NOT NULL DEFAULT false（门户商店「推荐」标签，只影响显示）；`signup_settings.user_invites` boolean NOT NULL DEFAULT true（允许用户邀请；关闭 = 没有邀请码、任何码注册时都与不存在的码同样回答）；`invite_codes` 每个用户多出的码删除（保留最早的），索引 `invite_codes_user` 改为 `UNIQUE (user_id)`（没有需要兼容的旧部署）。
 - **1109（v1-next B1，仅自研客户端）**：`panel_settings.sub_own_client_only` boolean（NULL = 关）。开启 = 第三方格式与导入按钮全部不生效（`sub_formats`/`sub_import_clients` 原值保留，关闭后恢复）、订阅只回答 `akari-client/` User-Agent、门户不给链接；只经 `settings::apply_update_subscription` 写（审计 `settings.subscription.update`）。
 - **1121（公告标签）**：`announcement_tags`（`id` uuid 默认 `gen_random_uuid()`，`name_zh` 1–12、`name_en` 可空 1–12、`color` CHECK 十一个预设键、`enabled`、`sort` ±1000000、`created_at`；索引 `announcement_tags_order (sort, created_at, id)`）+ 预置八个标签（带英文名）；`announcements.tag_id` uuid 可空 → `announcement_tags` `ON DELETE RESTRICT`（部分索引 `announcements_tag`）。使用中的标签由 API 先答 409，外键兜底。
+- **1122（通行密钥仅限回退）**：`email_codes` 的 `purpose` CHECK 加 `login_fallback`（仅通行密钥账号的密码 + 邮箱验证码登录，subject = 用户 id，`user_id` 必填：`email_codes_user_iff_change_email` 换成 `email_codes_user_iff_account_code`，change_email 与 login_fallback 都必须带 user_id）；`mail_outbox`/`mail_templates` 的 kind CHECK 加 `login_code`。
 - 改列名/加列后，同步检查 `src/` 中所有手写 SQL 与 `FromRow` 结构体（没有编译期 SQL 校验）。
 
 ## 当前表
