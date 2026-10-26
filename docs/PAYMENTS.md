@@ -401,6 +401,7 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 
 `entitle::lock`（创建订单和 `apply_mark_paid`）→ `orders` 行 → `coupons` / `coupon_redemptions` → `commissions` →
 `user_balances` → `withdrawals`。返利扫描和提现绝不会在取得靠后的锁之后再取靠前的锁。
+`orders::release_holds`（未付结束的订单）先释放优惠券、再退余额，与迟到付款（先兑现优惠券、后重扣余额）同序。
 
 ## Configuration (系统设置 → 支付)（配置）
 
