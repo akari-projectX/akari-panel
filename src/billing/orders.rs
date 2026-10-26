@@ -286,11 +286,20 @@ async fn refund_unfulfillable(
         json!({ "order_id": order_id, "out_trade_no": otn, "code": code,
                 "refund_cents": done["refund_cents"] }),
     );
-    // An alert failure never rolls the money back (savepoint).
+    enqueue_billing_alert(conn, order_id, &msg).await
+}
+
+/// Queue a `billing` alert for the admins in the caller's transaction. An
+/// alert failure never rolls the money back (savepoint).
+pub(super) async fn enqueue_billing_alert(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+    msg: &crate::alerts::channels::Message,
+) -> Result<(), ApiError> {
     let mut sp = conn.begin().await?;
     let queued = async {
         let s = crate::alerts::load(&mut sp).await?;
-        crate::alerts::channels::enqueue(&mut sp, &s.channels(), &msg).await
+        crate::alerts::channels::enqueue(&mut sp, &s.channels(), msg).await
     }
     .await;
     match queued {

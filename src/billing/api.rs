@@ -220,7 +220,7 @@ const MY_ORDER_SQL: &str = "SELECT id, out_trade_no, plan_id, plan_name, amount_
           WHEN refund_request->>'state' = 'done' THEN 'original' \
           WHEN refund_external_cents > 0 THEN 'manual' ELSE 'balance' END AS refund_route, \
      refund_balance_cents, refund_external_cents, \
-     COALESCE(refund_request->>'state' = 'pending', false) AS refund_pending, \
+     COALESCE(refund_request->>'state' IN ('pending', 'confirmed'), false) AS refund_pending, \
      refund_effect->>'kind' AS refund_effect FROM orders";
 
 /// An order as an admin sees it.
@@ -1402,6 +1402,11 @@ pub async fn refund_order(
                 BAD_GATEWAY,
                 "order_admin.refund_gateway_failed",
                 "the payment provider refused the refund: {detail}",
+                detail = detail
+            )),
+            super::refund::Settled::Confirmed(detail) => Err(conflict!(
+                "order_admin.refund_confirmed_unrecorded",
+                "the provider refunded the order but the panel could not record it ({detail}); record the refund manually",
                 detail = detail
             )),
             super::refund::Settled::Pending | super::refund::Settled::Gone => {

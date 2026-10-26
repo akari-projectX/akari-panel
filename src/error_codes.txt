@@ -244,6 +244,9 @@ order_admin.already_refunded
 order_admin.manual_not_fulfilled
 order_admin.no_price
 order_admin.plan_gone
+order_admin.refund_confirmed
+order_admin.refund_confirmed_record
+order_admin.refund_confirmed_unrecorded
 order_admin.refund_external_range
 order_admin.refund_external_required
 order_admin.refund_external_with_balance
