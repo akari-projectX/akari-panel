@@ -1,12 +1,15 @@
 /*
  * 截图集（不是验收用例）：和 v1.4.0 React 门户的参照图（design/portal-v1-reference-2026-10/screens/）同名同视口同主题，
- * 给「恢复 v1.4.0 外观」的逐张对照用：导航（桌面的页头、手机打开的菜单）、几张页面（仪表盘、订单、工单、设置、隐私）、加载骨架。
+ * 给「恢复 v1.4.0 外观」的逐张对照用：导航（桌面的页头、手机打开的菜单）、页面（仪表盘、商店、订单、工单、设置、隐私、文档、邀请、钱包三个页签、节点、流量、公告）、加载骨架。
  * 写到 test-results/screens/<名字>-<desktop|mobile>-<light|dark>.png，CI 作为 portal-screens 工件上传。
  * 放在最后跑（文件名 zz-，只在 mobile 项目里跑一次——那时两个视口的其余用例都跑完了），用前面用例留下的数据；
- * 拍不到的图记一条注解，不让整套失败。后续的恢复 PR 在这里继续加（商店、钱包、文档……）。
+ * 拍不到的图记一条注解，不让整套失败。参照图里 USDT 付款的几张（usdt-*）是已作废的旧流程，不拍。
  */
 import type { Browser, Locator, Page } from '@playwright/test';
 import { signIn, test } from './fixtures.ts';
+
+/* 钱包用例的邀请人（zz 只在 mobile 项目里跑一次）：账户里有佣金流水和两条提现记录 */
+const INVITER = 'v2-inviter-mobile@e2e.test';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -108,6 +111,32 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       name: 'shop-cards', account: 'user@e2e.test',
       run: async (page) => { await ready(page, '/shop', '选择套餐'); const c = page.locator('.plan-cols'); await c.waitFor({ timeout: WAIT }); return c; },
     },
+    /* 文档（使用手册）列表与一篇文章 */
+    { name: 'docs', account: 'user@e2e.test', run: (page) => ready(page, '/help', '使用手册') },
+    {
+      name: 'docs-article', account: 'user@e2e.test',
+      run: async (page) => {
+        await ready(page, '/help', '使用手册');
+        await page.locator('main .grid button.card, main button.card').first().click();
+        await page.locator('main article').first().waitFor({ timeout: WAIT });
+        await page.waitForLoadState('networkidle', { timeout: WAIT }).catch(() => undefined);
+      },
+    },
+    /* 邀请与钱包：邀请返佣 / 收支流水 / 提现记录三个页签（邀请人账户有佣金入账、追回、两笔提现） */
+    { name: 'invite', account: INVITER, run: (page) => ready(page, '/invite', '邀请返佣') },
+    { name: 'wallet', account: INVITER, run: (page) => ready(page, '/wallet', '邀请返佣') },
+    {
+      name: 'wallet-ledger', account: INVITER,
+      run: async (page) => { await ready(page, '/wallet?tab=ledger', '收支流水'); await page.locator('main table').first().waitFor({ timeout: WAIT }); },
+    },
+    {
+      name: 'wallet-withdrawals', account: INVITER,
+      run: async (page) => { await ready(page, '/wallet?tab=withdrawals', '提现记录'); await page.locator('main table').first().waitFor({ timeout: WAIT }); },
+    },
+    /* 其余页面：节点、流量、公告 */
+    ...(['/nodes', '/traffic', '/announcements'] as const).map((path) => ({
+      name: `page-${path.slice(1)}`, account: 'user@e2e.test', run: (page: Page) => ready(page, path),
+    })),
     /* 付款成功弹窗：商店当场付清后带着 paid 跳到订单页的那一刻（这里用一张已付款的订单模拟，只拍浅色） */
     {
       name: 'pay-success', account: 'user@e2e.test', plain: true,
