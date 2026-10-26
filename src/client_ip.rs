@@ -278,6 +278,18 @@ pub fn bucket(ip: IpAddr) -> String {
     }
 }
 
+/// The network a client address belongs to for limits that pair it with an
+/// account name (the login lockout): IPv4 by its /24, IPv6 by its /64 (as
+/// `bucket`). A whole /24 is one "place" for this purpose: a person moves
+/// between addresses of one access network, an attacker needs other
+/// networks to get more attempts.
+pub fn network(ip: IpAddr) -> String {
+    match canonical(ip) {
+        v4 @ IpAddr::V4(_) => format!("{}/24", mask(v4, 24)),
+        v6 @ IpAddr::V6(_) => format!("{}/64", mask(v6, 64)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,6 +594,25 @@ mod tests {
         let mut two = h(&["104.16.1.1"], Some("198.51.100.7"));
         two.append("cf-connecting-ip", HeaderValue::from_static("198.51.100.8"));
         assert_eq!(resolve(ip("172.28.0.5"), &two, &on), ip("104.16.1.1"));
+    }
+
+    #[test]
+    fn networks_group_v4_by_24_and_v6_by_64() {
+        assert_eq!(network(ip("198.51.100.1")), "198.51.100.0/24");
+        assert_eq!(
+            network(ip("198.51.100.254")),
+            network(ip("::ffff:198.51.100.7"))
+        );
+        assert_ne!(network(ip("198.51.101.1")), network(ip("198.51.100.1")));
+        assert_eq!(network(ip("2001:db8:1:2:aaaa::1")), "2001:db8:1:2::/64");
+        assert_eq!(
+            network(ip("2001:db8:1:2:ffff::9")),
+            network(ip("2001:db8:1:2::1"))
+        );
+        assert_ne!(
+            network(ip("2001:db8:1:3::1")),
+            network(ip("2001:db8:1:2::1"))
+        );
     }
 
     #[test]

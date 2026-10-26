@@ -718,11 +718,7 @@ pub async fn confirm_holder(
             "the current password is required"
         ));
     };
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
-    let attempt = crate::login_limit::Attempt::reserve(state, &bucket, &user.email)
+    let attempt = crate::login_limit::Attempt::reserve(state, user.ip, &user.email)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "login rate limit unavailable");

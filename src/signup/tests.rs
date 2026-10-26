@@ -2306,7 +2306,7 @@ async fn saturated_hashing_answers_busy_after_the_cheap_checks() {
     // Login: busy for any account (existing or not), not a failed attempt.
     let mut c = Client::new(&st, rand_ip());
     for who in [email.clone(), addr()] {
-        for _ in 0..crate::login_limit::PER_LOGIN + 2 {
+        for _ in 0..crate::login_limit::PER_NAME + 2 {
             let r = c.login(&who, &old_pw).await;
             assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.json());
         }
