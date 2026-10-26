@@ -51,7 +51,6 @@ dependencies = [
  "chrono",
  "clap",
  "dashmap",
- "data-encoding",
  "form_urlencoded",
  "fred",
  "hex",
