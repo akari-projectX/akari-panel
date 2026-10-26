@@ -635,6 +635,9 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
         return Ok(Settled::Gone);
     }
     let provider = method.and_then(|m| state.payments().provider(m));
+    // Only an error of the refund call itself can be a definite refusal; a
+    // failing query says nothing about whether an earlier attempt went through.
+    let mut refund_called = false;
     let outcome: Result<RefundState, CallError> = match &provider {
         None => Err(CallError::Transport("payment method unavailable".into())),
         Some(p) => {
@@ -645,6 +648,7 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
             };
             match asked {
                 Ok(RefundState::NotFound) => {
+                    refund_called = true;
                     p.refund(RefundReq {
                         out_trade_no: &otn,
                         out_request_no: &r.out_request_no,
@@ -736,8 +740,11 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
             Settled::Pending
         }
         Err(CallError::Business {
-            sub_code, sub_msg, ..
-        }) => {
+            code,
+            sub_code,
+            sub_msg,
+            ..
+        }) if refund_called && super::alipay::refund_refused(&code, &sub_code) => {
             next.state = "failed".into();
             next.attempts += 1;
             let detail = format!("{sub_code}: {sub_msg}");
