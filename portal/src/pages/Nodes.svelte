@@ -147,7 +147,7 @@
                 <div style="display: flex; align-items: center; gap: 12px">
                   {#if cc}<Flag {cc} w={24} h={16} />{:else}<span class="flag ph" style:width="24px" style:height="16px"></span>{/if}
                   <div style="min-width: 0">
-                    <div class="trunc" style="font-weight: 500">{stripFlag(n.entrance)}</div>
+                    <div class="trunc" style="font-weight: var(--fw-strong)">{stripFlag(n.entrance)}</div>
                     {#if n.region}<div style="font-size: 12.5px; color: var(--muted)">{n.region}</div>{/if}
                   </div>
                 </div>

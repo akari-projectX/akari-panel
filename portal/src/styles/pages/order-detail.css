@@ -2,11 +2,11 @@
 .od-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
 .od-steps li { position: relative; }
 .od-link { position: absolute; top: 13px; right: -4px; left: 40px; height: 1px; background: var(--line); }
-.od-dot { position: relative; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 9999px; font-size: 12px; font-weight: 500; }
-.od-lb { margin-top: 12px; font-size: 13.5px; font-weight: 500; }
+.od-dot { position: relative; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 9999px; font-size: 12px; font-weight: var(--fw-strong); }
+.od-lb { margin-top: 12px; font-size: 13.5px; font-weight: var(--fw-strong); }
 .od-tm { margin-top: 2px; font-size: 12px; color: var(--muted); }
 .od-rtx { font-size: 13.5px; line-height: 1.8; }
-.od-b { font-weight: 500; } .od-m, .od-rtx ul { color: var(--muted); }
+.od-b { font-weight: var(--fw-strong); } .od-m, .od-rtx ul { color: var(--muted); }
 .od-grid { display: grid; column-gap: 56px; border-top: 1px solid var(--line); }
 .od-aside { padding: 32px 0 40px; }
 .od-bill { padding: 24px; border: 1px solid var(--line); border-radius: 14px; }
@@ -57,6 +57,6 @@
 .result-summary > div { display: flex; justify-content: space-between; gap: 16px; padding: 10px 0; }
 .result-summary > div + div { border-top: 1px solid var(--line); }
 .result-summary dt { color: var(--muted); }
-.result-summary dd { min-width: 0; text-align: right; font-weight: 500; overflow-wrap: anywhere; }
+.result-summary dd { min-width: 0; text-align: right; font-weight: var(--fw-strong); overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .draw-in, .shake-x, .result-mark { animation: none !important; } .draw-in { stroke-dashoffset: 0; }
 }

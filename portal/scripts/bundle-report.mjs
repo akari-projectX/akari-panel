@@ -5,7 +5,6 @@
  *   · initialJs  = 入口 + 它的全部静态 import（首屏必下的 JS），gzip；
  *   · initialCss = index.html 里 <link rel="stylesheet"> 的样式表，gzip；
  *   · totalJs / totalCss = dist/app/assets 下全部 .js / .css 的 gzip 之和；
- *   · fonts = 全部 .woff2 的原始字节（按 unicode-range 用到哪片才下载哪片）。
  * 另列每个 JS / CSS 分包（按清单里的源文件名归并，内容哈希不影响对比）。
  *
  *   node scripts/bundle-report.mjs [dist] [--json out.json] [--base base.json] [--markdown out.md]
@@ -73,7 +72,6 @@ const totals = {
   initialCss: sum(linkedCss),
   totalJs: sum(assets.filter((f) => f.endsWith('.js'))),
   totalCss: sum(assets.filter((f) => f.endsWith('.css'))),
-  fonts: assets.filter((f) => f.endsWith('.woff2')).reduce((n, f) => n + statSync(f).size, 0),
 };
 const result = { totals, chunks, initial: [...[...initial].map(stable), ...linkedCss.map((f) => stable(rel(f)))] };
 
@@ -96,7 +94,7 @@ const lines = [];
 lines.push('### Portal bundle size (report only, not a gate)', '');
 lines.push(`| metric | KiB | ${base ? 'Δ vs base |' : ''}`, `|---|---:|${base ? '---:|' : ''}`);
 for (const [k, v] of Object.entries(totals)) {
-  lines.push(`| ${k}${k === 'fonts' ? ' (raw)' : ' (gzip)'} | ${kib(v)} | ${base ? `${delta(v, base.totals[k])} |` : ''}`);
+  lines.push(`| ${k} (gzip) | ${kib(v)} | ${base ? `${delta(v, base.totals[k])} |` : ''}`);
 }
 lines.push('', '<details><summary>Per chunk (gzip)</summary>', '');
 lines.push(`| chunk | initial | KiB | ${base ? 'Δ |' : ''}`, `|---|:-:|---:|${base ? '---:|' : ''}`);

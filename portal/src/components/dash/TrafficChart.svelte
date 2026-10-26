@@ -148,7 +148,7 @@
   .tchart:focus-visible { outline: none; box-shadow: var(--focus); }
   svg { display: block; width: 100%; overflow: visible; }
   text { font: 12px var(--font-sans); fill: var(--chart-text); font-variant-numeric: tabular-nums; }
-  text.now { fill: var(--fg); font-weight: 600; }
+  text.now { fill: var(--fg); font-weight: var(--fw-strong); }
   .gridline { stroke: var(--chart-grid); stroke-width: 1; }
   .base { stroke: var(--chart-axis); stroke-width: 1; }
   .wash-top { stop-color: var(--chart-area); stop-opacity: var(--chart-area-opacity); }
@@ -169,7 +169,7 @@
   .ttip div { display: flex; align-items: center; gap: 6px; }
   .ttip .val { margin-left: auto; padding-left: 16px; }
   .ttip .h { gap: 12px; margin-bottom: 2px; }
-  .ttip b { font-weight: 600; }
+  .ttip b { font-weight: var(--fw-strong); }
   .ttip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
   .ttip .k-down { background: var(--chart-line); }
   .ttip .k-up { background: var(--chart-up); }

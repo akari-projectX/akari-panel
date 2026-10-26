@@ -172,12 +172,12 @@
   :global(.dlg .bad-icon) { color: var(--danger); }
   .form { display: flex; flex-direction: column; gap: 18px; }
   .lose { padding: 12px 14px; border-radius: 8px; background: var(--secondary); }
-  .lose b { font-size: 13.5px; font-weight: 500; color: var(--fg); }
+  .lose b { font-size: 13.5px; font-weight: var(--fw-strong); color: var(--fg); }
   .lose ul { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; padding-left: 18px; list-style: disc; font-size: 13px; line-height: 1.7; color: var(--body); }
   .lose li::marker { color: var(--danger); }
   .warn-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--warn); }
   .blocked { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); font-size: 13px; line-height: 1.7; color: var(--body); list-style: none; }
-  .blocked .h { font-weight: 600; color: var(--warn); }
+  .blocked .h { font-weight: var(--fw-strong); color: var(--warn); }
   .blocked li:not(.h) { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
   .ack { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 13px; line-height: 1.6; color: var(--body); cursor: pointer; }
   .ack input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--danger); }

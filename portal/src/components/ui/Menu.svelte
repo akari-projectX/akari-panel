@@ -130,9 +130,9 @@
   }
   [role='menuitem']:hover, [role='menuitem']:focus-visible { background: var(--hover); color: var(--fg); box-shadow: none; outline: none; }
   .mi { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 2px; }
-  .mi-t { font-size: 13.5px; font-weight: 500; }
+  .mi-t { font-size: 13.5px; font-weight: var(--fw-strong); }
   .mi-s { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
-  .mi-x { flex: none; font-size: 11.5px; font-weight: 500; color: var(--brand); }
+  .mi-x { flex: none; font-size: 11.5px; font-weight: var(--fw-strong); color: var(--brand); }
   [role='menuitem'] :global(svg) { color: var(--brand); }
   @media (prefers-reduced-motion: reduce) {
     .menu-pop { animation: none; }

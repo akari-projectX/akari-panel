@@ -10,6 +10,16 @@
  */
 
 :root {
+  /*
+   * 字体与字重（不是颜色，但首帧样式表只带这个文件，启动画面也要用）。只用系统字体：拉丁字母与数字取 SF / Segoe UI，
+   * 汉字落到 PingFang SC / 微软雅黑 / Noto Sans CJK SC。字重只有两档（scripts/check-weights.mjs 检查）：
+   * 微软雅黑没有 500、Windows / Android / Linux 上没有 300，多档字重会悄悄并成一档，层次要靠颜色与字号。
+   */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei',
+    'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --fw-regular: 400;
+  --fw-strong: 600;
+
   /* 底与文字 */
   --bg: #f7f8fa;
   --surface: #fff;

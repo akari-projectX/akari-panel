@@ -210,7 +210,7 @@
       {#snippet title()}<span class="rl"><Ticket size={16} strokeWidth={1.75} aria-hidden="true" />{tp('重置「{n}」的流量', { n: cp.name })}</span>{/snippet}
       {#snippet desc()}{ro.refusal ? t(REFUSAL_TEXT[ro.refusal]) : t('付款后立即生效')}{/snippet}
       {#snippet extra()}
-        <span class="tnum" style="font-size: 20px; font-weight: 500">{formatMoney(ro.amount_cents ?? ro.price_cents)}</span>
+        <span class="tnum" style="font-size: 20px; font-weight: var(--fw-strong)">{formatMoney(ro.amount_cents ?? ro.price_cents)}</span>
         <button type="button" class="btn sm" disabled={!ro.action} onclick={() => openBuy(cp, ro, true)}>{t('购买')}</button>
       {/snippet}
     </Row>

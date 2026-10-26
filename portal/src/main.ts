@@ -4,7 +4,6 @@ import './styles/flat.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { startAuth } from '$lib/auth.svelte';
-import { loadFonts } from '$lib/fonts';
 import { startInputModality } from '$lib/input-modality';
 import { startI18n } from '$lib/i18n.svelte';
 import { preloadPage, watchPreloadErrors } from '$lib/lazy';
@@ -20,7 +19,6 @@ startRouter();
 watchPreloadErrors();
 startIntentPrefetch();
 startAuth();
-loadFonts();
 
 const target = document.getElementById('app');
 if (target) mount(App, { target });

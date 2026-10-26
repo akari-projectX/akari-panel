@@ -153,13 +153,13 @@
   .order { font-size: 12.5px; color: var(--muted); }
   .msg { display: flex; gap: 10px; }
   .msg.mine { flex-direction: row-reverse; }
-  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: 500; }
+  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: var(--fw-strong); }
   .mine .av { background: linear-gradient(135deg, var(--brand), var(--brand-hover)); color: var(--on-brand); }
   .col { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 80%; }
   .mine .col { align-items: flex-end; }
   .who { display: flex; align-items: baseline; gap: 8px; }
   .mine .who { flex-direction: row-reverse; }
-  .who b { font-size: 12.5px; font-weight: 600; }
+  .who b { font-size: 12.5px; font-weight: var(--fw-strong); }
   .who span { font-size: 11.5px; color: var(--muted); }
   .bubble {
     margin-top: 6px; padding: 10px 14px; border-radius: 16px 16px 16px 6px; background: var(--hover); color: var(--body);

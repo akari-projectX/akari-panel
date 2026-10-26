@@ -49,13 +49,13 @@
 }
 .row > :global(svg) { flex: none; color: var(--muted); }
 .row:hover, .row:focus { background: var(--hover); }
-.row.strong { font-weight: 500; }
+.row.strong { font-weight: var(--fw-strong); }
 .row[data-active] { background: var(--hover); color: var(--brand); }
 .row[data-active] > :global(svg) { color: var(--brand); }
 .row.destructive, .row.destructive > :global(svg) { color: var(--danger); }
 .row.destructive:hover, .row.destructive:focus { background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .row-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-m { margin-left: auto; display: flex; flex: none; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--fg); }
+.row-m { margin-left: auto; display: flex; flex: none; align-items: center; gap: 6px; font-size: 12px; font-weight: var(--fw-strong); color: var(--fg); }
 .row-m i { width: 5px; height: 5px; border-radius: 9999px; background: var(--brand); }
 
 </style>

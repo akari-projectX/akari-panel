@@ -88,8 +88,6 @@ function deferAppCss(): Plugin {
 
 export default defineConfig({
   base: '/',
-  /* public/assets/licenses/：字体许可证，原样复制 */
-  publicDir: path.resolve(import.meta.dirname, 'public'),
   plugins: [svelte(), tailwindcss(), bootScript(), headCss(), deferAppCss()],
   resolve: {
     alias: {
