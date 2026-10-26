@@ -327,14 +327,20 @@ fn bracket_link(s: &str) -> Option<(&str, &str, usize)> {
 }
 
 /// The closing `marker` after a non-empty inner text that does not start
-/// or end with whitespace.
+/// or end with whitespace. An underscore marker closes only where the next
+/// character is not alphanumeric (CommonMark: `snake_case_name` is text).
 fn find_emph_close(s: &str, marker: &str) -> Option<usize> {
+    let underscore = marker.starts_with('_');
     let mut from = 0;
     while let Some(pos) = s[from..].find(marker) {
         let at = from + pos;
         if at > 0 {
             let inner = &s[..at];
-            if !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace) {
+            let after = s[at + marker.len()..].chars().next();
+            if !inner.starts_with(char::is_whitespace)
+                && !inner.ends_with(char::is_whitespace)
+                && !(underscore && after.is_some_and(char::is_alphanumeric))
+            {
                 return Some(at);
             }
         }
@@ -348,6 +354,11 @@ fn find_emph_close(s: &str, marker: &str) -> Option<usize> {
 
 fn inline(s: &str, out: &mut String, depth: usize) {
     let mut i = 0;
+    // Marker kinds (`*`, `**`, `_`, `__`) that have no closer left in `s`:
+    // a failed search covers every later opener too (it only looks at the
+    // text after it), so a line of `*a *a *a …` is scanned once, not once
+    // per marker.
+    let mut no_closer = [false; 4];
     while i < s.len() {
         let rest = &s[i..];
         let c = rest.chars().next().unwrap_or('\0');
@@ -386,7 +397,25 @@ fn inline(s: &str, out: &mut String, depth: usize) {
                 let double = rest.starts_with("**") || rest.starts_with("__");
                 let marker = if double { &rest[..2] } else { &rest[..1] };
                 let body = &rest[marker.len()..];
-                match find_emph_close(body, marker).filter(|_| depth < MAX_DEPTH) {
+                let kind = usize::from(double) * 2 + usize::from(c == '_');
+                // An underscore opens only at a word edge (`a_b_c` is text).
+                let word_edge = c != '_'
+                    || !s[..i]
+                        .chars()
+                        .next_back()
+                        .is_some_and(char::is_alphanumeric);
+                let closer = if no_closer[kind]
+                    || !word_edge
+                    || depth >= MAX_DEPTH
+                    || body.starts_with(char::is_whitespace)
+                {
+                    None
+                } else {
+                    let found = find_emph_close(body, marker);
+                    no_closer[kind] = found.is_none();
+                    found
+                };
+                match closer {
                     Some(end) => {
                         let tag = if double { "strong" } else { "em" };
                         out.push_str(&format!("<{tag}>"));
@@ -481,6 +510,43 @@ mod tests {
             render("###### six\n####### seven"),
             "<h6>six</h6><p>####### seven</p>"
         );
+    }
+
+    /// Audit core P3-2a: underscores inside a word are text.
+    #[test]
+    fn intraword_underscores_stay_text() {
+        assert_eq!(render("foo_bar_baz"), "<p>foo_bar_baz</p>");
+        assert_eq!(
+            render("see https://x.example/a_b_c now"),
+            "<p>see https://x.example/a_b_c now</p>"
+        );
+        assert_eq!(
+            render("_em_ and __strong__"),
+            "<p><em>em</em> and <strong>strong</strong></p>"
+        );
+        assert_eq!(render("(_in parens_)"), "<p>(<em>in parens</em>)</p>");
+        // Asterisks may open and close inside a word.
+        assert_eq!(
+            render("un*frigging*believable"),
+            "<p>un<em>frigging</em>believable</p>"
+        );
+    }
+
+    /// Audit core P3-2b: a long line of markers with no closer is scanned
+    /// once per marker kind, not once per marker.
+    #[test]
+    fn unclosed_markers_are_linear() {
+        for unit in ["* ", "*a ", "_ ", "**a ", "__a "] {
+            let line = format!("x {}", unit.repeat(20_000));
+            let t = std::time::Instant::now();
+            let html = render(&line);
+            assert!(html.starts_with("<p>"));
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(2),
+                "{unit:?} took {:?}",
+                t.elapsed()
+            );
+        }
     }
 
     #[test]
