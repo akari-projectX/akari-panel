@@ -372,7 +372,7 @@ export function OrderDialog({ id, onClose }: { id: string; onClose: () => void }
   const o = q.data?.order;
   useCrumb(o?.out_trade_no);
   const st = o ? orderState(o) : null;
-  const paidish = st === "completed" || st === "unfulfilled";
+  const paidish = st === "completed" || st === "unfulfilled" || st === "refund_unrecorded";
   const gift = !!o && o.gift_cents > 0;
   const canRefund = !!o && o.status === "paid" && !o.refunded_at && o.refund_request?.state !== "pending";
   const primary: { label: string; icon: LucideIcon } | null =
