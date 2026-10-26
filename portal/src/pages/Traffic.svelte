@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import CloudDownload from '@lucide/svelte/icons/cloud-download';
   import PieIcon from '@lucide/svelte/icons/chart-pie';
   import { meApi } from '@/api';

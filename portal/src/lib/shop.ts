@@ -55,6 +55,6 @@ export function mmss(ms: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${pad(m)}:${pad(s % 60)}`;
 }
 
-/** 订单状态的色调（@/lib/format 的 orderState）→ 状态文字的类名（content.css 的 .st：色点 + 文字） */
+/** 订单状态的色调（@/lib/format 的 orderState）→ 状态文字的类名（pages.css 的 .st：色点 + 文字） */
 export const toneClass = (tone: StatusTone): string =>
   tone === 'success' ? 'st ok' : tone === 'warning' ? 'st warn' : tone === 'danger' ? 'st off' : 'st';

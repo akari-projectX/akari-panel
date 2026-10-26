@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '../styles/pages.css';
   import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
   import Share2 from '@lucide/svelte/icons/share-2';
   import WalletIcon from '@lucide/svelte/icons/wallet';
