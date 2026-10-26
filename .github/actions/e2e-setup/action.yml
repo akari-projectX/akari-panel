@@ -30,6 +30,25 @@ runs:
     # Started first so the images are pulled while npm and Chromium install.
     - shell: bash
       run: make dev-up
+    # The runner's apt mirror is sometimes extremely slow (~40 KB/s: the
+    # system libraries and fonts of --with-deps then exceed the install
+    # timeout). Keep the downloaded .deb files and the Chromium builds between
+    # runs: apt installs from the local files and downloads only what changed.
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cache/akari-apt
+          ~/.cache/ms-playwright
+        key: e2e-browsers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('portal/package-lock.json', 'admin/package-lock.json') }}
+        restore-keys: e2e-browsers-${{ runner.os }}-${{ runner.arch }}-
+    - shell: bash
+      run: |
+        mkdir -p ~/.cache/akari-apt
+        # apt must keep what it downloads (some images clean the archive after install).
+        printf 'APT::Keep-Downloaded-Packages "true";\nBinary::apt-get::APT::Keep-Downloaded-Packages "true";\n' \
+          | sudo tee /etc/apt/apt.conf.d/99akari-keep-debs >/dev/null
+        sudo rm -f /etc/apt/apt.conf.d/docker-clean
+        sudo cp -n ~/.cache/akari-apt/*.deb /var/cache/apt/archives/ 2>/dev/null || true
     # portal/ and admin/ pin their own Playwright versions; each needs its
     # browser build. The system libraries (--with-deps) once: the same for both.
     # `timeout`: a stuck install fails the step instead of holding the runner.
@@ -41,6 +60,8 @@ runs:
       env:
         DEPS: ${{ inputs.portal == 'true' && '' || '--with-deps' }}
       run: cd admin && npm ci && timeout 600 npx playwright install $DEPS chromium
+    - shell: bash
+      run: cp -n /var/cache/apt/archives/*.deb ~/.cache/akari-apt/ 2>/dev/null || true
     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: panel-release
