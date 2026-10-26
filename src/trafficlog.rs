@@ -586,7 +586,7 @@ async fn exists(pg: &sqlx::PgPool, sql: &'static str, id: Uuid) -> Result<(), Ap
     }
 }
 
-/// GET /users/{id}/traffic?from&to&group=day|node|month (admin).
+/// GET /users/{id}/traffic?from&to&group=day|entrance|month (admin).
 pub async fn user_traffic(
     State(state): State<AppState>,
     user: AuthUser,
