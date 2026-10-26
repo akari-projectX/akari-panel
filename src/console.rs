@@ -584,10 +584,7 @@ mod tests {
             let r = c.get(p).await;
             assert_eq!(r.status, StatusCode::OK, "{p}");
             assert_eq!(header(&r, header::CACHE_CONTROL), "no-store");
-            assert_eq!(
-                header(&r, header::CONTENT_SECURITY_POLICY),
-                "default-src 'self'; style-src 'self' 'unsafe-inline'"
-            );
+            assert_eq!(header(&r, header::CONTENT_SECURITY_POLICY), crate::web::CSP);
             let html = String::from_utf8_lossy(&r.body);
             assert!(!html.contains("\"/app/assets/"), "prefixed: {html}");
             assert!(!html.contains("/admin/assets/"), "{html}");

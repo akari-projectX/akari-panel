@@ -483,8 +483,14 @@ async fn prefix_gate(req: Request, next: Next) -> Response {
 }
 
 /// The Content-Security-Policy of every accepted response: same-origin
-/// only (inline styles for React's `style` props).
-pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'";
+/// only (inline styles for React's `style` props). The three directives
+/// after it do not fall back to `default-src`: nobody may frame the panel
+/// (`frame-ancestors`, as `X-Frame-Options: DENY` does for old browsers), an
+/// injected `<base>` cannot redirect relative URLs (`base-uri`), and a
+/// native form post can only go to the panel itself (`form-action`; the
+/// apps submit with `fetch`, a payment page is opened by navigation).
+pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+     frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 /// W36-b: the portal page's policy while Cloudflare Turnstile is on (the
 /// login/register/reset forms load its script, which renders in an
@@ -492,6 +498,7 @@ pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'";
 /// `spa::index` and `console::app_entry` (the sign-in page) only; never on
 /// the console, the API or assets.
 pub const CSP_TURNSTILE: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+     frame-ancestors 'none'; base-uri 'none'; form-action 'self'; \
      script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com";
 
 /// Security headers for real (prefixed, accepted) responses only. They are
