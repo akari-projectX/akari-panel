@@ -22,6 +22,7 @@ import { test, type Browser } from "@playwright/test";
 
 import { api, apiJson } from "./helpers";
 import * as commerce from "./screens/commerce";
+import * as dns from "./screens/dns";
 import * as nodes from "./screens/nodes";
 import * as ops from "./screens/ops";
 import * as people from "./screens/people";
@@ -34,6 +35,7 @@ import * as supportContent from "./screens/support-content";
 type Area = { shots: Shot[]; setup?: (c: Ctx) => Promise<void> };
 const AREAS: Record<string, Area> = {
   ops,
+  dns,
   people,
   commerce,
   nodes,

@@ -124,9 +124,15 @@ mkdir -p "$REL/www/rules"
 printf 'payload:\n  - DOMAIN-SUFFIX,e2e-rules.test\n  - DOMAIN,api.e2e-rules.test\n  - IP-CIDR,203.0.113.0/24,no-resolve\n  - PROCESS-NAME,E2E.exe\n' >"$REL/www/rules/E2E.yaml"
 python3 -m http.server --bind 127.0.0.1 --directory "$REL/www" "$REL_PORT" >"$REL/server.log" 2>&1 &
 REL_PID=$!
-AKARI_TEST_LIMITS=rule_set_fetch_loopback=1 "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
+# DNS management: a local Cloudflare API (admin/e2e/fixtures/cloudflare-mock.py); the
+# panel is pointed at it with cloudflare_mock_port (test-only, like the rule-set switch).
+CF_PORT=${E2E_CF_PORT:-18207}
+E2E_CF_TOKEN="e2e-cf-token-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+python3 admin/e2e/fixtures/cloudflare-mock.py "$CF_PORT" "$E2E_CF_TOKEN" >"$DIR/cloudflare-mock.log" 2>&1 &
+CF_PID=$!
+AKARI_TEST_LIMITS=rule_set_fetch_loopback=1,cloudflare_mock_port=$CF_PORT "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
 PANEL_PID=$!
-trap 'kill $PANEL_PID $REL_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
+trap 'kill $PANEL_PID $REL_PID $CF_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 60); do
   [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/$PREFIX/healthz")" = "200" ] && break
   kill -0 $PANEL_PID 2>/dev/null || { echo "FAIL: panel exited"; cat "$DIR/panel.log"; exit 1; }
@@ -161,6 +167,7 @@ export E2E_ADMIN=e2e-admin@e2e.test E2E_ADMIN_PW="$ADMIN_PW" \
   E2E_QUOTA_USER=e2e-quota@e2e.test E2E_DB="$E2E_DB" E2E_PAY_DIR="$DIR" \
   E2E_MAILPIT=http://127.0.0.1:18026/api/v1 E2E_SMTP_PORT=11026 \
   E2E_RELEASE_SOURCE="http://127.0.0.1:$REL_PORT/repos/akari-projectX/akari-agent/releases/latest" \
+  E2E_CF_TOKEN="$E2E_CF_TOKEN" \
   E2E_RULE_SET="http://127.0.0.1:$REL_PORT/rules/E2E.yaml" \
   E2E_ADMIN_BASE="http://$E2E_HOST:$PORT/$PREFIX/admin" \
   NO_PROXY='*' no_proxy='*'

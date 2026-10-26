@@ -180,6 +180,19 @@
 | NOD-22 | 倍率输入安全与并发：倍率留空 = 校验错误（不会当作 0x，不发请求）；保存 0x 需确认"免费"；入口弹窗只发送改动过的字段并带打开时的 `version`，期间被别人改过 → 409 提示"请关闭后重新打开"，不覆盖；改倍率提示"从下一次结算起生效、不追溯、30 秒内按较低倍率" | `PATCH /entrances/{id}`、`POST /nodes/{id}/entrances`、`POST /nodes` | next07 | 实现 |
 | NOD-23 | 入口弹窗「流量与记录」：本入口近 30 天原始/计费/平均倍率、每日原始/计费（折线 + 可展开的每日明细，不与同节点其他入口相加）、倍率变更记录（时间线：时间、操作人、旧 → 新、时段规则变更） | `GET /entrances/{id}/traffic` | next07 | 实现 |
 
+## 10a. DNS（Cloudflare）
+
+e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock.py`，`scripts/e2e.sh` 启动并用 `cloudflare_mock_port` 指过去）；截图 `e2e/screens/dns.ts`。
+
+| 编号 | 功能 | 接口 | 处理 |
+|---|---|---|---|
+| DNS-01 | Cloudflare 令牌（弹窗 `?tokens=1`；添加/改名/换令牌/删除只有所有者，其他管理员只读 + 测试连接）：令牌是只写的 `SecretInput`（保存后只显示指纹，留空 = 不改），删除要输入名称；「测试连接」显示域名数、可编辑/只读数；某个令牌被拒时页面顶部列出该令牌的错误，其他令牌的域名照常显示 | `GET/POST /dns/accounts`、`PUT/DELETE /dns/accounts/{id}`、`POST …/test`、`GET /dns/zones` | 实现 |
+| DNS-02 | 记录列表：域名下拉按令牌分组（`?zone=`），搜索名称/内容（`?q=`）、类型筛选（`?type=`）、Cloudflare 分页（每页 50，`?page=`）、类型/名称/内容/代理状态/TTL/备注，面板自己在用的名字带「面板使用中」；只读域名显示提示、没有新建与勾选；手机为卡片 | `GET …/zones/{zone}/records` | 实现 |
+| DNS-03 | 新建/编辑/删除记录（`?new=1`、`?edit=`）：按类型的字段（A/AAAA 校验地址族，MX 优先级，SRV/CAA 结构化字段，TXT/CNAME/NS），TTL 与橙云（橙云 TTL 固定自动），备注 ≤100；行上的云按钮一键切换橙/灰云；Cloudflare 的拒绝（重复、权限、限速）经错误码文案显示 | `POST/PUT/DELETE …/records[/{id}]` | 实现 |
+| DNS-04 | 危险记录：面板自己在用的名字（站点域名、通行密钥中心域名、服务器证书域名、入口连接地址）改地址/类型/代理或删除时，409 后弹出「这会影响面板自身的功能」列出名字与用途，确认后带 `confirm` 重发；只改备注/TTL 不需要确认 | 同上（`dns.confirm_required`） | 实现 |
+| DNS-05 | 批量（勾选 → 浮动条）：设为橙云/灰云、更换 IP（IPv4 只写 A、IPv6 只写 AAAA，不符的跳过并说明）、删除（输入数量）；有失败或跳过时弹出逐条结果；含危险记录时整批先确认 | `POST …/records/batch` | 实现 |
+| DNS-06 | 审计：`dns.account.*`、`dns.record.*` 有中英文名称，记录前后值，令牌从不出现 | `GET /audit` | 实现 |
+
 ## 11. 套餐
 
 | 编号 | 功能 | 接口 | 来源 | 处理 |
@@ -321,6 +334,7 @@
 | `GET /alerts`、`POST /alerts/{id}/ack`、`GET/PUT /alerts/settings`、`POST /alerts/test`、`GET /alerts/notifications`、`POST …/retry` | ALR-* |
 | `/agent-releases*`、`/agent-updates*`、`/rollouts*` | UPD-* |
 | `GET /audit` | AUD-* |
+| `/dns/accounts*`、`GET /dns/zones`、`/dns/accounts/{a}/zones/{z}/records*` | DNS-01…06 |
 | `GET/PUT /settings`、`PUT /settings/site`、`POST /settings/dns-check`、`/domains/impact`、`/server-names/remove` | SET-01…05、25 |
 | `PUT /settings/passkey-domain` | SET-27 |
 | `GET /settings/access`、`POST …/admin-prefix`、`PUT …/admin-allow`、`PUT …/sub-path` | SET-06、07、10 |

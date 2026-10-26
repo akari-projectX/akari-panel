@@ -86,6 +86,7 @@ const ENTITIES: Record<string, string[]> = {
   rollouts: RELEASES,
   "agent-updates": RELEASES,
   settings: [...SETTINGS, "servers", "nodes", "plans"],
+  dns: ["dns-accounts", "dns-zones", "dns-records", "dns-domains"],
   mail: SETTINGS,
   me: ["me", "passkeys", "account"],
   logout: [],
@@ -102,6 +103,7 @@ const PASSIVE = new Set(["palette", "delete-preview", "mail-template-preview", "
  */
 const READ_ONLY_POSTS = [
   /^\/settings\/dns-check$/,
+  /^\/dns\/accounts\/[^/]+\/test$/,
   /^\/settings\/domains\/impact$/,
   /^\/settings\/mail-templates\/preview$/,
   /^\/settings\/subscription\/rule-set\/check$/,

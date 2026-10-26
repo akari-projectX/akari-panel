@@ -4,6 +4,7 @@ import {
   Bell,
   Download,
   FileText,
+  Globe,
   Gauge,
   History,
   LayoutGrid,
@@ -55,6 +56,7 @@ export const NAV: NavGroup[] = [
     en: "Resources",
     items: [
       { id: "nodes", zh: "节点", en: "Nodes", icon: Server, tint: "#0891b2" },
+      { id: "dns", zh: "DNS", en: "DNS", icon: Globe, tint: "#0ea5e9" },
       { id: "plans", zh: "套餐", en: "Plans", icon: Layers, tint: "#4f46e5" },
       { id: "alerts", zh: "告警", en: "Alerts", icon: Bell, tint: "#dc2626", badge: "alerts" },
       { id: "updates", zh: "更新", en: "Updates", icon: Download, tint: "#0284c7" },
