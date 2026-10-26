@@ -218,7 +218,7 @@ async fn ordinary_admins_cannot_touch_other_admins() {
         )
         .await,
     );
-    // Users and the admin's own account stay its business.
+    // Users stay its business (an admin's own password goes through /me/password).
     let r = c
         .post(
             &format!("/test/api/v1/users/{u}/ban"),
@@ -229,8 +229,8 @@ async fn ordinary_admins_cannot_touch_other_admins() {
     let r = c
         .req(
             Method::PATCH,
-            &format!("/test/api/v1/users/{a}"),
-            Some(json!({ "password": "my-own-new-1" })),
+            &format!("/test/api/v1/users/{u}"),
+            Some(json!({ "password": "their-new-pass-1" })),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
