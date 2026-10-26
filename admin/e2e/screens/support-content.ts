@@ -105,6 +105,17 @@ const annShots: Shot[] = [
     open: async (page, c) =>
       rowMenu(page, "/content/announcements", need(c.extra.annLiveTitle, "live announcement"), "删除…"),
   },
+  // Announcement tags (2026-10-26): no v2 mock-up; the names follow the same scheme.
+  { name: "content-tags-default", full: true, open: async (page) => goto(page, "/content/tags") },
+  { name: "content-tags-editor", open: goDialog(() => "/content/tags?open=new") },
+  {
+    name: "content-ann-editor-tag",
+    open: async (page, c) => {
+      await goto(page, `/content/announcements?open=${need(c.extra.annLive, "live announcement")}`);
+      const d = page.getByRole("dialog", { name: "编辑公告" });
+      await d.getByRole("radiogroup", { name: "标签" }).getByRole("radio", { name: "维护" }).click();
+    },
+  },
   {
     name: "content-ann-mail",
     open: goDialog((c) => `/content/announcements?mail=${need(c.extra.annLive, "live announcement")}`),
