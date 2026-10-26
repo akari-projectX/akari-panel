@@ -332,33 +332,13 @@ pub fn clean_name(v: &str) -> Result<String, ApiError> {
     Ok(v.to_string())
 }
 
-/// A hostname, IPv4 or IPv6 literal (no scheme, path, port, spaces);
-/// brackets around an IPv6 literal are dropped.
-pub fn valid_host(h: &str) -> bool {
-    if h.is_empty() || h.len() > 253 {
-        return false;
-    }
-    if h.parse::<std::net::IpAddr>().is_ok() {
-        return true;
-    }
-    h.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-    })
-}
-
 /// "" / whitespace / null = cleared (None).
 pub fn clean_host(v: Option<&str>) -> Result<Option<String>, ApiError> {
     let Some(h) = v.map(str::trim).filter(|h| !h.is_empty()) else {
         return Ok(None);
     };
     let h = h.trim_start_matches('[').trim_end_matches(']');
-    if !valid_host(h) {
+    if !crate::hostname::is_host(h, crate::hostname::NameRules::WITH_UNDERSCORE) {
         return Err(bad_request!(
             "entrance.host_invalid",
             "connect_host must be a hostname or IP address"

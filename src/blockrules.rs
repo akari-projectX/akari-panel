@@ -110,21 +110,6 @@ impl Kind {
 // Entries
 // ---------------------------------------------------------------------------
 
-/// A DNS name as xray's domain matchers take it: lowercase LDH labels
-/// (punycode for IDNs), 1..=63 per label, at most 253 overall.
-fn valid_domain(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 253
-        && s.split('.').all(|l| {
-            !l.is_empty()
-                && l.len() <= 63
-                && !l.starts_with('-')
-                && !l.ends_with('-')
-                && l.bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        })
-}
-
 /// One domain entry → `domain:`/`full:`/`keyword:` form (a bare name is a
 /// suffix match, like xray's own default).
 fn domain_entry(raw: &str) -> Option<String> {
@@ -143,7 +128,8 @@ fn domain_entry(raw: &str) -> Option<String> {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
         }
-        _ => valid_domain(value),
+        // LDH labels (punycode for IDNs); the entry is lower-cased above.
+        _ => crate::hostname::is_dns_name(value, crate::hostname::NameRules::RFC1123),
     };
     ok.then(|| format!("{kind}:{value}"))
 }

@@ -108,7 +108,10 @@ pub(crate) fn server(v: &str) -> Option<Server> {
     }
     let host = host.to_ascii_lowercase();
     let is_ip = host.parse::<IpAddr>().is_ok();
-    if !is_ip && (scheme == Scheme::Udp || !crate::entrances::valid_host(&host)) {
+    if !is_ip
+        && (scheme == Scheme::Udp
+            || !crate::hostname::is_dns_name(&host, crate::hostname::NameRules::WITH_UNDERSCORE))
+    {
         return None; // plain UDP needs an address; names must be valid
     }
     Some(Server {

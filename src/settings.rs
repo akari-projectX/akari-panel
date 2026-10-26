@@ -75,6 +75,7 @@ use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::client_ip::{Cidr, Trust};
 use crate::config::{PanelConfig, ProbeConfig, RemoveMode};
+use crate::hostname::{self, NameRules};
 use crate::install::Install;
 use crate::nodeinstall::Origin;
 use crate::state::AppState;
@@ -157,21 +158,7 @@ impl Domain {
         }
         let host = host.trim_end_matches('.');
         let ascii = idna::domain_to_ascii_strict(host).map_err(|_| "不是有效的域名")?;
-        let labels: Vec<&str> = ascii.split('.').collect();
-        let ok = !ascii.is_empty()
-            && ascii.len() <= 253
-            && labels.len() >= 2
-            && labels.iter().all(|l| {
-                !l.is_empty()
-                    && l.len() <= 63
-                    && !l.starts_with('-')
-                    && !l.ends_with('-')
-                    && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            })
-            && labels
-                .last()
-                .is_some_and(|tld| !tld.bytes().all(|b| b.is_ascii_digit()));
-        if !ok {
+        if !hostname::is_dns_name(&ascii, NameRules::RFC1123.at_least_labels(2)) {
             return Err("不是有效的域名（需要形如 panel.example.com）".into());
         }
         Ok(Self { host: ascii, port })

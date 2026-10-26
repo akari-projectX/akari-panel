@@ -57,14 +57,10 @@ pub fn reality(
     })
 }
 
-/// A name clients put in the TLS handshake: letters, digits and `-._*`
-/// (a REALITY server name may be a wildcard), at most 253 bytes.
+/// A name clients put in the TLS handshake: a DNS name, a leading `*`
+/// label for a REALITY wildcard, or an IP literal (`hostname`).
 fn valid_server_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 253
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._*".contains(&b))
+    crate::hostname::is_host(name, crate::hostname::NameRules::SERVER_NAME)
 }
 
 /// REALITY short ids: 0-16 hex digits, an even number of them.

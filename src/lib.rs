@@ -35,6 +35,7 @@ pub mod export;
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod grpc;
+pub mod hostname;
 pub mod install;
 pub mod kb;
 pub mod login_limit;
