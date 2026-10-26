@@ -109,7 +109,7 @@
 .nload.low { color: var(--ok); } .nload.medium { color: var(--warn); } .nload.high { color: var(--danger); }
 .nt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .tags { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tags > span { display: inline-flex; height: 18px; align-items: center; padding-inline: 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-weight: var(--fw-strong); letter-spacing: .01em; white-space: nowrap; color: var(--muted); }
+.tags > span { display: inline-flex; height: 18px; align-items: center; padding-inline: 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-weight: var(--fw-regular); letter-spacing: .01em; white-space: nowrap; color: var(--muted); }
 .rate { display: inline-flex; height: 20px; align-items: center; padding-inline: 8px; border-radius: 999px; font-size: 12px; font-weight: var(--fw-strong); white-space: nowrap; }
 .rate.rate-lo { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .rate.rate-hi { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }

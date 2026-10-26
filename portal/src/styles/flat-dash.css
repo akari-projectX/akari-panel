@@ -16,7 +16,7 @@
   .statrow { display: flex; flex-wrap: wrap; gap: 56px 72px; }
   .statrow > div { min-width: 0; }
   .stat-v { font-size: 36px; font-weight: var(--fw-strong); letter-spacing: -.025em; line-height: 1.02; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .stat-unit { margin-left: .22em; font-size: .42em; font-weight: var(--fw-strong); letter-spacing: 0; color: var(--muted); }
+  .stat-unit { margin-left: .22em; font-size: .42em; font-weight: var(--fw-regular); letter-spacing: 0; color: var(--muted); }
   .stat-k { margin-top: 12px; font-size: 13px; letter-spacing: -.004em; color: var(--muted); }
   .stat-x { margin-top: 10px; max-width: 210px; font-size: 12.5px; color: var(--muted); }
   .stat-bar { display: block; height: 4px; margin-bottom: 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--brand) 20%, transparent); }

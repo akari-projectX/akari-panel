@@ -168,7 +168,7 @@
   .cats button:hover { color: var(--fg); border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
   .cats button[aria-pressed='true'] { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
   .cats span { min-width: 0; overflow-wrap: anywhere; }
-  .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: var(--fw-strong); }
+  .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: var(--fw-regular); }
   .cats button[aria-pressed='true'] em { background: color-mix(in srgb, var(--on-brand) 20%, transparent); }
 
   .device { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13.5px; color: var(--muted); }

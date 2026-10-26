@@ -223,7 +223,7 @@
   .more-item[data-on='true']:hover, .more-item[data-on='true']:focus { background: color-mix(in srgb, var(--hover) 70%, transparent); }
   .more-tick { position: absolute; top: 50%; left: 0; width: 0; height: 1px; translate: 0 -50%; background: var(--brand); transition: width var(--dur-fast); }
   .more-item[data-on='true'] .more-tick, .more-item:hover .more-tick, .more-item:focus .more-tick { width: 10px; }
-  .more-no { flex: none; margin-top: 2px; font-size: 11.5px; font-weight: var(--fw-strong); color: var(--faint); transition: color var(--dur-hover); }
+  .more-no { flex: none; margin-top: 2px; font-size: 11.5px; font-weight: var(--fw-regular); color: var(--faint); transition: color var(--dur-hover); }
   .more-item[data-on='true'] .more-no, .more-item:hover .more-no, .more-item:focus .more-no { color: var(--brand); }
   .more-body { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
   .more-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
