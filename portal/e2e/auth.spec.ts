@@ -94,7 +94,7 @@ test('#7 #10 registration with the proof of work; the trial plan is announced', 
   const before = await a.patch('signup', FIELDS.signup, { trial_plan_id: plans.find((p) => p.name === seed.plan)?.id, trial_days: 3, email_verify: false });
   try {
     await page.goto('/register');
-    await expect(page.getByRole('navigation', { name: '登录或注册' }).getByRole('link', { name: '注册' })).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('link', { name: '登录', exact: true })).toBeVisible();
     await expect(page.getByLabel('邮箱验证码')).toHaveCount(0);
     await page.getByLabel('邮箱', { exact: true }).fill(freshEmail('pow'));
     await page.getByLabel('密码', { exact: true }).fill('e2e-password-123');
@@ -150,8 +150,8 @@ test('#8 #9 site switches: closed registration, invite required + allowed domain
     await page.getByRole('link', { name: '登录已有账号' }).click();
     await expect(page).toHaveURL(/\/login$/);
     await expect(page.getByRole('link', { name: '忘记密码' })).toHaveCount(0);
-    /* 关了注册：标签只剩「登录」 */
-    await expect(page.getByRole('navigation', { name: '登录或注册' }).getByRole('link')).toHaveText(['登录']);
+    /* 关了注册：没有「注册」入口 */
+    await expect(page.getByRole('link', { name: '注册', exact: true })).toHaveCount(0);
     await page.goto('/forgot');
     await expect(page.getByText('本站没有开放自助找回密码。')).toBeVisible();
     await a.patch('signup', FIELDS.signup, before);

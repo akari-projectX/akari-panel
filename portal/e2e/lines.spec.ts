@@ -82,11 +82,11 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   await signIn(page, 'user@e2e.test');
   await open(page, '/traffic', '使用明细');
   await expect(page.getByText(/日期按 Asia\/Shanghai 计算/)).toBeVisible();
-  await expect(page.getByRole('button', { name: '本月' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('tab', { name: '本月' })).toHaveAttribute('aria-selected', 'true');
   const line = () => page.getByText('香港 01 · 直连').first();
   await expect(line()).toBeVisible();
-  await page.getByRole('button', { name: '近 30 天' }).click();
-  await expect(page.getByRole('button', { name: '近 30 天' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('tab', { name: '近 30 天' }).click();
+  await expect(page.getByRole('tab', { name: '近 30 天' })).toHaveAttribute('aria-selected', 'true');
   await expect(line()).toBeVisible();
   /* 按入口，各自此刻的倍率（与时段规则），不是计费 ÷ 原始 */
   const rowOf = (name: string) => page.getByRole('row').filter({ hasText: name });
@@ -98,29 +98,34 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   await expect(page.getByText('有效倍率')).toHaveCount(0);
   /* 每日明细：30 行，最新的在上面；今天 = 两个入口的流量（直连 2 GiB + 中转 1 GiB + 日本 0.5 GiB + 上行 1 GiB） */
   await expect(page.getByText('30 天的每日上下行流量')).toBeVisible();
-  const days = page.locator('section[aria-labelledby="h-days"] tbody tr');
+  const days = page.locator('section.sec').filter({ hasText: '30 天的每日上下行流量' }).locator('tbody tr');
   await expect(days).toHaveCount(30);
   await expect(days.first()).toContainText('4.50 GB');
   await shot(page, info, 'traffic-30d-light');
 });
 
-test('traffic chart: the dashboard\'s smooth area, today\'s value, a tooltip with down / up / billed', async ({ page }, info) => {
+test('traffic charts: area, donut and daily bars; a tooltip by keyboard', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/traffic', '使用明细');
-  await page.getByRole('button', { name: '近 7 天' }).click();
+  await page.getByRole('tab', { name: '近 7 天' }).click();
   await expect(page.getByText(/至 .*，按天统计/)).toBeVisible();
   const chart = page.getByRole('slider', { name: '流量走势，用左右方向键逐日查看' });
-  await expect(chart.locator('path.curve')).toHaveCount(1);
-  /* 7 天：桌面是「今天 10-22」，手机只有「今天」 */
-  await expect(chart.locator('text.x.now')).toHaveText(info.project.name === 'mobile' ? '今天' : /^今天 \d\d-\d\d$/);
+  /* 下行 / 上行两条曲线；横轴首尾保留：最后一天（今天）一定有标签 */
+  await expect(chart.locator('path.rc-ln')).toHaveCount(2);
+  await expect(chart.locator('text.rc-t').last()).toHaveText(/^\d\d-\d\d$/);
   await chart.focus();
+  await page.keyboard.press('ArrowLeft');
   const tip = chart.getByRole('status');
   await expect(tip).toBeVisible();
-  for (const k of ['下行', '上行', '计费']) await expect(tip.getByText(k, { exact: true })).toBeVisible();
-  await page.keyboard.press('ArrowLeft');
+  for (const k of ['下行流量', '上行流量']) await expect(tip.getByText(k, { exact: true })).toBeVisible();
   await expect(chart).toHaveAttribute('aria-valuenow', '6');
   await page.keyboard.press('Escape');
   await expect(tip).toHaveCount(0);
+  /* 柱状图：每天一根，键盘同样可逐日看 */
+  const bars = page.getByRole('slider', { name: '每日计费流量，用左右方向键逐日查看' });
+  await bars.focus();
+  await page.keyboard.press('End');
+  await expect(bars.getByRole('status')).toBeVisible();
   await shot(page, info, 'traffic-light');
   await dark(page);
   await shot(page, info, 'traffic-dark');
@@ -138,7 +143,7 @@ test('traffic: a range with no traffic says so; the panel keeps daily rows only 
     });
   });
   await open(page, '/traffic', '使用明细');
-  await page.getByRole('button', { name: '近 7 天' }).click();
+  await page.getByRole('tab', { name: '近 7 天' }).click();
   await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
   await expect(page.getByText(/按天的明细只保留到 .*，更早的日子显示为 0。/)).toBeVisible();
   await expect(page.getByRole('slider')).toHaveCount(0);

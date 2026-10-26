@@ -427,7 +427,7 @@
 .tbl.flat-head th { padding-bottom: 14px; font-size: 11.5px; font-weight: 500; letter-spacing: .05em; color: var(--muted); }
 .tbl.flat-head thead tr:hover { background: none; }
 .tbl code { font-size: 12.5px; }
-.tbl .btn.link-btn, .wtbl .btn.link-btn { height: 24px; padding: 0 8px; font-size: 12px; }
+.tbl .btn.link-btn, .wtbl .btn.link-btn { height: 24px; padding: 0 8px; font-size: 12px; gap: 4px; border: 1px solid transparent; border-radius: 10px; }
 .bdg.trunc { max-width: 220px; }
 .bdg.trunc > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .bdg.brandbadge { background: color-mix(in srgb, var(--brand) 10%, transparent); color: var(--brand-ink); }
@@ -597,3 +597,45 @@
 @media (min-width: 768px) { .md-hide-i { display: none; } .md-only-i { display: inline; } }
 .nlegend.plain { padding-block: 0; border-bottom: 0; margin-bottom: 16px; }
 @container (max-width: 24rem) { .sub-cl { column-gap: 10px; } .sub-cl .sep { display: none; } }
+
+/* 用量页图表（components/charts/*，v1.4.0 的 recharts + shadcn chart 的外观） */
+@layer components {
+  .stat-arrow { display: flex; align-items: center; gap: 4px; }
+  .stat-arrow svg.brand { color: var(--brand); }
+  .stat-arrow svg.brand-light { color: var(--brand-2); }
+  .rch { position: relative; display: block; width: 100%; font-size: 12px; outline: none; }
+  .rch svg { display: block; overflow: visible; }
+  .rc-area { height: 300px; margin-inline: -8px; width: calc(100% + 16px); }
+  .rc-bar { height: 272px; margin-inline: -8px; width: calc(100% + 16px); }
+  .rc-pie { height: 272px; }
+  .rch:focus-visible { box-shadow: var(--focus); border-radius: 6px; }
+  .rc-t { font-size: 12px; fill: var(--muted); }
+  .rc-grid { stroke: var(--line); stroke-dasharray: 4 4; }
+  .rc-cur { stroke: var(--line); }
+  .rc-ln { fill: none; stroke-width: 2.2; }
+  .clg { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 16px; padding-top: 12px; font-size: 12px; line-height: 16px; }
+  .clg > div { display: flex; align-items: center; gap: 6px; }
+  .clg i { display: block; flex: none; width: 8px; height: 8px; border-radius: 2px; }
+  .ctip { position: absolute; z-index: 5; pointer-events: none; display: grid; min-width: 128px; align-items: start; gap: 6px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); border-radius: 8px; background: var(--surface); font-size: 12px; line-height: 16px; box-shadow: var(--pop-shadow); }
+  .ctip-l { font-weight: 500; }
+  .ctip-i { display: grid; gap: 6px; }
+  .ctip-r { display: flex; width: 100%; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .ctip-k { flex: none; width: 10px; height: 10px; border-radius: 2px; }
+  .ctip-v { display: flex; flex: 1; align-items: center; justify-content: space-between; gap: 16px; line-height: 1; }
+  .ctip-n { color: var(--muted); }
+  .ctip-m { font-family: var(--font-mono); font-weight: 500; color: var(--fg); font-variant-numeric: tabular-nums; }
+}
+@media (max-width: 639px) { .hide-sm-cell { display: none; } }
+.rc-area .clg { margin: 0 10px 0 -20px; }
+.rc-pie .clg { margin-top: -5px; }
+
+/* 下拉选择（ui/Select.svelte，shadcn Select 的外观） */
+.sel-trig { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 40px; padding: 0 8px 0 10px; text-align: left; cursor: pointer; white-space: nowrap; }
+.sel-trig > svg { flex: none; color: var(--muted); pointer-events: none; }
+.sel-val { overflow: hidden; text-overflow: ellipsis; }
+.sel-pop { z-index: 60; min-width: var(--bits-select-anchor-width); max-height: var(--bits-select-content-available-height); overflow: hidden auto; border-radius: 8px; background: var(--surface); color: var(--fg); box-shadow: var(--pop-shadow), 0 0 0 1px var(--line); }
+.sel-vp { padding: 4px; }
+.sel-item { position: relative; display: flex; align-items: center; width: 100%; padding: 4px 32px 4px 6px; border-radius: 6px; font-size: 14px; cursor: default; user-select: none; outline: none; }
+.sel-item[data-highlighted] { background: var(--hover); }
+.sel-item[data-disabled] { opacity: .5; pointer-events: none; }
+.sel-ck { position: absolute; right: 8px; pointer-events: none; }

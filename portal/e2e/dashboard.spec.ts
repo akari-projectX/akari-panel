@@ -154,7 +154,8 @@ test('#27 #30 D11: the link is the panel\'s random subscription path, it works, 
   expect((await fetch(`${process.env.E2E_API}${url.pathname}`)).status).toBe(404);
 });
 
-test('#28 #29 W30: formats and import buttons follow the site switches; an import opens the client\'s deep link', async ({ page }) => {
+test('#28 #29 W30: formats and import buttons follow the site switches; an import opens the client\'s deep link', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   const a = await admin();
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
@@ -242,8 +243,10 @@ test('#14 client downloads: configured downloads replace the per-platform guides
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
   const help = page.locator('#subscribe');
-  await expect(help).toContainText('还没有客户端？按平台查看教程：');
-  await expect(help.getByRole('link', { name: 'Windows', exact: true })).toHaveAttribute('href', '/help?q=Windows');
+  await expect(help).toContainText('还没有客户端？');
+  await help.getByRole('button', { name: '按平台查看教程' }).click();
+  await expect(page.getByRole('menuitem', { name: /^Windows/ })).toBeVisible();
+  await page.keyboard.press('Escape');
   const a = await admin();
   const before = await a.patch('branding', FIELDS.branding, {
     client_downloads: [{ platform: 'windows', label: 'E2E 客户端', url: 'https://example.com/client.exe' }],
@@ -251,10 +254,13 @@ test('#14 client downloads: configured downloads replace the per-platform guides
   try {
     await page.reload();
     await ready(page, '仪表盘');
-    await expect(help).toContainText('还没有客户端？下载客户端：');
-    const dl = help.getByRole('link', { name: 'E2E 客户端' });
-    await expect(dl).toHaveAttribute('href', 'https://example.com/client.exe');
-    await expect(dl).toHaveAttribute('target', '_blank');
+    await expect(help).toContainText('还没有客户端？');
+    await help.getByRole('button', { name: '下载客户端' }).click();
+    const dl = page.getByRole('menuitem', { name: /E2E 客户端/ });
+    await expect(dl).toBeVisible();
+    await page.evaluate(() => { (window as unknown as { __opened: string[] }).__opened = []; window.open = (u) => { (window as unknown as { __opened: string[] }).__opened.push(String(u)); return null; }; });
+    await dl.click();
+    expect(await page.evaluate(() => (window as unknown as { __opened: string[] }).__opened)).toEqual(['https://example.com/client.exe']);
   } finally {
     await a.patch('branding', FIELDS.branding, before);
   }
