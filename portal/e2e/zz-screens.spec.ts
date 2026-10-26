@@ -35,7 +35,7 @@ async function shotsFor(device: Device, theme: Theme, browser: Browser, shots: S
       try {
         if (who !== s.account) {
           await ctx.clearCookies();
-          await signIn(page, s.account);
+          if (s.account) await signIn(page, s.account);
           who = s.account;
         }
         const what = await s.run(page, device);
@@ -74,6 +74,12 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
         return 'viewport';
       },
     },
+    /* 访客页（账号为空 = 不登录）：登录、注册、找回密码、条款 */
+    ...(['/login', '/register', '/forgot'] as const).map((path) => ({
+      name: `page-${path.slice(1)}`, account: '',
+      run: (page: Page) => page.goto(path).then(() => page.locator('main h1').first().waitFor({ timeout: WAIT }))
+        .then(() => page.waitForLoadState('networkidle', { timeout: WAIT }).catch(() => undefined)),
+    })),
     /* 页面的外壳：页头、页宽、页脚、字体与颜色 */
     { name: 'page-privacy', account: 'user@e2e.test', run: (page) => ready(page, '/privacy') },
     ...(['/', '/orders', '/tickets', '/account'] as const).map((path) => ({

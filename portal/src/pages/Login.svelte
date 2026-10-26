@@ -3,7 +3,7 @@
   import { ApiError, authApi, type LoginResult } from '@/api';
   import { isUserCancel, webauthnSupported } from '@/api/webauthn';
   import AuthShell from '../components/auth/AuthShell.svelte';
-  import AuthTabs from '../components/auth/AuthTabs.svelte';
+  import AuthTitle from '../components/auth/AuthTitle.svelte';
   import GuardFields from '../components/GuardFields.svelte';
   import Spinner from '../components/Spinner.svelte';
   import TextField from '../components/TextField.svelte';
@@ -87,7 +87,7 @@
 {/snippet}
 
 <AuthShell>
-  <AuthTabs current="login" />
+  <AuthTitle title={t('登录')} lead={t('继续使用你的订阅')} />
 
   {#if needPasskey && canPasskey}
     <div class="callout">
@@ -99,7 +99,7 @@
   <form novalidate onsubmit={submit} class="form">
     <TextField
       {...f.field('email', 'login-email')}
-      label={t('邮箱')} type="email" autocomplete="username webauthn" placeholder="name@example.com"
+      label={t('邮箱')} type="email" autocomplete="username webauthn" placeholder="you@example.com"
       bind:value={email}
     />
     <TextField
@@ -121,5 +121,9 @@
   {#if !needPasskey && canPasskey}
     <div class="or">{t('或')}</div>
     {@render passkeyButton(false)}
+  {/if}
+
+  {#if s.registerOpen}
+    <p class="au-foot">{t('还没有账号？')}<a href={R.register}>{t('注册')}</a></p>
   {/if}
 </AuthShell>

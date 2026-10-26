@@ -5,7 +5,6 @@
   import { solvePow } from '@/api/pow';
   import { isUserCancel, webauthnSupported } from '@/api/webauthn';
   import AuthShell from '../components/auth/AuthShell.svelte';
-  import AuthTabs from '../components/auth/AuthTabs.svelte';
   import AuthTitle from '../components/auth/AuthTitle.svelte';
   import CodeField from '../components/auth/CodeField.svelte';
   import GuardFields from '../components/GuardFields.svelte';
@@ -15,7 +14,7 @@
   import { errorText } from '$lib/errors';
   import { FormGuard } from '$lib/form-guard.svelte';
   import { FieldErrors, fieldOf, isCode, isEmail } from '$lib/forms.svelte';
-  import { i18n, t } from '$lib/i18n.svelte';
+  import { i18n, t, tp } from '$lib/i18n.svelte';
   import { navigate, param } from '$lib/router.svelte';
   import { R } from '$lib/routes';
   import { domainsLine, mailLocale, siteFlags } from '$lib/site';
@@ -173,25 +172,18 @@
     <p class="quiet-box">{t('目前不接受新账号注册，恢复开放后这里会重新出现注册表单。已有账号的用户不受影响，可以正常登录使用。')}</p>
     <a class="btn pri btn-block btn-gap" href={R.login}>{t('登录已有账号')}</a>
   {:else}
-    <AuthTabs current="register" />
+    <AuthTitle title={t('创建账号')} lead={t('注册后即可取得订阅链接')} />
 
     <form novalidate onsubmit={submit} class="form">
       <TextField
         {...f.field('email', 'register-email')}
-        label={t('邮箱')} type="email" autocomplete="email" placeholder="name@example.com"
+        label={t('邮箱')} type="email" autocomplete="email" placeholder="you@example.com"
         bind:value={email}
       >
         {#snippet hint()}
           {#if s.emailDomains.length > 0}<em>{t('仅限')} {domainsLine(s.emailDomains)}</em>{/if}
         {/snippet}
       </TextField>
-
-      {#if s.emailVerify}
-        <CodeField
-          id={f.field('code', 'register-code').id} error={f.errors.code}
-          bind:value={code} oninput={() => f.dismiss('code')} onsend={sendCode} disabled={!guard.ready || guard.unavailable}
-        />
-      {/if}
 
       <div>
         <TextField
@@ -210,13 +202,16 @@
       {#if s.invites}
         <TextField
           {...f.field('invite', 'register-invite')}
-          label={t('邀请码')} placeholder={t('填写邀请码')}
+          label={s.inviteRequired ? t('邀请码') : tp('{label}（选填）', { label: t('邀请码') })} placeholder={t('填写邀请码')}
           bind:value={invite}
-        >
-          {#snippet hint()}
-            {#if !s.inviteRequired}<em>{t('选填')}</em>{/if}
-          {/snippet}
-        </TextField>
+        />
+      {/if}
+
+      {#if s.emailVerify}
+        <CodeField
+          id={f.field('code', 'register-code').id} error={f.errors.code}
+          bind:value={code} oninput={() => f.dismiss('code')} onsend={sendCode} disabled={!guard.ready || guard.unavailable}
+        />
       {/if}
 
       <GuardFields {guard} />
@@ -226,23 +221,25 @@
         {phase === 'pow' ? t('正在进行安全校验…') : phase === 'submit' ? t('创建中') : t('创建账号')}
       </button>
       {#if phase === 'pow'}
-        <p class="fine" role="status">{t('浏览器正在做一次计算来证明你不是机器人，通常只要几秒。')}</p>
+        <p class="fine sm" role="status">{t('浏览器正在做一次计算来证明你不是机器人，通常只要几秒。')}</p>
       {/if}
+
+      {#if s.passkeyRegister && webauthnSupported()}
+        <div class="or">{t('或')}</div>
+        <button type="button" class="btn btn-block" disabled={busy || !guard.ready || guard.unavailable} onclick={() => void passkeySignup()}>
+          <KeyRound class="i" size={16} strokeWidth={1.75} aria-hidden="true" />{t('用通行密钥注册')}
+        </button>
+        <p class="fine sm">{t('不用设置密码；创建后需要绑定一个邮箱才能使用。')}</p>
+      {/if}
+
+      <p class="fine">
+        {t('注册即表示同意')}
+        {@render legal(s.tosUrl, R.terms, t('服务条款'))}
+        {t('与')}
+        {@render legal(s.privacyUrl, R.privacy, t('隐私政策'))}
+      </p>
     </form>
 
-    {#if s.passkeyRegister && webauthnSupported()}
-      <div class="or">{t('或')}</div>
-      <button type="button" class="btn btn-block" disabled={busy || !guard.ready || guard.unavailable} onclick={() => void passkeySignup()}>
-        <KeyRound class="i" size={16} strokeWidth={1.75} aria-hidden="true" />{t('用通行密钥注册')}
-      </button>
-      <p class="fine">{t('不用设置密码；创建后需要绑定一个邮箱才能使用。')}</p>
-    {/if}
-
-    <p class="fine">
-      {t('注册即表示同意')}
-      {@render legal(s.tosUrl, R.terms, t('服务条款'))}
-      {t('与')}
-      {@render legal(s.privacyUrl, R.privacy, t('隐私政策'))}
-    </p>
+    <p class="au-foot">{t('已有账号？')}<a href={R.login}>{t('登录')}</a></p>
   {/if}
 </AuthShell>

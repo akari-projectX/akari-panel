@@ -52,16 +52,16 @@
     <a class="btn btn-block btn-gap" href={R.login}>{t('返回登录')}</a>
   {:else if sent}
     <AuthTitle title={t('查收邮件')} lead={t('如果这个邮箱已注册并验证过，重置链接已经发出，30 分钟内有效。')}>
-      {#snippet icon()}<MailCheck class="auth-icon" size={22} strokeWidth={1.5} aria-hidden="true" />{/snippet}
+      {#snippet icon()}<MailCheck size={20} strokeWidth={1.75} aria-hidden="true" />{/snippet}
     </AuthTitle>
-    <p class="quiet">{t('没收到的话看看垃圾邮件箱。没有验证过的邮箱收不到重置邮件，请联系管理员。')}</p>
+    <p class="au-note">{t('没收到的话看看垃圾邮件箱。没有验证过的邮箱收不到重置邮件，请联系管理员。')}</p>
     <a class="btn btn-block btn-gap" href={R.login}>{t('返回登录')}</a>
   {:else}
     <AuthTitle title={t('找回密码')} lead={t('填写登录邮箱，我们会把重置链接发给你。')} />
     <form novalidate onsubmit={submit} class="form">
       <TextField
         {...f.field('email', 'forgot-email')}
-        label={t('邮箱')} type="email" autocomplete="email" placeholder="name@example.com"
+        label={t('邮箱')} type="email" autocomplete="email" placeholder="you@example.com"
         bind:value={email}
       />
       <GuardFields {guard} />

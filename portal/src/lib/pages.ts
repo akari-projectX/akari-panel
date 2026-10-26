@@ -7,19 +7,18 @@ import { R } from './routes';
  *   · guest  —— 登录、注册、找回密码：已登录的人直接去 ?redirect= 指的那一页；
  *   · public —— 重置密码、注销结果、条款、隐私：谁都能看（访客布局）。
  * 还没迁移的页面是 Placeholder（页面名 + 「此页面迁移中」），后续 PR 逐个换成真页面。
- * wide：访客布局里用宽的阅读栏（条款、隐私），其余访客页是 360px 的一栏。
  */
 export type Layout = 'dash' | 'guest' | 'public';
 export type PageProps = { title: string; params?: Record<string, string> };
 /** 页面组件收到 title、params；用不到它们的页面可以不声明 props */
 export type PageModule = { default: Component<PageProps> | Component<Record<string, never>> };
-export type Page = { path: string; title: string; layout: Layout; load: () => Promise<PageModule>; wide?: boolean };
+export type Page = { path: string; title: string; layout: Layout; load: () => Promise<PageModule> };
 
 const placeholder = () => import('../pages/Placeholder.svelte');
 
 const dash = (path: string, title: string, load: Page['load'] = placeholder): Page => ({ path, title, layout: 'dash', load });
 const guest = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'guest', load });
-const pub = (path: string, title: string, load: Page['load'], wide = false): Page => ({ path, title, layout: 'public', load, wide });
+const pub = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'public', load });
 const legal = () => import('../pages/Legal.svelte');
 
 export const PAGES: Page[] = [
@@ -39,8 +38,8 @@ export const PAGES: Page[] = [
   guest(R.forgot, '找回密码', () => import('../pages/Forgot.svelte')),
   pub(R.reset, '重置密码', () => import('../pages/Reset.svelte')),
   pub(R.deleted, '账户已注销', () => import('../pages/Deleted.svelte')),
-  pub(R.terms, '服务条款', legal, true),
-  pub(R.privacy, '隐私政策', legal, true),
+  pub(R.terms, '服务条款', legal),
+  pub(R.privacy, '隐私政策', legal),
 ];
 
 /** 旧地址：`/invite` → 钱包页的邀请分页（邮件、收藏夹里的链接） */
