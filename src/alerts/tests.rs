@@ -311,6 +311,11 @@ fn validators() {
     assert!(check_webhook_url("https://hooks.example.com/akari?x=1").is_ok());
     assert!(check_webhook_url("http://127.0.0.1:9000/hook").is_ok());
     for bad in [
+        // A literal non-public address (a name is checked when it is sent).
+        "https://10.0.0.1/hook",
+        "https://127.0.0.1/hook",
+        "https://169.254.169.254/latest",
+        "https://[fd00:ec2::254]/",
         "http://hooks.example.com/x",
         "https://user:pw@hooks.example.com/",
         "ftp://x",
@@ -807,7 +812,8 @@ async fn delivery_telegram_retry_dead_exclusive() {
     assert!((20.0..=31.0).contains(&delay), "{delay}");
     // Not due yet: nothing claimed.
     assert_eq!(channels::deliver_due(&state).await.unwrap(), 0);
-    // Permanent: 401 -> dead with the API's description.
+    // Permanent: 401 -> dead with the status only (the API's description
+    // is a remote body: never echoed).
     sqlx::query("UPDATE alert_notifications SET next_attempt_at = now()")
         .execute(&db.pool)
         .await
@@ -820,7 +826,7 @@ async fn delivery_telegram_retry_dead_exclusive() {
             .await
             .unwrap();
     assert_eq!(dead.len(), 6);
-    assert_eq!(dead[0].0, "telegram: HTTP 401 Unauthorized");
+    assert_eq!(dead[0].0, "telegram: HTTP 401");
     assert!(!dead[0].0.contains(BOT));
     // The admin retries one dead letter; it is delivered.
     let mut admin = Client::new(&state, rand_ip());
@@ -1438,5 +1444,68 @@ async fn settings_missing_secrets_and_list_filter_codes() {
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
     assert_eq!(r.json()["code"], "alert.status_invalid");
     drop(c);
+    db.drop().await;
+}
+
+/// Audit batch 2, P2-2: the webhook is an operator URL. A name that resolves
+/// to a non-public address is refused when it is SENT (dead at once, no
+/// retry, nothing connected), and the answer of a destination the panel
+/// does reach (here a loopback receiver, the documented exception) is never
+/// echoed into the error an admin reads.
+#[tokio::test]
+async fn webhook_goes_through_the_ssrf_guard() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    // Saving: a literal private address is refused with the URL code.
+    let mut req = put(version(&state).await);
+    req.webhook_enabled = true;
+    req.webhook_secret = Some(Some(SECRET.into()));
+    req.webhook_url = Some("https://10.0.0.1/hook".into());
+    let e = save(&state, req).await.unwrap_err();
+    assert_eq!(e.code(), "alert.webhook_url_invalid");
+
+    // A name that resolves to loopback over https (never "public").
+    let mut req = put(version(&state).await);
+    req.webhook_enabled = true;
+    req.webhook_secret = Some(Some(SECRET.into()));
+    req.webhook_url = Some("https://localhost:9/hook".into());
+    save(&state, req).await.unwrap();
+    offline_node(&db, 600).await;
+    eval::round(&state).await.unwrap().unwrap();
+    channels::deliver_due(&state).await.unwrap();
+    let rows: Vec<(String, i32, Option<String>)> = sqlx::query_as(
+        "SELECT status, attempts, last_error FROM alert_notifications WHERE channel = 'webhook'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].0, "dead", "refused for good, not retried: {rows:?}");
+    assert_eq!(rows[0].1, 1);
+    assert_eq!(
+        rows[0].2.as_deref(),
+        Some("webhook: the address is not public")
+    );
+
+    // A loopback receiver answering 500 with a body: status only.
+    let (mock, base) = Mock::start(500, "internal-secret-body").await;
+    let mut req = put(version(&state).await);
+    req.webhook_enabled = true;
+    req.webhook_url = Some(format!("{base}/hook"));
+    save(&state, req).await.unwrap();
+    sqlx::query("UPDATE alert_notifications SET status = 'pending', next_attempt_at = now()")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    channels::deliver_due(&state).await.unwrap();
+    assert_eq!(mock.count(), 1);
+    let err: Option<String> =
+        sqlx::query_scalar("SELECT last_error FROM alert_notifications WHERE channel = 'webhook'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(err.as_deref(), Some("webhook: HTTP 500"));
     db.drop().await;
 }

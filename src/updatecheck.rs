@@ -42,10 +42,9 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
-use http_body_util::{BodyExt, Empty, Limited};
+use http_body_util::{BodyExt, Limited};
 use hyper::body::{Bytes, Incoming};
 use hyper::header;
-use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -54,6 +53,7 @@ use sqlx::{PgConnection, Postgres, Transaction};
 use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, api_error, bad_request, conflict};
+use crate::outbound;
 use crate::state::AppState;
 use crate::updates::{self, CreateReleaseReq, SigFile};
 
@@ -89,50 +89,10 @@ const RUNNING_FOR: &str = "20 minutes";
 // Source URL policy and the HTTP client
 // ---------------------------------------------------------------------------
 
-struct Target {
-    tls: bool,
-    host: String,
-    port: u16,
-    authority: String,
-    path: String,
-}
-
-fn host_is_loopback(host: &str) -> bool {
-    crate::billing::http::is_loopback_host(host)
-}
-
 /// Parses an absolute http(s) URL: https, or http to a loopback host; no
-/// user info, no fragment.
-fn target(url: &str) -> Result<Target, String> {
-    if url.len() > 2048 || url.contains('#') || url.chars().any(|c| c.is_ascii_control()) {
-        return Err("not a plain URL".into());
-    }
-    let uri: hyper::Uri = url.parse().map_err(|_| "not a URL".to_string())?;
-    let auth = uri.authority().ok_or("URL without host")?;
-    if auth.as_str().contains('@') {
-        return Err("URL must not carry credentials".into());
-    }
-    let host = auth.host().to_ascii_lowercase();
-    if host.is_empty() {
-        return Err("URL without host".into());
-    }
-    let tls = match uri.scheme_str() {
-        Some("https") => true,
-        Some("http") if host_is_loopback(&host) => false,
-        _ => return Err("URL must be https".into()),
-    };
-    let port = auth.port_u16().unwrap_or(if tls { 443 } else { 80 });
-    let path = uri
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| "/".into());
-    Ok(Target {
-        tls,
-        authority: auth.as_str().to_ascii_lowercase(),
-        host,
-        port,
-        path,
-    })
+/// user info, no fragment (`outbound::target`, the SSRF guard's parser).
+fn target(url: &str) -> Result<outbound::Target, String> {
+    outbound::target(url, outbound::OPERATOR).map_err(|e| e.to_string())
 }
 
 /// Validates a source URL for the settings form.
@@ -235,53 +195,17 @@ async fn open(
     Err(fetch_failed(what, "too many redirects"))
 }
 
-async fn send(t: &Target, accept: &str) -> Result<hyper::Response<Incoming>, String> {
-    let connect_host = t
-        .host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_string();
-    let tcp = tokio::net::TcpStream::connect((connect_host.as_str(), t.port))
-        .await
-        .map_err(|e| format!("connect: {}", e.kind()))?;
-    let _ = tcp.set_nodelay(true);
-    let req = hyper::Request::get(t.path.as_str())
-        .header(header::HOST, t.authority.as_str())
-        .header(header::ACCEPT, accept)
-        .header(header::USER_AGENT, "akari-panel")
-        .body(Empty::<Bytes>::new())
-        .map_err(|_| "bad request".to_string())?;
-    if t.tls {
-        let name = rustls::pki_types::ServerName::try_from(connect_host)
-            .map_err(|_| "bad host name".to_string())?;
-        let stream = tokio_rustls::TlsConnector::from(crate::billing::http::tls_config()?)
-            .connect(name, tcp)
-            .await
-            .map_err(|e| format!("tls: {e}"))?;
-        request(TokioIo::new(stream), req).await
-    } else {
-        request(TokioIo::new(tcp), req).await
-    }
-}
-
-async fn request<T>(
-    io: T,
-    req: hyper::Request<Empty<Bytes>>,
-) -> Result<hyper::Response<Incoming>, String>
-where
-    T: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
-{
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| format!("http: {e}"))?;
-    // The connection task ends with the body (or when it is dropped).
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-    sender
-        .send_request(req)
-        .await
-        .map_err(|e| format!("http: {e}"))
+/// One GET to `t` through the SSRF guard (every resolved address public,
+/// the connection to the checked address; loopback http for a local source).
+async fn send(t: &outbound::Target, accept: &str) -> Result<hyper::Response<Incoming>, String> {
+    outbound::send(
+        t,
+        hyper::Method::GET,
+        &[(header::ACCEPT, accept.to_string())],
+        Bytes::new(),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// A small file, whole, at most `max` bytes.

@@ -176,17 +176,23 @@ impl SendError {
     }
 }
 
-fn by_status(what: &str, status: u16, detail: &str) -> SendError {
-    let d = detail
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(200)
-        .collect::<String>();
-    let msg = if d.is_empty() {
-        format!("{what}: HTTP {status}")
+/// A request that got no answer: retried, except when the SSRF guard refused
+/// the address (it will not become public by waiting).
+fn transport_failure(what: &str, e: String) -> SendError {
+    let msg = format!("{what}: {e}");
+    if e == crate::outbound::FetchError::Blocked.to_string() {
+        SendError::Permanent(msg)
     } else {
-        format!("{what}: HTTP {status} {d}")
-    };
+        SendError::Retry(msg)
+    }
+}
+
+/// The failure of an HTTP answer: the status code and our own
+/// classification only. The remote body is never echoed (the destination is
+/// operator-supplied: its answer would be a read channel into whatever the
+/// panel can reach).
+fn by_status(what: &str, status: u16) -> SendError {
+    let msg = format!("{what}: HTTP {status}");
     if status == 408 || status == 429 || status >= 500 {
         SendError::Retry(msg)
     } else {
@@ -279,16 +285,12 @@ pub async fn send(
                 SEND_TIMEOUT,
             )
             .await
-            .map_err(|e| SendError::Retry(format!("telegram: {e}")))?;
+            .map_err(|e| transport_failure("telegram", e))?;
             let v: Value = serde_json::from_slice(&resp).unwrap_or(Value::Null);
             if (200..300).contains(&status) && v["ok"] == Value::Bool(true) {
                 Ok(())
             } else {
-                Err(by_status(
-                    "telegram",
-                    status,
-                    v["description"].as_str().unwrap_or(""),
-                ))
+                Err(by_status("telegram", status))
             }
         }
         "webhook" => {
@@ -317,18 +319,14 @@ pub async fn send(
                     signature(secret.as_bytes(), now, &body),
                 ),
             ];
-            let (status, resp) =
+            let (status, _) =
                 crate::billing::http::post(url, "application/json", &headers, body, SEND_TIMEOUT)
                     .await
-                    .map_err(|e| SendError::Retry(format!("webhook: {e}")))?;
+                    .map_err(|e| transport_failure("webhook", e))?;
             if (200..300).contains(&status) {
                 Ok(())
             } else {
-                Err(by_status(
-                    "webhook",
-                    status,
-                    &String::from_utf8_lossy(&resp[..resp.len().min(200)]),
-                ))
+                Err(by_status("webhook", status))
             }
         }
         "email" => {
