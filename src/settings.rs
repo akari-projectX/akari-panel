@@ -442,6 +442,8 @@ pub const BOOT_NAMES: &[&str] = &["127.0.0.1", "localhost"];
 
 /// W25: built-in defaults of the database settings.
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 = 365;
+/// The shortest audit retention (0 = forever); migration 1115 enforces it.
+pub const MIN_AUDIT_RETENTION_DAYS: u32 = 90;
 
 #[derive(Debug, Clone)]
 pub struct Effective {
@@ -2407,7 +2409,19 @@ pub fn security_values(req: &SecurityReq) -> Result<SecurityValues, ApiError> {
     {
         return Err(bad_request!(
             "settings.audit_retention_invalid",
-            "审计日志保留天数：0（永久）到 36500"
+            "审计日志保留天数：0（永久）或 90 到 36500"
+        ));
+    }
+    // A floor: a short window would let the audit trail of a bad change
+    // expire before anyone looks (the owner may keep it forever).
+    if let Some(d) = req.audit_retention_days
+        && d != 0
+        && d < MIN_AUDIT_RETENTION_DAYS
+    {
+        return Err(bad_request!(
+            "settings.audit_retention_too_short",
+            "审计日志保留天数：0（永久）或至少 {min} 天",
+            min = MIN_AUDIT_RETENTION_DAYS
         ));
     }
     if let Some(d) = req.traffic_daily_retention_days
@@ -4184,6 +4198,12 @@ fn legacy_value(
             if v > 36_500 {
                 return Err("above 36500".into());
             }
+            // The floor (1115): a shorter old value is raised to it.
+            let v = if v == 0 {
+                0
+            } else {
+                v.max(MIN_AUDIT_RETENTION_DAYS)
+            };
             put(&mut new.audit_retention_days, v as i32)
         }
         "traffic.daily_retention_days" => {

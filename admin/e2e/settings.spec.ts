@@ -275,7 +275,7 @@ test("SET-09: retention days — a shorter period is flagged in the row and conf
 }) => {
   await openConsole(page, "/settings/retention");
   const audit = page.getByLabel("审计日志保留天数");
-  await audit.fill("40");
+  await audit.fill("100");
   await expect(page.getByText("保存后将删除更早的数据")).toBeVisible();
   await expect(page.getByText("不受这里控制的数据")).toBeVisible();
   await save(page);

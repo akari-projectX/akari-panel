@@ -505,7 +505,11 @@ function RetentionForm({ d }: { d: SettingsView }) {
     traffic: numText(sec.traffic_daily_retention_days.value),
   });
   const v = f.value!;
-  const auditError = intError(v.audit, 0, 36500, tr, true);
+  const auditError =
+    intError(v.audit, 0, 36500, tr, true) ??
+    (intOf(v.audit) !== null && intOf(v.audit)! > 0 && intOf(v.audit)! < 90
+      ? tr("0（永久）或 90–36500", "0 (forever) or 90–36500")
+      : undefined);
   const trafficError =
     intError(v.traffic, 0, 36500, tr, true) ??
     (intOf(v.traffic) !== null && intOf(v.traffic)! > 0 && intOf(v.traffic)! < 32
@@ -585,8 +589,8 @@ function RetentionForm({ d }: { d: SettingsView }) {
           description={
             <>
               {tr(
-                `0–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${days(a0)}`,
-                `0–36500; default ${sec.audit_retention_days.default}, in effect ${days(a0)}`,
+                `0 或 90–36500；默认 ${sec.audit_retention_days.default}，当前生效 ${days(a0)}`,
+                `0 or 90–36500; default ${sec.audit_retention_days.default}, in effect ${days(a0)}`,
               )}
               {auditShorter && later}
             </>
