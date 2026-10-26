@@ -969,3 +969,33 @@ async fn diagnose_endpoint_reports_steps() {
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     db.drop().await;
 }
+
+/// Audit core P3-11: a black-holed relay stops the batch after a few
+/// consecutive timeouts instead of waiting out the timeout for every row.
+#[tokio::test]
+async fn a_black_holed_relay_stops_the_batch() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let s = smtp(&db).await;
+    let rec = Recorder {
+        delay: Duration::from_secs(5),
+        ..Recorder::default()
+    };
+    for n in 0..6 {
+        queue(&db, &s, &Template::Test, &format!("h{n}@example.com"), None).await;
+    }
+    let claimed = sender::deliver_due_within(&db.pool, &rec, 50, Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert_eq!(claimed, 3, "stops after three consecutive timeouts");
+    let waiting: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mail_outbox WHERE status = 'pending' AND attempts = 0 \
+         AND claim_token IS NULL",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(waiting, 3, "the rest stays queued, untouched");
+    db.drop().await;
+}
