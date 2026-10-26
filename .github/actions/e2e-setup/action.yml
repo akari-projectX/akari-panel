@@ -1,0 +1,46 @@
+name: e2e setup
+description: >-
+  Browser end-to-end runner setup shared by the e2e shard and perf jobs:
+  Node + npm dependencies + Chromium for the chosen apps, the dev PostgreSQL
+  and Valkey (docker compose), and the panel binary built once by the
+  `panel build` job (artifact `panel-release`: target/release/akari and
+  portal/dist). Run after actions/checkout.
+
+inputs:
+  portal:
+    description: install the portal's dependencies and its Playwright browser
+    default: "false"
+  admin:
+    description: install the admin app's dependencies and its Playwright browser
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: "24" # package.json engines: >=22.18
+        cache: npm
+        cache-dependency-path: |
+          portal/package-lock.json
+          admin/package-lock.json
+    # The runner's own Postgres would collide with compose's port.
+    - shell: bash
+      run: sudo systemctl stop postgresql || true
+    # Started first so the images are pulled while npm and Chromium install.
+    - shell: bash
+      run: make dev-up
+    # portal/ and admin/ pin their own Playwright versions; each needs its browser build.
+    - if: ${{ inputs.portal == 'true' }}
+      shell: bash
+      run: cd portal && npm ci && npx playwright install --with-deps chromium
+    - if: ${{ inputs.admin == 'true' }}
+      shell: bash
+      run: cd admin && npm ci && npx playwright install --with-deps chromium
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: panel-release
+        path: .
+    # Artifacts do not keep the mode bits.
+    - shell: bash
+      run: chmod +x target/release/akari
