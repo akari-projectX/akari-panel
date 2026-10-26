@@ -362,7 +362,8 @@ html.dark {
 }
 
 /* 小控件的可点区域不小于 44px（复选框、开关、芯片关闭钮）：伪元素扩大命中区，不改布局 */
-.hit-44 {
+/* 不在层里的规则会压过 Tailwind 的 absolute/fixed/sticky：元素自己有定位时不改（搜索框的清除钮是 absolute hit-44） */
+.hit-44:where(:not(.absolute, .fixed, .sticky)) {
   position: relative;
 }
 .hit-44::after {
