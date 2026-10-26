@@ -78,9 +78,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: c
         env:
-          # Plain PR (no label) and push to main (refs/heads/main; a tag push
-          # reaching here through release.yml has another ref) are not full.
-          FULL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
+          # Light only for a plain PR (no label) and a push to main (a tag push
+          # reaching here through release.yml has another ref; schedule and
+          # dispatch on main are full).
+          FULL: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') || github.event_name != 'pull_request' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
           if [ "$FULL" = true ]; then scripts/ci-changes.sh full; else scripts/ci-changes.sh none; fi
 
