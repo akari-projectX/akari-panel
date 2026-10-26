@@ -40,6 +40,10 @@ if [ -z "${SMOKE_VALKEY_DB:-}" ]; then
   else SMOKE_VALKEY_DB=$(( $(printf '%s' "$SMOKE_DB" | cksum | cut -d' ' -f1) % 15 + 1 )); fi
 fi
 export VALKEY_URL="redis://127.0.0.1:6379/$SMOKE_VALKEY_DB"
+# xray >= 26.4 refuses user connections to loopback/private addresses by default
+# (freedom final rules); the smoke relays to 127.0.0.1 echo servers. Agents
+# before the xray 26.10 upgrade ignore the variable.
+export AKARI_ALLOW_PRIVATE_DESTINATIONS=1
 vk() { docker compose exec -T valkey valkey-cli -n "$SMOKE_VALKEY_DB" "$@"; }
 docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | matches 1 \
   || docker compose exec -T postgres psql -U akari -d postgres -qc "CREATE DATABASE \"$SMOKE_DB\"" >/dev/null
