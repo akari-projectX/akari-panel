@@ -2251,3 +2251,66 @@ async fn d8_cli_set_prefers() {
     drop(conn);
     db.drop().await;
 }
+
+/// Audit batch 4 P3-1: changing the ACME directory or e-mail must reach the
+/// agents that order a certificate (their Snapshot carries it), so the
+/// servers with a `tls_domain` get a new `config_version`, in the same
+/// transaction; the others, and a save that changes nothing about ACME, do
+/// not.
+#[tokio::test]
+async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let with_domain = db.server().await;
+    let without = db.server().await;
+    sqlx::query("UPDATE servers SET tls_domain = 'n1.example.com' WHERE id = $1")
+        .bind(with_domain)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (domain_before, plain_before) =
+        (db.versions(with_domain).await, db.versions(without).await);
+    let save = |values: NodeOpsValues| {
+        let pool = db.pool.clone();
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let cur = read_stored(&mut tx, false).await.unwrap();
+            apply_update_node_ops(&mut tx, &Actor::cli(), cur.version, &values)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    // Another node setting: no bump.
+    save(NodeOpsValues {
+        install_fallback_url: Some("".into()),
+        ..NodeOpsValues::default()
+    })
+    .await;
+    assert_eq!(db.versions(with_domain).await, domain_before);
+    // The ACME e-mail.
+    save(NodeOpsValues {
+        install_fallback_url: Some("".into()),
+        acme_email: Some("ops@example.com".into()),
+        ..NodeOpsValues::default()
+    })
+    .await;
+    assert_eq!(
+        db.versions(with_domain).await.0,
+        domain_before.0 + 1,
+        "the server with a certificate domain gets a Snapshot"
+    );
+    assert_eq!(db.versions(without).await, plain_before);
+    // The directory.
+    save(NodeOpsValues {
+        install_fallback_url: Some("".into()),
+        acme_email: Some("ops@example.com".into()),
+        acme_directory_url: Some("https://acme-staging-v02.api.letsencrypt.org/directory".into()),
+        ..NodeOpsValues::default()
+    })
+    .await;
+    assert_eq!(db.versions(with_domain).await.0, domain_before.0 + 2);
+    assert_eq!(db.versions(without).await, plain_before);
+    db.drop().await;
+}

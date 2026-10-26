@@ -1052,7 +1052,9 @@ pub async fn reload(state: &AppState) -> anyhow::Result<()> {
     let prev = live.get();
     let probe_changed = probe_wire(&prev.probe) != probe_wire(&eff.probe);
     // LeaseGrant carries the remove mode and Snapshots the ACME settings:
-    // sessions re-read and re-send when these change.
+    // sessions re-read when these change (an ACME change also bumps the
+    // `config_version` of the servers with a certificate domain, in
+    // `apply_update_node_ops`, so the re-read finds something to send).
     let agents_changed = probe_changed
         || prev.remove_mode != eff.remove_mode
         || prev.acme_directory_url != eff.acme_directory_url
@@ -2172,6 +2174,21 @@ pub async fn apply_update_node_ops(
     .bind(&new.remove_mode)
     .fetch_one(&mut *conn)
     .await?;
+    // The ACME directory and e-mail travel inside the Snapshot but are not
+    // part of the held versions: waking the sessions alone would find
+    // `held == desired` and send nothing. Bump the servers that order a
+    // certificate (an agent only orders after the Snapshot arrives; audit
+    // 2026-10 batch 4 P3-1). Same transaction as the setting.
+    if before.acme_directory_url != new.acme_directory_url || before.acme_email != new.acme_email {
+        sqlx::query(
+            "UPDATE servers SET config_version = config_version + 1 \
+             WHERE id IN (SELECT id FROM servers \
+                          WHERE tls_domain IS NOT NULL AND deleting_at IS NULL \
+                          ORDER BY id FOR UPDATE)",
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     crate::audit::record(
         conn,
         actor,
