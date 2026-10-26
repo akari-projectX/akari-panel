@@ -16,6 +16,7 @@ account.mail_off
 account.passkey_confirm_required
 account.passkey_exists
 account.passkey_failed
+account.passkey_last
 account.passkey_limit
 account.passkey_name_invalid
 account.passkey_none

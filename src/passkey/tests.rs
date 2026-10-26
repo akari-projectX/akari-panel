@@ -1990,3 +1990,56 @@ async fn fallback_code_is_refused_without_need_or_a_verified_address() {
     assert_eq!(sent, 0);
     db.drop().await;
 }
+
+/// An account without a password keeps its last passkey (audit auth P3-4):
+/// deleting it would leave nothing to sign in with. With another passkey,
+/// or a password, deleting is fine.
+#[tokio::test]
+async fn the_last_passkey_of_a_passwordless_account_stays() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let u = db.user().await;
+    sqlx::query("UPDATE users SET password_hash = NULL WHERE id = $1")
+        .bind(u)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for n in 0..2u8 {
+        let id: Uuid = sqlx::query_scalar(
+            "INSERT INTO webauthn_credentials (user_id, rp_id, cred_id, passkey, name) \
+             VALUES ($1, 'panel.example', $2, '{}'::jsonb, 'key') RETURNING id",
+        )
+        .bind(u)
+        .bind(vec![n; 32])
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let c = client_for(&st, u).await;
+    let del = |id: Uuid| {
+        let c = &c;
+        async move {
+            c.req(
+                Method::DELETE,
+                &format!("/test/api/v1/me/passkeys/{id}"),
+                None,
+            )
+            .await
+        }
+    };
+    assert_eq!(del(ids[0]).await.status, StatusCode::NO_CONTENT);
+    let r = del(ids[1]).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.json());
+    assert_eq!(r.json()["code"], "account.passkey_last");
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM webauthn_credentials WHERE user_id = $1")
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 1);
+    db.drop().await;
+}
