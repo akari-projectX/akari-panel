@@ -130,12 +130,13 @@ pub fn should_halt(healthy: i64, failed: i64, ratio: f64) -> bool {
 }
 
 /// Whether an agent running `running` needs the `target` release: a newer
-/// version; for an explicitly signed rollback release any other version.
+/// version; for a signed rollback release (`rollback` = its
+/// `rollback_from`) only an agent running exactly the version it replaces.
 /// Never for a build without a release version (the agent would refuse).
-pub fn update_due(running: &str, target: &str, rollback: bool) -> bool {
+pub fn update_due(running: &str, target: &str, rollback: Option<&str>) -> bool {
     match compare_versions(running, target) {
         Some(Ordering::Less) => true,
-        Some(Ordering::Greater) => rollback,
+        Some(Ordering::Greater) => rollback == Some(running),
         _ => false,
     }
 }
@@ -155,8 +156,9 @@ pub struct PendingNode<'a> {
     pub agent_version: Option<&'a str>,
     pub platform: Option<(&'a str, &'a str)>,
     pub has_artifact: bool,
-    /// The target release is a signed rollback target.
-    pub rollback: bool,
+    /// The target release is a signed rollback target: the version it
+    /// replaces (`rollback_from`).
+    pub rollback: Option<&'a str>,
     /// The server's wave started more than the health timeout ago.
     pub wave_timed_out: bool,
 }
@@ -164,6 +166,14 @@ pub struct PendingNode<'a> {
 pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome> {
     if n.deleting {
         return Some(PendingOutcome::Skipped("server being deleted".into()));
+    }
+    if let (Some(v), Some(from)) = (n.agent_version, n.rollback)
+        && v != from
+        && compare_versions(v, target) == Some(Ordering::Greater)
+    {
+        return Some(PendingOutcome::Skipped(format!(
+            "the signed rollback only replaces {from}, this server runs {v}"
+        )));
     }
     if let Some(v) = n.agent_version
         && !update_due(v, target, n.rollback)
@@ -609,7 +619,7 @@ struct PendingRow {
     agent_os: Option<String>,
     agent_arch: Option<String>,
     has_artifact: bool,
-    rollback: bool,
+    rollback_from: Option<String>,
     wave_timed_out: bool,
 }
 
@@ -665,7 +675,8 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
            n.agent_os, n.agent_arch, \
            EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.os = n.agent_os \
                    AND a.arch = n.agent_arch AND a.complete_at IS NOT NULL) AS has_artifact, \
-           EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.rollback) AS rollback, \
+           (SELECT convert_from(a.manifest, 'UTF8')::jsonb ->> 'rollback_from' \
+              FROM agent_releases a WHERE a.version = $2 AND a.rollback LIMIT 1) AS rollback_from, \
            (SELECT wave_started_at FROM rollouts WHERE id = $1) < now() - make_interval(secs => $3) \
              AS wave_timed_out \
          FROM rollout_servers rn JOIN servers n ON n.id = rn.server_id \
@@ -689,7 +700,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
                 agent_version: p.agent_version.as_deref(),
                 platform,
                 has_artifact: p.has_artifact,
-                rollback: p.rollback,
+                rollback: p.rollback_from.as_deref(),
                 wave_timed_out: p.wave_timed_out,
             },
         );
@@ -829,7 +840,18 @@ pub async fn offer_for(
     let Some((rollout, version, manifest, sigs, rollback)) = row else {
         return Ok(None);
     };
-    if !update_due(agent_version, &version, rollback) {
+    // A signed rollback is bound to the version it replaces and expires;
+    // the agent refuses anything else, so do not offer it (the tick settles
+    // the server: skipped / failed by the wave timeout).
+    let from = if rollback {
+        match crate::updates::parse_manifest(&manifest) {
+            Ok(m) if !m.expired(chrono::Utc::now()) => m.rollback_from,
+            _ => return Ok(None),
+        }
+    } else {
+        None
+    };
+    if !update_due(agent_version, &version, from.as_deref()) {
         // Already there (or unversioned build): the tick settles it.
         return Ok(None);
     }
@@ -1037,17 +1059,21 @@ mod tests {
             agent_version: Some("v1.0.0"),
             platform: Some(("linux", "amd64")),
             has_artifact: true,
-            rollback: false,
+            rollback: None,
             wave_timed_out: false,
         };
-        assert!(update_due("v1.0.0", "v1.1.0", false));
-        assert!(!update_due("v1.2.0", "v1.1.0", false));
-        assert!(update_due("v1.2.0", "v1.1.0", true));
-        assert!(!update_due("v1.1.0", "v1.1.0", true));
-        assert!(!update_due("dev", "v1.1.0", false));
+        assert!(update_due("v1.0.0", "v1.1.0", None));
+        assert!(!update_due("v1.2.0", "v1.1.0", None));
+        assert!(update_due("v1.2.0", "v1.1.0", Some("v1.2.0")));
+        assert!(
+            !update_due("v1.3.0", "v1.1.0", Some("v1.2.0")),
+            "a rollback only applies to the version it replaces"
+        );
+        assert!(!update_due("v1.1.0", "v1.1.0", Some("v1.1.0")));
+        assert!(!update_due("dev", "v1.1.0", None));
         let newer = PendingNode {
             agent_version: Some("v1.2.0"),
-            rollback: true,
+            rollback: Some("v1.2.0"),
             ..base
         };
         assert_eq!(
@@ -1055,6 +1081,15 @@ mod tests {
             None,
             "rollback target is due"
         );
+        let other = PendingNode {
+            agent_version: Some("v1.3.0"),
+            rollback: Some("v1.2.0"),
+            ..base
+        };
+        assert!(matches!(
+            classify_pending("v1.1.0", &other),
+            Some(PendingOutcome::Skipped(_))
+        ));
         let dev = PendingNode {
             agent_version: Some("dev"),
             ..base
@@ -1506,6 +1541,80 @@ mod db_tests {
             tonic::Code::Unauthenticated
         );
         h.stop().await;
+        db.drop().await;
+    }
+
+    /// A signed rollback (schema 2) is shown with what it replaces and
+    /// when it expires, is offered only to a server running exactly that
+    /// version, and an expired one is refused at upload and never offered.
+    #[tokio::test]
+    async fn rollback_release_is_bound_to_its_version() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let signer = Signer::new();
+        let line = signer.config_line();
+        let state = AppState::for_test(db.pool.clone()).await;
+        db.settings(&state, &format!("extra_release_keys = ARRAY['{line}']"))
+            .await;
+        let c = admin_client(&state, &db).await;
+        let bin = b"old agent".to_vec();
+        let rb = signer.release_for("v1.1.0", "amd64", &bin, true);
+        let r = c
+            .post(
+                "/test/api/v1/agent-releases",
+                json!({ "manifest": rb.manifest, "sig": rb.sig }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+        let id: Uuid = r.json()["id"].as_str().unwrap().parse().unwrap();
+        let r = c
+            .put_raw(
+                &format!("/test/api/v1/agent-releases/{id}/binary"),
+                bin.clone(),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+        let list = c.get("/test/api/v1/agent-releases").await.json();
+        assert_eq!(list[0]["rollback"], true);
+        assert_eq!(list[0]["rollback_from"], "v999.0.0");
+        assert!(list[0]["expires_at"].is_string(), "{list}");
+        let server = agent_server(&db, "v999.0.0", 3).await;
+        create(&db, req("v1.1.0")).await.unwrap();
+        let plat = ("linux", "amd64");
+        assert!(
+            offer_for(&db.pool, server, 3, "v999.0.0", plat)
+                .await
+                .unwrap()
+                .is_some(),
+            "the version it replaces gets the offer"
+        );
+        assert!(
+            offer_for(&db.pool, server, 3, "v998.0.0", plat)
+                .await
+                .unwrap()
+                .is_none()
+                && offer_for(&db.pool, server, 3, "v1000.0.0", plat)
+                    .await
+                    .unwrap()
+                    .is_none(),
+            "any other version is not offered the rollback"
+        );
+        // Expired at upload.
+        let mut m: crate::updates::Manifest = serde_json::from_str(&rb.manifest).unwrap();
+        m.version = "v1.0.0".into();
+        m.created_at = "2026-01-01T00:00:00Z".into();
+        m.expires_at = Some("2026-01-08T00:00:00Z".into());
+        let manifest = serde_json::to_string(&m).unwrap();
+        let old = signer.sign_manifest(manifest);
+        let r = c
+            .post(
+                "/test/api/v1/agent-releases",
+                json!({ "manifest": old.manifest, "sig": old.sig }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST);
+        assert_eq!(r.json()["code"], "release.rollback_expired");
         db.drop().await;
     }
 

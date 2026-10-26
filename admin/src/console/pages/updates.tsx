@@ -75,6 +75,9 @@ type Release = {
   size: number;
   key_id: string;
   rollback: boolean;
+  /** Rollback releases: the version it replaces, and when its signature stops being valid. */
+  rollback_from: string | null;
+  expires_at: string | null;
   complete: boolean;
   created_at: string;
 };
@@ -586,6 +589,20 @@ function ReleasesStage() {
                       </span>
                       <span className="tnum">{bytes(v.size)}</span>
                       <span>{dateTime(v.created_at)}</span>
+                      {(() => {
+                        const rb = v.rows.find((r) => r.rollback);
+                        if (!rb) return null;
+                        const expired = !!rb.expires_at && new Date(rb.expires_at).getTime() <= Date.now();
+                        return (
+                          <span className={expired ? "font-medium text-destructive" : "font-medium text-foreground/80"}>
+                            {tr(
+                              `仅用于从 ${rb.rollback_from ?? "?"} 回滚，签名有效至 ${rb.expires_at ? dateTime(rb.expires_at) : "?"}`,
+                              `Only replaces ${rb.rollback_from ?? "?"}; signature valid until ${rb.expires_at ? dateTime(rb.expires_at) : "?"}`,
+                            )}
+                            {expired && tr("（已过期，不会再下发）", " (expired, no longer offered)")}
+                          </span>
+                        );
+                      })()}
                       <span className="font-mono">{tr(`公钥 ${v.rows[0].key_id}`, `key ${v.rows[0].key_id}`)}</span>
                       <span className="tnum font-medium text-foreground/80">
                         {running ? tr(`${running} 台在用`, `${running} running it`) : tr("无服务器在用", "Not running")}

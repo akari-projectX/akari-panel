@@ -345,6 +345,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "release.manifest_invalid": ["发布清单无效：{detail}", "{detail}"],
   "release.no_keys": ["面板没有可用的发布公钥（系统设置 → 安全），自动更新已关闭", "No release keys are trusted (Settings → Security): self-update is off"],
   "release.panel_too_old": ["该版本需要面板协议 {needed}（当前面板为 {have}），请先升级面板", "Release needs panel protocol {needed} (this panel speaks {have}): upgrade the panel first"],
+  "release.rollback_expired": ["这份签名的回滚清单已过期（{expires_at}），请重新签名", "This signed rollback has expired ({expires_at}): sign a new one"],
   "release.rollout_open": ["有未结束的灰度更新使用此版本，请先中止", "An open rollout targets this version: abort it first"],
   "release.signature_invalid": ["签名校验失败：{detail}", "{detail}"],
   "release.upload_interrupted": ["上传中断，请重试", "Upload interrupted"],

@@ -1499,7 +1499,7 @@ agent 的 unit 文件在 M1c 中增加了 `StateDirectory=`：请随 agent 一�
 ## 5b. Agent updates (M6: signed self-update, staged rollout)（agent 更新：签名自更新、分批灰度）
 
 协议 3 的 agent 可以从面板更新。面板只做**中继**：agent 只有在其 manifest 由**编译进 agent** 的发布密钥签名（akari-agent 中的 `release-keys.txt`）、
-平台匹配、且版本比当前运行的更新时，才会运行新二进制（签名的 `rollback` manifest 是唯一的降级方式，并且永远不会降到该节点已经回滚过的版本）。
+平台匹配、且版本比当前运行的更新时，才会运行新二进制（签名的 `rollback` manifest 是唯一的降级方式，并且永远不会降到该节点已经回滚过的版本；rollback manifest 还绑定它所替换的版本并带有效期，见下文「签名的 rollback」）。
 被攻破的面板可以扣留或延迟更新，但不能推送未签名的、外来的或更旧的二进制。协议 1/2 的 agent 永远不会收到任何提议（需手动更新一次）。
 
 **Release key custody（发布密钥保管）。** 一把 Ed25519 密钥，离线生成并保管（不在面板上，也不在构建主机上）：
@@ -1564,7 +1564,7 @@ agent 以一次性用户运行，其 StateDirectory 被 systemd 以 `noexec` 挂
 - `akari-agent-update.path` 启动 `akari-agent-update.service`（root，无网络，`ProtectSystem=strict`，只有 `/usr/local/bin`、`/etc/systemd/system`（W23）和 agent 的状态可写），
   它运行 `/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent`。它把 agent 的目录视为不可信
   （不跟随符号链接；只收归 agent 所有的普通单链接文件），把暂存的二进制复制到 `/usr/local/bin/akari-agent` 旁边的仅 root 文件中，
-  用**自身**编译进去的发布密钥验证**那份副本**（签名、平台、更新的版本或签名的 rollback，永不降到该节点已回滚过的版本；其自身记录在 `/var/lib/akari-agent-update`），
+  用**自身**编译进去的发布密钥验证**那份副本**（签名、平台、更新的版本或签名的 rollback（见下文），永不降到该节点已回滚过的版本；其自身记录在 `/var/lib/akari-agent-update`），
   把运行中的二进制保留为 `akari-agent.prev`，把新的重命名到位，安装新发布版本的 unit（见下）并重启 `akari-agent`。
   拒绝的结果会回传给 agent，agent 上报它（`FAILED`）并继续运行；
 - 新二进制处于试用期：它必须在 `-update-self-check`（默认 5 分钟）内连接上并让一次 apply 被确认；updater 监视它，
@@ -1580,6 +1580,16 @@ agent 以一次性用户运行，其 StateDirectory 被 systemd 以 `noexec` 挂
 - **Alpine / OpenRC（W32）**：同样的交接，只是用 `akari-agent-update` 服务（一个每秒检查一次请求的 root 循环）代替 path unit，
   用两个 init 脚本代替三个 unit，用 supervise-daemon 的重启计数代替 `NRestarts`；差异与缺口（没有 updater 沙箱）见 §3h；日志 `/var/log/akari-agent-update.log`；
 - `akari-agent -release-keys` 打印固定的密钥（“no release keys pinned” = 自更新关闭）。
+
+**签名的 rollback（schema 2，审计 P2-2）。** 降级只能靠发布者专门签的 rollback manifest，并且它**绑定**到一次具体的回滚：
+- manifest 为 schema 2，带 `rollback_from`（它所替换的那个版本）与 `expires_at`（RFC 3339，晚于 `created_at`，最多 30 天；签名工具默认 7 天）；
+  agent（更新器是权威，agent 先检查一遍）只在**正运行的版本恰好等于 `rollback_from`**、**当前时间早于 `expires_at`**、并且目标版本是**该节点自己此前运行过并确认过的版本**时才接受。
+  所以泄露的旧 rollback 既不能在之后重放，也不能用来把别的版本降到那个版本，更不能降到节点从未运行过的版本；
+- schema 1 的 rollback manifest 不再被接受（面板上传时 400 `release.manifest_invalid`）；普通的向前发布仍是 schema 1，旧 agent 照常更新；
+- 时钟：`expires_at` 用节点的墙上时钟判断（离线时没有更可靠的来源）。能改节点时间的人可以把窗口拉长，但最多只到 manifest 自己的 30 天上限，并且 `rollback_from` 与“节点自己运行过”两条仍然成立；
+- 节点的“运行过的版本”记录在更新器自己的 root 状态里（每次应用更新时记下被替换的版本、自检通过后记下新版本，最多 32 个）。**由旧版更新器完成的那次更新不会留下记录**，所以刚升到这一版的节点要等下一次更新之后才有可回滚的目标；在此之前需用重装命令降级；
+- 签名：`akari-sign sign -rollback -rollback-from v1.3.0 -expires 7d …`（`-expires` 可写 `7d`、`36h` 或 RFC 3339 时间，最长 30 天）；`akari-sign verify` 会打印回滚来源与有效期；
+- 面板：上传已过期的 rollback 被拒（400 `release.rollback_expired`）；后台「更新」页对 rollback 发布显示“仅用于从 vX 回滚，签名有效至 …”；灰度只会向正运行 `rollback_from` 的服务器发出 rollback 提议（其余记为跳过），过期后不再下发。面板的这些检查只是提前报错，不是安全边界。
 
 ## 6. Rollback（回滚）
 

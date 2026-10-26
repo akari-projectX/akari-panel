@@ -336,6 +336,7 @@ release.exists
 release.manifest_invalid
 release.no_keys
 release.panel_too_old
+release.rollback_expired
 release.rollout_open
 release.signature_invalid
 release.upload_interrupted
