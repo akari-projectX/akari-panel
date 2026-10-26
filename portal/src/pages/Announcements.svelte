@@ -1,6 +1,5 @@
 <script lang="ts">
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Pin from '@lucide/svelte/icons/pin';
   import { contentApi, type Announcement, type Announcements } from '@/api';
   import { K } from '@/lib/cache';
@@ -9,6 +8,8 @@
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import Section from '../components/flat/Section.svelte';
   import { announcementText, tagsOf } from '$lib/announcement';
   import { att } from '$lib/attention.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
@@ -59,125 +60,138 @@
   }
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('公告与动态')}</h1>
-    <p>{t('节点变更、维护计划与活动通知。没看过的会标出来。')}</p>
-  </div>
-  {#if data.length > 0}
-    <span class="count">
-      {#if unread > 0}<b class="num">{unread}</b> {t('条未读')} · {/if}{tp('共 {n} 条', { n: data.length })}
-    </span>
-  {/if}
-</div>
+<PageTitle title={t('公告与动态')} sub={t('节点变更、维护计划与活动通知。没看过的会标出来。')}>
+  {#snippet extra()}
+    {#if data.length > 0}
+      <span class="an-count">
+        {#if unread > 0}<b>{unread}</b> {t('条未读')}{' · '}{/if}{tp('共 {n} 条', { n: data.length })}
+      </span>
+    {/if}
+  {/snippet}
+</PageTitle>
 
-{#if res.loading && !res.data}
-  <Loading />
-{:else if res.error && !res.data}
-  <LoadError error={res.error} onretry={res.reload} />
-{:else if data.length === 0}
-  <Empty title={t('暂时没有公告')} desc={t('站点发布公告后会出现在这里。')} />
-{:else}
-  {#if featured}
-    {@const f = text(featured)}
-    {@const d = siteParts(featured.created_at)}
-    <article class="feat">
-      <div class="when">
-        <span class="latest">{t('最新')}</span>
-        <span class="big num">{pad(d.month)}.{pad(d.day)}</span>
-        <span class="wd">{weekday.format(new Date(featured.created_at))} · {fromNow(featured.created_at, tp)}</span>
-      </div>
-      <div class="what">
-        <div class="flags">
-          {#if featured.pinned}<span class="pin"><Pin size={13} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
-          {#each tagsOf(featured) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
-          {#if !featured.read && now - new Date(featured.created_at).getTime() < NEW_WITHIN}<span class="new">{t('新')}</span>{/if}
+<Section>
+  {#if res.loading && !res.data}
+    <Loading />
+  {:else if res.error && !res.data}
+    <LoadError error={res.error} onretry={res.reload} />
+  {:else if data.length === 0}
+    <Empty title={t('暂时没有公告')} desc={t('站点发布公告后会出现在这里。')} />
+  {:else}
+    {#if featured}
+      {@const f = text(featured)}
+      {@const d = siteParts(featured.created_at)}
+      <article class="an-feat">
+        <div class="an-when">
+          <span class="an-latest"><i></i>{t('最新')}</span>
+          <span class="an-big tnum">{pad(d.month)}.{pad(d.day)}</span>
+          <span class="an-wd">{weekday.format(new Date(featured.created_at))} · {fromNow(featured.created_at, tp)}</span>
         </div>
-        <h2>{f.title}</h2>
-        <p>{summarize(f.html, 140)}</p>
-        <button type="button" class="link more" onclick={() => open(featured)}>{t('阅读全文')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></button>
-      </div>
-    </article>
-  {/if}
+        <div class="an-what">
+          <div class="an-flags">
+            {#if featured.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+            {#each tagsOf(featured) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
+            {#if !featured.read && now - new Date(featured.created_at).getTime() < NEW_WITHIN}<span class="bdg an-newb">{t('新')}</span>{/if}
+          </div>
+          <h2>{f.title}</h2>
+          <p>{summarize(f.html, 140)}</p>
+          <button type="button" class="an-more" onclick={() => open(featured)}>{t('阅读全文')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></button>
+        </div>
+      </article>
+    {/if}
 
-  {#each months as m (m.key)}
-    <section class="month" aria-label={m.key}>
-      <h3 class="mh num">{m.key}</h3>
-      {#each m.items as n (n.id)}
-        {@const x = text(n)}
-        {@const d = siteParts(n.created_at)}
-        <button type="button" class="item" class:unread={!n.read} onclick={() => open(n)}>
-          <span class="day"><b class="num">{pad(d.day)}</b><i>{weekday.format(new Date(n.created_at))}</i></span>
-          <span class="dot" aria-hidden="true"></span>
-          <span class="body">
-            <span class="tt">
-              {#if n.pinned}<span class="pin"><Pin size={13} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
-              {#each tagsOf(n) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
-              <span class="title">{x.title}</span>
-              {#if !n.read}<span class="sr">{t('未读')}</span>{/if}
-            </span>
-            <span class="sm">{summarize(x.html, 90)}</span>
-          </span>
-          <ChevronRight class="go" size={16} strokeWidth={1.75} aria-hidden="true" />
-        </button>
-      {/each}
-    </section>
-  {/each}
-{/if}
+    {#each months as m (m.key)}
+      <div class="an-month" role="group" aria-label={m.key}>
+        <div class="an-mh"><span class="tnum">{m.key}</span><span class="an-ml"></span></div>
+        {#each m.items as n, i (n.id)}
+          {@const x = text(n)}
+          {@const d = siteParts(n.created_at)}
+          <button type="button" class="an-item" onclick={() => open(n)}>
+            <div class="an-day"><div class="an-dn tnum">{pad(d.day)}</div><div class="an-dw">{weekday.format(new Date(n.created_at))}</div></div>
+            <div class="an-rail">
+              <i class={['an-dot', !n.read && 'an-on']}></i>
+              <i class={['an-ln', i < m.items.length - 1 && 'an-join']}></i>
+            </div>
+            <div class="an-bd">
+              <div class="an-tt">
+                {#if n.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+                {#each tagsOf(n) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
+                <span class={['an-title', !n.read && 'an-mid']}>{x.title}</span>
+                {#if !n.read}<span class="sr">{t('未读')}</span>{/if}
+              </div>
+              <p class="an-sm">{summarize(x.html, 90)}</p>
+            </div>
+            <ArrowRight class="go" size={16} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        {/each}
+      </div>
+    {/each}
+  {/if}
+</Section>
 
 {#if dialogLoaded}
   {#await import('../components/AnnouncementDialog.svelte') then m}<m.default item={detail} onclose={() => (detail = null)} />{/await}
 {/if}
 
 <style>
-  .count { flex: none; margin-bottom: 4px; font-size: 13px; color: var(--muted); white-space: nowrap; }
-  .count b { color: var(--brand); font-weight: 600; }
+  .an-count { font-size: 13px; color: var(--muted); }
+  .an-count b { font-weight: 500; color: var(--brand); }
 
-  .feat { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 40px; padding: 8px 0 40px; border-bottom: 1px solid var(--line); }
-  .when { display: flex; flex-direction: column; align-items: flex-start; }
-  .latest { font-size: 12.5px; font-weight: 600; color: var(--brand); letter-spacing: .04em; }
-  .big { margin-top: 12px; font-size: 52px; line-height: 1; font-weight: 600; letter-spacing: -.04em; color: var(--fg); }
-  .wd { margin-top: 10px; font-size: 13px; color: var(--muted); }
-  .flags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 20px; }
-  .new { font-size: 12px; font-weight: 600; color: var(--brand); }
-  .what h2 { margin-top: 10px; font-size: 24px; line-height: 1.35; font-weight: 600; letter-spacing: -.02em; color: var(--fg); overflow-wrap: anywhere; }
-  .what p { margin-top: 10px; max-width: 640px; font-size: 15px; line-height: 1.85; color: var(--body); overflow-wrap: anywhere; }
-  .more { margin-top: 14px; font-size: 14px; }
+  .an-feat { display: grid; gap: 14px; padding-bottom: 36px; border-bottom: 1px solid var(--line); }
+  .an-when { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+  .an-latest { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500; letter-spacing: .055em; color: var(--brand); }
+  .an-latest i { width: 10px; height: 1px; background: var(--brand); }
+  .an-big { font-size: 34px; line-height: 1.02; font-weight: 500; letter-spacing: -.038em; }
+  .an-wd { font-size: 13px; color: var(--muted); }
+  .an-what { min-width: 0; }
+  .an-flags { display: flex; align-items: center; gap: 8px; }
+  .an-flags:empty { display: none; }
+  .an-what h2 { margin-top: 14px; font-size: 22px; line-height: 1.3; font-weight: 500; overflow-wrap: anywhere; }
+  .an-what p { margin-top: 12px; max-width: 640px; font-size: 15px; line-height: 1.85; color: var(--body); overflow-wrap: anywhere; }
+  .an-more { display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; padding: 0; border: 0; background: none; font: inherit; font-size: 14px; font-weight: 500; color: var(--brand); cursor: pointer; }
+  .an-more:hover { text-decoration: underline; }
+  .an-pinb2 { gap: 4px; }
+  .an-newb { background: var(--brand); color: var(--on-brand); }
 
-  .month { padding-top: 28px; }
-  .mh { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; font-size: 13px; font-weight: 500; letter-spacing: .06em; color: var(--fg); }
-  .mh::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+  .an-mh { display: flex; align-items: center; gap: 14px; padding: 30px 0 10px; }
+  .an-mh .tnum { font-size: 13px; font-weight: 500; letter-spacing: .06em; }
+  .an-ml { flex: 1; height: 1px; background: var(--line); }
 
-  .item {
-    display: grid; grid-template-columns: 136px 12px minmax(0, 1fr) 16px; gap: 20px; align-items: start; width: 100%;
-    padding: 16px 0; border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  .an-item {
+    display: grid; grid-template-columns: 44px 14px minmax(0, 1fr); gap: 10px; width: calc(100% + 28px); margin-inline: -14px; padding: 14px;
+    border: 0; border-radius: 12px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color .15s;
   }
-  .item:last-child { border-bottom: 0; }
-  .day { display: flex; align-items: baseline; gap: 10px; }
-  .day b { font-size: 24px; line-height: 1; font-weight: 500; letter-spacing: -.03em; color: var(--fg); }
-  .day i { font-style: normal; font-size: 13px; color: var(--muted); }
-  .dot { width: 7px; height: 7px; margin-top: 8px; border-radius: 50%; background: var(--line2); }
-  .unread .dot { background: var(--brand); }
-  .body { display: flex; flex-direction: column; min-width: 0; }
-  .tt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
-  .title { font-size: 15px; line-height: 1.5; color: var(--fg); overflow-wrap: anywhere; }
-  .unread .title { font-weight: 600; }
-  .item:hover .title { color: var(--brand); }
-  .sm { margin-top: 4px; font-size: 13.5px; line-height: 1.75; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .item :global(.go) { margin-top: 4px; color: var(--faint); }
-  .item:hover :global(.go) { color: var(--brand); }
+  .an-item:hover { background: color-mix(in srgb, var(--hover) 60%, transparent); }
+  .an-day { text-align: right; }
+  .an-dn { font-size: 22px; line-height: 1; font-weight: 500; letter-spacing: -.03em; }
+  .an-dw { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+  .an-rail { position: relative; display: flex; flex-direction: column; align-items: center; }
+  .an-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: color-mix(in srgb, var(--muted) 30%, transparent); }
+  .an-dot.an-on { background: var(--brand); box-shadow: 0 0 0 4px color-mix(in srgb, var(--brand) 14%, transparent); }
+  .an-ln { position: absolute; top: 22px; left: calc(50% - .5px); bottom: 0; width: 1px; background: var(--line); }
+  .an-ln.an-join { bottom: -34px; }
+  .an-bd { min-width: 0; }
+  .an-tt { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .an-title { letter-spacing: normal; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+  .an-title.an-mid { font-weight: 500; }
+  .an-sm { margin-top: 6px; font-size: 13px; line-height: 1.7; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .an-item :global(.go) { display: none; margin-top: 4px; color: var(--faint); transition: color .15s; }
+  .an-item:hover :global(.go) { color: var(--brand); }
 
-  @media (max-width: 720px) {
-    .ph { flex-wrap: wrap; align-items: flex-start; }
-    .feat { grid-template-columns: 1fr; gap: 12px; padding-bottom: 32px; }
-    .when { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-    .big { margin-top: 0; font-size: 32px; }
-    .wd { margin-top: 0; }
-    .what h2 { font-size: 21px; }
-    .item { grid-template-columns: 40px 10px minmax(0, 1fr); gap: 12px; }
-    .day { flex-direction: column; align-items: flex-end; gap: 4px; }
-    .day b { font-size: 20px; }
-    .day i { font-size: 11.5px; }
-    .item :global(.go) { display: none; }
+  @media (min-width: 768px) {
+    .an-feat { grid-template-columns: 140px minmax(0, 1fr); gap: 40px; padding-bottom: 44px; }
+    .an-when { flex-direction: column; align-items: flex-start; gap: 0; }
+    .an-big { margin-top: 14px; font-size: 56px; }
+    .an-wd { margin-top: 8px; }
+    .an-what h2 { font-size: 26px; font-weight: 600; }
+    .an-item { grid-template-columns: 140px 20px minmax(0, 1fr) 24px; gap: 20px; padding-block: 18px; }
+    .an-day { display: flex; align-items: baseline; gap: 10px; text-align: left; }
+    .an-dn { font-size: 28px; }
+    .an-dw { margin-top: 0; font-size: 13px; }
+    .an-dot { margin-top: 9px; }
+    .an-ln { top: 27px; }
+    .an-ln.an-join { bottom: -45px; }
+    .an-sm { font-size: 13.5px; line-height: 1.75; }
+    .an-item :global(.go) { display: block; }
   }
 </style>

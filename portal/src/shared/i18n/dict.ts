@@ -1120,7 +1120,6 @@ export const EN: Record<string, string> = {
   '按状态筛选': 'Filter by status',
   /* ── 门户 v2：文档、公告、工单、设置 ── */
   '上一篇 / 下一篇': 'Previous / next',
-  '工单概况': 'Tickets at a glance',
   '客服有新回复': 'New reply from support',
   /* ── 门户恢复 v1.4.0 ── */
   '线路分布': 'By line',
