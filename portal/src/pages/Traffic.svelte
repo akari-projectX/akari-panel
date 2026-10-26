@@ -1,21 +1,29 @@
 <script lang="ts">
+  import CloudDownload from '@lucide/svelte/icons/cloud-download';
+  import PieIcon from '@lucide/svelte/icons/chart-pie';
   import { meApi } from '@/api';
   import { K } from '@/lib/cache';
   import { addDays, daysLeft, formatDate, monthStart, siteToday, toGB, trafficUsage } from '@/lib/format';
   import { ruleText, trafficByEntrance, trafficDays } from '@/lib/traffic';
+  import AreaChart from '../components/charts/AreaChart.svelte';
+  import BarChart from '../components/charts/BarChart.svelte';
+  import Donut from '../components/charts/Donut.svelte';
+  import DashSkeleton from '../components/DashSkeleton.svelte';
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
-  import Loading from '../components/Loading.svelte';
-  import TrafficChart from '../components/dash/TrafficChart.svelte';
+  import PageTitle from '../components/flat/PageTitle.svelte';
+  import PaneHead from '../components/flat/PaneHead.svelte';
+  import Section from '../components/flat/Section.svelte';
+  import Split from '../components/flat/Split.svelte';
+  import StatRow, { type Stat } from '../components/flat/StatRow.svelte';
+  import Tabs from '../components/flat/Tabs.svelte';
   import { auth } from '$lib/auth.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
 
   /*
-   * 用量明细（只有 full 范围）。数据与行为同 React 门户 pages/dash/traffic.tsx：范围 本月（默认，全站时区的自然月）/ 近 7 天 / 近 30 天，
-   * GET /me/traffic（日界按全站时区，接口带 timezone），换范围时先留着上一段的数据（keep）。
-   * 结构按新设计：关键数字 → 流量走势（仪表盘同一个平滑面积图，提示里有下行 / 上行 / 计费）→ 按线路（原始、占比细条、计费、
-   * 此刻的倍率与时段规则；代替 React 的环形图与「线路分布」）→ 每日明细（合计、计费、占比）。每日计费量在明细表与图的提示里，不另画柱图。
+   * 使用明细（只有 full 范围）。v1.4.0 pages/dash/traffic.tsx 的 Svelte 版：指标行 → 流量走势（面积图，本月 / 近 7 天 / 近 30 天）→
+   * 线路分布（环形图）| 每日计费流量（柱状图）→ 按线路 → 明细记录。数据同 React 门户：GET /me/traffic，日界按全站时区，换范围时先留着上一段。
    */
   type Range = 'month' | '7' | '30';
   const RANGES: { id: Range; label: string }[] = [
@@ -36,7 +44,6 @@
   const totalUp = $derived(days.reduce((n, d) => n + d.up, 0));
   const sum = $derived(totalDown + totalUp);
   const maxDay = $derived(Math.max(1, ...days.map((d) => d.down + d.up)));
-  const linesTotal = $derived(lines.reduce((n, l) => n + l.value, 0));
 
   const plan = $derived(auth.plan);
   const usage = $derived(trafficUsage(plan?.traffic_used_bytes ?? auth.me?.traffic_used_bytes, plan?.traffic_limit_bytes ?? null));
@@ -44,168 +51,150 @@
   const resetIn = $derived(daysLeft(nextReset));
   const billed = $derived(toGB(logs.data?.total.billed_bytes));
 
+  const stats = $derived<Stat[]>([
+    {
+      k: t('套餐已用流量'), v: usage.used.toFixed(1), unit: usage.unlimited ? 'GB' : `/ ${Math.round(usage.total)} GB`,
+      ...(usage.unlimited ? { x: t('套餐不限流量') } : { bar: { pct: usage.usedPct, low: false } }),
+    },
+    { k: t('下行'), v: totalDown.toFixed(1), unit: 'GB', arrow: 'down', x: t('占总流量'), x2: `${sum > 0 ? ((totalDown / sum) * 100).toFixed(0) : 0}%` },
+    { k: t('上行'), v: totalUp.toFixed(1), unit: 'GB', arrow: 'up', x: t('日均'), x2: `${(totalUp / Math.max(1, days.length)).toFixed(1)} GB` },
+    resetIn !== null
+      ? { k: t('距离重置'), v: String(resetIn), unit: t('天'), x: tp('{d} 重置，计费 {b} GB', { d: formatDate(nextReset), b: billed.toFixed(1) }) }
+      : { k: t('计费流量'), v: billed.toFixed(1), unit: 'GB', x: t('（上行 + 下行）× 倍率') },
+  ]);
+
   /* 表格里的流量一律两位小数，列才对得齐 */
   const gb2 = (v: number) => `${v.toFixed(2)} GB`;
-  const pct = (part: number, whole: number) => (whole > 0 ? (part / whole) * 100 : 0);
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('使用明细')}</h1>
-    <p>{logs.data ? tp('上下行流量走势、线路分布与每日用量。日期按 {tz} 计算。', { tz: logs.data.timezone }) : t('上下行流量走势、线路分布与每日用量。')}</p>
-  </div>
-  <div class="rng" role="group" aria-label={t('时间范围')}>
-    {#each RANGES as r (r.id)}
-      <button type="button" aria-pressed={range === r.id} onclick={() => (range = r.id)}>{t(r.label)}</button>
-    {/each}
-  </div>
-</div>
-
 {#if logs.loading && !logs.data}
-  <Loading rows={6} height={320} />
+  <DashSkeleton hold={false} />
 {:else if logs.error && !logs.data}
+  <PageTitle title={t('使用明细')} />
   <LoadError error={logs.error} onretry={logs.reload} />
 {:else}
-  <section class="kpis" aria-label={t('用量概况')}>
-    <div class="kpi">
-      <div class="lb">{t('套餐已用流量')}</div>
-      <div class="v">{usage.used.toFixed(1)}<small>{usage.unlimited ? 'GB' : `/ ${Math.round(usage.total)} GB`}</small></div>
-      {#if usage.unlimited}
-        <div class="sub">{t('套餐不限流量')}</div>
-      {:else}
-        <div class="meter" role="meter" aria-label={t('套餐已用流量')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(usage.usedPct)}>
-          <i style:width="{usage.usedPct}%"></i>
-        </div>
-      {/if}
-    </div>
-    <div class="kpi">
-      <div class="lb">{t('下行')}</div>
-      <div class="v">{totalDown.toFixed(1)}<small>GB</small></div>
-      <div class="sub">{t('占总流量')} {pct(totalDown, sum).toFixed(0)}%</div>
-    </div>
-    <div class="kpi">
-      <div class="lb">{t('上行')}</div>
-      <div class="v">{totalUp.toFixed(1)}<small>GB</small></div>
-      <div class="sub">{t('日均')} {(totalUp / Math.max(1, days.length)).toFixed(1)} GB</div>
-    </div>
-    {#if resetIn !== null}
-      <div class="kpi">
-        <div class="lb">{t('距离重置')}</div>
-        <div class="v">{resetIn}<small>{t('天')}</small></div>
-        <div class="sub">{tp('{d} 重置，计费 {b} GB', { d: formatDate(nextReset), b: billed.toFixed(1) })}</div>
-      </div>
-    {:else}
-      <div class="kpi">
-        <div class="lb">{t('计费流量')}</div>
-        <div class="v">{billed.toFixed(1)}<small>GB</small></div>
-        <div class="sub">{t('（上行 + 下行）× 倍率')}</div>
-      </div>
-    {/if}
-  </section>
+  <PageTitle
+    title={t('使用明细')}
+    sub={logs.data ? tp('上下行流量走势、线路分布与每日用量。日期按 {tz} 计算。', { tz: logs.data.timezone }) : t('上下行流量走势、线路分布与每日用量。')}
+  />
+
+  <Section><StatRow items={stats} /></Section>
 
   {#if logs.data?.daily_since && logs.data.daily_since > from}
     <p class="kept">{tp('按天的明细只保留到 {d}，更早的日子显示为 0。', { d: logs.data.daily_since })}</p>
   {/if}
 
-  <section class="sec" aria-labelledby="h-trend">
-    <div class="sh">
-      <div>
-        <h2 id="h-trend">{t('流量走势')}</h2>
-        <p class="num">{tp('{a} 至 {b}，按天统计', { a: from, b: to })}</p>
-      </div>
-    </div>
-    {#if sum > 0}
-      <TrafficChart {days} />
-    {:else}
+  {#if sum <= 0}
+    <Section>
+      {#snippet title()}{t('流量走势')}{/snippet}
       <Empty title={t('这段时间还没有流量记录')} desc={t('连接节点并产生流量后，这里会按天统计出来。')} />
-    {/if}
-  </section>
+    </Section>
+  {:else}
+    <Section>
+      {#snippet title()}<CloudDownload size={16} strokeWidth={1.75} aria-hidden="true" />{t('流量走势')}{/snippet}
+      {#snippet desc()}<span>{tp('{a} 至 {b}，按天统计', { a: from, b: to })}</span>{/snippet}
+      {#snippet extra()}
+        <Tabs inline idPrefix="range" label={t('时间范围')} value={range} onchange={(k) => (range = k as Range)} tabs={RANGES.map((r) => ({ key: r.id, label: t(r.label) }))} />
+      {/snippet}
+      {#key range}
+        <AreaChart rows={days.map((d) => ({ x: d.date, down: d.down, up: d.up }))} downLabel={t('下行流量')} upLabel={t('上行流量')} />
+      {/key}
+    </Section>
 
-  {#if sum > 0}
+    <Section>
+      <Split>
+        {#snippet left()}
+          <PaneHead>
+            {#snippet title()}<PieIcon size={16} strokeWidth={1.75} aria-hidden="true" />{t('线路分布')}{/snippet}
+            {#snippet desc()}{t('这段时间的流量落在各条线路上的比例（原始流量）')}{/snippet}
+          </PaneHead>
+          <Donut slices={lines.map((l) => ({ name: l.name, value: l.value }))} />
+        {/snippet}
+        {#snippet right()}
+          <PaneHead>
+            {#snippet title()}{t('每日计费流量')}{/snippet}
+            {#snippet desc()}{t('（上行 + 下行）× 倍率，也就是真正扣掉的量')}{/snippet}
+            {#snippet extra()}<span class="sec-x">{t('单位 GB')}</span>{/snippet}
+          </PaneHead>
+          <BarChart rows={days.map((d) => ({ x: d.date, v: d.billed }))} label={t('计费流量')} />
+        {/snippet}
+      </Split>
+    </Section>
+
     {#if lines.length > 0}
-      <section class="sec" aria-labelledby="h-lines">
-        <div class="sh">
-          <div>
-            <h2 id="h-lines">{t('按线路')}</h2>
-            <p>{t('当前倍率是此刻生效的倍率；有时段倍率的线路按全站时区的时段计费')}</p>
-          </div>
-        </div>
-        <div class="tbl-wrap">
-          <table class="tbl">
+      <Section>
+        {#snippet title()}{t('按线路')}{/snippet}
+        {#snippet desc()}{t('当前倍率是此刻生效的倍率；有时段倍率的线路按全站时区的时段计费')}{/snippet}
+        <div class="tbl-w">
+          <table class="tbl flat-head">
             <thead>
               <tr>
                 <th>{t('线路')}</th>
-                <th class="n d-only">{t('原始')}</th>
-                <th class="n d-only">{t('占比')}</th>
-                <th class="n">{t('计费')}</th>
-                <th>{t('当前倍率')}</th>
+                <th style="width: 128px">{t('原始')}</th>
+                <th style="width: 128px">{t('计费')}</th>
+                <th style="width: 160px">{t('当前倍率')}</th>
               </tr>
             </thead>
             <tbody>
               {#each lines as l (l.name)}
                 <tr>
-                  <td class="strong">{l.name}</td>
-                  <td class="n d-only">{gb2(l.value)}</td>
-                  <td class="n d-only">
-                    <span class="share"><span class="track"><i style:width="{pct(l.value, linesTotal)}%"></i></span>{pct(l.value, linesTotal).toFixed(1)}%</span>
-                  </td>
-                  <td class="n">{gb2(l.billed)}</td>
-                  <td class="num">
+                  <td>{l.name}</td>
+                  <td class="tnum">{gb2(l.value)}</td>
+                  <td class="tnum">{gb2(l.billed)}</td>
+                  <td class="tnum">
                     {l.rate != null ? `×${l.rate}` : '—'}
-                    {#each l.rules as r, i (i)}<div class="sub-l">{ruleText(r, t)}</div>{/each}
+                    {#each l.rules as r, i (i)}<div class="rule-x">{ruleText(r, t)}</div>{/each}
                   </td>
                 </tr>
               {/each}
             </tbody>
           </table>
         </div>
-      </section>
+      </Section>
     {/if}
 
-    <section class="sec" aria-labelledby="h-days">
-      <div class="sh">
-        <div>
-          <h2 id="h-days">{t('明细记录')}</h2>
-          <p>{tp('{d} 天的每日上下行流量', { d: days.length })}</p>
-        </div>
-      </div>
-      <div class="tbl-wrap">
-        <table class="tbl">
+    <Section>
+      {#snippet title()}{t('明细记录')}{/snippet}
+      {#snippet desc()}{tp('{d} 天的每日上下行流量', { d: days.length })}{/snippet}
+      <div class="tbl-w">
+        <table class="tbl flat-head">
           <thead>
             <tr>
-              <th>{t('日期')}</th>
-              <th class="n d-only">{t('下行')}</th>
-              <th class="n d-only">{t('上行')}</th>
-              <th class="n">{t('合计')}</th>
-              <th class="n">{t('计费')}</th>
-              <th class="n">{t('占比')}</th>
+              <th style="width: 128px">{t('日期')}</th>
+              <th class="hide-sm-cell" style="width: 128px">{t('下行')}</th>
+              <th class="hide-sm-cell" style="width: 128px">{t('上行')}</th>
+              <th style="width: 128px">{t('合计')}</th>
+              <th style="width: 128px">{t('计费')}</th>
+              <th>{t('占比')}</th>
             </tr>
           </thead>
           <tbody>
             {#each [...days].reverse() as d (d.day)}
-              <tr class={d.down + d.up > 0 ? '' : 'dim'}>
-                <td class="when">{d.day}</td>
-                <td class="n d-only">{gb2(d.down)}</td>
-                <td class="n d-only">{gb2(d.up)}</td>
-                <td class="n strong">{gb2(d.down + d.up)}</td>
-                <td class="n">{gb2(d.billed)}</td>
-                <td class="n">
-                  <!-- 细条按当期最大单日归一，百分比是占这段时间合计的比例 -->
-                  <span class="share"><span class="track d-only"><i style:width="{pct(d.down + d.up, maxDay)}%"></i></span>{pct(d.down + d.up, sum).toFixed(1)}%</span>
+              <tr>
+                <td class="tnum">{d.day}</td>
+                <td class="tnum hide-sm-cell">{gb2(d.down)}</td>
+                <td class="tnum hide-sm-cell">{gb2(d.up)}</td>
+                <td class="tnum" style="font-weight: 500">{gb2(d.down + d.up)}</td>
+                <td class="tnum">{gb2(d.billed)}</td>
+                <td>
+                  <!-- 条长按当期最大单日归一，与右侧真实占比同向可比 -->
+                  <div class="share-c">
+                    <span class="prog hide-sm-cell" style="height: 6px; max-width: 180px" role="progressbar" aria-label={t('占比')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(((d.down + d.up) / maxDay) * 100)}><i style:transform="translateX(-{100 - ((d.down + d.up) / maxDay) * 100}%)"></i></span>
+                    <span class="bdg brandbadge">{sum > 0 ? (((d.down + d.up) / sum) * 100).toFixed(1) : '0.0'}%</span>
+                  </div>
                 </td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
-    </section>
+    </Section>
   {/if}
 {/if}
 
 <style>
-  .ph .rng { margin-bottom: 4px; }
-  .kept { margin: -16px 0 24px; font-size: 12.5px; color: var(--muted); }
-  @media (max-width: 720px) {
-    .ph { flex-direction: column; align-items: flex-start; }
-  }
+  .kept { margin: 0 0 0; padding-top: 16px; font-size: 12.5px; color: var(--muted); }
+  .rule-x { font-size: 12px; color: var(--muted); }
+  .share-c { display: flex; align-items: center; gap: 10px; }
+  .share-c .prog { flex: 1; }
 </style>

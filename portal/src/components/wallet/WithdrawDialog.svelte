@@ -1,10 +1,10 @@
 <script lang="ts">
   import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import { walletApi, type MyInvite, type UsdtChain } from '@/api';
   import { formatMoney, parseYuan } from '@/lib/format';
   import TextField from '../TextField.svelte';
   import Dialog from '../ui/Dialog.svelte';
+  import Select from '../ui/Select.svelte';
   import { errorText } from '$lib/errors';
   import { FieldErrors, Pending, fieldOf } from '$lib/forms.svelte';
   import { t, tp } from '$lib/i18n.svelte';
@@ -91,12 +91,7 @@
     />
     <div class="field">
       <div class="field-label"><label for="w-chain">{t('USDT 网络')}</label></div>
-      <div class="select">
-        <select id="w-chain" class="input" aria-describedby="w-chain-msg" value={chain ?? ''} onchange={(e) => (picked = e.currentTarget.value as UsdtChain)}>
-          {#each chains as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
-        </select>
-        <ChevronDown size={16} strokeWidth={1.75} aria-hidden="true" />
-      </div>
+      <Select id="w-chain" aria-describedby="w-chain-msg" value={chain ?? ''} onchange={(v) => (picked = v as UsdtChain)} items={chains.map((c) => ({ value: c.id, label: c.name }))} />
       <p id="w-chain-msg" class="field-msg">{t('网络选错资金无法找回：请和收款方（钱包或交易所充值页）显示的网络保持一致。')}</p>
     </div>
     <TextField
@@ -124,8 +119,5 @@
 </Dialog>
 
 <style>
-  .select { position: relative; color: var(--faint); }
-  .select select { appearance: none; padding-right: 36px; color: var(--fg); cursor: pointer; }
-  .select :global(svg) { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); pointer-events: none; }
   :global(.dlg .mono-in) { font-family: var(--font-mono); font-size: 13px; }
 </style>

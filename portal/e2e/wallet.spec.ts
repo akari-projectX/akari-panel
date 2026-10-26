@@ -29,7 +29,7 @@ test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference 
   await signIn(page, inviter(info));
   await wallet(page, '/wallet?tab=ledger');
   await expect(page.getByRole('tab', { name: '收支流水' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText('邀请佣金入账').first()).toBeVisible();
+  await expect(page.getByText('邀请佣金入账').filter({ visible: true }).first()).toBeVisible();
   await page.getByRole('button', { name: '申请提现' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('提现金额（元）').fill('1');
@@ -37,9 +37,10 @@ test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference 
   await expect(dialog.getByText('约 0.14 USDT（按参考汇率，以实际打款为准）')).toBeVisible();
   /* 只列后台开着的网络 */
   const net = dialog.getByLabel('USDT 网络');
-  await expect(net.locator('option')).toHaveText(['TRC20 (Tron)', 'Polygon', 'TON']);
   await expect(dialog.getByText('T 开头的 34 位 Tron 地址')).toBeVisible();
-  await net.selectOption('ton');
+  await net.click();
+  await expect(page.getByRole('option')).toHaveText(['TRC20 (Tron)', 'Polygon', 'TON']);
+  await page.getByRole('option', { name: 'TON' }).click();
   await expect(dialog.getByText('TON 地址（UQ / EQ 开头）；转到交易所时请填写 Memo')).toBeVisible();
   /* 地址填错网络：面板按网络校验，错误画在地址下面并把焦点放回去 */
   await dialog.getByLabel('收款地址').fill(TRON);
@@ -50,21 +51,21 @@ test('#51 #52 #53 USDT withdrawals: network, address hints, TON memo, reference 
   await dialog.getByLabel('收款地址').fill(TON);
   await dialog.getByLabel('Memo（选填）').fill('12345');
   await dialog.getByRole('button', { name: '提交申请' }).click();
-  await expect(page.getByText('提现申请已提交').first()).toBeVisible();
+  await expect(page.getByText('提现申请已提交').filter({ visible: true }).first()).toBeVisible();
   await expect(dialog).toHaveCount(0);
   /* 同一时间只能有一笔待审核的：按钮置灰并说明原因 */
   await expect(page.getByRole('button', { name: '申请提现' })).toBeDisabled();
   await expect(page.getByText('同一时间只能有一笔待审核的提现申请。')).toBeVisible();
-  await expect(page.getByText('提现', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('提现', { exact: true }).filter({ visible: true }).first()).toBeVisible();
 
   await page.getByRole('tab', { name: '提现记录' }).click();
   await expect(page).toHaveURL(/\/wallet\?tab=withdrawals$/);
-  await expect(page.getByText('TON', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('12345').first()).toBeVisible();
-  await expect(page.getByText('待审核').first()).toBeVisible();
+  await expect(page.getByText('TON', { exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText('12345').filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText('待审核').filter({ visible: true }).first()).toBeVisible();
   await page.getByRole('button', { name: '撤回' }).first().click();
-  await expect(page.getByText('提现申请已撤回').first()).toBeVisible();
-  await expect(page.getByText('已撤回').first()).toBeVisible();
+  await expect(page.getByText('提现申请已撤回').filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText('已撤回').filter({ visible: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: '撤回' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '申请提现' })).toBeEnabled();
 });
@@ -78,15 +79,15 @@ test('#52 an approved withdrawal shows the USDT sent and the transaction hash; t
   await dialog.getByLabel('提现金额（元）').fill('1');
   await dialog.getByLabel('收款地址').fill(TRON);
   await dialog.getByRole('button', { name: '提交申请' }).click();
-  await expect(page.getByText('提现申请已提交').first()).toBeVisible();
+  await expect(page.getByText('提现申请已提交').filter({ visible: true }).first()).toBeVisible();
 
   const id = psql(`SELECT w.id FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE u.email = '${email}' AND w.status = 'pending';`);
   const txid = 'a'.repeat(64);
   await (await admin()).call('POST', `/api/v1/withdrawals/${id}/approve`, { usdt_amount: '0.138888', txid });
   await wallet(page, '/wallet?tab=withdrawals');
-  await expect(page.getByText('已打款').first()).toBeVisible();
-  await expect(page.getByText(/实付 0\.138888 USDT/).first()).toBeVisible();
-  await expect(page.getByText('aaaaaaaa…aaaaaaaa').first()).toBeVisible();
+  await expect(page.getByText('已打款').filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText(/实付 0\.138888 USDT/).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText('aaaaaaaa…aaaaaaaa').filter({ visible: true }).first()).toBeVisible();
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: '复制 交易哈希' }).first().click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(txid);
@@ -103,10 +104,10 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await ready(page, '邀请');
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByRole('tab', { name: '邀请返佣' })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText(/返佣 20%/).first()).toBeVisible();
+  await expect(page.getByText(/返佣 20%/).filter({ visible: true }).first()).toBeVisible();
   /* 余额与提现在同一页 */
   await expect(page.getByRole('button', { name: '申请提现' })).toBeVisible();
-  await expect(page.getByText('已入账').first()).toBeVisible();
+  await expect(page.getByText('已入账').filter({ visible: true }).first()).toBeVisible();
   await expect(page.getByText('返佣明细 · 共 1 条')).toBeVisible();
   await expect(page.getByText(mine(info, 'v2-invitee'))).toHaveCount(0);
   /* 每个账户一个邀请码：自动生成，没有「生成」与「删除」 */
@@ -122,10 +123,10 @@ test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, st
   await expect(page.getByRole('textbox', { name: '邀请链接' })).toHaveValue(new RegExp(`^${process.env.E2E_ORIGIN}/register\\?invite=${code}$`));
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.getByRole('button', { name: '复制邀请码' }).click();
-  await expect(page.getByText('邀请码已复制').first()).toBeVisible();
+  await expect(page.getByText('邀请码已复制').filter({ visible: true }).first()).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
   await page.getByRole('button', { name: '复制链接' }).first().click();
-  await expect(page.getByText('邀请链接已复制').first()).toBeVisible();
+  await expect(page.getByText('邀请链接已复制').filter({ visible: true }).first()).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(new RegExp(`/register\\?invite=${code}$`));
   expect(psql(`SELECT count(*) FROM invite_codes WHERE user_id = ${uid};`)).toBe('1');
   await shot(page, info, 'wallet-invite-light');
@@ -161,10 +162,10 @@ test('#56 a refund after the commission was credited claws it back (the balance 
   await a.call('POST', `/api/v1/orders/${order}/refund`, { reason: 'e2e 追回', to_balance: true });
   await signIn(page, inviter(info));
   await wallet(page, '/wallet?tab=ledger');
-  await expect(page.getByText('佣金追回').first()).toBeVisible();
-  await expect(page.getByText(/^[−-]¥[0-9.]+$/).first()).toBeVisible();
+  await expect(page.getByText('佣金追回').filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText(/^[−-]¥[0-9.]+$/).filter({ visible: true }).first()).toBeVisible();
   await page.getByRole('tab', { name: '邀请返佣' }).click();
-  await expect(page.getByText('已追回').first()).toBeVisible();
+  await expect(page.getByText('已追回').filter({ visible: true }).first()).toBeVisible();
   await expect(page.getByText(/被追回的佣金因订单退款从余额里扣回/)).toBeVisible();
   /* 余额到 0：没有可提现的金额，按钮置灰并说明 */
   await expect(page.getByRole('button', { name: '申请提现' })).toBeDisabled();
@@ -188,7 +189,7 @@ test('#52 withdrawal form: inline errors, the first bad field is focused, nothin
   });
   await wallet(page, '/wallet?tab=withdrawals');
   await expect(page.getByText('还没有提现记录')).toBeVisible();
-  await expect(page.getByText('最低提现').first()).toBeVisible();
+  await expect(page.getByText('最低提现').filter({ visible: true }).first()).toBeVisible();
   await page.getByRole('button', { name: '申请提现' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('可提现 ¥50，最低 ¥10')).toBeVisible();
@@ -263,7 +264,7 @@ test('ledger: older entries load page by page', async ({ page }) => {
   });
   await wallet(page, '/wallet?tab=ledger');
   /* 宽屏「说明」一格就是原因，窄屏是「时间 · 原因」一行 */
-  const reason = (n: number) => page.getByText(new RegExp(`(^|· )e2e ${n}$`));
+  const reason = (n: number) => page.getByText(new RegExp(`(^|· )e2e ${n}$`)).filter({ visible: true });
   await expect(reason(45)).toBeVisible();
   await expect(reason(15)).toHaveCount(0);
   await page.getByRole('button', { name: '加载更早的记录' }).click();

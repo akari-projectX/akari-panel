@@ -145,7 +145,6 @@ export const EN: Record<string, string> = {
   /* 门户 v2：线路、用量、钱包 */
   ' 分钟一次': ' min interval',
   ' 条': ' lines',
-  '用量概况': 'Usage at a glance',
   /* 门户 v2 仪表盘 */
   '时间范围': 'Range',
   '流量走势，用左右方向键逐日查看': 'Traffic trend; use the arrow keys to step through the days',
@@ -1124,6 +1123,14 @@ export const EN: Record<string, string> = {
   '工单概况': 'Tickets at a glance',
   '客服有新回复': 'New reply from support',
   /* ── 门户恢复 v1.4.0 ── */
+  '线路分布': 'By line',
+  '这段时间的流量落在各条线路上的比例（原始流量）': "How this period's raw traffic splits across lines",
+  '（上行 + 下行）× 倍率，也就是真正扣掉的量': '(upload + download) × multiplier — what is actually counted',
+  '每日计费流量，用左右方向键逐日查看': 'Daily billed traffic; use the left and right arrow keys to step through days',
+  '下行流量': 'Download',
+  '上行流量': 'Upload',
+  '每日计费流量': 'Billed traffic per day',
+  '单位 GB': 'in GB',
   '可用': 'Available',
   '平均延迟': 'Avg. latency',
   '查看教程': 'View guide',
