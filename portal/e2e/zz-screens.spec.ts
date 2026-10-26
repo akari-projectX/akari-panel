@@ -127,11 +127,11 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
     { name: 'wallet', account: INVITER, run: (page) => ready(page, '/wallet', '邀请返佣') },
     {
       name: 'wallet-ledger', account: INVITER,
-      run: async (page) => { await ready(page, '/wallet?tab=ledger', '收支流水'); await page.locator('main table').first().waitFor({ timeout: WAIT }); },
+      run: async (page) => { await ready(page, '/wallet?tab=ledger', '收支流水'); await page.locator('main .tp-sm tbody tr:visible, main .tp-sm .rowline:visible').first().waitFor({ timeout: WAIT }); },
     },
     {
       name: 'wallet-withdrawals', account: INVITER,
-      run: async (page) => { await ready(page, '/wallet?tab=withdrawals', '提现记录'); await page.locator('main table').first().waitFor({ timeout: WAIT }); },
+      run: async (page) => { await ready(page, '/wallet?tab=withdrawals', '提现记录'); await page.locator('main .tp-sm tbody tr:visible, main .tp-sm .rowline:visible').first().waitFor({ timeout: WAIT }); },
     },
     /* 其余页面：节点、流量、公告 */
     ...(['/nodes', '/traffic', '/announcements'] as const).map((path) => ({
@@ -142,8 +142,9 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       name: 'pay-success', account: 'user@e2e.test', plain: true,
       run: async (page) => {
         await ready(page, '/orders');
-        const res = await page.request.get('/api/v1/me/orders');
-        const paid = ((await res.json()) as { id: string; status: string; refunded_at: string | null }[]).find((o) => o.status === 'paid' && !o.refunded_at);
+        /* 页内取（页面的主机名只有浏览器认得，page.request 解析不了） */
+        const list = await page.evaluate(() => fetch('/api/v1/me/orders').then((r) => r.json())) as { id: string; status: string; refunded_at: string | null }[];
+        const paid = list.find((o) => o.status === 'paid' && !o.refunded_at);
         if (!paid) throw new Error('no paid order to show');
         await page.evaluate((id) => {
           history.pushState({ paid: true }, '', `/orders/${id}`);
