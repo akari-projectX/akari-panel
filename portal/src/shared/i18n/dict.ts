@@ -104,6 +104,7 @@ export const EN: Record<string, string> = {
   '{level}优先级': '{level} priority',
   '回复此工单…': 'Reply to this ticket…',
   '全部公告': 'All announcements',
+  '按标签筛选': 'Filter by tag',
   '公告与动态': 'News & updates',
   '查看详情': 'View details',
 

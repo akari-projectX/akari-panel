@@ -5,7 +5,7 @@
   import { formatDateTime } from '@/lib/format';
   import RichHtml from './RichHtml.svelte';
   import Dialog from './ui/Dialog.svelte';
-  import { announcementText } from '$lib/announcement';
+  import { announcementText, tagOf } from '$lib/announcement';
   import { i18n, t } from '$lib/i18n.svelte';
 
   /*
@@ -18,6 +18,7 @@
   $effect(() => { if (item) shown = item; });
   const n = $derived(item ?? shown);
   const text = $derived(n ? announcementText(n, i18n.locale) : null);
+  const tag = $derived(n ? tagOf(n, i18n.locale) : null);
 </script>
 
 <Dialog open={!!item} onOpenChange={(o) => { if (!o) onclose(); }} reading title={text?.title ?? ''}>
@@ -25,6 +26,7 @@
     {#if n}
       <Megaphone class="rd-ann" size={14} strokeWidth={1.75} aria-hidden="true" />
       {#if n.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+      {#if tag}<span class="tg {tag.cls}">{tag.name}</span>{/if}
       <span class="tnum">{formatDateTime(n.created_at)}</span>
     {/if}
   {/snippet}

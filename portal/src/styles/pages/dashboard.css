@@ -2,6 +2,10 @@
   .pager div { display: flex; gap: 4px; }
 }
 .ns > div { min-width: 0; }
+/* 带标签的公告提示条：卡片左侧 3px 标签色细边（design/announcement-tags-2026-10）；标题单行截断 */
+.notice.edge { position: relative; overflow: hidden; }
+.notice.edge::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--c); }
+.notice .nt.tagged { flex-wrap: nowrap; min-width: 0; }
 .feat-h > svg { flex: none; color: var(--fg); }
 .feat-t > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feat-go > svg { transition: translate var(--dur-fast); }

@@ -21,7 +21,7 @@
   import DocsPreview from './DocsPreview.svelte';
   import NodesPreview from './NodesPreview.svelte';
   import Notices from './Notices.svelte';
-  import { announcementText } from '$lib/announcement';
+  import { announcementText, tagOf } from '$lib/announcement';
   import { dashSpecs } from '$lib/dash-data';
   import { att } from '$lib/attention.svelte';
   import { auth } from '$lib/auth.svelte';
@@ -81,7 +81,7 @@
   /* ── 页面提醒（按急迫程度：账户提醒 → 没付完的订单 → 客服回复了工单 → 最新公告） ── */
   const openOrder = $derived((orders.data ?? []).find((o) => o.status === 'pending') ?? null);
   const replied = $derived((tickets.data ?? []).filter((x) => x.unread && x.status !== 'closed'));
-  const latestInfo = $derived(latest ? { title: text(latest).title, brief: summarize(text(latest).html, 80) } : null);
+  const latestInfo = $derived(latest ? { title: text(latest).title, brief: summarize(text(latest).html, 80), tag: tagOf(latest, i18n.locale) } : null);
 
   /* ── 近 7 天（全站时区的日历日，今天算一天；续费范围的账户面板不给流量记录） ── */
   const traffic = resource(() => ({ ...spec.traffic, enabled: full }));
@@ -178,10 +178,12 @@
       {:else}
         {#each ann.slice(0, 3) as a, i (a.id)}
           {@const at = text(a)}
+          {@const tg = tagOf(a, i18n.locale)}
           <Row first={i === 0} onclick={() => openNotice(a)}>
             {#snippet title()}
               <span class="rt">
                 {#if a.pinned}<span class="pinb"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
+                {#if tg}<span class="tg {tg.cls}">{tg.name}</span>{/if}
                 <span class={['trunc', !a.read && 'mid']}>{at.title}</span>
               </span>
             {/snippet}

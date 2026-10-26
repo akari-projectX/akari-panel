@@ -10,7 +10,7 @@
   import Loading from '../components/Loading.svelte';
   import PageTitle from '../components/flat/PageTitle.svelte';
   import Section from '../components/flat/Section.svelte';
-  import { announcementText, tagsOf } from '$lib/announcement';
+  import { announcementText, tagFilters, tagOf } from '$lib/announcement';
   import { att } from '$lib/attention.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
@@ -19,14 +19,18 @@
    * 公告与动态（行为同 React 门户 pages/dash/announcements.tsx）：面板一次给全部（置顶的在前），按界面语言取中 / 英文；
    * 已读由面板记（POST /me/announcements/{id}/read，换设备也一致），打开 = 标记已读，导航上的未读点跟着变。
    * 最新一条是头条（大号日期 + 标题 + 摘要 + 「阅读全文」），其余按月（站点时区）分组成细线时间轴：日期、圆点（未读 = 品牌蓝）、标题（未读加粗）、摘要。
-   * 标签（实底）只在面板给了时画（数据模型是单独的后端任务），没有就不占位。详情对话框第一次打开时才下载。
+   * 标签（实底，面板给的名称与预设色）画在标题前，没有标签就不占位；用到的标签多于一个时，列表上方出现按标签筛选。详情对话框第一次打开时才下载。
    */
   const NEW_WITHIN = 7 * 86_400_000;
   const pad = (n: number) => String(n).padStart(2, '0');
 
   const res = resource(() => ({ key: K.announcements, fetch: () => contentApi.announcements() }));
-  const data = $derived(res.data?.announcements ?? []);
+  const all = $derived(res.data?.announcements ?? []);
   const unread = $derived(res.data?.unread ?? 0);
+  /* 按标签筛选：用到的标签多于一个才出现；筛选后的列表照旧「头条 + 按月时间轴」 */
+  const filters = $derived(tagFilters(all, i18n.locale));
+  let tagId = $state<string | null>(null);
+  const data = $derived(tagId && filters.some((f) => f.id === tagId) ? all.filter((a) => a.tag?.id === tagId) : all);
   const featured = $derived(data[0]);
   const months = $derived.by(() => {
     const out: { key: string; items: Announcement[] }[] = [];
@@ -78,8 +82,17 @@
   {:else if data.length === 0}
     <Empty title={t('暂时没有公告')} desc={t('站点发布公告后会出现在这里。')} />
   {:else}
+    {#if filters.length > 0}
+      <div class="an-filter" role="group" aria-label={t('按标签筛选')}>
+        <button type="button" class="fchip" aria-pressed={tagId === null} onclick={() => (tagId = null)}>{t('全部')} <span class="n tnum">{all.length}</span></button>
+        {#each filters as f (f.id)}
+          <button type="button" class="fchip {f.cls}" aria-pressed={tagId === f.id} onclick={() => (tagId = f.id)}><i></i>{f.name} <span class="n tnum">{f.n}</span></button>
+        {/each}
+      </div>
+    {/if}
     {#if featured}
       {@const f = text(featured)}
+      {@const ftg = tagOf(featured, i18n.locale)}
       {@const d = siteParts(featured.created_at)}
       <article class="an-feat">
         <div class="an-when">
@@ -90,7 +103,7 @@
         <div class="an-what">
           <div class="an-flags">
             {#if featured.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
-            {#each tagsOf(featured) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
+            {#if ftg}<span class="tg {ftg.cls}">{ftg.name}</span>{/if}
             {#if !featured.read && now - new Date(featured.created_at).getTime() < NEW_WITHIN}<span class="bdg an-newb">{t('新')}</span>{/if}
           </div>
           <h2>{f.title}</h2>
@@ -105,6 +118,7 @@
         <div class="an-mh"><span class="tnum">{m.key}</span><span class="an-ml"></span></div>
         {#each m.items as n, i (n.id)}
           {@const x = text(n)}
+          {@const tg = tagOf(n, i18n.locale)}
           {@const d = siteParts(n.created_at)}
           <button type="button" class="an-item" onclick={() => open(n)}>
             <div class="an-day"><div class="an-dn tnum">{pad(d.day)}</div><div class="an-dw">{weekday.format(new Date(n.created_at))}</div></div>
@@ -115,7 +129,7 @@
             <div class="an-bd">
               <div class="an-tt">
                 {#if n.pinned}<span class="bdg brandbadge an-pinb2"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
-                {#each tagsOf(n) as tg (tg.name)}<span class="tg {tg.cls}">{tg.name}</span>{/each}
+                {#if tg}<span class="tg {tg.cls}">{tg.name}</span>{/if}
                 <span class={['an-title', !n.read && 'an-mid']}>{x.title}</span>
                 {#if !n.read}<span class="sr">{t('未读')}</span>{/if}
               </div>
@@ -136,6 +150,16 @@
 <style>
   .an-count { font-size: 13px; color: var(--muted); }
   .an-count b { font-weight: 500; color: var(--brand); }
+
+  .an-filter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+  .fchip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border: 1px solid var(--line2); border-radius: 999px;
+    background: var(--surface); color: var(--body); font: inherit; font-size: 13px; cursor: pointer; transition: border-color var(--dur-fast), color var(--dur-fast);
+  }
+  .fchip:hover { border-color: var(--muted); }
+  .fchip i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); }
+  .fchip .n { font-size: 12px; color: var(--faint); }
+  .fchip[aria-pressed='true'] { border-color: var(--fg); color: var(--fg); font-weight: 500; }
 
   .an-feat { display: grid; gap: 14px; padding-bottom: 36px; border-bottom: 1px solid var(--line); }
   .an-when { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }

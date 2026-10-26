@@ -47,9 +47,9 @@ async function stubNotices(page: Page) {
   let read = new Set<string>();
   const anns = () => {
     const list = [
-      { id: 'a-1', title_zh: '日本节点今晚 02:00–03:00 维护', title_en: null, html_zh: '<p>期间东京、大阪线路短暂不可用，其他地区不受影响。</p>', html_en: null, pinned: true, created_at: iso(-3 * 3600_000) },
-      { id: 'a-2', title_zh: '双十一全场八折，年付再送 50 GB', title_en: null, html_zh: '<p>活动时间 11 月 1 日至 11 月 11 日。</p>', html_en: null, pinned: false, created_at: iso(-7200_000) },
-      { id: 'a-3', title_zh: '新增新加坡 IPLC 线路', title_en: null, html_zh: '<p>已加入所有标准及以上套餐的订阅。</p>', html_en: null, pinned: false, created_at: iso(-86_400_000), read: true },
+      { id: 'a-1', title_zh: '日本节点今晚 02:00–03:00 维护', title_en: null, html_zh: '<p>期间东京、大阪线路短暂不可用，其他地区不受影响。</p>', html_en: null, pinned: true, tag: { id: 'tg-1', name_zh: '维护', name_en: 'Maintenance', color: 'amber' }, created_at: iso(-3 * 3600_000) },
+      { id: 'a-2', title_zh: '双十一全场八折，年付再送 50 GB', title_en: null, html_zh: '<p>活动时间 11 月 1 日至 11 月 11 日。</p>', html_en: null, pinned: false, tag: { id: 'tg-2', name_zh: '活动', name_en: 'Event', color: 'pink' }, created_at: iso(-7200_000) },
+      { id: 'a-3', title_zh: '新增新加坡 IPLC 线路', title_en: null, html_zh: '<p>已加入所有标准及以上套餐的订阅。</p>', html_en: null, pinned: false, tag: null, created_at: iso(-86_400_000), read: true },
     ].map((a) => ({ ...a, read: a.read ?? read.has(a.id) }));
     return { announcements: list, unread: list.filter((a) => !a.read).length };
   };
