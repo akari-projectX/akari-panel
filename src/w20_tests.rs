@@ -136,6 +136,13 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     let sub = anon.get(&format!("/sub/{token}")).await;
     assert_eq!(sub.status, StatusCode::OK);
     assert!(sub.headers.get("subscription-userinfo").is_some());
+    assert_eq!(
+        sub.headers
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("private, no-store"),
+        "a subscription body must not be cached"
+    );
     // ?format= picks the format explicitly.
     let clash = anon.get(&format!("/sub/{token}?format=clash")).await;
     assert_eq!(

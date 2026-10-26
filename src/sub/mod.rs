@@ -462,6 +462,12 @@ pub async fn subscription(
                 header::HeaderName::from_static("profile-update-interval"),
                 HeaderValue::from_static("24"),
             ),
+            // The body carries the user's node credentials: a shared cache
+            // (a "cache everything" CDN rule) must not keep it.
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            ),
             (header::CONTENT_DISPOSITION, disposition(site)),
             (
                 header::HeaderName::from_static("profile-title"),
