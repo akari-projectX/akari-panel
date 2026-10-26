@@ -15,6 +15,7 @@ export const PAGES: Record<string, Loader> = {
   tickets: () => import("./pages/tickets").then((m) => m.TicketsPage),
   content: () => import("./pages/content").then((m) => m.ContentPage),
   nodes: () => import("./pages/nodes").then((m) => m.NodesPage),
+  dns: () => import("./pages/dns").then((m) => m.DnsPage),
   plans: () => import("./pages/plans").then((m) => m.PlansPage),
   alerts: () => import("./pages/alerts").then((m) => m.AlertsPage),
   updates: () => import("./pages/updates").then((m) => m.UpdatesPage),
