@@ -102,7 +102,7 @@
 ## 字体与字重（2026-10-26）
 
 **只用系统字体，不自托管任何字体文件**（原来的 Noto Sans SC 切片 + Inter 在挂载后才注入，换字体时整页重排，还多下载约 1.3 MB）。字体栈 `--font-ui`（`src/styles/tokens.css`，`--font-sans` 指向它）：拉丁字母与数字在前（SF / Segoe UI），汉字落到 PingFang SC / 微软雅黑 / Noto Sans CJK SC；`<html lang>` 随界面语言，所以回落的汉字字形按简体选。系统字体的数字默认是比例数字：价格、流量、表格要对齐处显式 `font-variant-numeric: tabular-nums`（`.tnum` 与 `pages/common.css` 里的选择器清单）。
-**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。微软雅黑没有 500，Windows / Android / Linux 上没有 300，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。
+**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。微软雅黑没有 500，Windows / Android / Linux 上没有 300，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
 
 ## 偏好与存储（键名沿用 React 门户，老用户的偏好照旧生效）
 
