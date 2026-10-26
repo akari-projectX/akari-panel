@@ -3,6 +3,23 @@
 用户门户（brief：工作区 `briefs/portal-v2.md`；样稿 `design/portal-v2-2026-10/`）。v2.0.0 起它就是门户：面板只下发 `dist/app`
 （`src/spa.rs`），原来的 React 门户已删除（功能对照与 e2e 覆盖表见 PR #150、`docs/PORTAL-V2-PERF.md`）。
 
+## 外观 = v1.4.0（门户外观恢复，PR #160）
+
+门户 v2 的外观已**整体恢复为 v1.4.0 React 门户**（2026-10-26 用户裁决，见工作区 `briefs/portal-restore.md`：v2 样稿的新外观作废，只保留 Svelte 的性能与架构；新 Logo 除外）。
+逐页参照图在 `design/portal-v1-reference-2026-10/screens/`，恢复报告（对照图、几何差异、剩余差异及原因）在 `design/portal-restore-2026-10/REPORT.md`。
+改外观时先对照 v1.4.0 源码（`git show v1.4.0:spa/src/...`），不要凭样稿。
+
+- 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
+  `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/content.css`（表格 `.tbl`、右侧信息条等遗留的共用件）、`tokens.css`（颜色只能写在这里，`check:colors`）。
+  页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
+- 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
+- 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种：流程（图标 + 标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
+  **阅读**（`reading` + `meta` 片段：公告、工单对话，宽 640，只有正文滚动）。弹窗开着时 `lib/visual-viewport.ts` 把可见视口写进 `--vv-h` / `--vv-top`，
+  手机弹出软键盘时弹窗挪到键盘上方。
+- 切页：旧页面淡出（`--dur-exit` 100ms）→ 回到页首 → 新页面淡入（`App.svelte` 的 `shown` / `leaving`、`.page.out`）；换页的回到页首由它做，`navigate` 只在同一页内改查询串时立刻回到页首；
+  系统要求减少动效时直接换页。
+- 对照工具（不进仓库）：并排起 v1.4.0 的 Vite 开发服务器与本应用，按文字锚点比较每个文字块的位置、尺寸、字体、颜色；CI 的 `e2e/zz-screens.spec.ts` 按参照图的名字出对应的截图（`portal-screens` 工件，含真实 seed 数据）。
+
 ## 架构与理由
 
 - **Vite + Svelte 5（runes）+ Tailwind 4，手写的小路由，不用 SvelteKit**：SvelteKit 的静态 / SPA 产物靠内联 `<script>` 启动，
@@ -48,14 +65,12 @@
   余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
-  窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的上色规则 `lib/lines.ts`，仪表盘的线路预览共用）、
-  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；图是仪表盘的 `TrafficChart`；React 的环形图与
-  每日计费柱图按设计去掉：线路分布并进「按线路」表（原始、占比细条、计费、此刻倍率与时段规则），每日计费在明细表与图的提示里）、
+  窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
+  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`）、
   `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
-  `WithdrawDialog` 第一次点「申请提现」才下载（含 bits-ui）；USDT 网络是原生 `<select>`）。分页是 WAI-ARIA tabs（← → Home End），
+  `WithdrawDialog` 第一次点「申请提现」才下载（含 bits-ui）；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
   地址 `?tab=`，换分页 `navigate(…, { replace: true, keepScroll: true })`。文案表与纯函数 `lib/wallet.ts`（`wallet.test.ts`），
-  复制 `lib/copy.svelte.ts`（`Copied`）。content.css 新增共用的关键数字 `.kpis`、范围切换 `.rng`、页内分页 `.ptabs`、表格 `.tbl`、
-  小数字 `.mini`、占比细条 `.share`、`.copy-row` / `.mono`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
+  复制 `lib/copy.svelte.ts`（`Copied`）。页内分页是 `components/flat/Tabs`，关键数字 `flat/StatRow`，表格 `.tbl.flat-head` / `.wtbl`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
   seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
 - **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
   当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
