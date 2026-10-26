@@ -89,3 +89,6 @@ export function terms(i: MyInvite, t: (s: string) => string, tp: (s: string, v: 
     tp('冻结 {n} 天后入账', { n: i.hold_days }),
   ].join(' · ');
 }
+
+/** 状态色调 → Badge 的色调类（flat.css 的 .bdg） */
+export const bdgTone = (t: Tone): string => (t === 'ok' ? 'success' : t === 'warn' ? 'warning' : t === 'off' ? 'danger' : 'neutral');
