@@ -10,7 +10,7 @@ Cargo.toml 在仓库根（文档里的 `panel/` 前缀是拆仓前的旧路径�
 | `src/` | 全部 Rust 代码（`lib.rs` = crate `akari_panel` 的全部模块，`main.rs` = CLI/启动入口；全局分配器 mimalloc） | `src/CLAUDE.md` |
 | `bench/` | M2 基准与压测工具 crate（独立 workspace + lockfile，**不在**面板依赖图/发布二进制里）：`akari-bench seed/explain/http/swarm/lb/retention/multi` + criterion；专用 PG/Valkey 栈 `bench/compose.yml`（端口 5433/6380，不碰开发栈） | `docs/PERF.md` |
 | `fuzz/` | cargo-fuzz 目标（独立 crate + lockfile + 钉住的 nightly，**不在**面板依赖图里）：Alipay 通知/同步响应、易支付通知与网关应答（C1）、入站 JSON/模板/订阅、客户端 IP、域名/Host、CSR、发布 manifest/签名/版本、agent 上行消息（流量缓冲区不变量、心跳 blob）、`deny_unknown_fields` 请求体与日志脱敏、W15 邮箱地址/注册与重置请求体/邮件模板转义；库以 `--cfg fuzzing` 编译出 `src/fuzzing.rs` 入口。种子与回归输入 `fuzz/seeds/`，CI `fuzz.yml`（每目标 20s：main、发版前、改了 fuzz 编译范围或带 `full-ci` 的 PR；夜间 5min） | `docs/FUZZING.md` |
-| `portal/` | 用户门户（W36-b；2026-10 起 Svelte 5 + Vite + Tailwind 4 + bits-ui 重写（门户 v2，React 版已删除），产物 `portal/dist/app`；与框架无关的模块（接口层、词典、错误码文案、格式化、字体）在 `src/shared`（别名 `@/`）；颜色只在 `src/styles/tokens.css`；Playwright e2e `portal/e2e/`，性能报告 `portal/e2e/perf/`） | `portal/CLAUDE.md` |
+| `portal/` | 用户门户（W36-b；2026-10 起 Svelte 5 + Vite + Tailwind 4 + bits-ui 重写（门户 v2，React 版已删除），产物 `portal/dist/app`；与框架无关的模块（接口层、词典、错误码文案、格式化）在 `src/shared`（别名 `@/`）；颜色只在 `src/styles/tokens.css`；Playwright e2e `portal/e2e/`，性能报告 `portal/e2e/perf/`） | `portal/CLAUDE.md` |
 | `admin/` | W33-b 新管理后台（独立 Vite + React + TS + Tailwind 应用：登录页包 `dist/login` + 控制台包 `dist/console`，中英双语，Playwright e2e 桌面 + 手机）；功能清单 `admin/INVENTORY.md` | `admin/CLAUDE.md` |
 | `migrations/` | sqlx 迁移（启动时自动执行；v0.4 基线 `1000_baseline.sql`） | `migrations/CLAUDE.md` |
 | `proto/` | **控制协议正本** `agent.proto`；W26 协议能力清单 `protocols.toml`（同样同步给 agent） | `proto/CLAUDE.md` |

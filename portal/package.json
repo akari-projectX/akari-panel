@@ -11,10 +11,11 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:errors": "node scripts/check-error-codes.mjs",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:i18n && npm run check:errors && npm run test",
+    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:weights && npm run check:i18n && npm run check:errors && npm run test",
     "report:size": "node scripts/bundle-report.mjs dist/app",
     "e2e": "../scripts/e2e-portal.sh",
-    "check:colors": "node scripts/check-colors.mjs"
+    "check:colors": "node scripts/check-colors.mjs",
+    "check:weights": "node scripts/check-weights.mjs"
   },
   "engines": {
     "node": ">=22.18"
