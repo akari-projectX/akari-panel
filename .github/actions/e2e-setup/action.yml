@@ -59,6 +59,10 @@ runs:
         deps() { timeout "$1" sudo env "PATH=$PATH" npx playwright install-deps chromium; }
         if ! deps 240; then
           echo "::warning::apt mirror slow or failing: retrying with archive.ubuntu.com"
+          # `timeout` stops npx, not the apt-get it started: stop that too and
+          # wait for the dpkg lock before the retry.
+          sudo pkill -f 'apt-get|/usr/lib/apt/methods/' || true
+          for _ in $(seq 1 30); do sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
           sudo sed -i 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' \
             /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
           sudo dpkg --configure -a || true

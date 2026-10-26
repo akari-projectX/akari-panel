@@ -312,7 +312,15 @@ async fn history_merge_rollup_and_retention() {
         conns: users * 2,
         ..Default::default()
     };
-    let at = Some(Utc::now() - chrono::Duration::minutes(5));
+    // The start of the current hour: one minute bucket for both samples, and
+    // the hour the rollup below reads (now − 5 min was the previous hour
+    // during the first five minutes of every hour).
+    use chrono::DurationRound;
+    let at = Some(
+        Utc::now()
+            .duration_trunc(chrono::Duration::hours(1))
+            .unwrap(),
+    );
     write_sample_at(&db.pool, n, &s(10.0, 4), at).await.unwrap();
     write_sample_at(&db.pool, n, &s(30.0, 8), at).await.unwrap();
     let pts = history(&db.pool, n, &range_spec("1h").unwrap())
