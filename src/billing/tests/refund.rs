@@ -646,6 +646,99 @@ async fn original_route_failure_and_reconciliation() {
     db.drop().await;
 }
 
+/// Audit 2026-10 P2-3: a gateway SYSTEM error (or any code that is not a
+/// definite refusal) is an unknown outcome: the request stays pending with
+/// the same number, nothing else may refund meanwhile (no second payout by
+/// another route), and the reconcile loop settles it once the gateway
+/// answers — one refund at the provider, ever.
+#[tokio::test]
+async fn original_route_system_error_stays_pending() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "p1-sys", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let c = user_client(&state, db.user().await).await;
+    let o = bought(&db, &c, plan, "month").await;
+    let otn = otn_of(&db, o).await;
+
+    mock.refuse_refunds(Some("ACQ.SYSTEM_ERROR"));
+    let r = refund(&admin, o, json!({"reason": "r", "original": true})).await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{:?}", r.json());
+    let req = request_of(&db, o).await;
+    assert_eq!(req["state"], "pending");
+    assert_eq!(req["out_request_no"], format!("{otn}R1"));
+    assert!(req["last_error"].as_str().unwrap().contains("SYSTEM_ERROR"));
+    // Pending blocks every other way to refund the same order.
+    for body in [
+        json!({"reason": "r", "to_balance": true}),
+        json!({"reason": "r", "original": true, "original_cents": 500}),
+    ] {
+        assert_eq!(
+            refund(&admin, o, body).await.json()["code"],
+            "order_admin.refund_in_progress"
+        );
+    }
+    // The tick keeps asking (same number), whatever unlisted code comes back.
+    for code in ["ACQ.SYSTEM_ERROR", "isp.unknow-error", "ACQ.SOMETHING_NEW"] {
+        mock.refuse_refunds(Some(code));
+        sqlx::query(
+            "UPDATE orders SET refund_request = jsonb_set(refund_request, '{next_at}', \
+             to_jsonb(now() - interval '1 second')) WHERE id = $1",
+        )
+        .bind(o)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(super::super::refund::refund_tick(&state).await.unwrap(), 1);
+        let req = request_of(&db, o).await;
+        assert_eq!(req["state"], "pending", "{code}");
+        assert!(req["last_error"].as_str().unwrap().contains(code), "{code}");
+    }
+    assert!(mock.refunds().is_empty());
+
+    mock.refuse_refunds(None);
+    sqlx::query(
+        "UPDATE orders SET refund_request = jsonb_set(refund_request, '{next_at}', \
+         to_jsonb(now() - interval '1 second')) WHERE id = $1",
+    )
+    .bind(o)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(super::super::refund::refund_tick(&state).await.unwrap(), 1);
+    assert_eq!(request_of(&db, o).await["state"], "done");
+    assert_eq!(mock.refunds().len(), 1);
+    assert_eq!(mock.refunds()[&format!("{otn}R1")].1, "10.00");
+    db.drop().await;
+}
+
+#[test]
+fn only_definite_alipay_refusals_fail_a_refund() {
+    use super::super::alipay::refund_refused;
+    for sub in [
+        "ACQ.SELLER_BALANCE_NOT_ENOUGH",
+        "ACQ.REFUND_AMT_NOT_EQUAL_TOTAL",
+        "ACQ.TRADE_NOT_EXIST",
+        "ACQ.TRADE_NOT_ALLOW_REFUND",
+    ] {
+        assert!(refund_refused("40004", sub), "{sub}");
+    }
+    assert!(refund_refused("40002", ""));
+    for (code, sub) in [
+        ("40004", "ACQ.SYSTEM_ERROR"),
+        ("20000", "isp.unknow-error"),
+        ("40004", "ACQ.DISCORDANT_REPEAT_REQUEST"),
+        ("40004", "ACQ.SOMETHING_NEW"),
+        ("40004", ""),
+        ("", ""),
+    ] {
+        assert!(!refund_refused(code, sub), "{code} {sub}");
+    }
+}
+
 /// The channel's switch: off = no original-route refunds (the other two
 /// ways stay).
 #[tokio::test]
