@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PageTitle from '../components/flat/PageTitle.svelte';
   import Monitor from '@lucide/svelte/icons/monitor';
   import Moon from '@lucide/svelte/icons/moon';
   import Sun from '@lucide/svelte/icons/sun';
@@ -96,25 +97,20 @@
   ];
 </script>
 
-<div class="ph">
-  <div>
-    <h1>{t('设置')}</h1>
-    <p>{t('账户、登录与安全、订阅链接、语言与明暗。')}</p>
-  </div>
-</div>
+<PageTitle title={t('设置')} sub={t('账户、登录与安全、订阅链接、语言与明暗。')} />
 
-<div class="settings">
-  <nav aria-label={t('设置分区')} class="snav">
+<div class="settings-page">
+  <nav aria-label={t('设置分区')} class="settings-nav">
     <ul>
       {#each PARTS as x (x.id)}
-        <li><a href="#{x.id}" aria-current={active === x.id ? 'location' : undefined} onclick={(e) => jump(e, x.id)}>{t(x.label)}</a></li>
+        <li><a class="settings-nav-link" href="#{x.id}" aria-current={active === x.id ? 'location' : undefined} onclick={(e) => jump(e, x.id)}>{t(x.label)}</a></li>
       {/each}
     </ul>
   </nav>
 
   <div class="parts">
-    <section id="account" class="part" aria-labelledby="h-account">
-      <h2 id="h-account">{t('账户')}</h2>
+    <section id="account" class="sec" aria-labelledby="h-account">
+      <div class="sec-head"><div><h2 id="h-account" class="sec-title">{t('账户')}</h2></div></div>
       <div class="set-row">
         <div class="set-l">
           <div class="set-t">{t('邮箱')}</div>
@@ -123,7 +119,7 @@
         <div class="set-r">
           <span class="val email">
             {me?.email}
-            {#if me?.email_verified}<span class="st ok">{t('已验证')}</span>{:else}<span class="st warn">{t('未验证')}</span>{/if}
+            {#if me?.email_verified}<span class="bdg ok12">{t('已验证')}</span>{:else}<span class="bdg warn12">{t('未验证')}</span>{/if}
           </span>
           {#if s.mail}
             <span class="btns">
@@ -156,8 +152,8 @@
 
     <Security />
 
-    <section id="subscription" class="part" aria-labelledby="h-subscription">
-      <h2 id="h-subscription">{t('订阅链接')}</h2>
+    <section id="subscription" class="sec" aria-labelledby="h-subscription">
+      <div class="sec-head"><div><h2 id="h-subscription" class="sec-title">{t('订阅链接')}</h2></div></div>
       <div class="set-row">
         <div class="set-l">
           <div class="set-t">{t('订阅链接')}</div>
@@ -182,8 +178,8 @@
       </div>
     </section>
 
-    <section id="preferences" class="part" aria-labelledby="h-preferences">
-      <h2 id="h-preferences">{t('偏好')}</h2>
+    <section id="preferences" class="sec" aria-labelledby="h-preferences">
+      <div class="sec-head"><div><h2 id="h-preferences" class="sec-title">{t('偏好')}</h2></div></div>
       <div class="set-row">
         <div class="set-l">
           <div class="set-t">{t('界面语言')}</div>
@@ -215,8 +211,8 @@
       </div>
     </section>
 
-    <section id="danger" class="part" aria-labelledby="h-danger">
-      <h2 id="h-danger">{t('危险操作')}</h2>
+    <section id="danger" class="sec settings-danger" aria-labelledby="h-danger">
+      <div class="sec-head"><div><h2 id="h-danger" class="sec-title">{t('危险操作')}</h2></div></div>
       <div class="set-row">
         <div class="set-l">
           <div class="set-t">{t('注销账户')}</div>
@@ -241,40 +237,15 @@
 {/if}
 
 <style>
-  .settings { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 56px; }
-  .snav ul { position: sticky; top: 88px; display: flex; flex-direction: column; list-style: none; border-left: 1px solid var(--line); }
-  .snav a {
-    display: block; margin-left: -1px; padding: 6px 0 6px 14px; border-left: 2px solid transparent;
-    color: var(--muted); font-size: 13.5px; white-space: nowrap;
-  }
-  .snav a:hover { color: var(--fg); }
-  .snav a[aria-current='location'] { color: var(--fg); font-weight: 600; border-left-color: var(--brand); }
-
-  .parts { min-width: 0; }
-  .parts :global(.part) { scroll-margin-top: 80px; padding-bottom: 36px; }
-  .parts :global(.part + .part) { padding-top: 4px; }
-  .parts :global(.part > h2) { margin-bottom: 4px; font-size: 15px; line-height: 24px; font-weight: 600; color: var(--fg); }
-  .email { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; overflow-wrap: anywhere; }
-  .seg { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--line2); border-radius: 8px; }
+  .email { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+  .seg { display: inline-flex; align-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 9999px; }
   .seg button {
-    min-width: 34px; height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--muted);
-    font: inherit; font-size: 12.5px; font-weight: 500; cursor: pointer;
+    height: 24px; padding: 0 8px; border: 0; border-radius: 9999px; background: none; color: var(--muted);
+    font: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
   }
-  .seg button.ic { display: inline-grid; place-items: center; padding: 0; width: 34px; }
+  .seg button.ic { display: inline-grid; place-items: center; padding: 0; width: 32px; }
   .seg button:hover { color: var(--fg); }
   .seg button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
   .bad { color: var(--danger); }
   .bad:hover { border-color: var(--danger); }
-
-  @media (max-width: 960px) {
-    .settings { grid-template-columns: minmax(0, 1fr); gap: 0; }
-    .snav { position: sticky; top: 61px; z-index: 5; margin: 0 -16px 20px; padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--line); }
-    .snav ul { position: static; flex-direction: row; gap: 22px; border-left: 0; overflow-x: auto; scrollbar-width: none; }
-    .snav a { margin: 0; padding: 12px 0 10px; border-left: 0; border-bottom: 2px solid transparent; }
-    .snav a[aria-current='location'] { border-bottom-color: var(--brand); }
-    .parts :global(.part) { scroll-margin-top: 120px; }
-  }
-  @media (max-width: 720px) {
-    .snav { top: 57px; }
-  }
 </style>

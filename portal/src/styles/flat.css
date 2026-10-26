@@ -639,3 +639,25 @@
 .sel-item[data-highlighted] { background: var(--hover); }
 .sel-item[data-disabled] { opacity: .5; pointer-events: none; }
 .sel-ck { position: absolute; right: 8px; pointer-events: none; }
+
+/* 设置页（v1.4.0 index.css 的 .settings-*） */
+.parts { min-width: 0; }
+.settings-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 56px; margin-top: 8px; }
+@media (min-width: 1024px) { .settings-page { grid-template-columns: 184px minmax(0, 760px); } }
+.settings-nav { position: sticky; top: 64px; z-index: 10; min-width: 0; margin-inline: -16px; padding: 10px 16px; background: color-mix(in srgb, var(--bg) 95%, transparent); border-bottom: 1px solid var(--line); }
+.settings-nav ul { display: flex; gap: 4px; list-style: none; overflow-x: auto; scrollbar-width: none; }
+.settings-nav-link { display: block; white-space: nowrap; border-radius: 9999px; padding: 6px 12px; font-size: 13px; color: var(--muted); transition: color var(--dur-hover), background-color var(--dur-hover); }
+.settings-nav-link:hover { color: var(--fg); }
+.settings-nav-link[aria-current] { color: var(--fg); background: var(--hover); font-weight: 500; }
+@media (min-width: 1024px) {
+  .settings-nav { top: 96px; align-self: start; margin: 44px 0 0; padding: 0; background: none; border: 0; }
+  .settings-nav ul { flex-direction: column; overflow: visible; }
+  .settings-nav-link { border-radius: 8px; padding: 7px 12px; }
+}
+.settings-page .sec-title { font-size: 15.5px; letter-spacing: -.01em; color: var(--fg); }
+.settings-page .sec-head { margin-bottom: 14px; }
+.settings-page .sec { padding-block: 36px; }
+.settings-page .sec[id] { scroll-margin-top: 128px; }
+@media (min-width: 1024px) { .settings-page .sec[id] { scroll-margin-top: 80px; } }
+.settings-page .sec.settings-danger { margin-top: 36px; padding: 24px 20px; border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); border-radius: 14px; }
+.settings-danger .sec-title { color: var(--danger); }
