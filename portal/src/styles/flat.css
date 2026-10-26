@@ -260,7 +260,6 @@
 .bdg.success { background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ok); }
 .bdg.warning { background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--warn); }
 .bdg.danger { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
-.bdg.outline { border-color: var(--line); color: var(--fg); }
 .bdg.ml { margin-left: 4px; }
 .bdg.ok12 { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .bdg.warn12 { background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--warn); }

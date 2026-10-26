@@ -14,9 +14,7 @@ export type PageProps = { title: string; params?: Record<string, string> };
 export type PageModule = { default: Component<PageProps> | Component<Record<string, never>> };
 export type Page = { path: string; title: string; layout: Layout; load: () => Promise<PageModule> };
 
-const placeholder = () => import('../pages/Placeholder.svelte');
-
-const dash = (path: string, title: string, load: Page['load'] = placeholder): Page => ({ path, title, layout: 'dash', load });
+const dash = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'dash', load });
 const guest = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'guest', load });
 const pub = (path: string, title: string, load: Page['load']): Page => ({ path, title, layout: 'public', load });
 const legal = () => import('../pages/Legal.svelte');

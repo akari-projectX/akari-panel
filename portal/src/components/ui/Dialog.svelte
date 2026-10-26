@@ -3,6 +3,7 @@
   import X from '@lucide/svelte/icons/x';
   import type { Snippet } from 'svelte';
   import { t } from '$lib/i18n.svelte';
+  import { trackViewport } from '$lib/visual-viewport';
 
   /*
    * 对话框（bits-ui Dialog：焦点困在框里、Esc、点遮罩、锁滚动、关闭后焦点还给触发它的元素、aria-modal / 标题 / 说明）。
@@ -28,6 +29,9 @@
     children?: Snippet;
     footer?: Snippet;
   } = $props();
+
+  /* 开着时跟踪可见视口：手机弹出软键盘，弹窗挪到键盘上方（v1.4.0） */
+  $effect(() => (open ? trackViewport() : undefined));
 
   /* AlertDialog 与 Dialog 共用同一份根状态（Title / Description / Close 通用），只换 Root 与 Content 的角色 */
   const D = $derived(alert ? AlertDialog : Dialog);

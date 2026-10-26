@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import ErrorScreen from './components/ErrorScreen.svelte';
   import PageView from './components/PageView.svelte';
   import DashLayout from './layouts/DashLayout.svelte';
@@ -8,7 +8,7 @@
   import { auth, refresh, scope, siteName } from '$lib/auth.svelte';
   import { boot, startBoot } from '$lib/boot.svelte';
   import { t } from '$lib/i18n.svelte';
-  import { REDIRECTS, match } from '$lib/pages';
+  import { REDIRECTS, match, type Page } from '$lib/pages';
   import { prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
   import { loc, navigate } from '$lib/router.svelte';
   import { allowed, R, safeRedirect } from '$lib/routes';
@@ -76,13 +76,43 @@
   /* 公开页（条款、隐私、重设密码……）：登录了就用用户中心的页头（v1.4.0 SiteLayout），没登录用访客页头 */
   const dash = $derived(found ? found.page.layout === 'dash' || !!auth.me : !!auth.me);
 
+  /*
+   * 切页外壳（v1.4.0 page-transition）：旧页面淡出（--dur-exit）→ 回到页首 → 新页面淡入（PageView 的 .page）。
+   * 旧页面这一份实例留在原地淡出（shown 是它的页面与参数）；退场期间又切了一次：退完时直接换成最新的那一页。
+   * 刷新后的第一页不播退场；系统要求减少动效时直接换页。
+   */
+  type Shown = { path: string; page: Page; params: Record<string, string> };
+  let shown = $state<Shown | null>(null);
+  let leaving = $state(false);
+  let latest: Shown | null = null;
+  let leaveTimer: ReturnType<typeof setTimeout> | undefined;
+  const swap = () => {
+    leaveTimer = undefined;
+    if (!latest) return;
+    if (!location.hash) window.scrollTo(0, 0);
+    shown = latest;
+    leaving = false;
+  };
+  $effect(() => {
+    const cur: Shown | null = view.kind === 'page' && found ? { path: loc.path, page: found.page, params: found.params } : null;
+    untrack(() => {
+      latest = cur;
+      if (!cur) { clearTimeout(leaveTimer); leaveTimer = undefined; shown = null; leaving = false; if (view.kind !== 'wait') window.scrollTo(0, 0); return; }
+      if (!shown || shown.path === cur.path) { shown = cur; return; }
+      if (leaveTimer) return;
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) { swap(); return; }
+      leaving = true;
+      leaveTimer = setTimeout(swap, 100);
+    });
+  });
+
   onMount(startBoot);
 </script>
 
 {#snippet content()}
-  {#if view.kind === 'page' && found}
-    {#key loc.path}
-      <PageView page={found.page} params={found.params} />
+  {#if view.kind === 'page' && found && shown}
+    {#key shown.path}
+      <PageView page={shown.page} params={shown.params} {leaving} />
     {/key}
   {:else if view.kind === 'notfound'}
     <ErrorScreen kind="notfound" />

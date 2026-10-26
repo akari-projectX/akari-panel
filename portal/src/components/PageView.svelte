@@ -11,7 +11,7 @@
    * 一页：按需下载页面分包（重试 / 新版本自动重新加载见 lib/lazy.ts），下载期间拖住启动画面。
    * 下载过的分包同步渲染，不闪加载态。App 用 {#key 地址} 包着它：换页 = 新实例。
    */
-  let { page, params }: { page: Page; params: Record<string, string> } = $props();
+  let { page, params, leaving = false }: { page: Page; params: Record<string, string>; leaving?: boolean } = $props();
 
   // svelte-ignore state_referenced_locally
   let mod = $state<PageModule | undefined>(loadedPage(page.load));
@@ -29,7 +29,7 @@
 </script>
 
 {#if View}
-  <div class="page">
+  <div class="page" class:out={leaving}>
     <View title={page.title} {params} />
   </div>
 {:else if failed}
