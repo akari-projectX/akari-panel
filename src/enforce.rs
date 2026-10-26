@@ -109,6 +109,19 @@ pub async fn apply_expiry(conn: &mut PgConnection) -> sqlx::Result<Vec<Uuid>> {
 }
 
 pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
+    run_passes(|pass| run_pass(state, pass)).await
+}
+
+/// Every pass, in order, even when an earlier one fails: one pass that
+/// keeps failing on bad data must not switch off the traffic limit or the
+/// expiry enforcement behind it (audit P2-3). Each failure is logged and
+/// counted (`enforcement_pass`); the first error is returned at the end.
+async fn run_passes<F, Fut>(run: F) -> anyhow::Result<()>
+where
+    F: Fn(Pass) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
+    let mut first_error = None;
     // Plan passes first: a due reset re-enables before the limit pass
     // would look at the old usage.
     for pass in [
@@ -119,19 +132,18 @@ pub async fn run_all(state: &crate::state::AppState) -> anyhow::Result<()> {
         Pass::Commissions,
         Pass::ServerQuota,
     ] {
-        let name = match pass {
-            Pass::PlanExpiry => "plan_expiry",
-            Pass::Resets => "period_reset",
-            Pass::Limits => "limits",
-            Pass::Expiry => "expiry",
-            Pass::Commissions => "commissions",
-            Pass::ServerQuota => "server_quota_reset",
-        };
-        let r = run_pass(state, pass).await;
-        crate::metrics::enforcement_pass(name, r.is_ok());
-        r?;
+        let name = pass.name();
+        let result = run(pass).await;
+        crate::metrics::enforcement_pass(name, result.is_ok());
+        if let Err(e) = result {
+            tracing::warn!(pass = name, error = %e, "enforcement pass failed; continuing with the next");
+            first_error.get_or_insert(e);
+        }
     }
-    Ok(())
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<()> {
@@ -174,6 +186,20 @@ enum Pass {
     Expiry,
     Commissions,
     ServerQuota,
+}
+
+impl Pass {
+    /// The `enforcement_pass` metric label.
+    fn name(self) -> &'static str {
+        match self {
+            Pass::PlanExpiry => "plan_expiry",
+            Pass::Resets => "period_reset",
+            Pass::Limits => "limits",
+            Pass::Expiry => "expiry",
+            Pass::Commissions => "commissions",
+            Pass::ServerQuota => "server_quota_reset",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +334,59 @@ mod tests {
         run_all(&state).await.unwrap();
         assert_eq!(user_row(&db, u).await, (false, Some("quota".into()), false));
         assert_eq!(db.versions(n).await.1, v1.1 + 1);
+        db.drop().await;
+    }
+
+    /// Audit P2-3: a failing early pass does not keep the traffic limit
+    /// (or any later pass) from running; the failure is still returned.
+    #[tokio::test]
+    async fn a_failing_pass_does_not_skip_the_later_ones() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let (n, over) = db.member().await;
+        set(
+            &db,
+            over,
+            "traffic_limit_bytes = 100, traffic_used_bytes = 101",
+        )
+        .await;
+        let before = db.versions(n).await;
+        let ran = std::sync::Mutex::new(Vec::new());
+        let result = run_passes(|pass| {
+            ran.lock().expect("test mutex").push(pass.name());
+            let state = &state;
+            async move {
+                match pass {
+                    Pass::PlanExpiry | Pass::Resets => Err(anyhow::anyhow!("injected failure")),
+                    other => run_pass(state, other).await,
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap_err().to_string(), "injected failure");
+        assert_eq!(
+            *ran.lock().expect("test mutex"),
+            [
+                "plan_expiry",
+                "period_reset",
+                "limits",
+                "expiry",
+                "commissions",
+                "server_quota_reset"
+            ]
+        );
+        assert_eq!(
+            user_row(&db, over).await,
+            (false, Some("quota".into()), false),
+            "the limit pass must still run"
+        );
+        assert_eq!(
+            db.versions(n).await.1,
+            before.1 + 1,
+            "the user's node is bumped"
+        );
         db.drop().await;
     }
 }
