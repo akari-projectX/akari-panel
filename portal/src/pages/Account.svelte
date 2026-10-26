@@ -1,5 +1,5 @@
 <script lang="ts">
-  import '../styles/pages.css';
+  import '../styles/pages/account.css';
   import PageTitle from '../components/flat/PageTitle.svelte';
   import Monitor from '@lucide/svelte/icons/monitor';
   import Moon from '@lucide/svelte/icons/moon';

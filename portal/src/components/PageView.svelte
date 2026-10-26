@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { holdBoot } from '$lib/boot.svelte';
+  import { boot, holdBoot } from '$lib/boot.svelte';
   import { chunkLoaded, loadPage, loadedPage } from '$lib/lazy';
   import type { Component } from 'svelte';
   import type { Page, PageModule, PageProps } from '$lib/pages';
@@ -13,6 +13,10 @@
    */
   let { page, params, leaving = false }: { page: Page; params: Record<string, string>; leaving?: boolean } = $props();
 
+  // svelte-ignore state_referenced_locally
+  /* 刷新后的第一页：启动画面盖着它，收起时的淡出就是入场，不再播 .page 的淡入（它会拖慢 LCP 的计时，而且白播） */
+  // svelte-ignore state_referenced_locally
+  const first = !boot.out;
   // svelte-ignore state_referenced_locally
   let mod = $state<PageModule | undefined>(loadedPage(page.load));
   let failed = $state(false);
@@ -29,7 +33,7 @@
 </script>
 
 {#if View}
-  <div class="page" class:out={leaving}>
+  <div class="page" class:out={leaving} class:first>
     <View title={page.title} {params} />
   </div>
 {:else if failed}
