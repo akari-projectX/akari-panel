@@ -1122,6 +1122,7 @@ export const EN: Record<string, string> = {
   '上一篇 / 下一篇': 'Previous / next',
   '客服有新回复': 'New reply from support',
   /* ── 门户恢复 v1.4.0 ── */
+  '阅读教程': 'Read',
   '线路分布': 'By line',
   '这段时间的流量落在各条线路上的比例（原始流量）': "How this period's raw traffic splits across lines",
   '（上行 + 下行）× 倍率，也就是真正扣掉的量': '(upload + download) × multiplier — what is actually counted',
