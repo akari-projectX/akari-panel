@@ -586,7 +586,7 @@ async fn batch(
         }
         _ => {}
     }
-    let mut ids: Vec<&str> = Vec::with_capacity(req.ids.len());
+    let mut ids: Vec<&str> = Vec::with_capacity(req.ids.len().min(BATCH_MAX));
     for raw in &req.ids {
         let id = cf_id(raw)?;
         if !ids.contains(&id) {
