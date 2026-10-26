@@ -65,6 +65,7 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户�
 
 - **面板先行**：契约（`proto/agent.proto`）或依赖新 agent 能力的功能，面板 PR 先合、agent PR 后合（agent 的 `check-proto` 对比面板 main，面板未合前预期失败；流程见 `akari-agent/CLAUDE.md`「契约变更的合并顺序」）。联调用本仓 ci 的 `workflow_dispatch`（`agent_ref=<agent 分支>`），该模式 `SMOKE_REQUIRE_AGENT=1`：任何 SKIP 都是失败。
 - **smoke 能力闸门**（`smoke.sh`「W12: agent capabilities」）：从管理 API 读 agent 的 `agent_protocol`/`agent_capabilities`（Hello 记录，迁移 0090），并与 agent 检出源码里的 `agentProtocol`/`agentCapabilities` 比对，**不一致即失败**（所以 SKIP 不能掩盖回归：main 上的 agent 有该能力时段落必跑）。依赖 agent 的段落用 `need_agent "protocol>=N"|"cap:NAME" "<段名>"` 包住，缺能力时打印 `SKIP: agent lacks …`、GitHub warning 注解、结尾汇总与 job summary。现有闸门：W8 协议矩阵与 W9 SS2022（协议 ≥4）、W7 限速吞吐（≥4，否则断言 NodeView 警告）、W10 ACME（≥6）、W11 机器状态（`metrics`）与延迟（`latency`）。新增依赖 agent 的段落必须同样加闸门；面板侧断言不得放进闸门。
+- **跑完再报（CI 提速）**：`smoke.sh` 在 `# smoke-sections-begin` 之后按 `echo "== 标题 =="` 行切成段（文件仍是一份线性脚本，shellcheck 照常检查），每段在自己的子shell 里带 `set -e` 运行（断言失败 = 该段结束，与以前整次结束的语义一致），段后的变量、数组、函数交给下一段（`smoke_save_state`）；某段失败不终止整次，结尾列出全部失败段并以非 0 退出（第一个失败是根因，后面的可能是连锁）。建立夹具的段（`SMOKE_FATAL`：面板、管理员、服务器、节点、agent）失败则立即结束。段内**不要**用 `trap … EXIT`（设 `EXIT_EXTRA='docker rm -f …'`，退出时由 `smoke_exit` 执行）、`declare`/`local`（段是函数体，顶层 `declare` 会变成局部变量）。smoke 不拆成并行 job：约 500 秒的段共享同一个面板 + agent 状态，最长的 M6 自更新（约 100 秒）依赖前面段落留下的节点，拆开要为每个 job 重建夹具，省不下多少。
 - **管道**：smoke/scripts 里禁止 `cmd | grep -q`/`| head -1`（grep -q 先退出 → 写端 EPIPE → pipefail 失败，偶发）；用 `cmd | matches …`（读完全部输入）与 `| sed -n 1p`。smoke 开头有自检，违例直接失败。
 
 ## 硬性不变量
