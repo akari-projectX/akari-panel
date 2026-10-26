@@ -1,8 +1,11 @@
 //! The SSRF guard of every panel request to an operator-supplied URL
 //! (remote rule-sets, `sub::rulesets::fetch`):
 //!
-//! * https only (plain http only to 127.0.0.1 when a test switch allows
-//!   it — `Policy::loopback_http`); no user info, no fragment;
+//! * https only (plain http only to a loopback host — 127.0.0.0/8, ::1,
+//!   `localhost` — when the caller's `Policy::loopback_http` allows it: the
+//!   documented exception of alert webhooks / a self-hosted Telegram Bot
+//!   API, the update-check source and local mock gateways; the address
+//!   must then really be loopback); no user info, no fragment;
 //! * the host is resolved here and EVERY address must be public
 //!   (`public_address`: no loopback, private, link-local / metadata
 //!   169.254.169.254, CGNAT, ULA, multicast, documentation, benchmarking,
@@ -23,12 +26,21 @@ use hyper::body::{Bytes, Incoming};
 use hyper::header;
 use hyper_util::rt::TokioIo;
 
-/// What a request may do beyond the rules above (tests only).
+/// What a request may do beyond the rules above.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Policy {
-    /// Plain http to 127.0.0.1 (the address guard is skipped for it).
+    /// Plain http to a loopback host (`is_loopback_host`); every address
+    /// the name resolves to must be loopback, the public-address guard is
+    /// skipped for it.
     pub loopback_http: bool,
 }
+
+/// Policy of the operator-configured callbacks (webhook, Telegram, the
+/// update source, payment gateways): https to public addresses, plain http
+/// only to loopback.
+pub const OPERATOR: Policy = Policy {
+    loopback_http: true,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
@@ -140,7 +152,9 @@ pub fn target(url: &str, policy: Policy) -> Result<Target, FetchError> {
     }
     let tls = match uri.scheme_str() {
         Some("https") => true,
-        Some("http") if policy.loopback_http && host == "127.0.0.1" => false,
+        Some("http") if policy.loopback_http && crate::billing::http::is_loopback_host(&host) => {
+            false
+        }
         _ => return Err(failed("the URL must be https")),
     };
     let port = auth.port_u16().unwrap_or(if tls { 443 } else { 80 });
@@ -163,9 +177,22 @@ pub fn target(url: &str, policy: Policy) -> Result<Target, FetchError> {
 /// (one private answer refuses the whole name).
 async fn addresses(t: &Target) -> Result<Vec<SocketAddr>, FetchError> {
     if !t.tls {
-        // Plain http is only ever the loopback test fixture.
-        return Ok(vec![SocketAddr::from(([127, 0, 0, 1], t.port))]);
+        // Plain http is loopback only: resolve and require loopback.
+        let addrs = resolve(t).await?;
+        if addrs.iter().any(|a| !a.ip().to_canonical().is_loopback()) {
+            return Err(FetchError::Blocked);
+        }
+        return Ok(addrs);
     }
+    let addrs = resolve(t).await?;
+    if addrs.iter().any(|a| !public_address(a.ip())) {
+        return Err(FetchError::Blocked);
+    }
+    Ok(addrs)
+}
+
+/// The (at most 16) addresses of `t`'s host.
+async fn resolve(t: &Target) -> Result<Vec<SocketAddr>, FetchError> {
     let addrs: Vec<SocketAddr> = match t.host.parse::<IpAddr>() {
         Ok(ip) => vec![SocketAddr::new(ip, t.port)],
         Err(_) => tokio::net::lookup_host((t.host.as_str(), t.port))
@@ -176,9 +203,6 @@ async fn addresses(t: &Target) -> Result<Vec<SocketAddr>, FetchError> {
     };
     if addrs.is_empty() {
         return Err(failed("the name does not resolve"));
-    }
-    if addrs.iter().any(|a| !public_address(a.ip())) {
-        return Err(FetchError::Blocked);
     }
     Ok(addrs)
 }
@@ -415,7 +439,9 @@ mod tests {
             loopback_http: true,
         };
         assert!(target("http://127.0.0.1:18205/a.list", test).is_ok());
-        assert!(target("http://localhost:18205/a.list", test).is_err());
+        // A loopback NAME too (its addresses must then all be loopback).
+        assert!(target("http://localhost:18205/a.list", test).is_ok());
+        assert!(target("http://127.0.0.1.evil.test/a.list", test).is_err());
         assert!(target("http://10.0.0.1/a.list", test).is_err());
         assert_eq!(
             FetchError::TooLarge.to_string(),
@@ -508,5 +534,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((status, &body[..]), (200, &b"{\"a\":1}"[..]));
+    }
+
+    #[tokio::test]
+    async fn operator_policy_reaches_loopback_over_http_only() {
+        let t = target("http://localhost:8080/x", OPERATOR).unwrap();
+        assert!(!t.tls);
+        assert!(target("http://[::1]:8080/", OPERATOR).is_ok());
+        assert!(target("http://127.0.0.2/", OPERATOR).is_ok());
+        for bad in [
+            "http://example.com/",
+            "http://10.0.0.1/",
+            "http://127.0.0.1.evil.test/",
+        ] {
+            assert!(target(bad, OPERATOR).is_err(), "{bad}");
+        }
+        // The default policy has no plain http at all.
+        assert!(target("http://127.0.0.1/", Policy::default()).is_err());
+        // https to a non-public address: refused before any connection
+        // (every address of the name must be public).
+        for url in [
+            "https://10.0.0.1/",
+            "https://127.0.0.1:1/",
+            "https://[::1]/",
+            "https://169.254.169.254/latest",
+            "https://[fd00:ec2::254]/",
+            "https://localhost:1/",
+        ] {
+            let t = target(url, OPERATOR).unwrap();
+            let r = send(&t, hyper::Method::GET, &[], Bytes::new()).await;
+            assert_eq!(r.err(), Some(FetchError::Blocked), "{url}");
+        }
     }
 }

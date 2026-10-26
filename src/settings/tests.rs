@@ -2303,7 +2303,11 @@ fn cloudflare_ranges_must_be_public_and_narrow() {
 fn shipped_cloudflare_ranges_pass_validation() {
     let list = include_str!("../cloudflare_ips.txt");
     let mut n = 0;
-    for l in list.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+    for l in list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    {
         assert!(cf(l), "{l}");
         n += 1;
     }
