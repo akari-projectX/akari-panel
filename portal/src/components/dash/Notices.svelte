@@ -6,6 +6,7 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { orderApi, type MyOrder, type TicketRow } from '@/api';
   import { formatMoney, formatTime, periodText } from '@/lib/format';
+  import type { TagView } from '$lib/announcement';
   import { auth, scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
@@ -23,8 +24,8 @@
     order: MyOrder | null;
     onorderchange: () => void;
     replied: TicketRow[];
-    /** 最新一条没读过的公告：标题与摘要；onopen = 点「查看详情」 */
-    latest: { title: string; brief: string } | null;
+    /** 最新一条没读过的公告：标题、摘要与标签（卡片左边一道同色细边）；onopen = 点「查看详情」 */
+    latest: { title: string; brief: string; tag: TagView | null } | null;
     onopen: () => void;
   } = $props();
 
@@ -125,10 +126,13 @@
   {/if}
 
   {#if latest}
-    <div class="notice">
+    <div class={['notice', latest.tag && `edge ${latest.tag.cls}`]}>
       <Megaphone size={16} strokeWidth={1.75} class="ic-brand" aria-hidden="true" />
       <div class="grow">
-        <div class="nt">{latest.title}</div>
+        <div class={['nt', latest.tag && 'tagged']}>
+          {#if latest.tag}<span class="tg {latest.tag.cls}">{latest.tag.name}</span>{/if}
+          <span class="trunc">{latest.title}</span>
+        </div>
         {#if latest.brief}<div class="nd">{latest.brief}</div>{/if}
       </div>
       <button type="button" class="btn sm" onclick={onopen}>{t('查看详情')}</button>

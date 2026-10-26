@@ -27,9 +27,12 @@
 
   /* ── 公告标签（实底，design/announcement-tags-2026-10） ── */
   .tg {
-    --c: var(--t-slate); display: inline-flex; align-items: center; flex: none; white-space: nowrap;
+    --c: var(--t-slate); display: inline-flex; align-items: center; flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-size: 12px; line-height: 20px; font-weight: 500; padding: 0 7px; border-radius: 5px; color: var(--on-solid); background: var(--c);
   }
+  .c-red { --c: var(--t-red); } .c-orange { --c: var(--t-orange); } .c-amber { --c: var(--t-amber); } .c-green { --c: var(--t-green); }
+  .c-teal { --c: var(--t-teal); } .c-cyan { --c: var(--t-cyan); } .c-blue { --c: var(--t-blue); } .c-indigo { --c: var(--t-indigo); }
+  .c-violet { --c: var(--t-violet); } .c-pink { --c: var(--t-pink); } .c-slate { --c: var(--t-slate); }
 /* ── 线路：地区码（等宽灰字）、状态（色点 + 文字）、倍率（纯文字右对齐）、线路标签（细描边） ── */
   .st { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .st::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }

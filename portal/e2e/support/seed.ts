@@ -173,8 +173,16 @@ for (const [route, body] of [
 }
 
 /* ── 内容：公告；知识库（分类 + 长文章，排版用例看它） ── */
+/* 公告标签：迁移预置了八个；种子里的两条公告各带一个（公告页用到的标签多于一个，筛选才出现） */
+const tags = await admin.call<{ id: string; name_zh: string }[]>('GET', '/api/v1/announcement-tags');
+const tagId = (name: string) => tags.find((x) => x.name_zh === name)?.id ?? null;
 await admin.call('POST', '/api/v1/announcements', {
   title_zh: 'E2E 维护通知', title_en: 'E2E maintenance', body_zh: '今晚 **维护** 一小时。', body_en: 'One hour of **maintenance** tonight.', pinned: true,
+  tag_id: tagId('维护'),
+});
+await admin.call('POST', '/api/v1/announcements', {
+  title_zh: 'E2E 双十一活动', title_en: 'E2E sale', body_zh: '全场八折，年付再送流量。', body_en: 'Everything 20% off.', pinned: false,
+  tag_id: tagId('活动'),
 });
 const win = await admin.call<{ id: string }>('POST', '/api/v1/kb/categories', { name_zh: 'Windows 教程', name_en: 'Windows guides' });
 const ios = await admin.call<{ id: string }>('POST', '/api/v1/kb/categories', { name_zh: 'iOS 与 iPadOS 教程', name_en: 'iOS and iPadOS guides' });

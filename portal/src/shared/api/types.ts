@@ -493,6 +493,9 @@ export type NewTicket = {
   order_id?: string;
 };
 
+/** 公告标签：两种语言的名称（英文可空，回落中文）与预设色键（red … slate，见 styles/tokens.css 的 --t-*） */
+export type AnnouncementTag = { id: string; name_zh: string; name_en: string | null; color: string };
+
 export type Announcement = {
   id: string;
   title_zh: string;
@@ -501,6 +504,7 @@ export type Announcement = {
   html_zh: string;
   html_en: string | null;
   pinned: boolean;
+  tag: AnnouncementTag | null;
   created_at: string;
   read: boolean;
 };
