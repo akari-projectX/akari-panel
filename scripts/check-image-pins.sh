@@ -8,20 +8,22 @@ set -eu
 cd "$(dirname "$0")/.."
 bad=0
 
-dockerfiles=$(git ls-files 'Dockerfile' '*/Dockerfile')
-for f in $dockerfiles; do
-	stages=$(sed -n 's/^FROM .* [Aa][Ss] \([A-Za-z0-9_.-]*\)$/\1/p' "$f")
-	sed -n 's/^FROM \(--[a-z]*=[^ ]* \)*\([^ ]*\).*/\2/p' "$f" | while read -r ref; do
+# FROM lines: a stage of the same Dockerfile, scratch and a stage picked by
+# a build arg (base-${...}: every candidate stage is itself pinned) are fine.
+for f in $(git ls-files 'Dockerfile' '*/Dockerfile'); do
+	stages=$(sed -n 's/^FROM .* [Aa][Ss] \([A-Za-z0-9_.-]*\)$/\1/p' "$f" | tr '\n' ' ')
+	refs=$(sed -n 's/^FROM \(--[a-z]*=[^ ]* \)*\([^ ]*\).*/\2/p' "$f")
+	for ref in $refs; do
 		case "$ref" in
-		scratch | *@sha256:*) continue ;;
-		base-\$\{*) continue ;; # stage chosen by build arg: all candidate stages are pinned
+		scratch | *@sha256:* | base-\$\{*) continue ;;
 		esac
-		if ! printf '%s\n' "$stages" | grep -qx "$ref"; then
-			echo "unpinned FROM in $f: $ref" >&2
-			echo bad
-		fi
+		case " $stages " in
+		*" $ref "*) continue ;;
+		esac
+		echo "unpinned FROM in $f: $ref" >&2
+		bad=1
 	done
-done | grep -q bad && bad=1
+done
 
 images=$(git ls-files '*compose*.yml' '.github/workflows/*.yml' |
 	xargs grep -Hn -E '^[[:space:]]*image:[[:space:]]+[a-z]' 2>/dev/null |
