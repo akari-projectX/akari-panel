@@ -1490,9 +1490,8 @@ echo "== W11: node form fields, multiplier billing, machine status, latency =="
 # Agent-side assertions need the agent capabilities "metrics" / "latency"
 # (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
-# W28-a: multiplier and address belong to the (direct) entrance; 1104: so
-# do the tags (node-level tags are legacy and named nowhere).
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","tags":["节点级"],"sort":1}')" = "200" ] \
+# W28-a: multiplier, address and tags belong to the (direct) entrance.
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","sort":1}')" = "200" ] \
   || { echo "FAIL: W11 node fields"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"traffic_rate":0.5}')" = "400" ] || { echo "FAIL: node-level multiplier accepted"; exit 1; }
 [ "$(entrance_patch '{"rate":0.5,"connect_host":"127.0.0.1","connect_port":11443,"tags":["IPLC","0.5x"]}')" = "200" ] \
@@ -1563,7 +1562,6 @@ echo "multiplier: ok (raw $RAW_D bytes, billed $USED_D at 0.5x)"
 subrl; curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" >"$LOG/w11-sub.yaml"
 grep -qx '  - name: 直连 | IPLC | 0.5x' "$LOG/w11-sub.yaml" || { echo "FAIL: subscription name"; head -20 "$LOG/w11-sub.yaml"; exit 1; }
 ! grep -q '冒烟 01' "$LOG/w11-sub.yaml" || { echo "FAIL: the landing node's name is in a subscription line name"; exit 1; }
-! grep -q '节点级' "$LOG/w11-sub.yaml" || { echo "FAIL: node-level tags in the subscription (1104)"; exit 1; }
 grep -q 'server: "127.0.0.1"' "$LOG/w11-sub.yaml" || { echo "FAIL: connect override not in subscription"; exit 1; }
 # The profile is named after the site: no quoted filename (clients showed
 # it as \"akari\"), the exact name in filename* and Profile-Title.
@@ -4475,7 +4473,7 @@ assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for 
   echo "update to v900.0.1 (updater unit): ok"
   # The installer took the units from the release (-print-unit), the
   # update kept them in step, and under them every machine metric is
-  # read (the pre-W23 ProcSubset=pid hid /proc: all 0).
+  # read (a sandbox with ProcSubset=pid would hide /proc: all unknown).
   for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
     udx "/usr/local/bin/akari-agent -print-unit $u | cmp -s - /etc/systemd/system/$u" \
       || { echo "FAIL: $u on the node is not the release's"; exit 1; }
