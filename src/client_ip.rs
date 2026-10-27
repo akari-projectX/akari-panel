@@ -204,6 +204,21 @@ pub fn resolve(peer: IpAddr, headers: &HeaderMap, trust: &Trust) -> IpAddr {
     genuine.last
 }
 
+/// Whether the client reached a trusted proxy over https: the TCP peer is a
+/// trusted proxy (or trusted Cloudflare edge) and its `X-Forwarded-Proto`
+/// ends in `https`. The rightmost element is the nearest proxy's own
+/// statement; from an untrusted peer the header is ignored.
+pub fn forwarded_https(peer: IpAddr, headers: &HeaderMap, trust: &Trust) -> bool {
+    trust.trusted(canonical(peer))
+        && headers
+            .get_all("x-forwarded-proto")
+            .iter()
+            .next_back()
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit(',').next())
+            .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
+}
+
 /// `CF-Connecting-IP`: exactly one header line holding one address.
 fn cf_connecting_ip(headers: &HeaderMap) -> Option<IpAddr> {
     let mut it = headers.get_all("cf-connecting-ip").iter();

@@ -456,6 +456,73 @@ curl -s --noproxy '*' -D - -o /dev/null "$BASE/healthz" | matches -i '^x-frame-o
   || { echo "FAIL: security headers missing on real responses"; exit 1; }
 echo "rejections: ok ($REJ)"
 
+echo "== audit batch 2: HSTS behind a trusted https proxy, cross-site writes =="
+# HSTS needs web.cookie_secure (the default) and a trusted proxy that says
+# "https"; this smoke's main panel runs plain-HTTP development
+# (cookie_secure = false), so a third instance with the production default
+# answers. Same database, no login (a Secure cookie would not travel over http).
+cat >"$LOG/panel-c.toml" <<'TOML'
+[web]
+bind = "127.0.0.1:8083"
+trusted_proxies = ["127.0.0.2/32"]
+[grpc]
+bind = "127.0.0.1:8445"
+TOML
+"$PANEL" -c "$LOG/panel-c.toml" serve >"$LOG/panel-c.log" 2>&1 &
+PANEL_C=$!
+EXIT_EXTRA="kill $PANEL_C 2>/dev/null || true"
+for _ in $(seq 1 40); do [ "$(code "http://127.0.0.1:8083/$PREFIX/healthz")" = "200" ] && break; sleep 0.5; done
+[ "$(code "http://127.0.0.1:8083/$PREFIX/healthz")" = "200" ] || { echo "FAIL: HSTS test instance did not start"; cat "$LOG/panel-c.log"; exit 1; }
+hsts_of() { curl -s --noproxy '*' -D - -o /dev/null "$@" | tr -d '\r' | sed -n 's/^[Ss]trict-[Tt]ransport-[Ss]ecurity: //p'; }
+C="http://127.0.0.1:8083"
+[ "$(hsts_of --interface 127.0.0.2 -H 'X-Forwarded-Proto: https' "$C/$PREFIX/healthz")" = "max-age=31536000" ] \
+  || { echo "FAIL: no HSTS on an https request through the trusted proxy"; exit 1; }
+[ "$(hsts_of --interface 127.0.0.2 -H 'X-Forwarded-Proto: https' "$C/healthz")" = "max-age=31536000" ] \
+  || { echo "FAIL: no HSTS on the portal entry"; exit 1; }
+[ -z "$(hsts_of --interface 127.0.0.2 -H 'X-Forwarded-Proto: http' "$C/$PREFIX/healthz")" ] \
+  || { echo "FAIL: HSTS on a plain-http request"; exit 1; }
+[ -z "$(hsts_of --interface 127.0.0.2 "$C/$PREFIX/healthz")" ] \
+  || { echo "FAIL: HSTS without X-Forwarded-Proto"; exit 1; }
+[ -z "$(hsts_of -H 'X-Forwarded-Proto: https' "$C/$PREFIX/healthz")" ] \
+  || { echo "FAIL: an untrusted client obtained HSTS by claiming https"; exit 1; }
+# The canonical rejection is untouched by the header.
+[ "$(fp --interface 127.0.0.2 -H 'X-Forwarded-Proto: https' "$C/definitely-not-here")" = "$REJ" ] \
+  || { echo "FAIL: the rejection changed behind an https proxy"; cat /tmp/akari-smoke/fphead; exit 1; }
+[ "$(fp --interface 127.0.0.2 -H 'X-Forwarded-Proto: https' "$C/$PREFIX/nope")" = "$REJ" ] \
+  || { echo "FAIL: an unknown route behind an https proxy is not the canonical rejection"; exit 1; }
+kill "$PANEL_C" 2>/dev/null; wait "$PANEL_C" 2>/dev/null || true
+EXIT_EXTRA=''
+# The main (cookie_secure = false) panel never sends it.
+[ -z "$(hsts_of --interface 127.0.0.2 -H 'X-Forwarded-Proto: https' "$BASE/healthz")" ] \
+  || { echo "FAIL: HSTS although web.cookie_secure is off"; exit 1; }
+# Sec-Fetch-Site: a cross-site write that carries the session cookie is
+# refused before any handler (portal and admin API); a missing header, a
+# same-origin one, reads and the public routes are unchanged.
+for u in "$ROOT/auth/logout" "$BASE/auth/logout" "$BASE/api/v1/nodes" "$ROOT/api/v1/me/password"; do
+  for m in POST PUT DELETE; do
+    [ "$(code -X "$m" -H 'Cookie: sid=bogus' -H 'Sec-Fetch-Site: cross-site' "$u")" = "403" ] \
+      && last_json "d['code']" | matches '^request.cross_site$' \
+      || { echo "FAIL: cross-site $m $u was not refused: $(cat /tmp/akari-smoke/last)"; exit 1; }
+  done
+  for site in same-origin same-site none; do
+    [ "$(code -X POST -H 'Cookie: sid=bogus' -H "Sec-Fetch-Site: $site" "$u")" != "403" ] \
+      || { echo "FAIL: Sec-Fetch-Site $site refused on $u"; exit 1; }
+  done
+  [ "$(code -X POST -H 'Cookie: sid=bogus' "$u")" != "403" ] || { echo "FAIL: a request without Sec-Fetch-Site was refused on $u"; exit 1; }
+  [ "$(code -X POST -H 'Sec-Fetch-Site: cross-site' "$u")" != "403" ] || { echo "FAIL: a cross-site write without a session was refused on $u"; exit 1; }
+done
+[ "$(code -H 'Cookie: sid=bogus' -H 'Sec-Fetch-Site: cross-site' "$BASE/healthz")" = "200" ] \
+  || { echo "FAIL: a cross-site read was refused"; exit 1; }
+for probe in \
+    "-X POST $ROOT/pay/00000000-0000-0000-0000-000000000000/notify" \
+    "-X POST $ROOT/install/x" \
+    "-X POST $SUBBASE/not-a-real-token"; do
+  # shellcheck disable=SC2086
+  [ "$(fp -H 'Cookie: sid=bogus' -H 'Sec-Fetch-Site: cross-site' $probe)" = "$REJ" ] \
+    || { echo "FAIL: cross-site header changed the answer of: $probe"; exit 1; }
+done
+echo "hsts + cross-site: ok"
+
 echo "== W27: bot protection of the public forms (default: honeypot + 2 s minimum) =="
 # Fingerprint without the per-request id (status, headers, body).
 fpr() { curl -s --noproxy '*' -D - "$@" | tr -d '\r' | grep -viE '^(date|x-request-id):' | sha256sum | cut -d' ' -f1; }

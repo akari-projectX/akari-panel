@@ -372,6 +372,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "release.upload_interrupted": ["上传中断，请重试", "Upload interrupted"],
   "request.body_too_large": ["提交的内容过大", "The request is too large"],
   "request.busy": ["服务器繁忙，请稍后再试", "The server is busy. Please try again shortly."],
+  "request.cross_site": ["请求来自其他网站，已被拒绝。请回到本站页面再操作", "The request came from another site and was refused. Go back to this site and try again."],
   "request.field_not_null": ["{field} 不能为空", "{field} cannot be empty"],
   "request.field_required": ["请填写 {field}", "{field} is required"],
   "request.field_too_long": ["{field} 最多 {max} 个字符", "{field} can be at most {max} characters"],

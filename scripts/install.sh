@@ -3342,6 +3342,8 @@ frontend akari_web
 	bind :80
 	bind :443 ssl crt /etc/haproxy/certs/$DOMAIN.pem alpn h2,http/1.1
 	http-request redirect scheme https unless { ssl_fc }
+	# Only https gets here; the panel sends HSTS when a trusted proxy says so.
+	http-request set-header X-Forwarded-Proto https
 	option forwardfor
 	default_backend akari_web
 
