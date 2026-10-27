@@ -3745,28 +3745,16 @@ resolve_lang() {
 	return 0
 }
 
-# become_root ARGS...: re-run as root through sudo. From a file: the same
-# file; piped (curl | sh): download the installer again (same release).
+# become_root ARGS...: re-run the installer file as root through sudo. A
+# piped installer (curl | sh) is NOT downloaded a second time: bytes fetched
+# again are not covered by any signature, and root would run them. It asks
+# for `curl … | sudo sh` instead.
 become_root() {
 	[ "$(id -u)" -ne 0 ] || return 0
+	[ -n "$SELF_FILE" ] || die piped_installer_needs_root "$RELEASES_URL/latest/download/install.sh"
 	have sudo || die run_as_root_or_install_sudo
 	keep='AKARI_JOIN_PASSPHRASE,AKARI_MODE,AKARI_DOMAIN,AKARI_PUBLIC_IP,AKARI_EMAIL,AKARI_ADMIN,AKARI_ADMIN_PASSWORD,AKARI_NODE_ADDRESS,AKARI_VERSION,AKARI_DOCKER_DIR,AKARI_RELEASES_URL,AKARI_COSIGN_KEY,AKARI_SOURCE_DIR,AKARI_BACKUP_AGENT_RELEASES,AKARI_LANG,AKARI_NO_BANNER,LANG,LC_ALL,LC_MESSAGES'
-	if [ -n "$SELF_FILE" ]; then
-		exec sudo --preserve-env="$keep" sh "$SELF_FILE" "$@"
-	fi
-	if [ "$INSTALLER_VERSION" != '@@AKARI_INSTALLER_VERSION@@' ]; then
-		url="$RELEASES_URL/download/$INSTALLER_VERSION/install.sh"
-	else
-		url="$RELEASES_URL/latest/download/install.sh"
-	fi
-	note re_running_through_sudo
-	t=$(mktemp)
-	fetch "$url" "$t" || die cannot_download_installer "$url"
-	chmod 0644 "$t"
-	sudo --preserve-env="$keep" sh "$t" "$@"
-	rc=$?
-	rm -f "$t"
-	exit "$rc"
+	exec sudo --preserve-env="$keep" sh "$SELF_FILE" "$@"
 }
 
 SELF_FILE=
@@ -4025,8 +4013,7 @@ msg_zh() {
 	backup_verification_public_key_keep_it) m '备份验证公钥（离线保存；恢复时用 --backup-verify-key <文件> 验证备份出自本机，docs/BACKUP.md「真实性」；对应的私钥 %s 不要放进备份存储）：' ;;
 	unknown_option_help) m '未知参数：%s（--help）' ;;
 	run_as_root_or_install_sudo) m '请以 root 运行（或安装 sudo）' ;;
-	re_running_through_sudo) m '以 sudo 重新运行' ;;
-	cannot_download_installer) m '下载安装器失败：%s' ;;
+	piped_installer_needs_root) m '管道运行的安装器需要 root：请改用  curl -fsSL %s | sudo sh（不会再次下载安装器：再次下载的字节没有签名保护）' ;;
 	ui_warning) m '警告：' ;;
 	ui_error) m '错误：' ;;
 	ui_log_is) m '日志：' ;;
@@ -4387,8 +4374,7 @@ msg_en() {
 	backup_verification_public_key_keep_it) m 'Backup verification public key (keep it offline; pass it as --backup-verify-key <file> when restoring to prove a backup came from this host, docs/BACKUP.md Authenticity; never put the private key %s on the backup storage):' ;;
 	unknown_option_help) m 'unknown option: %s (--help)' ;;
 	run_as_root_or_install_sudo) m 'run as root (or install sudo)' ;;
-	re_running_through_sudo) m 're-running through sudo' ;;
-	cannot_download_installer) m 'cannot download the installer: %s' ;;
+	piped_installer_needs_root) m 'a piped installer needs root: run  curl -fsSL %s | sudo sh  (it is not downloaded a second time: the second download would not be covered by a signature)' ;;
 	ui_warning) m 'WARNING:' ;;
 	ui_error) m 'ERROR:' ;;
 	ui_log_is) m 'log:' ;;

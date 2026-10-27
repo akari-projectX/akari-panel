@@ -85,7 +85,7 @@ Akari 的差别主要在性能：热路径（节点同步、流量结算、订�
 
 ## 部署
 
-在全新的 **Debian 12/13 或 Ubuntu 22.04/24.04**（amd64 / arm64，≥ 1 GB 内存）上，以 root 或有 sudo 的用户执行：
+在全新的 **Debian 12/13 或 Ubuntu 22.04/24.04**（amd64 / arm64，≥ 1 GB 内存）上，以 root 或有 sudo 的用户执行（非 root 用 `| sudo sh`）：
 
 ```bash
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
