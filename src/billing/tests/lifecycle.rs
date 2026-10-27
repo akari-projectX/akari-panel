@@ -506,3 +506,155 @@ async fn recommended_flag_reaches_the_shop() {
     drop(state);
     db.drop().await;
 }
+
+/// 低-3: switching out of a permanent plan forfeits what is left of it: the
+/// shop says so (`forfeits_permanent`), the order is refused without
+/// `accept_forfeit` (nothing is created), and goes through with it.
+#[tokio::test]
+async fn leaving_a_permanent_plan_needs_the_confirmation() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, forever) = catalog_plan(
+        &db,
+        "l3-forever",
+        &[(PeriodKind::Onetime, None, 5000)],
+        |_| {},
+    )
+    .await;
+    let (_, other) =
+        catalog_plan(&db, "l3-other", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, forever, "onetime").await;
+    assert_eq!(expiry(&db, u).await, None, "permanent");
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    let offer = shop["plans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["plan_id"] == json!(other))
+        .unwrap()["offers"][0]
+        .clone();
+    assert_eq!(offer["action"], "switch");
+    assert_eq!(offer["forfeits_permanent"], true, "{offer}");
+    assert_eq!(offer["credit_cents"], 0);
+    let r = buy(&c, other, "month").await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.json());
+    assert_eq!(r.json()["code"], "order.forfeit_unconfirmed");
+    let n: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM orders WHERE user_id = $1 AND plan_id = $2")
+            .bind(u)
+            .bind(other)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0, "no order without the confirmation");
+    let r = c
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": other, "period": "month", "accept_forfeit": true }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    // An expiring plan needs no confirmation (and says nothing).
+    let v = db.user().await;
+    let cv = user_client(&state, v).await;
+    bought(&db, &cv, other, "month").await;
+    let shop = cv.get("/test/api/v1/me/shop").await.json();
+    assert!(shop["plans"].as_array().unwrap().iter().all(|p| {
+        p["offers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["forfeits_permanent"] == json!(false))
+    }));
+    drop(state);
+    db.drop().await;
+}
+
+/// 低-8: without a usable payment method the shop stays open and an order
+/// the balance covers entirely is placed (and paid); one that still needs
+/// the gateway is refused (503, no order).
+#[tokio::test]
+async fn orders_the_balance_covers_need_no_payment_method() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let (_, cheap) =
+        catalog_plan(&db, "l8-cheap", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let (_, dear) = catalog_plan(&db, "l8-dear", &[(PeriodKind::Month, None, 90000)], |_| {}).await;
+    let u = db.user().await;
+    let mut tx = db.pool.begin().await.unwrap();
+    super::super::ledger::apply_adjust(
+        &mut tx,
+        &crate::audit::Actor::test(),
+        u,
+        &super::super::ledger::AdjustReq {
+            amount_cents: 5000,
+            reason: "test".into(),
+        },
+    )
+    .await
+    .ok()
+    .unwrap();
+    tx.commit().await.unwrap();
+    let c = user_client(&state, u).await;
+    let shop = c.get("/test/api/v1/me/shop").await.json();
+    assert_eq!(shop["enabled"], true);
+    assert_eq!(shop["payments_available"], false);
+    let find = |shop: &Value, plan: Uuid| {
+        shop["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["plan_id"] == json!(plan))
+            .unwrap()["offers"][0]
+            .clone()
+    };
+    let (a, b) = (find(&shop, cheap), find(&shop, dear));
+    assert_eq!(
+        (a["payable"].clone(), a["balance_only"].clone()),
+        (json!(true), json!(true))
+    );
+    assert_eq!(
+        (b["payable"].clone(), b["balance_only"].clone()),
+        (json!(false), json!(false))
+    );
+    // Asked with the balance applied, the cheap one needs nothing more.
+    let with = c.get("/test/api/v1/me/shop?use_balance=true").await.json();
+    let a = find(&with, cheap);
+    assert_eq!(
+        (a["amount_cents"].clone(), a["balance_only"].clone()),
+        (json!(0), json!(true))
+    );
+    // The dear one, or the cheap one without the balance: no method, 503.
+    for (plan, extra) in [(dear, json!({ "use_balance": true })), (cheap, json!({}))] {
+        let mut body = json!({ "plan_id": plan, "period": "month" });
+        body["use_balance"] = extra.get("use_balance").cloned().unwrap_or(json!(false));
+        let r = c.post("/test/api/v1/me/orders", body).await;
+        assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", r.json());
+        assert_eq!(r.json()["code"], "order.payments_off");
+    }
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM orders WHERE user_id = $1")
+        .bind(u)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0, "refused orders leave nothing");
+    let r = c
+        .post(
+            "/test/api/v1/me/orders",
+            json!({ "plan_id": cheap, "period": "month", "use_balance": true }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    assert_eq!(r.json()["status"], "paid");
+    assert_eq!(r.json()["amount_cents"], 0);
+    assert!(active_plan(&db, u).await.is_some());
+    drop(state);
+    db.drop().await;
+}

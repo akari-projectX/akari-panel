@@ -43,7 +43,7 @@
     onpick: (key: string) => void;
     oncoupon: (code: string) => void;
     onorderchange: () => void;
-    onsubmit: (method: PayMethod | undefined) => void;
+    onsubmit: (method: PayMethod | undefined, acceptForfeit: boolean) => void;
   } = $props();
 
   let couponInput = $state('');
@@ -68,9 +68,9 @@
   const methods = $derived(shop?.methods ?? []);
   const method = $derived(methods.find((m) => m.id === methodId) ?? (methods.length === 1 ? methods[0] : undefined));
   const amount = $derived(offer?.amount_cents ?? 0);
-  const confirmSwitch = $derived(!!offer && !!shop && needsSwitchConfirm(offer, shop));
+  const confirmSwitch = $derived(!!offer && !!shop && needsSwitchConfirm(offer));
   const pickMethod = $derived(!!offer && !!shop && needsMethod(offer, shop));
-  const noPayment = $derived(!!offer && amount > 0 && !!shop && !shop.enabled);
+  const noPayment = $derived(!!offer && amount > 0 && !!shop && !shop.payments_available);
   const couponRefusal = $derived(shop?.coupon?.refusal ?? offer?.coupon_refusal ?? null);
   const blocked = $derived(submitting || !offer?.action || !!pending || noPayment || (confirmSwitch && !ack) || (pickMethod && !method));
 
@@ -169,10 +169,9 @@
           <input id="switch-ack" type="checkbox" bind:checked={ack} />
           <span>
             <TriangleAlert size={14} strokeWidth={1.75} aria-hidden="true" />
-            {offer.forfeited_cents > 0
-              ? tp('旧套餐剩余价值里有 {v} 超过了新套餐的价格，换过去后这部分作废，不退回。', { v: formatMoney(offer.forfeited_cents) })
-              : t('你现在的套餐长期有效，换成别的套餐后不能再换回来，它的剩余价值也不会退回。')}
-            {' '}{t('我已了解。')}
+            {#if offer.forfeits_permanent}{t('你现在的套餐长期有效。换成别的套餐后，它剩下的长期权益会作废，不折算、不退回，也不能换回来。')}{' '}{/if}
+            {#if offer.forfeited_cents > 0}{tp('旧套餐剩余价值里有 {v} 超过了新套餐的价格，换过去后这部分作废，不退回。', { v: formatMoney(offer.forfeited_cents) })}{' '}{/if}
+            {t('我已了解。')}
           </span>
         </label>
       {/if}
@@ -193,7 +192,9 @@
         </section>
       {/if}
       {#if noPayment}
-        <p class="fnote">{t('站点暂未开放在线支付。可以用余额抵扣，或提交工单联系客服。')}</p>
+        <p class="fnote">{offer?.balance_only
+          ? t('站点暂未开放在线支付。这个套餐可以用余额全额支付：请在商店页打开「用余额抵扣」。')
+          : t('站点暂未开放在线支付。可以用余额抵扣，或提交工单联系客服。')}</p>
       {/if}
     </div>
   {/if}
@@ -202,7 +203,7 @@
     <div class="flow-sum"><div class="k">{t('应付金额')}</div><div class="v">{formatMoney(amount)}</div></div>
     <div class="flow-btns">
       <button type="button" class="btn hide-m" onclick={onclose}>{t('取消')}</button>
-      <button type="button" class="btn pri submit" disabled={blocked} onclick={() => onsubmit(amount > 0 ? method : undefined)}>
+      <button type="button" class="btn pri submit" disabled={blocked} onclick={() => onsubmit(amount > 0 ? method : undefined, confirmSwitch && ack)}>
         {submitting ? t('处理中') : amount === 0 ? t('确认开通') : tp('支付 {v}', { v: formatMoney(amount) })}
       </button>
     </div>

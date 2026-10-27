@@ -52,6 +52,13 @@ R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式
 | `onetime` (`days` = N or null) | N 天；`days` 为 null 时**永不过期** | N（永久则无） |
 | `reset` | 流量重置包：把当前套餐的已用流量清零；不改变周期，重置计划不变 | — |
 
+### Without a payment method（没有可用支付方式，低-8）
+
+商店在没有任何可用支付方式时**仍然开着**（`GET /me/shop` 的 `enabled` 只看用户角色，`payments_available` 说明有没有支付方式）。
+只有**还要付钱**的订单（扣掉优惠券、折算、余额后 `amount_cents > 0`）才需要支付方式（503 `order.payments_off`、
+`order.method_required`/`order.method_unavailable` 都只在此时出现）；全额由余额、折算或优惠券付清的订单不需要，也不需要主域名。
+每档报价带 `payable`（有可用支付方式，或余额够全付）与 `balance_only`（只因余额够全付才付得了：下单须带 `use_balance`）。
+
 ### What a purchase does（购买的效果）
 
 | 用户当前的套餐 | 购买套餐 P、周期 X |
@@ -106,7 +113,10 @@ amount  = price − min(credit, price)        -- never negative
 
 示例：一个月 30.00，剩余 15 天时换套餐 → 折算 15.00；一个 50.00 的套餐此时只需 35.00。
 折算额超过新套餐价格的部分会**作废**（不转余额、不退款）——商店在购买前会提示（`forfeited_cents`），
-订单由折算额全额支付。折算额在创建订单时就固定在订单中（订单在 `order_timeout_minutes` 后过期）；
+订单由折算额全额支付。
+**从永久套餐（无到期时间）换出（低-3）**：永久订阅不折算（折算额 0），它剩下的长期权益**作废**，不转余额、不退款；
+商店的报价带 `forfeits_permanent: true`，门户确认框用明确文字提示并要勾选「我已了解」，下单必须带
+`accept_forfeit: true`，否则 409 `order.forfeit_unconfirmed`（不建单）。折算额在创建订单时就固定在订单中（订单在 `order_timeout_minutes` 后过期）；
 如果付款会替换的订阅并非下单时所针对的那个，则退回余额（低-4，见上文）；
 如果折算来源的订阅在此期间已结束，付款仍然生效，并以 `fulfil_result.credit_source_changed = true` 标记待人工复核。
 
@@ -132,7 +142,7 @@ amount  = price − min(credit, price)        -- never negative
   现有用户仍出现在商店里，只能续费和买重置包；其他人看不到、下单 400「not for sale」。关掉它则
   下架即对所有人停售。**停用**（`enabled = false`）则谁都不能买（续费也不行）。
 - `allow_switch_in = false`：其他套餐的持有者不能换入（新用户可以购买）。
-- `speed_limit_mbps` 由 agent 执行（见 docs/REFERENCE.md "Plans and node groups"）；`device_seats` 在客户端发布之前不执行（R25）。
+- `speed_limit_mbps` 由 agent 执行（见 docs/REFERENCE.md "Plans and node groups"）。
 
 周期内的流量重置遵循套餐的 `reset_period`（M3 周期扫描）。运营规则（运营逻辑审查中-1）：续费**不重置**流量的套餐（`reset_period = none`）或一次性
 （`onetime`）时长时，新的一期从满额流量开始（已用清零、因超额被停用的账户恢复、记
@@ -264,6 +274,8 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
   邀请人期间被删除 → 撤销。
 - 运营规则（运营逻辑审查低-6）：邀请人被**封禁**（`disabled_reason='admin'`，非注销）期间，到期的返利**保持待结算**、不入账；
   解封后下一次扫描入账。不提供「封禁期间暂停订阅计时」开关（用户裁决）。
+- 已知限制（运营逻辑审查低-7，用户裁决不改）：返利默认关闭、默认只返被邀请人的首单，所以「小号邀请大号」的套利空间有限；
+  面板不做同 IP / 同支付宝买家的返利风控。开启返利前请自行评估。
 - 冻结期内的管理员退款会撤销待结算的返利（`commission.reverse`）。
 - 运营规则（运营逻辑审查中-4）：冻结期**之后**退款也会追回已入账的返利（`commission.clawback`）：
   邀请人余额够就当场扣回（明细 `commission_clawback`，负数，只追加）；不够（例如已经提现）

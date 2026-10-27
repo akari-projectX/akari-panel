@@ -262,6 +262,7 @@ node.template_and_inbound
 node.tls_domain_invalid
 node.too_many_tags
 node.view_invalid
+order.forfeit_unconfirmed
 order.gateway_unavailable
 order.in_progress
 order.method_required
@@ -346,7 +347,6 @@ plan.price_days_unexpected
 plan.price_duplicate
 plan.price_range
 plan.quota_negative
-plan.seats_negative
 plan.speed_limit_range
 plan.unknown
 plan.unknown_ref

@@ -612,6 +612,16 @@ pub struct Offer {
     pub coupon_refusal: Option<super::coupons::Refusal>,
     pub action: Option<Action>,
     pub refusal: Option<Refusal>,
+    /// 低-3: a switch out of a subscription without expiry (permanent): the
+    /// rest of that entitlement is forfeited — it earns no credit and
+    /// nothing comes back as balance. The order needs `accept_forfeit`.
+    pub forfeits_permanent: bool,
+    /// 低-8: the buyer can pay this now — a payment method is usable, or
+    /// the balance covers all of it.
+    pub payable: bool,
+    /// 低-8: payable only because the balance covers all of it (no payment
+    /// method is usable): the order must be created with `use_balance`.
+    pub balance_only: bool,
 }
 
 impl Offer {
@@ -631,6 +641,9 @@ impl Offer {
             forfeited_cents: 0,
             balance_cents: 0,
             coupon_refusal: None,
+            forfeits_permanent: action == Some(Action::Switch) && cur.is_some_and(|c| !c.expires),
+            payable: action.is_some(),
+            balance_only: false,
             action,
             refusal,
         }
@@ -655,6 +668,27 @@ impl Offer {
         self.credit_cents = s.credit_cents;
         self.forfeited_cents = credit_available - s.credit_cents;
         self.balance_cents = s.balance_cents;
+    }
+
+    /// 低-8: whether the amount can be paid now. Only what is left after the
+    /// balance needs a payment method (`gateway_usable`); with
+    /// `use_balance` the split already took the balance, else it would.
+    pub fn payability(&mut self, s: &Split, balance: i64, use_balance: bool, gateway_usable: bool) {
+        if self.action.is_none() {
+            return;
+        }
+        let due = if use_balance {
+            s.amount_cents + s.balance_cents
+        } else {
+            s.amount_cents
+        };
+        let left = if use_balance {
+            s.amount_cents
+        } else {
+            (s.amount_cents - balance).max(0)
+        };
+        self.payable = gateway_usable || left == 0;
+        self.balance_only = !gateway_usable && left == 0 && due > 0;
     }
 }
 
