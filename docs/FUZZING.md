@@ -18,6 +18,8 @@ AddressSanitizer 同样开启。
 |---|---|---|
 | `alipay_notify` | notify 表单正文（互联网上任何人） | 解码器是规范的（重新编码 → 同一个 map），参数 ≤ 64 个且无重复；没有支付宝密钥就无法通过验签；支付宝签过名的 map（两种空值约定均可）经线上往返后仍能验签；篡改任一已签名的非空值，或 `sign_type` ≠ RSA2，都会验签失败 |
 | `epay_notify` | C1 易支付：通知（GET 查询串 / POST 表单）与网关应答（`mapi.php`、`api.php?act=order`） | 不 panic；没有商户密钥就无法通过验签；商户密钥签过名的 map 经线上往返后仍能验签（带本商户 pid 与订单号时为 Verified，金额 = `money` 严格解析），篡改任一已签名的非空值或 `sign_type` ≠ MD5 都失败；下单应答给出的跳转链接一定是 http(s) 且 ≤ 2048；查询应答只有 `code` 与 `status` 都为 1 才算已付款 |
+| `coinpayments_notify` | CoinPayments Webhook（头签名 + 原始请求体）与网关应答（创建 / 发票列表） | 不 panic；没有客户端密钥（无头、另一把密钥的签名、签名后改一个字节、旧时间戳）就无法通过验签；真实密钥签过名的新鲜 Webhook 不会因签名被拒；Verified 事件只有 `InvoiceCompleted` + 状态 `Completed` 且币种 ID 与总额（必须带小数点）和带回的订单分经 `Pricing` 精确相等才`paid`（其他事件只带回订单分）；创建应答的链接一定是 http(s) 且 ≤ 2048；列表里选出的发票 ID 可安全放进请求路径 |
+| `coinbase_notify` | Coinbase Webhook（`X-Webhook-Signature`）、签名头解析、API 密钥解析与网关应答（创建 / 收银台列表 / 错误体） | 不 panic；没有 Webhook 密钥就无法通过验签（同上四种篡改）；真实密钥签过名的新鲜 Webhook 不会因签名被拒；Verified 事件只有 `checkout.payment.success` + `COMPLETED` 才 `paid`，付款事件只有回显的 `fiatCurrency`/`fiatAmount` 与带回的订单分经 `Pricing` 精确相等才带金额（其他事件只带回订单分）；选出的收银台 ID 是 24 位十六进制；错误体只被归为固定词 |
 | `alipay_response` | 网关响应字节 | 未签名或伪造的正文绝不会被接受；对原始 `<method>_response` 文本签名的正文，当且仅当 `code` = 10000 时被接受，并得到解析后的该文本；已签名文本内的任何改动 → `BadSignature` |
 | `inbounds` | 管理员提交的 inbound JSON（W28-a：每个节点一个对象） | 判定是确定且幂等的；被接受 ⇒ 没有 tag（由面板命名）、通过 `check_inbound`、任意深度都没有键在 Go 的大小写折叠下相等的对象（W14）；可签发的 inbound 得到无需再调整的账号；三种订阅格式都能渲染（sing-box 为合法 JSON） |
 | `node_templates` | 模板请求（管理员，单个模板） | 凡是渲染出的结果都能通过 `validate_inbound` 且没有 tag；渲染出的受管 inbound 可签发；绝不使用已被占用的端口 |

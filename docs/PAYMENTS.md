@@ -1,14 +1,15 @@
-# Payments: payment methods (Alipay Face-to-Face, EPay)（支付：支付方式——支付宝当面付、易支付）
+# Payments: payment methods (Alipay Face-to-Face, EPay, CoinPayments, Coinbase)（支付：支付方式——支付宝当面付、易支付、CoinPayments、Coinbase）
 
 R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
 一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前有两种类型：**支付宝当面付**
 （`alipay_f2f`：`alipay.trade.precreate` → 二维码）与**易支付**（`epay`，C1：通用易支付 MD5 接口，见下文「EPay（易支付）」）。
-同一类型可以有多个支付方式（例如两个支付宝商户，或同一易支付商户的支付宝与微信两个渠道）。
+另有两个托管的加密货币网关：**CoinPayments**（`coinpayments`，API v2）与 **Coinbase**（`coinbase`，Business Checkouts API），
+见下文「加密货币网关」。同一类型可以有多个支付方式（例如两个支付宝商户，或同一易支付商户的支付宝与微信两个渠道）。
 
 - 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载 / 旧配置导入，
-  `alipay.rs` 为支付宝类型，`epay.rs` 为易支付类型；W7 套餐目录：`catalog.rs`）
+  `alipay.rs` 为支付宝类型，`epay.rs` 为易支付类型，`coinpayments.rs` / `coinbase.rs` / `crypto.rs` 为加密货币网关；W7 套餐目录：`catalog.rs`）
 - 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`（均已并入 `1000_baseline.sql`）、
-  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）；C2 的 USDT 链上收款（`1111`）已由
+  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）、`1123_payment_kinds_crypto.sql`（加 `coinpayments`、`coinbase`）；C2 的 USDT 链上收款（`1111`）已由
   `1114_drop_usdt_chain.sql` 整体移除（2026-10-23 用户裁决；USDT **提现**不受影响，见「Withdrawals」）
 - 门户：`portal/src/pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`、`portal/src/components/shop/`；
   后台：`admin/src/console/`（订单、套餐价格、系统设置 → 支付）。
@@ -555,6 +556,115 @@ trade_status, sign, sign_type`（可能还有空的 `param`）。依次检查：
 不同易支付分支的应答细节（`code` 为数字或字符串、`money` 为字符串或数字、错误文案）都已按宽松方式解析；
 若某个站点的「订单不存在」文案不含「不存在」/「not exist」，查询会被当作错误（订单保持待付款，直到过期后强制结束）。
 
+## 加密货币网关（CoinPayments、Coinbase）
+
+两个**托管**网关：面板不运行节点、不碰私钥，付款人被带到网关的收银页，网关换算并收取加密货币，面板只在**网关确认款项已到账的终态**
+才开通。订单、金额拆分、`apply_mark_paid` 唯一付款路径、对账循环、`/pay/{method}/notify` 路由、规范拒绝、`payment_events`、
+密钥加密存放（只写、`<字段>_set` + 指纹）、仅所有者可写、`version` 乐观并发、审计，全部沿用，与易支付一样。
+
+**金额与币种。**订单始终是整数分（人民币）。发票用**运营者选的币种**计价，汇率风险由网关承担：
+
+- 币种 `currency`（ISO 代码，如 `USD`、`CNY`；Coinbase 还可用 `USDC`）与汇率 `rate_cents`（**1.00 该币种 = 多少分人民币**，如 USD 填 `720`）。
+  币种为 `CNY` 时不需要汇率（存为空，按 100 算）。**非 CNY 币种必须填汇率**（启用时缺失 = 409 `payments.incomplete`），不设默认值：
+  默认值错了会少收钱。
+- 发票金额 = `ceil(订单分 × 100 ÷ rate_cents)`（向上取整到该币种的分，对商家有利），由 `billing::crypto::Pricing` 唯一计算。
+  下单时把**订单的人民币分**写进网关的自定义数据（CoinPayments `customData.akari_cents`；Coinbase `metadata.akari_cents`）与我们的订单号，
+  网关在通知 / 读取里原样带回。
+- **结算比对**：网关报告的发票币种（CoinPayments 为币种 ID，Coinbase 为 `fiatCurrency`，USDC 方式为 `currency`）与发票总额，必须**精确等于**
+  `Pricing` 按带回的订单分算出的值；之后 `total_cents` 才是订单分，并由 `api::handle_notify` / `orders::apply_query_result`
+  与 `orders.amount_cents` 再比对一次。任何不符（另一种币种、金额不同、金额格式不明、汇率在下单后被改、缺少带回的订单分）
+  = `amount_mismatch` 事件、**不付款**。改汇率前请先等待中的订单结束（或在订单页手动处理）。
+- 币种不是 CNY 时，门户显示的仍是人民币金额；付款页上的金额是网关按所选币种换算后的加密货币数量。
+
+**哪些状态付款。**只有网关文档里的**终态已到账**：CoinPayments 的 `completed`（Webhook `InvoiceCompleted`，发票状态 `Completed`）、
+Coinbase 的 `COMPLETED`（Webhook `checkout.payment.success`）。其余——未付、确认中（`pending`/`PROCESSING`）、CoinPayments 的 `paid`
+（链上已确认但商户余额还没入账，文档明确不建议此时发货）、取消、超时、过期、失败、退款状态——**一律不付款**，只记入 `payment_events`
+（结果 `ignored`，参数里有状态；CoinPayments 还记各笔付款的状态，欠付款的发票停在 `pending`、可在事件里看到）。欠付款（少付）网关不会
+把发票置为 `completed`（除非商家在 CoinPayments 后台手动「接受部分付款」，那是商家的决定）；多付时发票按应付金额完成、多出部分由网关退给付款人。
+
+**对账。**通知丢失时，对账循环与门户订单页的轮询用查询接口读回发票 / 收银台并套用同一规则（CoinPayments：按 `invoiceId` = 我们的订单号搜索再按 ID 读；
+Coinbase：按描述搜索再按 `metadata.akari_order` 精确匹配、按 ID 读），所以丢失 Webhook 也会开通。网关不可达 / 5xx / 429 最多重试 3 次，
+之后是错误，不是「未付」。
+
+**关单。**订单到期或被取消时：CoinPayments 只**取消未付**（`unpaid`）的发票，Coinbase 只**停用 `ACTIVE`** 的收银台；
+款项可能已在途（`pending` / `PROCESSING`）或已入账的不动（`not_closable`，取消会触发网关的自动退款流程）——之后到账的**迟到付款照样开通**
+（与易支付相同的规则，`apply_mark_paid` 接受已过期 / 已取消的订单）。
+
+**退款。**两者都**不支持原路退款**（`refunds() = false`）：请用「退回余额」，或在网关后台退款后在订单里登记外部退款金额。
+
+**出站安全。**只经 `billing::http`（`outbound::OPERATOR`：https、全部解析地址须为公网），API 主机固定为官方地址
+（CoinPayments `a|b|c-api.coinpayments.net`，Coinbase `business.coinbase.com`），超时 15 秒、应答 ≤256 KiB；
+密钥只在请求头 / 请求体里，不进 URL、日志、错误或审计；网关的错误正文**从不**回显或存储（只有状态码与我们自己的分类词）。
+配置里的 `api_base` 仅供 mock 网关测试（只接受回环 `http://127.0.0.1:端口`，表单里不显示）。
+
+### CoinPayments（API v2）
+
+官方文档（2026-10-27 核对）：<https://docs.coinpayments.net> —— 认证 `/api/auth/generate-api-signature`、`/api/auth/request-headers`；
+Webhook `/api/webhooks/authenticating-requests`、`/api/webhooks/clients`（事件）、`/api/webhooks/clients/payload`、`/api/webhooks/clients/setup`；
+发票 `/api/invoices/routes/postMerchantInvoicesV2`（创建）、`getMerchantInvoicesByIdV2`、`getMerchantInvoicesV2`（列表，`q` 搜索）、
+`postMerchantInvoicesCancelByIdV1`（取消）、`/api/invoices/statuses`、`/api/invoices/payment-errors`。
+
+**运营者要做的（CoinPayments 后台）：**
+
+1. 注册并完成 KYC（未验证账户只能用测试币 LTCT）；记下账户所属的**平台实例**（A/B/C，凭据不能跨实例通用）。
+2. Integrations → Add Integration → API Integration，保存 `clientId` 与 `clientSecret`（**只显示一次**）。可限制权限（需要发票的读写）与允许的 IP。
+3. **不需要**在后台配置 Webhook：面板为每张发票单独指定 Webhook 地址（创建发票时的 `webhooks[]`，事件 `invoiceCompleted`、`invoiceCancelled`、
+   `invoiceTimedOut`），地址是本支付方式的 `<主域名>/pay/<支付方式 id>/notify`，必须是公网 https。
+4. 查出**发票币种的数字 ID**：公开接口 `GET https://a-api.coinpayments.net/api/v2/currencies?types=fiat`（把 `a` 换成你的实例），找到 `symbol` 为所选币种
+   （如 USD）的那一项的 `id`。
+5. 面板：系统设置 → 支付 → 添加支付方式 → CoinPayments，填 实例、客户端 ID、客户端密钥、币种代码、币种 ID、汇率（非 CNY）、订单有效期，启用，点**测试连接**：
+   先做一次带签名的读取（凭据 / 实例 / 权限），再用币种 ID 查公开接口核对其代码与所填币种一致（`keys_ok`；否则 `credentials_rejected`、
+   `currency_mismatch`、`currency_unknown`、`unreachable`、`gateway_status`）。
+
+**请求签名**（`coinpayments::signing_message` / `signature`）：`Base64(HMAC-SHA256(clientSecret, "﻿" ‖ 方法 ‖ 完整 URL ‖ clientId ‖ 时间戳 ‖ 原始请求体))`，
+头 `X-CoinPayments-Client` / `-Timestamp`（UTC `YYYY-MM-DDTHH:mm:ss`）/ `-Signature`。文档没有公布字面签名值；测试向量由独立的 HMAC-SHA256 实现（Python `hmac`）算出。
+带查询串的 GET，签名用的是**含查询串的完整 URL**（文档只说「完整 URL」；测试连接的 `?limit=1` 读取会立刻暴露这个假设是否成立）。
+
+**Webhook 验证**（`CoinPayments::check_notify`）：同样的三个头；签名串 = `"﻿" ‖ POST ‖ 本方式的通知 URL（面板登记给 CoinPayments 的那一字符串）‖ X-CoinPayments-Client ‖ X-CoinPayments-Timestamp ‖ 原始请求体字节`，
+**不重新序列化**；常数时间比较；`X-CoinPayments-Client` 必须是本方式的 clientId；时间戳与本机时钟相差超过 5 分钟 = `stale_timestamp`（重放）。
+通知 URL 取当前主域名，所以**主域名变更之前创建的发票**其 Webhook 签名对不上（拒绝），由对账查询来开通。
+负载按文档字段读取：`type`（PascalCase，大小写不敏感）、`invoice.invoiceId`（= 我们的订单号）、`invoice.id`、`invoice.state`、
+`invoice.amount.currencyId` / `total`、`invoice.customData.akari_cents`、`invoice.payments[].state`。**付款条件** = `type = InvoiceCompleted` 且
+`invoice.state = Completed` 且金额 / 币种 / 订单分全部相符。文档未说明 v2 的金额字符串是十进制还是最小单位，
+所以**不带小数点的金额字符串一律不信**（`1.38` 可以，`138` 不行）——对实际站点首次测试时请确认金额格式。
+
+### Coinbase（Business Checkouts API）
+
+选型：**Checkouts API**，不用旧的 Commerce charges。它能在服务端创建收银台（`POST /api/v1/checkouts`）、读取（`GET /api/v1/checkouts/{id}`，列表可按描述过滤）、
+停用（`POST …/deactivate`），并有带签名的 Webhook，满足整个流程。文档（2026-10-27 核对）：
+<https://docs.cdp.coinbase.com/coinbase-business/checkout-apis>（总览）、`…/checkout-apis/webhooks`（事件与签名）、
+`/api-reference/business-api/rest-api/checkouts-spec.yaml`（OpenAPI：状态、金额、`fiatAmount` / `fiatCurrency`）、
+`/coinbase-business/authentication-authorization/api-key-authentication` 与 `/api-reference/v2/authentication`（JWT）。
+
+**运营者要做的：**
+
+1. 开通 Coinbase Business 账户；在 CDP 门户（portal.cdp.coinbase.com → API Keys → Secret API keys）创建 API 密钥，权限勾 **View**（Checkouts 需要），
+   可设 IP 白名单（面板出口地址）。记下**密钥名称 / ID**与**私钥**：Ed25519 密钥是 base64 的 64 字节（种子‖公钥），ECDSA 密钥是 PEM（`-----BEGIN EC PRIVATE KEY-----`
+   或 PKCS#8，P-256；多行或带 `\n` 转义均可）。
+2. **创建 Webhook 订阅**（账户级，不是每张收银台；每个支付方式一个订阅）。先在面板里保存支付方式（Webhook 密钥可先随便填一个，稍后替换）以得到它的通知地址，然后用 CDP CLI：
+   `cdp data webhooks subscriptions create description="Akari" 'eventTypes:=["checkout.payment.success","checkout.payment.failed","checkout.payment.expired","checkout.refund.success","checkout.refund.failed"]' target.url=<通知地址> target.method=POST isEnabled:=true`，
+   把返回里的 **secret**（文档示例在 `metadata.secret`）填进面板的「Webhook 签名密钥」。订阅会收到账户内**所有**收银台的事件，不属于本方式订单的一律按 `unknown_order` 拒绝。
+3. 面板：系统设置 → 支付 → 添加支付方式 → Coinbase，填 密钥名称、API 私钥、Webhook 签名密钥、币种（`USD`/`CNY`/`USDC`…）、汇率（非 CNY）、订单有效期，启用，点**测试连接**
+   （带签名的收银台列表读取：`keys_ok` / `credentials_rejected` / `forbidden` / `unreachable` / `gateway_status`；Webhook 密钥只能用一笔真实订单验证）。
+
+**创建**：`amount`（两位小数）、`currency`、`description`（`<订单号> <商品名>`，供按描述搜索）、`metadata`（`akari_order`、`akari_cents`）、
+`expiresAt` = 现在 + 订单有效期、`successRedirectUrl` / `failRedirectUrl` = 门户订单页（https 才发；只带回页面，**绝不**凭重定向付款）。
+法币会在创建时按当时汇率换成 USDC（`USDC` 币种则原值使用）；应答的 `url` 即付款页。**文档没有说明是否支持 CNY**：选 CNY 而 Coinbase 拒绝时，
+下单会以「支付网关暂不可用」失败——请改用 USD + 汇率，并用一笔小额订单实测。
+
+**API 认证**：每个请求一个新的 JWT（有效 2 分钟，头 `kid`/`nonce`，声明 `sub`=密钥名、`iss`=`cdp`、`nbf`/`exp`、`uri`=`METHOD host/path`（不含查询串），
+Ed25519 用 `EdDSA` 并带 `aud: ["cdp_service"]`，ECDSA 用 `ES256`），`Authorization: Bearer`。
+
+**Webhook 验证**（`Coinbase::check_notify`）：头 `X-Webhook-Signature: t=<unix 秒>,h=<空格分隔的头名>,v1=<hex>`；签名串 =
+`t ‖ "." ‖ h ‖ "." ‖ 所列头的值用 "." 连接 ‖ "." ‖ 原始请求体`，HMAC-SHA256（订阅 secret），hex，常数时间比较；时间戳相差超过 5 分钟 = `stale_timestamp`。
+**付款条件** = `eventType = checkout.payment.success` 且 `status = COMPLETED` 且订单号 / 金额 / 币种 / 订单分相符。
+
+### 未实测
+
+两个网关都**尚未用真实账户实测**（没有测试账户）：行为按上面引用的官方文档实现，并由 mock 网关测试（校验面板的请求签名 / JWT）与 smoke 覆盖。
+上线前请各做一笔真实小额订单（CoinPayments 可用测试币 LTCT），确认：金额字符串格式、Webhook 签名（尤其是通知 URL 与查询串签名的假设）、
+币种（Coinbase 的 CNY）、测试连接结果。文档含糊处面板一律取更安全的行为（不确定就不付款，由对账 / 管理员手动处理）。
+
 ## Notify endpoint rules（通知端点规则）
 
 `POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）以及旧的
@@ -649,6 +759,13 @@ cargo test --lib live_sandbox -- --ignored --nocapture
   并发重复通知 + 查询恰好一次；被拒时改用页面跳转、二维码应答、轮询按金额付款、网关故障、`submit` 不调用接口、查询重试；
   到期 `not_closable` 后迟到通知照样开通；与支付宝方式并存时的隔离。
 - fuzz 目标 `epay_notify`（docs/FUZZING.md）。
+- `billing::crypto::tests`（定价向上取整与精确比对、严格十进制、API 地址 / 链接校验、读取重试）、`billing::coinpayments::tests`
+  （请求 / Webhook 签名向量、终态才付款、伪造 / 过期 / 错 URL / 缺头的 Webhook、金额与币种精确比对、发票 JSON 两种形状、创建体、测试连接各结果、配置校验）、
+  `billing::coinbase::tests`（Webhook 签名构造、终态才付款、伪造 / 过期、金额币种、API 密钥 JWT 的 Ed25519 与 ES256（SEC1 / PKCS#8 / `\n` 转义）验证、配置校验）。
+- `billing::tests::crypto`（真实数据库 + 校验面板请求认证的 mock CoinPayments / Coinbase）：管理 API（密钥加密存放且绝不回显或审计、门户 `crypto` 图标、测试连接各结果）；
+  HTTP 购买流程（创建体、每种错误 / 非终态 / 少付 Webhook、另一方式的订单 = `unknown_order`、真实通知付款、重放）；不依赖 Webhook 的查询结算与金额 / 币种不符；
+  对账循环结算；并发重复通知 + 查询恰好一次；到期关单（未付取消 / 款项在途不动 / 网关无此单）与迟到付款；两种加密方式并存时的隔离。
+- fuzz 目标 `coinpayments_notify`、`coinbase_notify`（docs/FUZZING.md）。
 - `billing::tests::w24`（真实数据库 + mock 网关）：支付方式 API（带错误码的校验错误、AAD = id 的加密存放密钥、
   绝不回显或审计、乐观并发、测试连接、轮换宽限期、停用 = 规范拒绝、仅未使用时才能删除）；两个支付方式
   （选择器错误、跨方式通知隔离、旧通知路径、按方式对账）；不可读的密钥；在另一实例上重载
