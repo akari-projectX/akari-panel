@@ -16,9 +16,7 @@
 //!   other client gets the canonical 404 for everything under the prefix.
 //! - **Subscription** at `/{sub_path}/{token}` (D11): a site-wide random
 //!   segment, editable (audited, the old path dies at once; optionally every
-//!   user gets the new link by mail through a resumable batch job). The
-//!   panel-hosted rule-sets of sing-box profiles live beside it at
-//!   `/{sub_path}/rules/{id}.json` (public, nothing secret).
+//!   user gets the new link by mail through a resumable batch job).
 //! - **Install links** `/install/{token}…` and **payment notifications**
 //!   `/pay/…`: fixed paths without any prefix (their tokens / signatures are
 //!   the gate).
@@ -104,7 +102,7 @@ pub const PORTAL_PAGES: &[&str] = &[
 ];
 
 /// Paths that exist outside the admin prefix only.
-const PUBLIC_ONLY: &[&str] = &["sub", "sub-rules", "install", "pay"];
+const PUBLIC_ONLY: &[&str] = &["sub", "install", "pay"];
 
 fn first(path: &str) -> &str {
     path.split('/').next().unwrap_or("")
@@ -320,23 +318,15 @@ pub fn route(a: &Access, path: &str, get: bool) -> Route {
             _ => Route::Reject,
         };
     }
-    // The subscription: exactly `/{sub_path}/{token}`; the panel-hosted
-    // rule-sets of sing-box profiles: exactly `/{sub_path}/rules/{file}`
-    // (`sub::rulesets::serve`; tokens never contain '/').
+    // The subscription: exactly `/{sub_path}/{token}` (tokens never contain
+    // '/').
     if seg == a.sub_path {
         return match tail {
             Some(t) if !t.is_empty() && !t.contains('/') => Route::Inner {
                 path: format!("/{INNER}/sub/{t}"),
                 via: Via::Sub,
             },
-            Some(t) => match t.strip_prefix("rules/") {
-                Some(f) if !f.is_empty() && !f.contains('/') => Route::Inner {
-                    path: format!("/{INNER}/sub-rules/{f}"),
-                    via: Via::Sub,
-                },
-                _ => Route::Reject,
-            },
-            None => Route::Reject,
+            _ => Route::Reject,
         };
     }
     match seg {

@@ -242,7 +242,6 @@ fn subscription_formats_follow_the_manifest() {
             Some(&format!("format={}", f.id)),
             "",
             &rows,
-            &crate::sub::routing::Routing::default(),
         );
         let text = if f.id == "links" {
             String::from_utf8(STANDARD.decode(body.trim_end()).unwrap()).unwrap()

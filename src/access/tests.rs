@@ -64,15 +64,8 @@ fn dispatch_table() {
         // Subscription: exactly one token segment.
         ("/s3cr3tsub/TOKEN", true, inner("/_/sub/TOKEN", Via::Sub)),
         ("/s3cr3tsub/TOKEN/x", true, Route::Reject),
-        // The hosted rule-sets: exactly one file below `rules/`.
-        (
-            "/s3cr3tsub/rules/0123abcd.json",
-            true,
-            inner("/_/sub-rules/0123abcd.json", Via::Sub),
-        ),
-        ("/s3cr3tsub/rules/", true, Route::Reject),
-        ("/s3cr3tsub/rules/a/b.json", true, Route::Reject),
-        ("/sub/rules/0123abcd.json", true, Route::Reject),
+        // The removed hosted rule-sets are no route any more.
+        ("/s3cr3tsub/rules/0123abcd.json", true, Route::Reject),
         ("/secretprefix/sub-rules/0123abcd.json", true, Route::Reject),
         ("/s3cr3tsub", true, Route::Reject),
         ("/s3cr3tsub/", true, Route::Reject),
