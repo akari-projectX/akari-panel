@@ -714,10 +714,9 @@ async fn subscription_uses_templates_and_new_formats() {
     assert_eq!(surge.headers["content-type"], "text/plain; charset=utf-8");
     let body = String::from_utf8(surge.body.clone()).unwrap();
     assert!(
-        body.starts_with("#!MANAGED-CONFIG /"),
-        "no domain configured: the relative link\n{body}"
+        !body.contains("MANAGED-CONFIG "),
+        "no domain configured: a managed-config line needs an absolute URL\n{body}"
     );
-    assert!(body.contains("?format=surge interval=86400"), "{body}");
     assert!(
         body.contains("download=0, total=1000, expire=1893456000"),
         "{body}"
@@ -727,7 +726,7 @@ async fn subscription_uses_templates_and_new_formats() {
     assert!(
         String::from_utf8(board.body)
             .unwrap()
-            .contains("interval=1440")
+            .contains("[Proxy Group]")
     );
     let stash = get(&c, "Stash/2.7.5 Clash/1.11.0", "").await;
     assert_eq!(stash.headers["content-type"], "text/yaml; charset=utf-8");
@@ -773,4 +772,48 @@ async fn subscription_uses_templates_and_new_formats() {
     assert_eq!(get(&c, "clash.meta", "").await.status, StatusCode::OK);
     c.cookie = None;
     db.drop().await;
+}
+
+/// A line's name or secret that looks like a placeholder is data: it is
+/// never expanded again, in any format (fuzz crash, 2026-10-27).
+#[test]
+fn placeholders_inside_line_data_stay_literal() {
+    let mut rows = sample_rows();
+    for r in &mut rows {
+        r.entrance = "name, x = y\n[Rule]".into();
+        r.account = match r.protocol.as_str() {
+            "vless" | "vmess" => serde_json::json!({"id": "p\"w$proxies"}),
+            "hysteria" => serde_json::json!({"auth": "p\"w$proxies"}),
+            _ => serde_json::json!({"password": "p\"w$proxies"}),
+        };
+    }
+    let proxies = crate::sub::proxy::collect_proxies(&rows);
+    for f in TemplateFormat::ALL {
+        let out = render_sample_for(f, f.default_body(), &proxies).unwrap();
+        assert!(out.len() < 1 << 20, "{f:?}: {} bytes", out.len());
+        if matches!(f, TemplateFormat::Surge | TemplateFormat::Surfboard) {
+            let sections = out.lines().filter(|l| l.starts_with('[')).count();
+            let plain = render_sample_for(f, f.default_body(), &[]).unwrap();
+            let want = plain.lines().filter(|l| l.starts_with('[')).count();
+            assert_eq!(sections, want, "{f:?}\n{out}");
+        }
+    }
+}
+
+/// An IPv6 server address is quoted in the Clash document (and bracketed
+/// nowhere else): `2001:db8::1` unquoted would read as a sexagesimal-ish
+/// scalar in YAML 1.1 parsers.
+#[test]
+fn ipv6_server_is_quoted_in_clash() {
+    let mut rows = sample_rows();
+    rows[0].server = Some("2001:db8::1".into());
+    rows[0].port = None;
+    let proxies = crate::sub::proxy::collect_proxies(&rows);
+    let out = render_sample_for(
+        TemplateFormat::Clash,
+        TemplateFormat::Clash.default_body(),
+        &proxies,
+    )
+    .unwrap();
+    assert!(out.contains("\n    server: \"2001:db8::1\"\n"), "{out}");
 }

@@ -118,7 +118,13 @@ pub(super) fn render(
         } else if t.starts_with(['#', ';']) && !t.starts_with("#!MANAGED-CONFIG") {
             out.push(l.to_string()); // comments are not templates
         } else {
-            out.push(fill(l, &tokens));
+            let filled = fill(l, &tokens);
+            // A managed-config line needs an absolute URL: without a
+            // subscription or main domain the link is a relative path.
+            if t.starts_with("#!MANAGED-CONFIG") && !filled.contains("://") {
+                continue;
+            }
+            out.push(filled);
         }
     }
     check(d, body, &out, &kept_names, strict)

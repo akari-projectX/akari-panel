@@ -883,9 +883,11 @@ curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" \
 # neither documents: no proxy line, the groups fall back to DIRECT).
 for ua in "Surge iOS/3000" "Surfboard/2.30.0"; do
   subrl; curl -s --noproxy '*' -A "$ua" "$SUB" >"$LOG/w30-ini.conf"
-  for want in "^#!MANAGED-CONFIG http.*$SUBP/.*[?]format=" "^\[Proxy\]" "^\[Proxy Group\]" "^\[Rule\]" "^FINAL,🚀 默认代理"; do
+  for want in "^\[Proxy\]" "^\[Proxy Group\]" "^\[Rule\]" "^FINAL,🚀 默认代理"; do
     matches "$want" <"$LOG/w30-ini.conf" || { echo "FAIL: $ua profile lacks $want"; head -c 2500 "$LOG/w30-ini.conf"; exit 1; }
   done
+  # No domain is configured here: a managed-config line needs an absolute URL, so there is none.
+  matches "^#!MANAGED-CONFIG" <"$LOG/w30-ini.conf" && { echo "FAIL: relative MANAGED-CONFIG in a $ua profile"; exit 1; }
   matches "vless" <"$LOG/w30-ini.conf" && { echo "FAIL: a VLESS line in a $ua profile"; exit 1; }
 done
 subrl; [ "$(code -A "curl/8" "$SUB?format=surge")" = "200" ] || { echo "FAIL: ?format=surge"; exit 1; }

@@ -76,8 +76,11 @@ pub fn sub_template_values(name: &str, secret: &str) -> Result<(), String> {
             }
             TemplateFormat::Surge | TemplateFormat::Surfboard => {
                 let sections = out.lines().filter(|l| l.starts_with('[')).count();
-                if sections != 5 && sections != 6 {
-                    return Err(format!("{f:?}: {sections} sections:\n{out}"));
+                let plain = render_sample_for(f, f.default_body(), &[])
+                    .map_err(|e| format!("{f:?}: the built-in template failed: {}", e.message))?;
+                let expect = plain.lines().filter(|l| l.starts_with('[')).count();
+                if sections != expect {
+                    return Err(format!("{f:?}: {sections} sections, want {expect}:\n{out}"));
                 }
             }
         }
