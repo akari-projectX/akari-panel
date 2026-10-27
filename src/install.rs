@@ -66,54 +66,18 @@ fn ensure_jwt_key(data_dir: &Path) -> Result<String> {
     Ok(secret)
 }
 
-/// File name of the master key (v0.4 D7).
+/// File name of the master key.
 pub const MASTER_KEY: &str = "master.key";
-/// Its name before v0.4 (it was introduced for TOTP secrets).
-pub const LEGACY_MASTER_KEY: &str = "totp.key";
 
 /// The master key (32 random bytes, hex, 0600) every at-rest secret and
 /// MAC key is derived from (masterkey.rs). Unlike jwt.key it is never
 /// regenerated over a malformed file: that would silently make every sealed
 /// secret (SMTP password, alert channels, payment methods, subscription
 /// links) unreadable.
-///
-/// D7 rename: an install that still has only `totp.key` gets it renamed to
-/// `master.key` (atomic, same directory) and keeps working with identical
-/// derived keys. Both present: they must hold the same key (a restored
-/// backup next to a renamed file); different keys refuse to start rather
-/// than guess which one the database was sealed with.
 fn ensure_master_key(data_dir: &Path) -> Result<Vec<u8>> {
     let path = data_dir.join(MASTER_KEY);
-    let legacy = data_dir.join(LEGACY_MASTER_KEY);
     if path.exists() {
-        let key = read_master_key(&path)?;
-        if legacy.exists() {
-            if read_master_key(&legacy)? != key {
-                anyhow::bail!(
-                    "{} and {} hold different keys; keep the one the database was \
-                     sealed with (the other came from a different install) and remove the other",
-                    path.display(),
-                    legacy.display()
-                );
-            }
-            tracing::warn!(
-                "{} is a leftover copy of {}; it can be removed",
-                legacy.display(),
-                path.display()
-            );
-        }
-        return Ok(key);
-    }
-    if legacy.exists() {
-        let key = read_master_key(&legacy)?;
-        fs::rename(&legacy, &path)
-            .with_context(|| format!("rename {} to {}", legacy.display(), path.display()))?;
-        #[cfg(unix)]
-        if let Ok(d) = fs::File::open(data_dir) {
-            let _ = d.sync_all();
-        }
-        tracing::info!("renamed {} to {}", legacy.display(), path.display());
-        return Ok(key);
+        return read_master_key(&path);
     }
     let secret = random_hex(32);
     write_secret(&path, secret.as_bytes())?;
@@ -540,54 +504,6 @@ mod tests {
         // A corrupt master key is an error, never silently replaced.
         fs::write(dir.join(MASTER_KEY), "junk").unwrap();
         assert!(ensure_master_key(&dir).is_err());
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    /// D7: totp.key → master.key, once, keeping the key (and so every
-    /// derived key) identical; conflicting copies refuse to start.
-    #[cfg(unix)]
-    #[test]
-    fn legacy_totp_key_is_renamed_once() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("akari-master-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        let hexkey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
-        write_secret(
-            &dir.join(LEGACY_MASTER_KEY),
-            format!("{hexkey}\n").as_bytes(),
-        )
-        .unwrap();
-        let key = ensure_master_key(&dir).unwrap();
-        assert_eq!(hex::encode(&key), hexkey);
-        assert!(!dir.join(LEGACY_MASTER_KEY).exists(), "renamed, not copied");
-        let mode = fs::metadata(dir.join(MASTER_KEY))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "permissions kept");
-        assert_eq!(
-            ensure_master_key(&dir).unwrap(),
-            key,
-            "stable after the rename"
-        );
-        // A leftover identical copy is tolerated…
-        write_secret(&dir.join(LEGACY_MASTER_KEY), hexkey.as_bytes()).unwrap();
-        assert_eq!(ensure_master_key(&dir).unwrap(), key);
-        // …a different one is refused, and nothing is overwritten.
-        let other = "ff".repeat(32);
-        write_secret(&dir.join(LEGACY_MASTER_KEY), other.as_bytes()).unwrap();
-        assert!(ensure_master_key(&dir).is_err());
-        assert_eq!(
-            fs::read_to_string(dir.join(LEGACY_MASTER_KEY)).unwrap(),
-            other,
-            "untouched"
-        );
-        assert_eq!(read_master_key(&dir.join(MASTER_KEY)).unwrap(), key);
-        // A corrupt legacy file is not renamed.
-        fs::remove_file(dir.join(MASTER_KEY)).unwrap();
-        fs::write(dir.join(LEGACY_MASTER_KEY), "junk").unwrap();
-        assert!(ensure_master_key(&dir).is_err());
-        assert!(!dir.join(MASTER_KEY).exists());
         fs::remove_dir_all(&dir).ok();
     }
 
