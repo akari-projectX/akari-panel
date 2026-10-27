@@ -135,7 +135,8 @@ log "expose-data for B's network"
 ina akari-ctl expose-data --yes --allow "$subnet" || fail "expose-data"
 tcp_open "$cb" "$ipa" 5432 || fail "B cannot reach PostgreSQL"
 tcp_open "$cb" "$ipa" 6379 || fail "B cannot reach Valkey"
-ina nft list table inet akari_data | grep -qF "${subnet%/*}" || fail "the firewall does not name the network"
+fw=$(ina nft list table inet akari_data) || fail "nft list"
+case $fw in *"${subnet%/*}"*) ;; *) fail "the firewall does not name the network" ;; esac
 ina nft list table inet akari_data | grep -qF 10.99.0.0 && fail "the old network is still in the firewall"
 # Listening: loopback + the private address only, never every address.
 for port in 5432 6379; do
