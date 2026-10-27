@@ -35,9 +35,7 @@
 //!   saving transaction (`apply_update_probe`).
 //!
 //! W25 (R39): the database is the ONLY source. NULL = the built-in default
-//! (`Effective`), never a panel.toml value. Keys of older panel.toml files
-//! are imported once (`import_legacy`, actor `system`, audited
-//! `settings.import`) and then ignored with a warning.
+//! (`Effective`), never a panel.toml value.
 //! `akari settings show|set|unset` reads/changes the row from the CLI (e.g.
 //! after a mistyped main domain, or to set the node domain before the first
 //! login).
@@ -1068,8 +1066,7 @@ fn probe_wire(p: &ProbeConfig) -> (u64, &[String], u32, u32) {
     (p.interval_secs, &p.urls, p.timeout_ms, p.attempts)
 }
 
-/// Startup: load the settings (obsolete panel.toml keys were imported by
-/// `import_legacy` before).
+/// Startup: load the settings.
 pub async fn init(state: &AppState) -> anyhow::Result<()> {
     reload(state).await
 }
@@ -2533,14 +2530,13 @@ pub async fn put_security(
 pub struct AffectedNode {
     pub id: Uuid,
     pub name: String,
-    /// "enrolled" (its agent uses the name), "pending" (an unused token's
-    /// bootstrap carries it) or "unknown" (enrolled before 0060: the name
-    /// was not recorded).
+    /// "enrolled" (its agent uses the name) or "pending" (an unused token's
+    /// bootstrap carries it).
     pub reason: String,
 }
 
 /// Servers still using `name` (enrolled with it, or holding a live token
-/// for it). Servers enrolled before 0060 are listed by `legacy_nodes`.
+/// for it).
 pub async fn nodes_using(conn: &mut PgConnection, name: &str) -> sqlx::Result<Vec<AffectedNode>> {
     sqlx::query_as(
         "SELECT id, name, 'enrolled' AS reason FROM servers \
@@ -2557,37 +2553,13 @@ pub async fn nodes_using(conn: &mut PgConnection, name: &str) -> sqlx::Result<Ve
     .await
 }
 
-/// Enrolled servers whose server name is unknown (enrolled before 0060).
-pub async fn legacy_nodes(conn: &mut PgConnection) -> sqlx::Result<Vec<AffectedNode>> {
-    sqlx::query_as(
-        "SELECT id, name, 'unknown' AS reason FROM servers \
-         WHERE deleting_at IS NULL AND cert_serial IS NOT NULL AND server_name IS NULL \
-         ORDER BY name",
-    )
-    .fetch_all(conn)
-    .await
-}
-
 /// Why a recorded name cannot be removed (None = removable).
-/// `legacy_nodes`: nodes enrolled before 0060 exist (their server name is
-/// unknown: most likely one that came from panel.toml).
-fn removal_blocker(
-    eff_node: Option<&NodeEndpoint>,
-    source: &str,
-    name: &str,
-    legacy_nodes: bool,
-) -> Option<&'static str> {
+fn removal_blocker(eff_node: Option<&NodeEndpoint>, name: &str) -> Option<&'static str> {
     if eff_node.is_some_and(|n| n.server_name.eq_ignore_ascii_case(name)) {
         return Some("这是当前的节点通信域名，不能移除");
     }
     if BOOT_NAMES.iter().any(|n| n.eq_ignore_ascii_case(name)) {
         return Some("这是内置的本机名称，证书始终包含它");
-    }
-    if source == "config" && legacy_nodes {
-        return Some(
-            "这个名称来自旧版 panel.toml，而仍有在记录服务器名称之前注册的节点（可能在用它）：\
-             先为这些节点重新签发注册令牌再移除",
-        );
     }
     None
 }
@@ -2604,18 +2576,7 @@ pub async fn apply_remove_server_name(
     crate::owner::require(conn, actor).await?;
     let cur = read_stored(&mut *conn, true).await?;
     let eff = compute(cfg, cur, Vec::new());
-    let source: Option<String> =
-        sqlx::query_scalar("SELECT source FROM grpc_server_names WHERE name = $1")
-            .bind(name)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let legacy = !legacy_nodes(conn).await?.is_empty();
-    if let Some(why) = removal_blocker(
-        eff.node.as_ref(),
-        source.as_deref().unwrap_or(""),
-        name,
-        legacy,
-    ) {
+    if let Some(why) = removal_blocker(eff.node.as_ref(), name) {
         return Err(bad_request!(
             "settings.server_name_locked",
             "{detail}",
@@ -2853,9 +2814,6 @@ pub struct SettingsView {
     pub node: NodeDomainView,
     pub trust_cloudflare: TrustView,
     pub server_names: Vec<ServerNameView>,
-    /// Enrolled before server names were recorded (they most likely use
-    /// an old panel.toml grpc.server_name).
-    pub legacy_nodes: Vec<AffectedNode>,
     /// Names the gRPC certificate served by THIS instance covers.
     pub certificate_names: Vec<String>,
     /// Certificate changes apply without a restart.
@@ -2879,8 +2837,6 @@ pub struct SettingsView {
     pub passkey: PasskeyView,
     /// W30: 订阅 (routing template, rule list URLs).
     pub subscription: SubscriptionView,
-    /// W25: obsolete keys in THIS instance's panel.toml (delete them).
-    pub obsolete_config_keys: Vec<String>,
     /// Advisory notes from the last save (DNS checks).
     pub warnings: Vec<String>,
 }
@@ -3042,7 +2998,6 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
     let live = state.settings();
     let eff = compute(cfg, stored, names);
     warnings.extend(eff.standing_warnings(state.payments().any_usable()));
-    let legacy = legacy_nodes(&mut conn).await?;
     let mut server_names = Vec::new();
     for n in &eff.server_names {
         server_names.push(ServerNameView {
@@ -3054,7 +3009,7 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
                 .node
                 .as_ref()
                 .is_some_and(|e| e.server_name.eq_ignore_ascii_case(&n.name)),
-            locked: removal_blocker(eff.node.as_ref(), &n.source, &n.name, !legacy.is_empty()),
+            locked: removal_blocker(eff.node.as_ref(), &n.name),
             nodes: nodes_using(&mut conn, &n.name).await?,
         });
     }
@@ -3106,7 +3061,6 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
             source: eff.trust_source,
         },
         server_names,
-        legacy_nodes: legacy,
         certificate_names: live.certs().names(),
         hot_reload: true,
         host_gate: eff.host_gate_on(),
@@ -3115,7 +3069,6 @@ pub async fn view(state: &AppState, mut warnings: Vec<String>) -> Result<Setting
         probe: probe_view(&eff),
         node_ops: node_ops_view(&eff),
         security: security_view(&eff),
-        obsolete_config_keys: cfg.legacy.names().map(str::to_string).collect(),
         warnings,
     })
 }
@@ -3998,500 +3951,6 @@ pub async fn cli_set(
     tx.commit().await?;
     println!("{field}: set; running panels pick it up at once");
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// W25: one-time import of obsolete panel.toml keys
-// ---------------------------------------------------------------------------
-
-/// What happened to one obsolete key on this start.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Imported {
-    /// Written into the database now.
-    Now,
-    /// The database already had a value; the file value was not used.
-    Kept,
-    /// Handled on an earlier start: ignored.
-    Before,
-    /// Unreadable or invalid: ignored (reason).
-    Unusable(String),
-    /// A built-in constant now: ignored.
-    Constant,
-    /// The feature is gone: ignored.
-    Removed,
-}
-
-/// The one-time import's report (logged at startup; tests read it).
-#[derive(Debug, Default)]
-pub struct ImportReport {
-    pub keys: Vec<(String, Imported)>,
-    /// The import turned the host gate on (main domain from the file).
-    pub host_gate_on: bool,
-}
-
-impl ImportReport {
-    pub fn get(&self, key: &str) -> Option<&Imported> {
-        self.keys.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-    }
-}
-
-/// The new value of one setting from an obsolete key (Err = unusable).
-fn legacy_value(
-    legacy: &crate::config::Legacy,
-    key: &str,
-    new: &mut Stored,
-    names: &mut Vec<String>,
-) -> Result<bool, String> {
-    // Returns Ok(true) when the database had no value (written), Ok(false)
-    // when it had one (kept).
-    macro_rules! get {
-        ($t:ty) => {
-            match legacy.get::<$t>(key) {
-                Some(Ok(v)) => v,
-                Some(Err(e)) => return Err(e),
-                None => return Err("missing".into()),
-            }
-        };
-    }
-    fn put<T>(slot: &mut Option<T>, v: T) -> bool {
-        if slot.is_some() {
-            return false;
-        }
-        *slot = Some(v);
-        true
-    }
-    fn put_first(list: &mut Vec<String>, v: String) -> bool {
-        if !list.is_empty() {
-            return false;
-        }
-        list.push(v);
-        true
-    }
-    let domain = |v: &str| Domain::parse(v).map(|d| d.authority());
-    Ok(match key {
-        "web.sub_domain" => put_first(&mut new.sub_domains, domain(&get!(String))?),
-        "web.trust_cloudflare" => put(&mut new.trust_cloudflare, get!(bool)),
-        "web.cloudflare_ranges" => {
-            let list: Vec<String> = get!(Vec<String>);
-            let req = SecurityReq {
-                version: 0,
-                audit_retention_days: None,
-                traffic_daily_retention_days: None,
-                cloudflare_ranges: Some(list),
-                extra_release_keys: None,
-            };
-            match security_values(&req)
-                .map_err(|e| e.message().to_string())?
-                .cloudflare_ranges
-            {
-                Some(v) => put(&mut new.cloudflare_ranges, v),
-                None => return Err("empty (the shipped list applies)".into()),
-            }
-        }
-        "web.advertised_names" | "grpc.server_name" => {
-            let list: Vec<String> = if key == "grpc.server_name" {
-                vec![get!(String)]
-            } else {
-                get!(Vec<String>)
-            };
-            let list: Vec<String> = list
-                .into_iter()
-                .map(|n| n.trim().trim_end_matches('.').to_ascii_lowercase())
-                .filter(|n| {
-                    !n.is_empty() && !n.chars().any(|c| c.is_whitespace() || c.is_control())
-                })
-                .collect();
-            if list.is_empty() {
-                return Err("empty".into());
-            }
-            names.extend(list);
-            true
-        }
-        "grpc.advertise" => {
-            let v = domain(&get!(String))?;
-            if Domain::parse(&v)
-                .ok()
-                .and_then(|d| d.host.parse::<IpAddr>().ok())
-                .is_some_and(|ip| ip.is_unspecified())
-            {
-                return Err("0.0.0.0 / :: is not an address agents can dial".into());
-            }
-            put_first(&mut new.node_domains, v)
-        }
-        "install.public_url" => {
-            let o = crate::nodeinstall::parse_origin(&get!(String))?;
-            if !o.https {
-                return Err("not an https origin".into());
-            }
-            let auth = match o.port {
-                Some(p) if p != 443 => format!("{}:{p}", o.host),
-                _ => o.host,
-            };
-            put_first(&mut new.main_domains, domain(&auth)?)
-        }
-        "install.tls_pin" => {
-            let v = get!(String);
-            if v.trim().is_empty() {
-                return Err("empty (probed)".into());
-            }
-            if !crate::nodeinstall::valid_pin(v.trim()) {
-                return Err("not a sha256// pin".into());
-            }
-            put(&mut new.install_tls_pin, v.trim().to_string())
-        }
-        "install.fallback_binary_url" => {
-            let v = get!(String);
-            let v = v.trim();
-            if !v.is_empty() && !crate::nodeinstall::fallback_url_ok(v) {
-                return Err("not an https URL with {arch}".into());
-            }
-            if v == crate::config::DEFAULT_FALLBACK_BINARY_URL {
-                return Err("the built-in default".into());
-            }
-            put(&mut new.install_fallback_url, v.to_string())
-        }
-        "probe.interval_secs" => {
-            let v: u64 = get!(u64);
-            if !PROBE_INTERVAL_SECS.contains(&v) {
-                return Err("outside 600..=604800".into());
-            }
-            put(&mut new.probe_interval_secs, v as i32)
-        }
-        "probe.urls" => {
-            let v: Vec<String> = get!(Vec<String>);
-            if !valid_probe_urls(&v) {
-                return Err("1-4 distinct http(s) URLs required".into());
-            }
-            put(&mut new.probe_urls, v)
-        }
-        "probe.panel_tcp" => put(&mut new.probe_panel_tcp, get!(bool)),
-        "acme.directory_url" => {
-            let v = get!(String);
-            if v.trim().is_empty() {
-                return Err("empty (Let's Encrypt)".into());
-            }
-            if !acme_url_ok(v.trim()) {
-                return Err("not an https URL".into());
-            }
-            put(&mut new.acme_directory_url, v.trim().to_string())
-        }
-        "acme.email" => {
-            let v = get!(String);
-            if v.trim().is_empty() {
-                return Err("empty".into());
-            }
-            if !acme_email_ok(v.trim()) {
-                return Err("not an e-mail address".into());
-            }
-            put(&mut new.acme_email, v.trim().to_string())
-        }
-        "audit.retention_days" => {
-            let v: u32 = get!(u32);
-            if v > 36_500 {
-                return Err("above 36500".into());
-            }
-            // The floor (1115): a shorter old value is raised to it.
-            let v = if v == 0 {
-                0
-            } else {
-                v.max(MIN_AUDIT_RETENTION_DAYS)
-            };
-            put(&mut new.audit_retention_days, v as i32)
-        }
-        "traffic.daily_retention_days" => {
-            let v: u32 = get!(u32);
-            if v != 0 && !(32..=36_500).contains(&v) {
-                return Err("must be 0 or 32..=36500".into());
-            }
-            put(&mut new.traffic_daily_retention_days, v as i32)
-        }
-        "agent.remove_mode" => {
-            let v = get!(String);
-            let m = RemoveMode::parse(v.trim()).ok_or("must be gate or rebuild")?;
-            put(&mut new.remove_mode, m.as_str().to_string())
-        }
-        "updates.release_keys" => {
-            let v: Vec<String> = get!(Vec<String>);
-            let keys = crate::updates::parse_release_keys(&v)?;
-            let official = crate::updates::official_release_keys();
-            let extra: Vec<String> = v
-                .iter()
-                .zip(&keys)
-                .filter(|(_, k)| !official.iter().any(|o| o.id == k.id))
-                .map(|(line, _)| line.split_whitespace().collect::<Vec<_>>().join(" "))
-                .collect();
-            if extra.is_empty() {
-                return Err("only official keys (built in)".into());
-            }
-            if extra.len() > MAX_EXTRA_RELEASE_KEYS {
-                return Err("more than 16 keys".into());
-            }
-            put(&mut new.extra_release_keys, extra)
-        }
-        _ => return Err("not importable".into()),
-    })
-}
-
-/// `alerts.telegram_api_url` → `alert_settings.telegram_api_url` (告警 →
-/// Telegram API 地址). The built-in origin itself is not imported.
-fn legacy_telegram(
-    legacy: &crate::config::Legacy,
-    cur: &Option<String>,
-    new: &mut Option<String>,
-) -> Result<bool, String> {
-    let key = "alerts.telegram_api_url";
-    let v: String = match legacy.get::<String>(key) {
-        Some(Ok(v)) => v,
-        Some(Err(e)) => return Err(e),
-        None => return Err("missing".into()),
-    };
-    let v = v.trim().trim_end_matches('/').to_string();
-    if !crate::alerts::valid_telegram_api_url(&v) {
-        return Err("not an https origin".into());
-    }
-    if v == crate::config::TELEGRAM_API_URL {
-        return Err("the built-in origin".into());
-    }
-    if cur.is_some() {
-        return Ok(false);
-    }
-    *new = Some(v);
-    Ok(true)
-}
-
-/// Startup (before `init`): obsolete keys of an older panel.toml. Each key
-/// that moved to 系统设置 is imported ONCE — when the database has no
-/// value and no earlier start handled the key — in one transaction under
-/// the settings row lock (concurrent instances import once), audited
-/// `settings.import` as actor `system`; server names (`web.advertised_names`,
-/// `grpc.server_name`) join `grpc_server_names` (source `config`) so the
-/// gRPC certificate keeps covering them. Every key is then ignored with a
-/// warning; keys that became built-in constants are only warned about.
-/// `[payments]` is W24's (`billing::methods::import_legacy`). Never fails
-/// the start.
-pub async fn import_legacy(state: &AppState) -> ImportReport {
-    let legacy = &state.cfg().legacy;
-    let mut report = ImportReport::default();
-    if legacy.is_empty() {
-        return report;
-    }
-    match import_tx(state.pg(), legacy).await {
-        Ok(r) => report = r,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "obsolete panel.toml keys could not be imported; they are ignored: set them in \
-                 系统设置 and delete them from panel.toml"
-            );
-            return report;
-        }
-    }
-    for (key, what) in &report.keys {
-        let place = match crate::config::fate(key) {
-            Some(crate::config::Fate::Moved(p)) => p,
-            _ => "",
-        };
-        match what {
-            Imported::Now => tracing::warn!(
-                key,
-                "panel.toml {key} imported into 系统设置 → {place}; it is obsolete and now \
-                 ignored: delete it from panel.toml"
-            ),
-            Imported::Kept => tracing::warn!(
-                key,
-                "panel.toml {key} is obsolete and ignored (系统设置 → {place} already has a \
-                 value): delete it from panel.toml"
-            ),
-            Imported::Before => tracing::warn!(
-                key,
-                "panel.toml {key} is obsolete and ignored (系统设置 → {place} is the only \
-                 source): delete it from panel.toml"
-            ),
-            Imported::Unusable(why) => tracing::warn!(
-                key,
-                reason = %why,
-                "panel.toml {key} is obsolete and was not imported ({why}): set 系统设置 → \
-                 {place} if needed, then delete it from panel.toml"
-            ),
-            Imported::Constant => tracing::warn!(
-                key,
-                "panel.toml {key} is obsolete: the value is built in now; delete it from \
-                 panel.toml"
-            ),
-            Imported::Removed => tracing::warn!(
-                key,
-                "panel.toml {key} is obsolete: the feature was removed; delete it from \
-                 panel.toml"
-            ),
-        }
-    }
-    if report.host_gate_on {
-        tracing::warn!(
-            "install.public_url became the main domain: the host gate is on (requests for other \
-             DNS names are refused; IP addresses stay allowed). Check 系统设置 → 站点; \
-             `akari settings unset main` turns it off"
-        );
-    }
-    report
-}
-
-async fn import_tx(
-    pg: &sqlx::PgPool,
-    legacy: &crate::config::Legacy,
-) -> anyhow::Result<ImportReport> {
-    let mut tx = pg.begin().await?;
-    let cur = read_stored(&mut tx, true).await?;
-    let handled: Vec<String> = sqlx::query_scalar("SELECT key FROM legacy_config_imports")
-        .fetch_all(&mut *tx)
-        .await?;
-    let mut new = cur.clone();
-    let cur_tg: Option<String> =
-        sqlx::query_scalar("SELECT telegram_api_url FROM alert_settings WHERE id = 1 FOR UPDATE")
-            .fetch_one(&mut *tx)
-            .await?;
-    let mut new_tg = cur_tg.clone();
-    let mut names: Vec<String> = Vec::new();
-    let mut report = ImportReport::default();
-    let mut marks: Vec<(String, &'static str)> = Vec::new();
-    for key in legacy.names() {
-        match crate::config::fate(key) {
-            None => continue,
-            Some(crate::config::Fate::Constant) => {
-                report.keys.push((key.to_string(), Imported::Constant));
-                continue;
-            }
-            Some(crate::config::Fate::Removed(_)) => {
-                report.keys.push((key.to_string(), Imported::Removed));
-                continue;
-            }
-            Some(crate::config::Fate::Moved(_)) if key == "payments.*" => continue,
-            Some(crate::config::Fate::Moved(_)) => {}
-        }
-        if handled.iter().any(|h| h == key) {
-            report.keys.push((key.to_string(), Imported::Before));
-            continue;
-        }
-        let res = if key == "alerts.telegram_api_url" {
-            legacy_telegram(legacy, &cur_tg, &mut new_tg)
-        } else {
-            legacy_value(legacy, key, &mut new, &mut names)
-        };
-        let outcome = match res {
-            Ok(true) => Imported::Now,
-            Ok(false) => Imported::Kept,
-            Err(why) => Imported::Unusable(why),
-        };
-        marks.push((
-            key.to_string(),
-            match outcome {
-                Imported::Now => "imported",
-                Imported::Kept => "kept",
-                _ => "unusable",
-            },
-        ));
-        report.keys.push((key.to_string(), outcome));
-    }
-    for n in &names {
-        record_server_name(&mut tx, n, "config").await?;
-    }
-    if new != cur {
-        report.host_gate_on = cur.main_domains.is_empty() && !new.main_domains.is_empty();
-        sqlx::query(
-            "UPDATE panel_settings SET \
-                 trust_cloudflare = $1, probe_interval_secs = $2, probe_urls = $3, \
-                 probe_panel_tcp = $4, cloudflare_ranges = $5, install_tls_pin = $6, \
-                 install_fallback_url = $7, acme_directory_url = $8, acme_email = $9, \
-                 audit_retention_days = $10, traffic_daily_retention_days = $11, \
-                 remove_mode = $12, extra_release_keys = $13, \
-                 version = version + 1, updated_at = now() \
-             WHERE id = 1",
-        )
-        .bind(new.trust_cloudflare)
-        .bind(new.probe_interval_secs)
-        .bind(&new.probe_urls)
-        .bind(new.probe_panel_tcp)
-        .bind(&new.cloudflare_ranges)
-        .bind(&new.install_tls_pin)
-        .bind(&new.install_fallback_url)
-        .bind(&new.acme_directory_url)
-        .bind(&new.acme_email)
-        .bind(new.audit_retention_days)
-        .bind(new.traffic_daily_retention_days)
-        .bind(&new.remove_mode)
-        .bind(&new.extra_release_keys)
-        .execute(&mut *tx)
-        .await?;
-        let added = write_domains(&mut tx, &Values::of(&cur), &Values::of(&new))
-            .await
-            .map_err(|e| anyhow::anyhow!("imported domains: {}", e.message()))?;
-        for host in added {
-            record_server_name(&mut tx, &host, "config").await?;
-        }
-    }
-    if new_tg != cur_tg {
-        sqlx::query(
-            "UPDATE alert_settings SET telegram_api_url = $1, version = version + 1, \
-                 updated_at = now() WHERE id = 1",
-        )
-        .bind(&new_tg)
-        .execute(&mut *tx)
-        .await?;
-    }
-    if !marks.is_empty() {
-        let (keys, outcomes): (Vec<String>, Vec<&str>) = marks.into_iter().unzip();
-        sqlx::query(
-            "INSERT INTO legacy_config_imports (key, outcome) \
-             SELECT * FROM unnest($1::text[], $2::text[]) ON CONFLICT (key) DO NOTHING",
-        )
-        .bind(&keys)
-        .bind(&outcomes)
-        .execute(&mut *tx)
-        .await?;
-        let imported: Vec<&str> = report
-            .keys
-            .iter()
-            .filter(|(_, o)| *o == Imported::Now)
-            .map(|(k, _)| k.as_str())
-            .collect();
-        if !imported.is_empty() {
-            let diff = |s: &Stored, tg: &Option<String>| {
-                let mut v = serde_json::to_value(s).unwrap_or_default();
-                if let Some(o) = v.as_object_mut() {
-                    o.remove("version");
-                    o.retain(|k, _| legacy_column_changed(k, &cur, &new));
-                    if new_tg != cur_tg {
-                        o.insert("alerts.telegram_api_url".into(), json!(tg));
-                    }
-                }
-                v
-            };
-            crate::audit::record(
-                &mut tx,
-                &Actor::system(),
-                "settings.import",
-                "settings",
-                None,
-                Some(diff(&cur, &cur_tg)),
-                Some(json!({
-                    "values": diff(&new, &new_tg),
-                    "keys": imported,
-                    "server_names": names,
-                })),
-            )
-            .await?;
-        }
-    }
-    tx.commit().await?;
-    Ok(report)
-}
-
-/// Did the import change this `Stored` column?
-fn legacy_column_changed(col: &str, a: &Stored, b: &Stored) -> bool {
-    let (a, b) = (serde_json::to_value(a), serde_json::to_value(b));
-    match (a, b) {
-        (Ok(a), Ok(b)) => a.get(col) != b.get(col),
-        _ => true,
-    }
 }
 
 #[cfg(test)]

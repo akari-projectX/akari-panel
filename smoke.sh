@@ -77,11 +77,9 @@ echo "== start panel (runs migrations) =="
 # Plain-HTTP development: the session cookie must not be Secure. 127.0.0.2
 # plays a trusted reverse proxy (curl --interface 127.0.0.2); requests from
 # 127.0.0.1 are direct clients whose X-Forwarded-For must be ignored.
-# W25 (R39): panel.toml keeps only what the process needs to start. The
-# sections after the first block are OBSOLETE on purpose (an upgraded
-# install's file): the first start imports the moved ones into 系统设置 once
-# (node domain from grpc.advertise, latency test URL, ACME directory, the
-# TEST release key), constants are ignored — both with a warning.
+# W25 (R39): panel.toml keeps only what the process needs to start; the
+# rest (node domain, latency test URL, ACME directory, the TEST release key)
+# is seeded into 系统设置 below.
 cat >"$LOG/panel.toml" <<'TOML'
 [web]
 cookie_secure = false
@@ -90,28 +88,6 @@ trusted_proxies = ["127.0.0.2/32"]
 bind = "127.0.0.1:9109"
 [tls_ask]
 bind = "127.0.0.1:8092"
-
-# --- obsolete (W25) ---
-[grpc]
-advertise = "127.0.0.1:8443"
-server_name = "localhost"
-lease_seconds = 86400
-
-# W11 latency tests: a local test URL (the 204 server below).
-[probe]
-urls = ["http://127.0.0.1:18204/generate_204"]
-timeout_ms = 2000
-
-# W10: agents of nodes with a TLS domain order from the local pebble CA
-# (docker, W10 section), never from Let's Encrypt.
-[acme]
-directory_url = "https://127.0.0.1:14000/dir"
-
-[sub]
-rate_per_token = 8
-
-[alerts]
-telegram_api_url = "https://tg.example.com"
 TOML
 # W25: the timers smoke shortens are built-in constants now; this TEST-ONLY
 # variable (logged at startup) shortens them: 8 subscription fetches per
@@ -147,10 +123,9 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 18204), H).serve_forever()
 ' >/dev/null 2>&1 &
 W11_PROBE_PID=$!
 # M6: the agent's TEST release key (testdata/, public on purpose) is
-# trusted here IN ADDITION to the official key compiled into the panel (W25:
-# obsolete [updates] release_keys, imported once into 系统设置 → 安全).
+# trusted here IN ADDITION to the official key compiled into the panel (an
+# extra key in 系统设置 → 安全, seeded below).
 TEST_RELEASE_PUB=$(cut -d' ' -f1 "$AGENT_DIR/testdata/TEST-ONLY-release.pub")
-printf '\n[updates]\nrelease_keys = ["%s TEST-ONLY"]\n' "$TEST_RELEASE_PUB" >>"$LOG/panel.toml"
 # R18-3: Alipay Face-to-Face against a local mock gateway, with throwaway
 # RSA keys made here (never real credentials).
 PAY="$LOG/pay"; mkdir -p "$PAY"
@@ -292,7 +267,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoke
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM site_domains; UPDATE panel_settings SET version = 0, sub_domain_per_user = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names, legacy_config_imports;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM site_domains; UPDATE panel_settings SET version = 0, sub_domain_per_user = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
@@ -407,32 +382,21 @@ fi
 echo "SMOKE TEST PASSED"
 exit 0
 # smoke-sections-begin
-echo "== W25: an old panel.toml on a clean database: obsolete keys imported once, constants ignored =="
-# The reset above cleared what the first start imported: start again so the
-# import runs against the clean database (what an upgrade does once).
+echo "== W25: the settings the run needs, seeded into 系统设置 =="
+# The reset above cleared the first start's settings: start again (the access
+# layout is drawn anew), then give the database what the sections below
+# expect: the node domain agents dial, a local latency target, the local
+# ACME CA, the TEST release key and a Telegram API address.
 kill "$PANEL_PID" 2>/dev/null; wait "$PANEL_PID" 2>/dev/null || true
 start_panel "$LOG/panel.log"
-for k in grpc.advertise grpc.server_name probe.urls acme.directory_url updates.release_keys alerts.telegram_api_url; do
-  matches "panel.toml $k imported into 系统设置" <"$LOG/panel.log" || { echo "FAIL: $k not imported"; grep -i obsolete "$LOG/panel.log"; exit 1; }
-done
-for k in grpc.lease_seconds probe.timeout_ms sub.rate_per_token; do
-  matches "panel.toml $k is obsolete: the value is built in now" <"$LOG/panel.log" || { echo "FAIL: constant $k not warned about"; exit 1; }
-done
 matches "AKARI_TEST_LIMITS is set" <"$LOG/panel.log" || { echo "FAIL: test limits not announced"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import' AND actor_label = 'system'")" = "1" ] \
-  || { echo "FAIL: import not audited once (actor system)"; exit 1; }
+"$PANEL" settings set node 127.0.0.1:8443 >/dev/null || { echo "FAIL: settings set node"; exit 1; }
+psql_q "UPDATE panel_settings SET probe_urls = ARRAY['http://127.0.0.1:18204/generate_204'], acme_directory_url = 'https://127.0.0.1:14000/dir', extra_release_keys = ARRAY['$TEST_RELEASE_PUB TEST-ONLY'], version = version + 1; UPDATE alert_settings SET telegram_api_url = 'https://tg.example.com'" >/dev/null \
+  || { echo "FAIL: seeding the settings"; exit 1; }
 [ "$(psql_q "SELECT (SELECT domain FROM site_domains WHERE kind = 'node' AND preferred) || ' ' || array_to_string(probe_urls, ',') || ' ' || acme_directory_url FROM panel_settings")" \
     = "127.0.0.1:8443 http://127.0.0.1:18204/generate_204 https://127.0.0.1:14000/dir" ] \
-  || { echo "FAIL: imported values: $(psql_q "SELECT * FROM panel_settings")"; exit 1; }
-[ "$(psql_q "SELECT extra_release_keys[1] FROM panel_settings")" = "$TEST_RELEASE_PUB TEST-ONLY" ] \
-  || { echo "FAIL: TEST release key not imported as an extra key"; exit 1; }
-[ "$(psql_q "SELECT telegram_api_url FROM alert_settings")" = "https://tg.example.com" ] \
-  || { echo "FAIL: alerts.telegram_api_url not imported into 告警"; exit 1; }
-# D8: every node domain is recorded as a certificate name (the imported
-# grpc.advertise host here), besides grpc.server_name.
-[ "$(psql_q "SELECT string_agg(name || ':' || source, ',' ORDER BY name) FROM grpc_server_names")" = "127.0.0.1:config,localhost:config" ] \
-  || { echo "FAIL: grpc.server_name not recorded as a certificate name"; psql_q "SELECT * FROM grpc_server_names"; exit 1; }
-echo "w25 import: ok"
+  || { echo "FAIL: seeded values: $(psql_q "SELECT * FROM panel_settings")"; exit 1; }
+echo "w25 seed: ok"
 
 echo "== first admin (env password) =="
 # D1: the e-mail address is the login name.
@@ -649,7 +613,7 @@ for p in "$BASE/api/v1/me/totp" "-X POST $BASE/api/v1/me/totp/enroll" "-X POST $
 done
 echo "email login: ok"
 
-echo "-- W25: the imported settings through the API (database only; obsolete keys listed) --"
+echo "-- W25: the seeded settings through the API (database only) --"
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
 python3 - "$TEST_RELEASE_PUB" <<'PY' || { echo "FAIL: W25 settings view"; cat /tmp/akari-smoke/last; exit 1; }
 import json, sys
@@ -659,8 +623,6 @@ assert v["probe"]["urls"]["source"] == "settings", v["probe"]
 assert v["node_ops"]["acme_directory_url"] == "https://127.0.0.1:14000/dir", v["node_ops"]
 assert v["security"]["extra_release_keys"] == [sys.argv[1] + " TEST-ONLY"], v["security"]
 assert [k["official"] for k in v["security"]["release_keys"]] == [True, False], v["security"]
-for k in ("grpc.advertise", "acme.directory_url", "sub.rate_per_token", "updates.release_keys"):
-    assert k in v["obsolete_config_keys"], v["obsolete_config_keys"]
 PY
 echo "w25 settings api: ok"
 
@@ -5103,7 +5065,7 @@ echo "== R22 系统设置: domains, Caddy on-demand ask, host gate, node domain 
 R22_AUDIT0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update'")
 R22_CLI0=$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.update' AND actor_label = 'cli'")
 # An agent enrolled BEFORE the change (bootstrap server_name = the node
-# domain imported from the old grpc.advertise, "127.0.0.1"): it must keep
+# domain "127.0.0.1"): it must keep
 # connecting afterwards.
 "$PANEL" server add r22-old --out "$LOG/r22-old.toml" >/dev/null
 grep -q '^server_name = "127.0.0.1"$' "$LOG/r22-old.toml" || { echo "FAIL: CLI bootstrap server_name"; exit 1; }
@@ -5426,17 +5388,9 @@ grep -q 'PRIVATE' "$LOG/config-check.out" && { echo "FAIL: a key in config check
 grep -qE '^# payment method .* kind=epay enabled=false .*secrets=<redacted, set>' "$LOG/config-check.out" \
   || { echo "FAIL: config check lacks the EPay method"; cat "$LOG/config-check.out"; exit 1; }
 grep -qF "$EPAY_KEY" "$LOG/config-check.out" && { echo "FAIL: the EPay key in config check"; exit 1; }
-# W25: obsolete keys are warnings (never errors) naming where they went; the
-# printed effective config holds none of them; the database side is listed.
-matches 'warning: grpc.advertise is obsolete: it is set in 系统设置 → 节点通信' <"$LOG/config-check.out" \
-  || { echo "FAIL: config check does not list the obsolete keys"; cat "$LOG/config-check.out"; exit 1; }
-matches 'warning: grpc.lease_seconds is obsolete: the value is built in now' <"$LOG/config-check.out" \
-  || { echo "FAIL: config check does not list the obsolete constants"; exit 1; }
-matches -E '^(advertise|lease_seconds|release_keys|directory_url) *=' <"$LOG/config-check.out" \
-  && { echo "FAIL: config check prints an obsolete key as configuration"; exit 1; }
 matches -F '# --- 系统设置 (database; the only source of these values) ---' <"$LOG/config-check.out" \
   || { echo "FAIL: config check lacks the database settings"; exit 1; }
-printf '[web]\nbind = "127.0.0.1:0"\n[grpc]\nlease_seconds = 5\n' >"$LOG/bad.toml"
+printf '[web]\nbind = "127.0.0.1:0"\n' >"$LOG/bad.toml"
 "$PANEL" -c "$LOG/bad.toml" config check >"$LOG/bad.out" 2>&1 \
   && { echo "FAIL: invalid config accepted"; exit 1; }
 grep -q 'web.bind: port 0' "$LOG/bad.out" || { echo "FAIL: invalid config error not readable"; cat "$LOG/bad.out"; exit 1; }
@@ -5675,7 +5629,7 @@ done
 grep -q 'panel shutting down' "$LOG/term-agent.log" || { echo "FAIL: agent stream not ended with 'panel shutting down'"; grep 'channel closed' "$LOG/term-agent.log" | tail -2; exit 1; }
 stop_proc "$AGENT_PID"
 AGENT_PID=""
-# Back to no node domain: the restart below must not bring grpc.advertise back.
+# Back to no node domain.
 "$PANEL" settings unset node >/dev/null || { echo "FAIL: settings unset node (S4-3)"; exit 1; }
 echo "sigterm: ok"
 
@@ -5688,13 +5642,7 @@ BASE="$ROOT/$PREFIX"
 start_panel "$LOG/panel2.log"
 for _ in $(seq 1 20); do [ "$(code "$BASE/healthz")" = "200" ] && break; sleep 0.5; done
 [ "$(code "$BASE/healthz")" = "200" ] || { echo "FAIL: new prefix not served"; exit 1; }
-# W25: a later start never imports again (even though `settings unset all`
-# cleared the imported values meanwhile): the old keys are only warned about.
-matches "panel.toml grpc.advertise is obsolete and ignored" <"$LOG/panel2.log" \
-  || { echo "FAIL: second start does not warn about the obsolete keys"; grep -i obsolete "$LOG/panel2.log"; exit 1; }
-matches "imported into 系统设置" <"$LOG/panel2.log" && { echo "FAIL: obsolete keys imported twice"; exit 1; }
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.import'")" = "1" ] || { echo "FAIL: a second import was audited"; exit 1; }
-[ "$(psql_q "SELECT coalesce((SELECT domain FROM site_domains WHERE kind = 'node'), '-')")" = "-" ] || { echo "FAIL: unset node domain came back from panel.toml"; exit 1; }
+[ "$(psql_q "SELECT coalesce((SELECT domain FROM site_domains WHERE kind = 'node'), '-')")" = "-" ] || { echo "FAIL: unset node domain came back"; exit 1; }
 [ "$(fp "$OLD_BASE/healthz")" = "$REJ" ] || { echo "FAIL: old prefix still answers"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action = 'settings.admin_prefix.rotate' AND actor_label = 'cli'")" = "1" ] || { echo "FAIL: rotate-prefix not audited"; exit 1; }
 # The owner rotates through the API (confirmed); the old prefix dies at once,

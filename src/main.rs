@@ -270,7 +270,6 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     // 系统设置 ([payments.alipay] into an empty 支付) and then ignored with a
     // warning; never an error.
     akari_panel::billing::methods::import_legacy(&state).await;
-    akari_panel::settings::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     // D4/D11: the admin prefix (imported from data/state.json once) and

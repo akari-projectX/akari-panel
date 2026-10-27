@@ -53,7 +53,6 @@ const S = {
   site_name: null,
   timezone: { value: null, effective: "Asia/Shanghai", default: "Asia/Shanghai" },
   passkey: { domain: null, rp_id: "a.example.com", related_origins: [], labels: 1, label_limit: 5 },
-  obsolete_config_keys: ["install.public_url"],
   warnings: [],
   probe: {
     interval_secs: { value: null, effective: 1800, default: 1800 },
