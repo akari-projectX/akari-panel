@@ -89,6 +89,18 @@ tonic-prost-build = "0.14"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
+# briefs/RUST-STYLE.md "Machine enforcement"; the same table is in bench/ and fuzz/.
+[lints.clippy]
+wildcard_imports = "warn"
+unwrap_used = "warn"
+fn_params_excessive_bools = "warn"
+undocumented_unsafe_blocks = "warn"
+mem_forget = "warn"
+rc_buffer = "warn"
+manual_string_new = "warn"
+redundant_clone = "warn"
+needless_pass_by_value = "warn"
+
 # CI-only build of the static binary/image (Dockerfile CARGO_PROFILE=ci,
 # ci.yml `build`): same code as `release`, without the Dockerfile's
 # release-only thin LTO and single codegen unit, so it compiles much faster.
