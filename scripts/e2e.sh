@@ -53,25 +53,12 @@ docker run -d --name "$MAILPIT" --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11
 # D4: the admin prefix (the first start imports data/state.json's into the
 # database; `info` prints that one before the first start).
 PREFIX=$("$PANEL" -c "$DIR/panel.toml" info | awk '/admin prefix/{sub(/^\//,"",$3); print $3}')
-# W16: payments on (throwaway keys, a gateway nobody listens on) so the
-# shop, coupons and balance can be driven; the e2e purchases are fully
-# covered by a coupon / the balance and never reach the gateway.
-# W24/R40: [payments.alipay] is OBSOLETE — kept here on purpose: the first
-# start imports it once into 系统设置 → 支付 as a payment method (the
-# upgrade path), which the W24 test then sees in the console.
+# W16: throwaway keys for the payment method admin/e2e/global-setup.ts creates
+# (a gateway nobody listens on).
 ( umask 077
   openssl genrsa -out "$DIR/app-key.pem" 2048 2>/dev/null
   openssl genrsa -out "$DIR/alipay-key.pem" 2048 2>/dev/null )
 openssl rsa -in "$DIR/alipay-key.pem" -pubout -out "$DIR/alipay-pub.pem" 2>/dev/null
-cat >>"$DIR/panel.toml" <<TOML
-[payments.alipay]
-enabled = true
-app_id = "2021000000000000"
-app_private_key_file = "$DIR/app-key.pem"
-alipay_public_key_file = "$DIR/alipay-pub.pem"
-gateway_url = "http://127.0.0.1:9/gateway.do"
-notify_url = "http://$E2E_HOST:$PORT/pay/alipay/notify"
-TOML
 # One-click agent update check: a throwaway Ed25519 release key (trusted by
 # this panel only: 系统设置 → 安全's extra keys, set in the database below) and a signed two-platform release behind a local stand-in
 # for the GitHub API (plain http is accepted for loopback only).

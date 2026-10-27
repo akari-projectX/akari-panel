@@ -3,7 +3,7 @@
 //!
 //! - `provider`: the `PaymentProvider` / `ProviderKind` traits + registry.
 //! - `methods`: configured payment methods (系统设置 → 支付, DB only),
-//!   their per-instance clients, the legacy panel.toml import.
+//!   their per-instance clients.
 //! - `alipay`: RSA2 signing/verification, the gateway calls, the
 //!   `alipay_f2f` provider kind.
 //! - `epay` (C1): 易支付 (EPay, the common MD5 interface: mapi/submit,

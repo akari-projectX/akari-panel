@@ -798,10 +798,6 @@ impl ProviderKind for EpayKind {
         v
     }
 
-    fn peek_out_trade_no(&self, body: &[u8]) -> Option<String> {
-        super::api::parse_form(body)?.remove("out_trade_no")
-    }
-
     fn default_icon(&self, config: &Value) -> Option<&'static str> {
         text_field(config, "channel")
             .and_then(|c| Channel::parse(&c))
@@ -989,10 +985,6 @@ pub(crate) mod tests {
         assert_eq!(reason(e.check_notify(b"a=1&a=2")), (false, "malformed"));
         assert_eq!(reason(e.check_notify(&[0xff, 0xfe])), (false, "malformed"));
         assert_eq!(reason(e.check_notify(b"")), (false, "bad_signature"));
-        assert_eq!(
-            EpayKind.peek_out_trade_no(body.as_bytes()).as_deref(),
-            Some("AK1")
-        );
     }
 
     #[test]

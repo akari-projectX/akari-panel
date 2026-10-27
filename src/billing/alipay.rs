@@ -1427,10 +1427,6 @@ impl super::provider::ProviderKind for AlipayKind {
             .unwrap_or(Value::Null);
         v
     }
-
-    fn peek_out_trade_no(&self, body: &[u8]) -> Option<String> {
-        super::api::parse_form(body)?.remove("out_trade_no")
-    }
 }
 
 #[cfg(test)]

@@ -687,8 +687,7 @@ pub struct Pending {
     pub expires_at: DateTime<Utc>,
     /// expires_at <= now() (DB clock).
     pub due: bool,
-    /// R40: the method that may settle it (None: pre-0140 order never
-    /// assigned, or a method-less order).
+    /// R40: the method that may settle it (None: a method-less order).
     pub payment_method_id: Option<Uuid>,
 }
 

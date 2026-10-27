@@ -721,19 +721,12 @@ W23 之前的 unit 带有 `ProcSubset=pid`，导致所有机器指标读出来�
 
 ### Certificate renewal（证书续期）
 
-协议 2 的 agent 在有效期剩余不足三分之一时自动续期（90 天中的第 60 天）：新的密钥和 CSR 经现有的 mTLS 连接发送，
+agent 在有效期剩余不足三分之一时自动续期（90 天中的第 60 天）：新的密钥和 CSR 经现有的 mTLS 连接发送，
 agent 用新证书重新连接，面板第一次见到新证书时吊销旧证书。在此之前旧证书一直有效，所以中间崩溃或网络故障没有任何代价
 （agent 只会再续期一次）。证书距过期不足 14 天的节点，在节点列表中带有警告
-（协议 1 的 agent 永不续期：请升级它们，或在证书过期前重新注册；过期的证书会在 TLS 握手时被拒绝）。
+（过期的证书会在 TLS 握手时被拒绝）。
 
 如果想在不重新注册的情况下恢复节点，请备份 agent 的状态目录。
-
-### Nodes added before M1c (bootstrap files with a private key)（M1c 之前添加的节点：带私钥的 bootstrap 文件）
-
-它们无需任何操作即可继续工作：agent 仍接受 bootstrap 文件（v1）中的 `identity.cert_pem` / `identity.key_pem`，面板也保留其证书（2 年有效期）。
-升级 agent（第 5 节）并给它一个状态目录（新的 unit 文件）；在第一次续期时，它换用节点上生成的密钥，面板吊销旧的、由面板生成的密钥。
-然后从 `/etc/akari-agent/bootstrap.toml` 中删除 `cert_pem`/`key_pem`。如果想立即迁移而不是等到续期，
-请为该节点签发新的注册令牌并安装那份 bootstrap 文件。
 
 ## 3h. 系统支持：BBR + fq 与 Alpine（W32，中文）
 
