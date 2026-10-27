@@ -1727,7 +1727,7 @@ check_restore_dir() {
 # installation. The database is recreated empty first (a database kept
 # from an earlier install of this mode, e.g. a move back, is replaced):
 # pg_restore --clean cannot drop the partitions of a partitioned table
-# (traffic_daily, migration 1033). The data dir is moved aside.
+# (traffic_daily). The data dir is moved aside.
 restore_into() {
 	step restoring_from_backup "$RESTORE_DIR"
 	recreate_db='DROP DATABASE IF EXISTS akari WITH (FORCE);
