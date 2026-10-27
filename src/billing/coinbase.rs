@@ -1330,11 +1330,12 @@ pub(crate) mod tests {
         // Ed25519 (EdDSA, with the audience).
         let (secret, public) = ed25519_secret();
         let s = Signer::parse(&secret).unwrap();
+        let nonce = hex::encode(rand::random::<[u8; 8]>());
         let tok = s.bearer(
             KEY_ID,
             "GET business.coinbase.com/api/v1/checkouts",
             NOW,
-            "n1",
+            &nonce,
         );
         let (signing, sig, head, claims) = split(&tok);
         UnparsedPublicKey::new(&ED25519, &public)
@@ -1346,7 +1347,7 @@ pub(crate) mod tests {
                 head["kid"].as_str(),
                 head["nonce"].as_str()
             ),
-            (Some("EdDSA"), Some(KEY_ID), Some("n1"))
+            (Some("EdDSA"), Some(KEY_ID), Some(nonce.as_str()))
         );
         assert_eq!(claims["uri"], "GET business.coinbase.com/api/v1/checkouts");
         assert_eq!(
@@ -1382,11 +1383,12 @@ pub(crate) mod tests {
         .unwrap();
         for pem in [sec1.clone(), pkcs8, sec1.replace('\n', "\\n")] {
             let s = Signer::parse(&pem).unwrap();
+            let nonce = hex::encode(rand::random::<[u8; 8]>());
             let tok = s.bearer(
                 KEY_ID,
                 "POST business.coinbase.com/api/v1/checkouts",
                 NOW,
-                "n2",
+                &nonce,
             );
             let (signing, sig, head, claims) = split(&tok);
             UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, &public)
