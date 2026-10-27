@@ -1758,26 +1758,6 @@ migration_version() {
 	fi
 }
 
-# migration_min_version: the oldest applied migration (0 = none / unreadable).
-migration_min_version() {
-	if [ "$MODE" = bare ]; then
-		psql_pg -At -d akari -c 'SELECT coalesce(min(version), 0) FROM _sqlx_migrations' 2>/dev/null || echo 0
-	else
-		dc exec -T postgres psql -X -At -U akari -d akari -c 'SELECT coalesce(min(version), 0) FROM _sqlx_migrations' 2>/dev/null || echo 0
-	fi
-}
-
-# refuse_pre_baseline: v0.4 squashed migrations 0001-0168 into 1000_baseline;
-# a database created by v0.3.x cannot be upgraded in place (the panel would
-# refuse it at start too, db::migrate). Checked before anything is changed.
-refuse_pre_baseline() {
-	v=$(migration_min_version | tr -dc 0-9)
-	if [ -n "$v" ] && [ "$v" -ge 1 ] && [ "$v" -lt 1000 ]; then
-		die database_from_v0_3_x_fresh
-	fi
-	return 0
-}
-
 # default_admin: the admin's e-mail when none is given: the certificate
 # e-mail if any, else admin@<main domain> (IP-only installs: a reserved
 # .invalid address; change it in the console after logging in).
@@ -2007,8 +1987,6 @@ install_bare() {
 	if [ -n "$RESTORE_DIR" ]; then
 		restore_into
 	fi
-	# A database kept from a v0.3.x install, or a v0.3.x backup just restored.
-	refuse_pre_baseline
 	run akari_cli config check || die configuration_check_failed_akari_config_check
 	prefix=$(prefix_bare)
 	[ -n "$prefix" ] || die cannot_read_admin_prefix
@@ -2046,7 +2024,6 @@ install_docker_mode() {
 		run dc up -d postgres valkey
 		wait_docker_pg
 		restore_into
-		refuse_pre_baseline
 	fi
 	prefix=$(docker_prefix)
 	[ -n "$prefix" ] || die cannot_read_admin_prefix
@@ -2141,7 +2118,6 @@ cmd_upgrade() {
 	fi
 	[ "$MODE" != bare ] || check_systemd
 	multi_upgrade_precheck
-	refuse_pre_baseline
 	base_packages
 	TAG=$(resolve_tag "$VERSION_REQ")
 	if [ "$TAG" = "$CUR_VERSION" ] && [ "$FORCE" != 1 ]; then
@@ -3953,7 +3929,6 @@ msg_zh() {
 	cannot_recreate_database_akari) m '无法重建数据库 akari' ;;
 	no_akari_akari_data_volume) m '找不到数据卷 akari_akari-data' ;;
 	restore_failed_see) m '恢复失败（见 %s）' ;;
-	database_from_v0_3_x_fresh) m '数据库来自 v0.3.x：需要全新安装，见 docs/DEPLOY.md（未做任何改动）' ;;
 	admin_account_exists_not_creating_one) m '已有管理员账户，跳过创建' ;;
 	creating_admin_account) m '创建管理员账户 %s' ;;
 	cannot_create_admin_account_see_log) m '创建管理员失败（见日志）' ;;
@@ -4316,7 +4291,6 @@ msg_en() {
 	cannot_recreate_database_akari) m 'cannot recreate the database akari' ;;
 	no_akari_akari_data_volume) m 'no akari_akari-data volume' ;;
 	restore_failed_see) m 'restore failed (see %s)' ;;
-	database_from_v0_3_x_fresh) m 'database from v0.3.x — fresh install required; see docs/DEPLOY.md (nothing was changed)' ;;
 	admin_account_exists_not_creating_one) m 'an admin account exists; not creating one' ;;
 	creating_admin_account) m 'creating the admin account %s' ;;
 	cannot_create_admin_account_see_log) m 'cannot create the admin account (see the log)' ;;

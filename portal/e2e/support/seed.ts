@@ -114,10 +114,10 @@ for (const p of PROJECTS) {
   await user(`v2-verify-${p}@e2e.test`);
   /* 商店（PR 4）：余额付重置包 / 续费、换套餐（折算、作废） */
   await credit((await user(`v2-shop-${p}@e2e.test`)).id, 20000);
-  /* 设置（PR 6）：验证 / 更换邮箱 + 改密码、分区与明暗、旧格式订阅链接、自助注销 */
+  /* 设置（PR 6）：验证 / 更换邮箱 + 改密码、分区与明暗、读不出来的订阅链接、自助注销 */
   await user(`v2-account-${p}@e2e.test`);
   await user(`v2-settings-${p}@e2e.test`);
-  await user(`v2-legacy-${p}@e2e.test`);
+  await user(`v2-unreadable-${p}@e2e.test`);
   await user(`v2-delete-${p}@e2e.test`, false);
 }
 const expired = await user('expired@e2e.test');
