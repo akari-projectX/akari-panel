@@ -111,18 +111,9 @@ pub struct WarnFacts {
     pub agent_capabilities: Option<Vec<String>>,
     /// M1-8: when the newest agent certificate expires.
     pub cert_not_after: Option<DateTime<Utc>>,
-    /// W7: the server serves a speed-limited user but its agent predates
-    /// speed limits (protocol < 4).
-    #[serde(skip)]
-    pub unenforced_speed_limits: bool,
     /// The inbounds of the server's nodes (array).
     #[serde(skip)]
     pub inbounds: Value,
-    /// Enabled relay entrances / enabled entrances on the server.
-    #[serde(skip)]
-    pub relays: i64,
-    #[serde(skip)]
-    pub entrances_enabled: i64,
     /// D5: the server's traffic quota is used up since then (all its nodes
     /// get the empty state); the next period starts at the reset time.
     pub traffic_quota_exceeded_at: Option<DateTime<Utc>>,
@@ -133,59 +124,28 @@ pub struct WarnFacts {
 /// The `WarnFacts` columns for a server aliased `s`.
 pub fn server_warn_cols() -> String {
     "s.tls_domain, s.agent_protocol, s.agent_capabilities, s.cert_not_after, \
-     CASE WHEN s.agent_protocol < 4 THEN EXISTS (\
-        SELECT 1 FROM entrance_users eu JOIN entrances e ON e.id = eu.entrance_id \
-        JOIN user_plans up ON up.user_id = eu.user_id AND up.status = 'active' \
-        WHERE e.server_id = s.id AND up.speed_limit_mbps IS NOT NULL) \
-     ELSE false END AS unenforced_speed_limits, \
      coalesce((SELECT jsonb_agg(n.inbound ORDER BY n.id) FROM nodes n \
         WHERE n.server_id = s.id AND n.inbound IS NOT NULL), '[]'::jsonb) AS inbounds, \
-     (SELECT count(*) FROM entrances e WHERE e.server_id = s.id AND e.kind = 'relay' \
-        AND e.enabled) AS relays, \
-     (SELECT count(*) FROM entrances e WHERE e.server_id = s.id AND e.enabled) \
-        AS entrances_enabled, s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at"
+     s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at"
         .to_string()
 }
 
-/// A certificate expiring within this many days is flagged (agents of
-/// protocol >= 2 renew with a third of the validity left, i.e. 30 days at
-/// the default 90; protocol 1 agents never renew).
+/// A certificate expiring within this many days is flagged (agents renew
+/// with a third of the validity left, i.e. 30 days at the default 90).
 const CERT_WARN_DAYS: i64 = 14;
 
 impl WarnFacts {
     /// The machine-level warnings (Chinese, shown as they are).
     pub fn warnings(&self) -> Vec<String> {
-        let mut w = entrance_warnings(
-            self.relays,
-            self.entrances_enabled,
-            self.agent_protocol,
-            self.agent_capabilities.as_deref(),
-        );
-        w.extend(tls_domain_warnings(
-            self.tls_domain.as_deref(),
-            &self.inbounds,
-            self.agent_protocol,
-        ));
-        if let Some(c) = cert_warning(self.cert_not_after, self.agent_protocol, Utc::now()) {
+        let mut w = tls_domain_warnings(self.tls_domain.as_deref(), &self.inbounds);
+        if let Some(c) = cert_warning(self.cert_not_after, Utc::now()) {
             w.push(c);
-        }
-        if let Some(u) = updater_warning(self.agent_protocol, self.agent_capabilities.as_deref()) {
-            w.push(u);
-        }
-        if let Some(u) = stale_units_warning(self.agent_capabilities.as_deref()) {
-            w.push(u);
         }
         if let Some(q) = quota_warning(
             self.traffic_quota_exceeded_at,
             self.traffic_quota_next_reset_at,
         ) {
             w.push(q);
-        }
-        if self.unenforced_speed_limits {
-            w.push(format!(
-                "agent 版本过旧，不支持限速（协议 < {}）：升级 agent 之前，套餐限速在此服务器上不生效",
-                crate::grpc::SPEED_LIMIT_PROTOCOL
-            ));
         }
         w
     }
@@ -208,35 +168,6 @@ fn quota_warning(
         "流量额度已用完（{}，北京时间）：此服务器上的全部节点已停止服务，{until}",
         crate::api::beijing_time(at)
     ))
-}
-
-/// W28-a / Q1: relay entrances the agent cannot filter by source address
-/// (capability "source-filter"), and several entrances on an agent that
-/// shares limits per entrance rather than per user (protocol < 7: every
-/// entrance but the first direct one is keyed `<user>#<n>`).
-fn entrance_warnings(
-    relays: i64,
-    entrances: i64,
-    agent_protocol: Option<i32>,
-    agent_capabilities: Option<&[String]>,
-) -> Vec<String> {
-    let Some(protocol) = agent_protocol else {
-        return Vec::new();
-    };
-    let mut w = Vec::new();
-    if relays > 0 && !agent_capabilities.is_some_and(|c| c.iter().any(|c| c == "source-filter")) {
-        w.push(
-            "agent 不支持来源 IP 过滤：中转入口目前只靠独立凭据隔离（升级 agent 后由内核按中转出口 IP 过滤）"
-                .to_string(),
-        );
-    }
-    if entrances > 1 && protocol < crate::grpc::ACCOUNT_KEY_PROTOCOL {
-        w.push(format!(
-            "agent 版本过旧（协议 < {}）：同一用户在多个入口上的限速与在线人数分别计算，升级 agent 后按用户合并",
-            crate::grpc::ACCOUNT_KEY_PROTOCOL
-        ));
-    }
-    w
 }
 
 /// W28-a: the agent reports that it could not install the source
@@ -268,102 +199,14 @@ pub fn source_filter_warning(blob: &str) -> Option<String> {
     })
 }
 
-/// W18: agents that can be offered updates (protocol >= 3) but predate the
-/// privileged updater try to execute the update from their state
-/// directory, which systemd >= 256 mounts noexec ("permission denied").
-/// One run of the install command (重装命令) installs the updater units and
-/// the current agent.
-fn updater_warning(protocol: Option<i32>, caps: Option<&[String]>) -> Option<String> {
-    let p = protocol?;
-    if p < 3 || caps.is_some_and(|c| c.iter().any(|c| c == "updater")) {
-        return None;
-    }
-    Some(
-        "agent 不支持新的自更新方式：在 systemd 257 及以上（如 Debian 13）的服务器上自更新会失败\
-         （permission denied）。请在服务器上重新运行一次安装命令（重装命令），它会安装更新服务\
-         akari-agent-update 并升级 agent"
-            .to_string(),
-    )
-}
-
-/// W23: the agent reports ("stale-units") that the installed systemd units
-/// are not the ones its release carries: they were installed by an
-/// installer or updater that predates unit refresh (or edited by hand).
-/// Updates refresh them only once the updater's own unit allows it, i.e.
-/// after one reinstall.
-fn stale_units_warning(caps: Option<&[String]>) -> Option<String> {
-    caps?.iter().any(|c| c == "stale-units").then(|| {
-        "服务器上的 systemd 单元文件（akari-agent.service / akari-agent-update.*）不是当前 agent \
-         版本自带的版本（由旧版安装命令或旧版更新服务安装，或被手工修改），例如机器状态可能读不到。\
-         请在服务器上重新运行一次安装命令（重装命令），之后的自更新会一并更新单元文件；\
-         自定义设置请用 drop-in（/etc/systemd/system/akari-agent.service.d/）"
-            .to_string()
-    })
-}
-
-/// W18: a certificate the agent must obtain itself (the TLS domain + an
-/// inbound reading the certificate files) for an agent too old to do it
-/// (protocol 1..6): such an agent ignores ConfigSnapshot.acme and fails the
-/// WHOLE snapshot when the files are missing. Refused at write time.
-fn acme_needs_newer_agent(
-    domain: Option<&str>,
-    inbounds: &Value,
-    protocol: Option<i32>,
-) -> Option<i32> {
-    let p = protocol.filter(|p| (1..crate::grpc::ACME_PROTOCOL).contains(p))?;
-    (domain.is_some() && crate::nodetpl::needs_certificate(inbounds)).then_some(p)
-}
-
-/// Refuse (400) a TLS domain + certificate-reading inbound on a server
-/// whose agent cannot obtain the certificate (`acme_needs_newer_agent`),
-/// as stored now (call after the write, in its transaction).
-pub async fn refuse_acme_for_old_agent(
-    conn: &mut PgConnection,
-    server: Uuid,
-) -> Result<(), ApiError> {
-    let row: Option<(Option<String>, Value, Option<i32>)> = sqlx::query_as(
-        "SELECT s.tls_domain, coalesce((SELECT jsonb_agg(n.inbound) FROM nodes n \
-            WHERE n.server_id = s.id AND n.inbound IS NOT NULL), '[]'::jsonb), \
-         s.agent_protocol FROM servers s WHERE s.id = $1",
-    )
-    .bind(server)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some((domain, inbounds, protocol)) = row else {
-        return Ok(());
-    };
-    if let Some(p) = acme_needs_newer_agent(domain.as_deref(), &inbounds, protocol) {
-        return Err(bad_request!(
-            "node.acme_agent_too_old",
-            "该服务器的 agent 版本过旧（协议 {p} < {need}），不支持自动证书：它会忽略服务器域名，并因缺少证书文件\
-             导致整份配置下发失败。请先升级 agent（升级发布，或在服务器上重新运行一次安装命令），\
-             或清空服务器域名并手动放置证书",
-            p = p,
-            need = crate::grpc::ACME_PROTOCOL
-        ));
-    }
-    Ok(())
-}
-
 /// W10: what keeps the automatic certificate from working.
-fn tls_domain_warnings(
-    domain: Option<&str>,
-    inbounds: &Value,
-    protocol: Option<i32>,
-) -> Vec<String> {
+fn tls_domain_warnings(domain: Option<&str>, inbounds: &Value) -> Vec<String> {
     let Some(domain) = domain else {
         return Vec::new();
     };
     let mut out = Vec::new();
     if !crate::nodetpl::needs_certificate(inbounds) {
         return out;
-    }
-    if protocol.is_some_and(|p| p < crate::grpc::ACME_PROTOCOL) {
-        out.push(format!(
-            "agent 版本过旧（协议 < {}）：不会自动申请 {domain} 的证书，且在缺少证书文件时整份配置下发失败。\
-             请先升级 agent（升级发布，或在服务器上重新运行一次安装命令），或手动放置 {domain} 的证书",
-            crate::grpc::ACME_PROTOCOL
-        ));
     }
     for i in inbounds.as_array().into_iter().flatten() {
         let uses_server_cert = i
@@ -388,20 +231,12 @@ fn tls_domain_warnings(
     out
 }
 
-fn cert_warning(
-    not_after: Option<DateTime<Utc>>,
-    protocol: Option<i32>,
-    now: DateTime<Utc>,
-) -> Option<String> {
+fn cert_warning(not_after: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
     let left = not_after? - now;
     if left > chrono::Duration::days(CERT_WARN_DAYS) {
         return None;
     }
-    let why = if protocol.unwrap_or(0) < 2 {
-        "agent 版本过旧，不能续期（协议 < 2）：请升级 agent，或重新生成安装命令"
-    } else {
-        "agent 没有按时续期：请查看服务器上的 agent 日志"
-    };
+    let why = "agent 没有按时续期：请查看服务器上的 agent 日志";
     let at = crate::api::beijing_time(not_after?);
     Some(if left <= chrono::Duration::zero() {
         format!("agent 证书已于 {at}（北京时间）过期；{why}")
@@ -966,13 +801,12 @@ pub async fn apply_update(
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
-        " RETURNING {}, {}, old.config_version <> new.config_version, \
-         old.tls_domain IS DISTINCT FROM new.tls_domain",
+        " RETURNING {}, {}, old.config_version <> new.config_version",
         crate::audit::server_snapshot_sql("old"),
         crate::audit::server_snapshot_sql("new")
     ));
-    let (before, after, bumped, domain_changed) = match qb
-        .build_query_as::<(Value, Value, bool, bool)>()
+    let (before, after, bumped) = match qb
+        .build_query_as::<(Value, Value, bool)>()
         .fetch_one(&mut *conn)
         .await
     {
@@ -985,9 +819,6 @@ pub async fn apply_update(
         }
         Err(e) => return Err(e.into()),
     };
-    if domain_changed {
-        refuse_acme_for_old_agent(conn, id).await?;
-    }
     crate::audit::record(
         conn,
         actor,

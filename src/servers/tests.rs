@@ -1,26 +1,19 @@
 use super::*;
 
-fn caps(c: &[&str]) -> Vec<String> {
-    c.iter().map(|s| s.to_string()).collect()
-}
-
-/// M1-8: a certificate within 14 days of expiry (or expired) is flagged,
-/// with the likely cause by agent protocol.
+/// M1-8: a certificate within 14 days of expiry (or expired) is flagged.
 #[test]
 fn cert_expiry_warning() {
     let now = Utc::now();
     let d = chrono::Duration::days;
-    assert_eq!(cert_warning(None, Some(2), now), None, "unknown expiry");
-    assert_eq!(cert_warning(Some(now + d(15)), Some(1), now), None);
-    let w = cert_warning(Some(now + d(10)), Some(1), now).unwrap();
+    assert_eq!(cert_warning(None, now), None, "unknown expiry");
+    assert_eq!(cert_warning(Some(now + d(15)), now), None);
+    let w = cert_warning(Some(now + d(10)), now).unwrap();
     assert!(
         w.contains("将在 9 天后") || w.contains("将在 10 天后"),
         "{w}"
     );
-    assert!(w.contains("不能续期"), "{w}");
-    let w = cert_warning(Some(now + d(3)), Some(2), now).unwrap();
     assert!(w.contains("没有按时续期"), "{w}");
-    let w = cert_warning(Some(now - d(1)), None, now).unwrap();
+    let w = cert_warning(Some(now - d(1)), now).unwrap();
     assert!(w.contains("已于") && w.contains("过期"), "{w}");
 }
 
@@ -31,116 +24,33 @@ fn tls(sni: &str) -> Value {
             "keyFile": crate::nodetpl::TLS_KEY_FILE}]}}})
 }
 
-/// W10: an old agent or an inbound naming another SNI keeps the automatic
-/// certificate from working; said on the server (over all its nodes).
+/// W10: an inbound naming another SNI keeps the automatic certificate from
+/// working; said on the server (over all its nodes).
 #[test]
-fn tls_domain_warnings_flag_old_agents_and_other_names() {
+fn tls_domain_warnings_flag_other_names() {
     let d = Some("n1.example.com");
     let one = |ib: Value| json!([ib]);
-    assert!(tls_domain_warnings(None, &one(tls("x.example.com")), Some(5)).is_empty());
-    assert!(tls_domain_warnings(d, &one(tls("n1.example.com")), Some(6)).is_empty());
+    assert!(tls_domain_warnings(None, &one(tls("x.example.com"))).is_empty());
+    assert!(tls_domain_warnings(d, &one(tls("n1.example.com"))).is_empty());
     assert!(
-        tls_domain_warnings(d, &one(tls("N1.example.com")), None).is_empty(),
-        "not connected yet"
+        tls_domain_warnings(d, &one(tls("N1.example.com"))).is_empty(),
+        "case-insensitive"
     );
     assert!(
-        tls_domain_warnings(d, &json!([]), Some(1)).is_empty(),
+        tls_domain_warnings(d, &json!([])).is_empty(),
         "no certificate needed"
     );
-    let w = tls_domain_warnings(d, &one(tls("n1.example.com")), Some(5));
-    assert!(w.len() == 1 && w[0].contains("版本过旧"), "{w:?}");
-    let w = tls_domain_warnings(d, &one(tls("other.example.com")), Some(6));
+    let w = tls_domain_warnings(d, &one(tls("other.example.com")));
     assert!(w.len() == 1 && w[0].contains("other.example.com"), "{w:?}");
     // Q1: every node's inbound counts.
-    let w = tls_domain_warnings(
-        d,
-        &json!([tls("n1.example.com"), tls("b.example.com")]),
-        Some(6),
-    );
+    let w = tls_domain_warnings(d, &json!([tls("n1.example.com"), tls("b.example.com")]));
     assert!(w.len() == 1 && w[0].contains("b.example.com"), "{w:?}");
 }
 
-/// W18: a certificate the agent must obtain itself is refused for agents
-/// of protocol 1..6 (they would fail the whole snapshot); not connected yet
-/// (None) and protocol-0 agents (served the empty state) pass, as does a
-/// server without a TLS domain (certificates by hand).
+/// W28-a: a source filter the agent could not install is reported from its
+/// heartbeat.
 #[test]
-fn acme_inbounds_need_an_acme_agent() {
-    let t = json!([tls("n1.example.com")]);
-    let d = Some("n1.example.com");
-    assert_eq!(acme_needs_newer_agent(d, &t, Some(5)), Some(5));
-    assert_eq!(acme_needs_newer_agent(d, &t, Some(1)), Some(1));
-    assert_eq!(acme_needs_newer_agent(d, &t, Some(6)), None);
-    assert_eq!(acme_needs_newer_agent(d, &t, None), None);
-    assert_eq!(acme_needs_newer_agent(d, &t, Some(0)), None);
-    assert_eq!(acme_needs_newer_agent(None, &t, Some(5)), None);
-    assert_eq!(acme_needs_newer_agent(d, &json!([]), Some(5)), None);
-}
-
-/// W18: self-updatable agents without the "updater" capability fail on
-/// systemd >= 256 (noexec state directory): told on the server.
-#[test]
-fn updater_warning_for_pre_updater_agents() {
-    let w = updater_warning(Some(6), Some(&caps(&["metrics", "latency"]))).unwrap();
-    assert!(
-        w.contains("重装命令") && w.contains("akari-agent-update"),
-        "{w}"
-    );
-    assert!(
-        updater_warning(Some(3), None).is_some(),
-        "protocol 3, no capabilities"
-    );
-    assert!(updater_warning(Some(6), Some(&caps(&["metrics", "updater"]))).is_none());
-    assert!(
-        updater_warning(Some(2), None).is_none(),
-        "never offered updates"
-    );
-    assert!(updater_warning(None, None).is_none(), "not connected yet");
-}
-
-/// W23: the agent says the server's systemd units are not its own.
-#[test]
-fn stale_units_warning_names_the_reinstall() {
-    let w = stale_units_warning(Some(&caps(&["metrics", "stale-units"]))).unwrap();
-    assert!(w.contains("重装命令") && w.contains("drop-in"), "{w}");
-    assert!(stale_units_warning(Some(&caps(&["metrics", "updater"]))).is_none());
-    assert!(stale_units_warning(None).is_none());
-    let all = WarnFacts {
-        agent_protocol: Some(6),
-        agent_capabilities: Some(caps(&["updater", "stale-units"])),
-        inbounds: json!([]),
-        ..Default::default()
-    }
-    .warnings();
-    assert_eq!(all.len(), 1, "{all:?}");
-}
-
-/// W28-a / Q1: relay entrances on an agent without source filtering, and
-/// several entrances on an agent without the per-account limits of
-/// protocol 7, are flagged; a filter the agent could not install is
-/// reported from its heartbeat.
-#[test]
-fn entrance_and_source_filter_warnings() {
-    let w = entrance_warnings(1, 2, Some(6), Some(&caps(&["metrics"])));
-    assert_eq!(w.len(), 2, "{w:?}");
-    assert!(
-        w[0].contains("来源 IP 过滤") && w[1].contains("协议 < 7"),
-        "{w:?}"
-    );
-    assert!(entrance_warnings(1, 2, Some(7), Some(&caps(&["source-filter"]))).is_empty());
-    assert!(
-        entrance_warnings(0, 1, Some(1), None).is_empty(),
-        "one direct entrance"
-    );
-    let w = entrance_warnings(0, 2, Some(6), None);
-    assert!(
-        w.len() == 1 && w[0].contains("协议 < 7"),
-        "two nodes' direct entrances: {w:?}"
-    );
-    assert!(
-        entrance_warnings(1, 2, None, None).is_empty(),
-        "never connected"
-    );
+fn source_filter_warnings() {
     let w = source_filter_warning(
         r#"{"ts":"x","source_filter":{"applied":false,"error":"nft: permission denied"}}"#,
     )

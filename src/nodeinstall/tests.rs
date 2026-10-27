@@ -690,41 +690,8 @@ async fn tls_domain_flows_into_templates_and_script() {
         )
         .await;
     assert_eq!(r.status, 400);
-    // W18: an agent older than protocol 6 ignores the node domain and
-    // fails the whole snapshot without certificate files: neither the
-    // inbounds nor a domain change is accepted for it (nothing changes).
-    sqlx::query("UPDATE servers SET agent_protocol = 5 WHERE id = $1")
-        .bind(sid)
-        .execute(st.pg())
-        .await
-        .unwrap();
+    // Clearing the domain (certificates by hand) and setting it again.
     let path = format!("/test/api/v1/servers/{sid}");
-    let r = admin
-        .req(
-            axum::http::Method::PUT,
-            &format!("/test/api/v1/nodes/{id}/inbound"),
-            Some(json!({"inbound": inbound})),
-        )
-        .await;
-    assert_eq!(r.status, 400);
-    assert!(String::from_utf8_lossy(&r.body).contains("agent 版本过旧"));
-    let r = admin
-        .req(
-            axum::http::Method::PATCH,
-            &path,
-            Some(json!({"tls_domain": "hk9.example.com"})),
-        )
-        .await;
-    assert_eq!(r.status, 400);
-    let (domain2, cv2): (Option<String>, i64) =
-        sqlx::query_as("SELECT tls_domain, config_version FROM servers WHERE id = $1")
-            .bind(sid)
-            .fetch_one(st.pg())
-            .await
-            .unwrap();
-    assert_eq!((domain2.as_deref(), cv2), (Some("hk1.example.com"), cv));
-    // Clearing the domain (certificates by hand) is fine; so is the same
-    // change once the agent speaks protocol 6.
     let r = admin
         .req(
             axum::http::Method::PATCH,
@@ -733,11 +700,6 @@ async fn tls_domain_flows_into_templates_and_script() {
         )
         .await;
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
-    sqlx::query("UPDATE servers SET agent_protocol = 6 WHERE id = $1")
-        .bind(sid)
-        .execute(st.pg())
-        .await
-        .unwrap();
     let r = admin
         .req(
             axum::http::Method::PATCH,
