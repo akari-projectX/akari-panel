@@ -3,10 +3,8 @@
 //! Key material: 32 random bytes, hex, 0600 (install.rs `ensure_master_key`). Every
 //! key below is HMAC-SHA-256(material, label) with a fixed label. The labels
 //! are part of the stored data's format: changing one makes everything
-//! sealed under it unreadable, so they stay byte-identical even where the
-//! name is historical (`akari/totp-secret-aead/v1` now seals the SMTP
-//! password and the alert channel secrets; TOTP itself is gone).
-//! `tests::derived_keys_are_unchanged` pins every one of them.
+//! sealed under it unreadable. `tests::derived_keys_are_unchanged` pins
+//! every one of them.
 
 use rand::Rng;
 use ring::{aead, hmac};
@@ -14,7 +12,7 @@ use uuid::Uuid;
 
 /// Keys derived from the master key.
 pub struct Keys {
-    /// Generic secrets at rest (label `akari/totp-secret-aead/v1`): the SMTP
+    /// Generic secrets at rest (label `akari/secret-aead/v1`): the SMTP
     /// password (AAD `mail::SMTP_AAD`), the Telegram bot token and webhook
     /// secret (AADs in alerts/mod.rs).
     aead: aead::LessSafeKey,
@@ -42,7 +40,7 @@ impl Keys {
             anyhow::bail!("master key material must be at least 32 bytes");
         }
         let root = hmac::Key::new(hmac::HMAC_SHA256, material);
-        let enc = hmac::sign(&root, b"akari/totp-secret-aead/v1");
+        let enc = hmac::sign(&root, b"akari/secret-aead/v1");
         let mail = hmac::sign(&root, b"akari/mail-code-hmac/v1");
         let sub = hmac::sign(&root, b"akari/sub-token-aead/v1");
         let pay = hmac::sign(&root, b"akari/payment-secrets-aead/v1");
@@ -171,22 +169,21 @@ mod tests {
 
     const AAD: Uuid = Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
 
-    /// D7 (v0.4): totp.key became master.key and TOTP went away; every key
-    /// still in use must derive exactly as before, or data sealed by v0.3
-    /// (SMTP password, alert channel secrets, subscription tokens, payment
-    /// secrets) and outstanding mail codes / PoW challenges stop working.
-    /// The vectors were produced by the pre-rename code (v0.3.2 totp.rs)
-    /// from material 00..1f with a fixed nonce 09×12.
+    /// Every derived key must keep deriving exactly as it does now, or the
+    /// data sealed under it (SMTP password, alert channel secrets,
+    /// subscription tokens, payment secrets) and outstanding mail codes /
+    /// PoW challenges stop working. The vectors come from material 00..1f
+    /// with a fixed nonce 09×12.
     #[test]
     fn derived_keys_are_unchanged() {
         let keys = fixed_keys();
         let blob = |h: &str| hex::decode(h).unwrap();
-        // akari/totp-secret-aead/v1 (SMTP password, Telegram, webhook).
+        // akari/secret-aead/v1 (SMTP password, Telegram, webhook).
         assert_eq!(
             keys.open(
                 AAD,
                 &blob(
-                    "0109090909090909090909090963a7b50f8894f6c5b498e422aa06b44a4511315e98cdd3e34b1dc4754d"
+                    "01090909090909090909090909220ead877c52d02f80602c3edac5d3fe48dafc061ac97b3177c327ef44"
                 )
             )
             .as_deref(),
@@ -222,7 +219,7 @@ mod tests {
             hex::encode(keys.pow_mac(b"challenge")),
             "aa9df01256e2651fee8b9e586bf1ca98fcdeee1c797b06b1a7cb85f601e8776b"
         );
-        // akari/form-token-hmac/v1 (v0.4): pinned from its introduction.
+        // akari/form-token-hmac/v1.
         assert_eq!(
             hex::encode(keys.form_mac(b"form")),
             "535b240603c1c393a44ba5252f121038c4d665df5f13ab6c6ad30a628830baf1",
