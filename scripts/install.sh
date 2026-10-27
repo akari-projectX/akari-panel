@@ -2855,13 +2855,12 @@ cmd_join() {
 	GRPC_PORT=${GRPC_PORT:-8443}
 	mstep join_start "$TAG" "$LISTEN"
 	check_ports "$WEB_PORT" "$ASK_PORT" "$GRPC_PORT"
-	_mx_ca=$MX_DIR/ca.pem
 	mstep join_probe "$_mx_dbh:$_mx_dbp"
-	probe_tls pg "$_mx_dbh" "$_mx_dbp" "$_mx_ca" || mdie join_probe_fail "$_mx_dbh:$_mx_dbp" "$LISTEN"
+	probe_tls pg "$_mx_dbh" "$_mx_dbp" "$MX_DIR/ca.pem" || mdie join_probe_fail "$_mx_dbh:$_mx_dbp" "$LISTEN"
 	case "$MX_VK" in
 	rediss://*)
 		mstep join_probe "$_mx_vkh:$_mx_vkp"
-		probe_tls vk "$_mx_vkh" "$_mx_vkp" "$_mx_ca" || mdie join_probe_fail "$_mx_vkh:$_mx_vkp" "$LISTEN"
+		probe_tls vk "$_mx_vkh" "$_mx_vkp" "$MX_DIR/ca.pem" || mdie join_probe_fail "$_mx_vkh:$_mx_vkp" "$LISTEN"
 		;;
 	esac
 
