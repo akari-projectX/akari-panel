@@ -112,7 +112,7 @@ fn defaults_render_for_the_sample_user_in_every_format() {
         surge.contains("日本 01 = vmess, jp.example.com, 8443, username="),
         "{surge}"
     );
-    assert!(surge.contains("新加坡 01 = ss, sg.example.com, 8388, encrypt-method=2022-blake3-aes-128-gcm, password=AAAAAAAAAAAAAAAAAAAAAA==:AQEBAQEBAQEBAQEBAQEBAQ==, udp-relay=true"), "{surge}");
+    assert!(surge.contains("新加坡 01 = ss, sg.example.com, 8388, encrypt-method=2022-blake3-aes-128-gcm, password=\"AAAAAAAAAAAAAAAAAAAAAA==:AQEBAQEBAQEBAQEBAQEBAQ==\", udp-relay=true"), "{surge}");
     assert!(
         surge.contains("台湾 01 = hysteria2, tw.example.com, 443, password="),
         "{surge}"

@@ -1,18 +1,36 @@
 content-type: text/yaml; charset=utf-8
+mixed-port: 7890
+mode: rule
+log-level: warning
+ipv6: false
 dns:
   enable: true
   ipv6: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
-  fake-ip-filter: ["+.lan","+.local","rule-set:geosite-private","+.msftconnecttest.com","+.msftncsi.com","time.*.com","ntp.*.com"]
-  default-nameserver: ["223.5.5.5"]
-  proxy-server-nameserver: ["https://223.5.5.5/dns-query","https://doh.pub/dns-query"]
+  fake-ip-filter:
+    - +.lan
+    - +.local
+    - rule-set:geosite-private
+    - +.msftconnecttest.com
+    - +.msftncsi.com
+    - time.*.com
+    - ntp.*.com
+  default-nameserver:
+    - "223.5.5.5"
+  proxy-server-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
   nameserver-policy:
-    "rule-set:geosite-private,geosite-cn": ["https://223.5.5.5/dns-query","https://doh.pub/dns-query"]
-  nameserver: ["https://1.1.1.1/dns-query","https://8.8.8.8/dns-query"]
+    "rule-set:geosite-private,geosite-cn":
+      - https://223.5.5.5/dns-query
+      - https://doh.pub/dns-query
+  nameserver:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
   respect-rules: true
 proxies:
-  - name: "t0 | IPLC | 0.5x"
+  - name: t0 | IPLC | 0.5x
     type: vless
     server: relay.example.net
     port: 30443
@@ -25,9 +43,9 @@ proxies:
     reality-opts:
       public-key: 5Jb27oX8W738ZxUIXkYUhgRdCa094FSJXhP9YvUkUjU
       short-id: 54743dc5e24d2a41
-  - name: "t1 | IPLC | 0.5x"
+  - name: t1 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 444
     uuid: 19510f1c-2317-499e-88f9-de4ba7c9de23
     network: tcp
@@ -37,9 +55,9 @@ proxies:
     reality-opts:
       public-key: vQV2yDqkaV19psaYsR47O9PZ7m5wVh_XTJzv3SNmcSw
       short-id: ea88e527a819b062
-  - name: "t2 | IPLC | 0.5x"
+  - name: t2 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 445
     uuid: 9fc5e0cb-6285-4e5e-91bb-453df4efed35
     network: xhttp
@@ -52,18 +70,18 @@ proxies:
     xhttp-opts:
       path: /c680488a0d74b233
       mode: stream-one
-  - name: "t3 | IPLC | 0.5x"
+  - name: t3 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 446
     uuid: 0e300dc6-a276-4d18-ae60-f4c0d8cae46b
     flow: xtls-rprx-vision
     network: tcp
     tls: true
     servername: node.example.com
-  - name: "t4 | IPLC | 0.5x"
+  - name: t4 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 447
     uuid: cd9fe072-8907-4ef0-9be3-61ea4b2864d2
     network: ws
@@ -71,9 +89,9 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /vl
-  - name: "t5 | IPLC | 0.5x"
+  - name: t5 | IPLC | 0.5x
     type: vmess
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 448
     uuid: 639e4e86-c81c-4f57-ac4d-eea4a02ee159
     alterId: 0
@@ -81,9 +99,9 @@ proxies:
     network: ws
     ws-opts:
       path: /c9769a35fb136de4
-  - name: "t6 | IPLC | 0.5x"
+  - name: t6 | IPLC | 0.5x
     type: vmess
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 449
     uuid: c834fe96-83b6-4ac5-aa3c-418e6ee87c4c
     alterId: 0
@@ -93,25 +111,25 @@ proxies:
     servername: node.example.com
     ws-opts:
       path: /a4f4557f17fef863
-  - name: "t7 | IPLC | 0.5x"
+  - name: t7 | IPLC | 0.5x
     type: vmess
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 450
     uuid: 99a30bd0-1ec6-45ee-b407-25eb87c005bd
     alterId: 0
     cipher: auto
     network: tcp
-  - name: "t8 | IPLC | 0.5x"
+  - name: t8 | IPLC | 0.5x
     type: trojan
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 451
     password: d770f7cf496f7fca357a5e0d287ad93e1f30d38cc28ea4d4a56ac81082c0eec1
     network: tcp
     tls: true
     sni: node.example.com
-  - name: "t9 | IPLC | 0.5x"
+  - name: t9 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 452
     uuid: 1b777d6a-cf96-4f89-9e59-7d889fe4235a
     network: ws
@@ -122,9 +140,9 @@ proxies:
       headers:
         Host: cdn.example.com
       v2ray-http-upgrade: true
-  - name: "t11 | IPLC | 0.5x"
+  - name: t11 | IPLC | 0.5x
     type: trojan
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 454
     password: cbbc6cfae4be8acdee3561a8df10aef63e25a8dbc3378aeafef351e2a793deec
     network: grpc
@@ -132,31 +150,32 @@ proxies:
     sni: node.example.com
     grpc-opts:
       grpc-service-name: 081f5b7d6c24c39b
-  - name: "t12 | IPLC | 0.5x"
+  - name: t12 | IPLC | 0.5x
     type: ss
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 18388
     cipher: 2022-blake3-aes-128-gcm
-    password: "D4SCUD+QykMDrsw++ZuN8g==:VpMbq1DuxbJ4K7+2OZjLRA=="
+    password: D4SCUD+QykMDrsw++ZuN8g==:VpMbq1DuxbJ4K7+2OZjLRA==
     udp: true
-  - name: "t13 | IPLC | 0.5x"
+  - name: t13 | IPLC | 0.5x
     type: ss
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 456
     cipher: 2022-blake3-aes-256-gcm
-    password: "ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM=:YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE="
+    password: >-
+      ToH1n8izc5aaDQX0Zz71ob9Biwvc7tQfagD2Xx5TNUM=:YMEFSB8ZlmWBrEeUAjjV8PnmNBzVO0/23vvDfFDywFE=
     udp: true
-  - name: "t14 | IPLC | 0.5x"
+  - name: t14 | IPLC | 0.5x
     type: hysteria2
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 443
     password: a06a4623c47ef6fe84a19107d4f4a1ea321c80d6cd97e152b707229aae790131
     sni: node.example.com
     alpn:
       - h3
-  - name: "t15 | IPLC | 0.5x"
+  - name: t15 | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 457
     uuid: bed6a9eb-78e2-405b-941a-f173a1818db6
     network: grpc
@@ -164,28 +183,28 @@ proxies:
     servername: node.example.com
     grpc-opts:
       grpc-service-name: grpc-svc
-  - name: "vless-kcp | IPLC | 0.5x"
+  - name: vless-kcp | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 9002
     uuid: c4a57424-7065-4ff5-91ea-f8209906ba4b
     network: kcp
-  - name: "ss-tcp | IPLC | 0.5x"
+  - name: ss-tcp | IPLC | 0.5x
     type: ss
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 9004
     cipher: 2022-blake3-aes-128-gcm
-    password: "AAAAAAAAAAAAAAAAAAAAAA==:4blVDvXrbBABiSMfkVTDqA=="
+    password: AAAAAAAAAAAAAAAAAAAAAA==:4blVDvXrbBABiSMfkVTDqA==
     udp: false
-  - name: "vless-split | IPLC | 0.5x"
+  - name: vless-split | IPLC | 0.5x
     type: vless
-    server: 203.0.113.7
+    server: "203.0.113.7"
     port: 9005
     uuid: d01dbffb-44dc-468e-974c-3da0e05d0bc5
     network: xhttp
     xhttp-opts:
       path: /s
-  - name: "t8"
+  - name: t8
     type: trojan
     server: a.example.com
     port: 451
@@ -202,180 +221,320 @@ proxies:
     tls: true
     sni: node.example.com
 proxy-groups:
-  - name: "🚀 默认代理"
+  - name: 🚀 默认代理
     type: select
     proxies:
-      - "♻️ 全部节点"
-      - "🌐 日本"
-      - "t0 | IPLC | 0.5x"
-      - "t1 | IPLC | 0.5x"
-      - "t2 | IPLC | 0.5x"
-      - "t3 | IPLC | 0.5x"
-      - "t4 | IPLC | 0.5x"
-      - "t5 | IPLC | 0.5x"
-      - "t6 | IPLC | 0.5x"
-      - "t7 | IPLC | 0.5x"
-      - "t8 | IPLC | 0.5x"
-      - "t9 | IPLC | 0.5x"
-      - "t11 | IPLC | 0.5x"
-      - "t12 | IPLC | 0.5x"
-      - "t13 | IPLC | 0.5x"
-      - "t14 | IPLC | 0.5x"
-      - "t15 | IPLC | 0.5x"
-      - "vless-kcp | IPLC | 0.5x"
-      - "ss-tcp | IPLC | 0.5x"
-      - "vless-split | IPLC | 0.5x"
-      - "t8"
+      - ♻️ 自动选择
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
       - "t8 #2"
-  - name: "🎬 Netflix"
-    type: select
-    proxies:
-      - "🚀 默认代理"
-      - "🌐 日本"
-      - "♻️ 全部节点"
       - DIRECT
-  - name: "🔍 Google"
-    type: select
-    proxies:
-      - "🚀 默认代理"
-      - "🌐 日本"
-      - "♻️ 全部节点"
-      - DIRECT
-  - name: "📺 YouTube"
-    type: select
-    proxies:
-      - "🚀 默认代理"
-      - "🌐 日本"
-      - "♻️ 全部节点"
-      - DIRECT
-  - name: "✈️ Telegram"
-    type: select
-    proxies:
-      - "🚀 默认代理"
-      - "🌐 日本"
-      - "♻️ 全部节点"
-      - DIRECT
-  - name: "🤖 AI 服务"
-    type: select
-    proxies:
-      - "🚀 默认代理"
-      - "🌐 日本"
-      - "♻️ 全部节点"
-      - DIRECT
-  - name: "🌐 日本"
+  - name: ♻️ 自动选择
     type: url-test
     url: https://www.gstatic.com/generate_204
     interval: 300
     proxies:
-      - "t0 | IPLC | 0.5x"
-      - "t1 | IPLC | 0.5x"
-      - "t2 | IPLC | 0.5x"
-      - "t3 | IPLC | 0.5x"
-      - "t4 | IPLC | 0.5x"
-      - "t5 | IPLC | 0.5x"
-      - "t6 | IPLC | 0.5x"
-      - "t7 | IPLC | 0.5x"
-      - "t8 | IPLC | 0.5x"
-      - "t9 | IPLC | 0.5x"
-      - "t11 | IPLC | 0.5x"
-      - "t12 | IPLC | 0.5x"
-      - "t13 | IPLC | 0.5x"
-      - "t14 | IPLC | 0.5x"
-      - "t15 | IPLC | 0.5x"
-      - "vless-kcp | IPLC | 0.5x"
-      - "ss-tcp | IPLC | 0.5x"
-      - "vless-split | IPLC | 0.5x"
-  - name: "♻️ 全部节点"
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+  - name: 🎬 Netflix
+    type: select
+    proxies:
+      - 🚀 默认代理
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - ♻️ 自动选择
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+      - DIRECT
+  - name: 🔍 Google
+    type: select
+    proxies:
+      - 🚀 默认代理
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - ♻️ 自动选择
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+      - DIRECT
+  - name: 📺 YouTube
+    type: select
+    proxies:
+      - 🚀 默认代理
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - ♻️ 自动选择
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+      - DIRECT
+  - name: ✈️ Telegram
+    type: select
+    proxies:
+      - 🚀 默认代理
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - ♻️ 自动选择
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+      - DIRECT
+  - name: 🤖 AI 服务
+    type: select
+    proxies:
+      - 🚀 默认代理
+      - 🇭🇰 香港
+      - 🇯🇵 日本
+      - 🇺🇸 美国
+      - 🇸🇬 新加坡
+      - 🇹🇼 台湾
+      - ♻️ 自动选择
+      - t0 | IPLC | 0.5x
+      - t1 | IPLC | 0.5x
+      - t2 | IPLC | 0.5x
+      - t3 | IPLC | 0.5x
+      - t4 | IPLC | 0.5x
+      - t5 | IPLC | 0.5x
+      - t6 | IPLC | 0.5x
+      - t7 | IPLC | 0.5x
+      - t8 | IPLC | 0.5x
+      - t9 | IPLC | 0.5x
+      - t11 | IPLC | 0.5x
+      - t12 | IPLC | 0.5x
+      - t13 | IPLC | 0.5x
+      - t14 | IPLC | 0.5x
+      - t15 | IPLC | 0.5x
+      - vless-kcp | IPLC | 0.5x
+      - ss-tcp | IPLC | 0.5x
+      - vless-split | IPLC | 0.5x
+      - t8
+      - "t8 #2"
+      - DIRECT
+  - name: 🇭🇰 香港
     type: url-test
     url: https://www.gstatic.com/generate_204
     interval: 300
-    proxies:
-      - "t0 | IPLC | 0.5x"
-      - "t1 | IPLC | 0.5x"
-      - "t2 | IPLC | 0.5x"
-      - "t3 | IPLC | 0.5x"
-      - "t4 | IPLC | 0.5x"
-      - "t5 | IPLC | 0.5x"
-      - "t6 | IPLC | 0.5x"
-      - "t7 | IPLC | 0.5x"
-      - "t8 | IPLC | 0.5x"
-      - "t9 | IPLC | 0.5x"
-      - "t11 | IPLC | 0.5x"
-      - "t12 | IPLC | 0.5x"
-      - "t13 | IPLC | 0.5x"
-      - "t14 | IPLC | 0.5x"
-      - "t15 | IPLC | 0.5x"
-      - "vless-kcp | IPLC | 0.5x"
-      - "ss-tcp | IPLC | 0.5x"
-      - "vless-split | IPLC | 0.5x"
-      - "t8"
-      - "t8 #2"
+    include-all-proxies: true
+    filter: (?i)港|hk|hong
+  - name: 🇯🇵 日本
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    include-all-proxies: true
+    filter: (?i)日本|jp|japan
+  - name: 🇺🇸 美国
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    include-all-proxies: true
+    filter: (?i)美国|美國|us|united
+  - name: 🇸🇬 新加坡
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    include-all-proxies: true
+    filter: (?i)新加坡|狮城|sg|singapore
+  - name: 🇹🇼 台湾
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 300
+    include-all-proxies: true
+    filter: (?i)台湾|台灣|tw|taiwan
 rule-providers:
   geosite-category-ads-all:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ads-all.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ads-all.list
     interval: 86400
   geosite-private:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/private.list
     interval: 86400
   geoip-private:
     type: http
     behavior: ipcidr
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/private.list"
+    url: https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/private.list
     interval: 86400
   geosite-cn:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list"
+    url: https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list
     interval: 86400
   geoip-cn:
     type: http
     behavior: ipcidr
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.list"
+    url: https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/cn.list
     interval: 86400
   geosite-netflix:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/netflix.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/netflix.list
     interval: 86400
   geosite-google:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/google.list
     interval: 86400
   geosite-youtube:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/youtube.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/youtube.list
     interval: 86400
   geosite-telegram:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/telegram.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/telegram.list
     interval: 86400
   geoip-telegram:
     type: http
     behavior: ipcidr
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geoip/telegram.list
     interval: 86400
   geosite-category-ai-!cn:
     type: http
     behavior: domain
     format: text
-    url: "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-!cn.list"
+    url: >-
+      https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/category-ai-!cn.list
     interval: 86400
 rules:
   - RULE-SET,geosite-category-ads-all,REJECT
@@ -390,6 +549,670 @@ rules:
   - RULE-SET,geoip-telegram,✈️ Telegram,no-resolve
   - RULE-SET,geosite-category-ai-!cn,🤖 AI 服务
   - MATCH,🚀 默认代理
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
