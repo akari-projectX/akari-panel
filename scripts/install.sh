@@ -2767,8 +2767,13 @@ probe_tls() {
 	_mx_ca=
 	[ ! -f "$4" ] || _mx_ca="-CAfile $4"
 	# shellcheck disable=SC2086 # option lists
-	timeout 20 openssl s_client -connect "$2:$3" $_mx_st $_mx_ca $_mx_vf -verify_return_error </dev/null 2>&1 |
-		matches 'Verify return code: 0 '
+	# -verify_return_error aborts the handshake on a bad certificate, so a
+	# zero exit is a verified connection (OpenSSL prints the verify result
+	# only when a session ticket arrived first).
+	timeout 20 openssl s_client -connect "$2:$3" $_mx_st $_mx_ca $_mx_vf -verify_return_error </dev/null >"$TMP/probe.out" 2>&1 || {
+		sed 's/^/    probe: /' "$TMP/probe.out" | sed -n 1,25p >>"$LOG"
+		return 1
+	}
 }
 
 # join_secret: the passphrase from the environment, a file or the terminal.
