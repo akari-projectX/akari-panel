@@ -50,6 +50,14 @@ make smoke         # 全量构建 + smoke.sh（会 TRUNCATE PG、FLUSHDB 本次 
 make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户与后台打包的 npm 包及其许可原文（发布资产；需 cargo fetch、portal 与 admin 的 npm ci）
 ```
 
+## Lint（Rust 风格机器检查，`briefs/RUST-STYLE.md`）
+
+`Cargo.toml [lints.clippy]`（根 crate、`bench/`、`fuzz/` 各一份相同的表）+ 根目录 `clippy.toml`（`allow-unwrap-in-tests = true`，clippy 向上级目录查找，bench/fuzz 共用）。级别 `warn`，由 `cargo clippy -D warnings` 变成错误（`make check`、`make lint`、CI rust / bench tooling / fuzz.yml；测试代码只有 `make lint` 与 CI 的 `--all-targets` 覆盖）：`wildcard_imports`（`use super::*` 在测试模块里 clippy 默认放行）、`unwrap_used`（生产代码用 `expect("为什么不会失败")` 或 `?`）、`fn_params_excessive_bools`、`undocumented_unsafe_blocks`（`// SAFETY:` 必须紧贴 `unsafe`）、`mem_forget`、`rc_buffer`、`manual_string_new`、`redundant_clone`、`needless_pass_by_value`；`ptr_arg` 是 clippy 默认。`must_use_candidate` 刻意不开（应用代码噪声太大，`#[must_use]` 是评审项）。
+- 采纳时（2026-10-27）实测命中：根 crate 49（`needless_pass_by_value` 21、`redundant_clone` 19、`manual_string_new` 8、`undocumented_unsafe_blocks` 1；另有 `--cfg fuzzing` 下才编译的 `wildcard_imports` 1）、fuzz 10（`unwrap_used` 6、`wildcard_imports` 2、`redundant_clone` 2）、bench 0；其余 lint 为 0 命中，作为护栏保留，全部已清零，没有因噪声删掉的 lint。
+- `needless_pass_by_value` 的例外只用 `#[expect(clippy::needless_pass_by_value, reason = "…")]`（不用 `allow`，该例外消失时编译器会提醒）：目前三处 `map_err` 回调（`enroll::csr_status`、`signup::valkey_err`、`dns::cloudflare::unreachable`）和泛型按值参数 `csvx::Cell::raw`；其余一律改为借用。
+- `src/fuzzing.rs` 与 `#[cfg(fuzzing)]` 代码只在 `--cfg fuzzing` 下编译，`make fuzz-lint` 对它不生效（路径依赖不是 workspace 成员）；改这些代码时手动跑 `RUSTFLAGS="--cfg fuzzing" cargo clippy --lib -- -D warnings`（用单独的 `CARGO_TARGET_DIR`）。
+- 无法 lint 的规则（命名、缩写、trait 设计、文档质量、bool 参数改枚举）是评审项，见 `briefs/DEFECT-CHECKLIST.md`。
+
 ## CI 分级（W37）
 
 - **合并队列（2026-10-26）**：main 启用 GitHub merge queue，PR 不再需要“更新分支 + 重跑全套”。合并 = 加入队列：`gh pr merge <n> --squash|--rebase`（队列开启后该命令即入队，等价 `--auto`）；队列在“PR + 最新 main”的临时分支上跑全套，通过才落到 main。必需检查名单不变，每个名字在每一档都存在（真跑或被跳过，跳过 = 成功）。
