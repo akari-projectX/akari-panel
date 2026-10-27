@@ -96,20 +96,16 @@ assets = [{"name": n, "size": os.path.getsize(os.path.join(dl, n)),
 json.dump({"tag_name": ver, "name": ver, "draft": False, "prerelease": False, "assets": assets},
           open(os.path.join(rel, "www/repos/akari-projectX/akari-agent/releases/latest"), "w"))
 PY
-# SET-11: a remote rule-set the routing editor adds (the panel downloads it
-# from loopback over http only under AKARI_TEST_LIMITS rule_set_fetch_loopback=1,
-# as in smoke).
-mkdir -p "$REL/www/rules"
-printf 'payload:\n  - DOMAIN-SUFFIX,e2e-rules.test\n  - DOMAIN,api.e2e-rules.test\n  - IP-CIDR,203.0.113.0/24,no-resolve\n  - PROCESS-NAME,E2E.exe\n' >"$REL/www/rules/E2E.yaml"
+mkdir -p "$REL/www"
 python3 -m http.server --bind 127.0.0.1 --directory "$REL/www" "$REL_PORT" >"$REL/server.log" 2>&1 &
 REL_PID=$!
 # DNS management: a local Cloudflare API (admin/e2e/fixtures/cloudflare-mock.py); the
-# panel is pointed at it with cloudflare_mock_port (test-only, like the rule-set switch).
+# panel is pointed at it with cloudflare_mock_port (test-only).
 CF_PORT=${E2E_CF_PORT:-18207}
 E2E_CF_TOKEN="e2e-cf-token-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 python3 admin/e2e/fixtures/cloudflare-mock.py "$CF_PORT" "$E2E_CF_TOKEN" >"$DIR/cloudflare-mock.log" 2>&1 &
 CF_PID=$!
-AKARI_TEST_LIMITS=rule_set_fetch_loopback=1,cloudflare_mock_port=$CF_PORT "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
+AKARI_TEST_LIMITS=cloudflare_mock_port=$CF_PORT "$PANEL" -c "$DIR/panel.toml" serve >"$DIR/panel.log" 2>&1 &
 PANEL_PID=$!
 trap 'kill $PANEL_PID $REL_PID $CF_PID 2>/dev/null || true; wait $PANEL_PID 2>/dev/null || true; docker rm -f "$MAILPIT" >/dev/null 2>&1 || true' EXIT
 for _ in $(seq 1 60); do

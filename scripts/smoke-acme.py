@@ -45,6 +45,16 @@ os.makedirs(DIR, exist_ok=True)
 DOMAIN = "node.akari.test"
 
 
+
+def yaml_name(v):
+    """A proxy name as the panel's YAML writes it: plain, 'single' or "double" quoted."""
+    v = v.strip()
+    if v.startswith('"'):
+        return json.loads(v)
+    if v.startswith("'"):
+        return v[1:-1].replace("''", "'")
+    return v
+
 def fail(msg):
     print(f"FAIL: {msg}")
     sys.exit(1)
@@ -290,7 +300,7 @@ try:
             continue
         # Only the proxies (not the subscription's DNS block or routing groups).
         cfg = clash[clash.find("proxies:\n"):].split("proxy-groups:")[0]
-        names = [json.loads(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
+        names = [yaml_name(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
         if len(names) != 1:
             fail(f"{label}: {len(names)} proxies in the subscription")
         lport = free_port()

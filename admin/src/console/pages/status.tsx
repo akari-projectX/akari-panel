@@ -128,7 +128,6 @@ function jobName(j: string, tr: Tr) {
         reconciliation: tr("支付对账", "Payment reconciliation"),
         mail: tr("邮件发件箱", "Mail outbox"),
         alerts: tr("告警评估", "Alert evaluation"),
-        rule_sets: tr("远程规则集刷新", "Remote rule-set refresh"),
       } as Record<string, string>
     )[j] ?? j
   );
@@ -141,10 +140,6 @@ function jobDesc(j: string, tr: Tr) {
         reconciliation: tr("向支付渠道核对待支付订单与退款", "Checks unpaid orders and refunds with the provider"),
         mail: tr("发送队列中的邮件，失败的按退避重试", "Sends the queued mail, retries with back-off"),
         alerts: tr("评估告警规则并投递通知", "Evaluates the alert rules and delivers notices"),
-        rule_sets: tr(
-          "每天重新下载订阅分流里的远程规则集，失败时保留上一份",
-          "Re-downloads the routing's remote rule-sets daily, keeping the last good copy on failure",
-        ),
       } as Record<string, string>
     )[j] ?? ""
   );
