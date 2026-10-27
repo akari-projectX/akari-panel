@@ -689,10 +689,7 @@ jobs:
           if-no-files-found: error
 
   installer-bare:
-    # scripts/installer-test/bare-e2e.sh in a fresh systemd container: the
-    # latest published release (v0.3.x) installed by the PR's installer from
-    # GitHub (keyless cosign) -> its upgrade to the PR build is refused
-    # untouched (v0.4 baseline: fresh install only) -> purge -> fresh install
+    # scripts/installer-test/bare-e2e.sh in a fresh systemd container: install
     # of the PR build (local release, signed with a throwaway cosign key) ->
     # a deliberately broken release rolls back ->
     # uninstall keeps data / reinstall -> age-encrypted backup -> purge ->
@@ -717,26 +714,20 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3
-      - name: local releases (PR build, broken) and the previous release
-        id: rel
+      - name: local releases (PR build, broken)
         env:
           NEW: ${{ needs.build.outputs.tag }}
         run: |
           scripts/installer-test/make-release.sh "$RUNNER_TEMP/rel" "$NEW" --binary dist/akari-linux-amd64 --latest
           scripts/installer-test/make-release.sh "$RUNNER_TEMP/rel" v9.9.9 --broken
-          prev="$(curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/akari-panel-image.txt \
-            | sed -n 's/.*:\([0-9][^@]*\)@sha256:.*/v\1/p')"
-          echo "prev=$prev" >>"$GITHUB_OUTPUT"
-          echo "previous release: $prev"
-      - run: scripts/installer-test/bare-e2e.sh "${{ matrix.base }}" "$RUNNER_TEMP/rel" "${{ needs.build.outputs.tag }}" v9.9.9 "${{ steps.rel.outputs.prev }}"
+      - run: scripts/installer-test/bare-e2e.sh "${{ matrix.base }}" "$RUNNER_TEMP/rel" "${{ needs.build.outputs.tag }}" v9.9.9
         env:
           ADDRESS: ${{ matrix.address }}
 
   installer-host:
     # scripts/installer-test/host-e2e.sh on the runner itself (systemd,
-    # Docker): Docker mode = the latest published release (ghcr image), its
-    # upgrade to the PR build refused untouched (v0.4 baseline) -> purge ->
-    # fresh install of the PR build (image in a local registry, by digest);
+    # Docker): Docker mode = install of the PR build (image in a local
+    # registry, by digest);
     # then bare metal with a real agent (../akari-agent) -> `akari-ctl
     # migrate --to docker` -> `--to bare`: same prefix, the agent reconnects
     # without re-enrolling, the subscription link keeps working.
@@ -770,7 +761,6 @@ jobs:
       # installer's PostgreSQL 18 cluster gets the next free port.
       - run: sudo systemctl stop postgresql || true
       - name: PR image into a local registry; local releases
-        id: rel
         env:
           NEW: ${{ needs.build.outputs.tag }}
         run: |
@@ -783,10 +773,7 @@ jobs:
           case "$digest" in sha256:*) ;; *) echo "::error::no registry digest for $ref"; exit 1 ;; esac
           akari-panel/scripts/installer-test/make-release.sh "$RUNNER_TEMP/rel" "$NEW" \
             --binary dist/akari-linux-amd64 --image "$ref@$digest" --latest
-          prev="$(curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/akari-panel-image.txt \
-            | sed -n 's/.*:\([0-9][^@]*\)@sha256:.*/v\1/p')"
-          echo "prev=$prev" >>"$GITHUB_OUTPUT"
-      - run: sudo -E env "PATH=$PATH" akari-panel/scripts/installer-test/host-e2e.sh "$RUNNER_TEMP/rel" "${{ needs.build.outputs.tag }}" akari-agent/agent "${{ steps.rel.outputs.prev }}"
+      - run: sudo -E env "PATH=$PATH" akari-panel/scripts/installer-test/host-e2e.sh "$RUNNER_TEMP/rel" "${{ needs.build.outputs.tag }}" akari-agent/agent
       - if: failure()
         run: |
           sudo tail -n 120 /var/log/akari-install.log || true

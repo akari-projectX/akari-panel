@@ -48,10 +48,6 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 - **备份签名（默认开启）**：安装/升级/备份时安装器在 `/etc/akari/backup-sign.pem`（root、0600）生成签名密钥，
   每个备份目录带 `SHA256SUMS.sig`。`akari-ctl info` 打印**验证公钥**，请离线保存；恢复到新主机时
   `--backup-verify-key <公钥文件>` 强制验证（缺签名/伪造一律拒绝），不给则继续但打印“未经验证”的醒目警告（docs/BACKUP.md「真实性」）。
-- **v0.3.x → v0.4 不能升级，只能全新安装**：v0.4 把迁移 0001–0168 压缩为新基线 `1000_baseline.sql`。
-  - `akari-ctl upgrade` 在改动任何东西之前就会拒绝（`database from v0.3.x — fresh install required`），面板启动时也会拒绝 v0.3.x 的数据库。
-  - v0.3.x 的备份**不能**恢复到 v0.4。
-  - 做法：`akari-ctl uninstall --purge --confirm purge` 后重新安装（见 §5）。
 - **换服务器**：
   1. 旧机执行 `akari-ctl backup`；
   2. 把备份目录复制到新机；
@@ -1356,19 +1352,6 @@ akari-ctl lb-config caddy|haproxy|nginx --instances 10.0.0.5,10.0.0.6 --domain p
 
 ## 5. Upgrade (agents BEFORE the panel)（升级：agent 先于面板）
 
-### v0.3.x → v0.4: fresh install only（v0.3.x → v0.4：只能全新安装）
-
-v0.4 把迁移 0001–0168 压缩为单一基线 `migrations/1000_baseline.sql`（schema 相同；research/db-schema-review.md §7）。
-v0.3.x 创建的数据库不能原地升级：
-
-- 从 v0.3.x 安装执行 `akari-ctl upgrade` 会**在改动任何东西之前**停止（不备份、不切换），并报 `database from v0.3.x — fresh install required; see docs/DEPLOY.md`；
-- 面板本身拒绝在这样的数据库上启动（`db::migrate`：任何 `_sqlx_migrations` 版本低于 1000），报相同的信息；这也涵盖手工部署、保留的数据卷和恢复的备份；
-- **v0.3.x 做的备份不能恢复到 v0.4**（`install --restore` 在加载之后以相同信息停止）。
-
-所以：记下你需要的东西（设置、套餐、用户），执行 `akari-ctl uninstall --purge --confirm
-purge`（`/var/backups/akari` 下的备份会保留，但只能用于 v0.3），全新安装 v0.4，并重新注册节点（重装命令）。
-v0.4 各发布版本之间的升级按下文进行。
-
 **用安装器升级**（任何由它完成的安装，或 `/opt/akari-panel/deploy` 或 `/opt/akari` 下的 §A compose 检出，它会接管）：
 
 ```bash
@@ -1607,12 +1590,12 @@ Caddy 会在新主机上获取新证书（主域名在启动时，其他的按�
   像发布一样制作（Dockerfile `artifact` → `prebuilt`），但使用 CI 的 cargo profile（`Cargo.toml` `[profile.ci]`：无 LTO，16 个 codegen unit；release.yml 发布 `release`），
   版本为 `<version>-ci.<run>`；依赖来自 Dockerfile 的 cargo-chef `deps` 阶段，存放在 BuildKit GitHub Actions 缓存中（只由仅 main 的 `image cache (main)` job 写入）。
   `make-release.sh` 把它们变成本地发布（GitHub 目录布局，用一次性的 cosign 密钥签名；外加一个故意损坏的发布 `v9.9.9`）。
-- `installer (bare, debian:13 / ubuntu:24.04)`：`bare-e2e.sh` 在全新的 systemd 容器中运行（`dl.cloudsmith.io` 指向本机，预置一个回答 402 的旧 Caddy 源，断言安装器停用它、Caddy 来自固定版本的 GitHub 发布）：从 GitHub 安装最新已发布版本（v0.3.x，真实的 keyless 验证），
-  其到 PR 构建的升级被原样拒绝（v0.4 基线）→ purge → 全新安装 PR 构建 → 通过 Caddy 的 healthz
+- `installer (bare, debian:13 / ubuntu:24.04)`：`bare-e2e.sh` 在全新的 systemd 容器中运行（Caddy 来自固定版本的 GitHub 发布）：
+  全新安装 PR 构建 → 通过 Caddy 的 healthz
   （带 `local_certs` 的 `myapp.test`，或仅 IP）、经 API 的管理员登录、`akari settings show` 中的节点地址
   （`--node-address`：主机名，或 `[::1]:9443`）、一个用户及其订阅 → 损坏的发布会回滚 → 卸载保留数据，重装保留前缀/密码/订阅 →
   age 加密的备份 → `--purge` → 从该备份 `--restore` 安装（主机迁移）。
-- `installer (host, docker + migration)`：`host-e2e.sh` 在 runner 上运行：Docker 安装最新发布版本（ghcr 镜像）→ 其到 PR 镜像的升级被原样拒绝 → purge →
+- `installer (host, docker + migration)`：`host-e2e.sh` 在 runner 上运行：
   Docker 安装 PR 镜像（本地 registry，按 digest 固定）→ purge；裸机安装 PR 构建，注册一个真实 agent（`../akari-agent`），
   `migrate --to docker` 再 `--to bare` 回来：前缀相同，agent 无需重新注册即可重连，订阅仍能应答。
 - 语言与 locale：`bare-e2e.sh` 在没有 `zh_CN` 的镜像上先让 `apt-get` 拒绝安装 `locales`，断言运行改为英文并说明原因、本机仍无该 locale；随后的默认安装断言 `zh_CN.UTF-8` 已装好、日志是中文、`/etc/default/locale` 与 `/etc/locale.conf` 没有 `LANG=`、没有写入任何 profile。smoke 的节点安装段（Debian 容器与 Alpine/OpenRC）走默认（中文）路径。
