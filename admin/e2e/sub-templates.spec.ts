@@ -47,7 +47,7 @@ test("SET-29: subscription templates — tabs, placeholders, error markers, prev
 
   // Sing-box first, showing the built-in default.
   const singbox = page.getByRole("textbox", { name: "Sing-box 订阅模板" });
-  await expect(singbox).toContainText('"outbounds"');
+  await expect(singbox).toContainText('"log"');
   await expect(page.getByText("使用内置默认模板", { exact: true })).toBeVisible();
 
   // The placeholder cheat-sheet (collapsed behind a button on a phone); a click inserts at the cursor.
@@ -66,7 +66,7 @@ test("SET-29: subscription templates — tabs, placeholders, error markers, prev
   await tab(page, "Clash").click();
   await expect(page).toHaveURL(/format=clash/);
   const clash = page.getByRole("textbox", { name: "Clash 订阅模板" });
-  await expect(clash).toContainText("proxy-groups");
+  await expect(clash).toContainText("mixed-port");
   await setDoc(clash, BAD);
   await saveButton(page).click();
   await expect(errors(page)).toContainText("Ghost");
@@ -146,7 +146,7 @@ test("SET-29: subscription templates — tabs, placeholders, error markers, prev
 
   // The two text formats open with their own placeholders.
   await tab(page, "Surge").click();
-  await expect(page.getByRole("textbox", { name: "Surge 订阅模板" })).toContainText("[Proxy Group]");
+  await expect(page.getByRole("textbox", { name: "Surge 订阅模板" })).toContainText("[General]");
   if (isMobile(info)) await page.getByRole("button", { name: /^占位符说明/ }).click();
   await expect(page.getByRole("button", { name: "插入 $subscribe_info", exact: true })).toBeVisible();
   await side(page, "预览").click();
