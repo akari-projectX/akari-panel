@@ -14,7 +14,8 @@
 //! trade, query it, close it, verify a notify, test the configuration.
 //!
 //! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`), EPay / 易支付
-//! (`epay.rs`, `epay`, C1), CoinPayments (hosted crypto gateways: `coinpayments.rs`, `coinbase.rs`). Adding a kind = implement both traits, add it
+//! (`epay.rs`, `epay`, C1), CoinPayments (`coinpayments.rs`) and Coinbase
+//! (`coinbase.rs`), the last two hosted crypto gateways. Adding a kind = implement both traits, add it
 //! to `KINDS`, extend the `payment_methods.kind` CHECK (new migration) and
 //! the admin form.
 
@@ -279,7 +280,11 @@ pub trait ProviderKind: Sync {
 }
 
 /// Every provider kind.
-pub static KINDS: &[&dyn ProviderKind] = &[&super::alipay::AlipayKind, &super::epay::EpayKind];
+pub static KINDS: &[&dyn ProviderKind] = &[
+    &super::alipay::AlipayKind,
+    &super::epay::EpayKind,
+    &super::coinpayments::CoinPaymentsKind,
+];
 
 pub fn kind(id: &str) -> Option<&'static dyn ProviderKind> {
     KINDS.iter().copied().find(|k| k.id() == id)
@@ -423,7 +428,7 @@ pub mod mock {
         assert_eq!(m.notify_ack(), "ok");
         assert!(!m.notify_get());
         // The registry knows every kind, and nothing unknown.
-        for id in ["alipay_f2f", "epay"] {
+        for id in ["alipay_f2f", "epay", "coinpayments"] {
             assert_eq!(kind(id).map(|k| k.id()), Some(id));
         }
         assert!(kind("usdt_chain").is_none());
