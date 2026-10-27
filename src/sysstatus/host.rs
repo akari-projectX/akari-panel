@@ -82,12 +82,6 @@ pub struct Host {
     pub disk_used_bytes: Option<u64>,
     /// This panel process.
     pub rss_bytes: Option<u64>,
-    /// The machine-wide `/proc` files (stat, meminfo, loadavg) cannot be
-    /// read while this process's own can: the service sandbox hides them
-    /// (systemd `ProcSubset=pid`). The page
-    /// says so instead of a bare "unknown".
-    #[serde(default)]
-    pub proc_hidden: bool,
 }
 
 fn read(path: &str) -> Option<String> {
@@ -114,7 +108,6 @@ impl Sampler {
     pub fn sample(&self, data_dir: &std::path::Path) -> Host {
         let stat = read("/proc/stat");
         let rss = read("/proc/self/status");
-        let proc_hidden = stat.is_none() && rss.is_some();
         let cpu = stat.as_deref().and_then(parse_cpu);
         let cpu_percent = match (cpu, self.prev.lock()) {
             (Some(cur), Ok(mut prev)) => {
@@ -149,7 +142,6 @@ impl Sampler {
             disk_total_bytes: disk.map(|d| d.0),
             disk_used_bytes: disk.map(|d| d.1),
             rss_bytes: rss.as_deref().and_then(parse_rss),
-            proc_hidden,
         }
     }
 }

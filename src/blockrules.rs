@@ -16,7 +16,7 @@
 //!   node's sessions instead.
 //! - **Compiling** ([`server_policy`] → `pb::BlockPolicy`): done here, once
 //!   per send; the agent only installs the result into xray routing.
-//!   Sessions of agents with the `block-rules` capability send it after the
+//!   Sessions send it after the
 //!   Hello and whenever it differs from the one last sent on the stream
 //!   (`grpc.rs`, like `LatencyProbeConfig`).
 //! - **Counters**: the agent reports cumulative hits per rule and agent
@@ -46,8 +46,6 @@ use crate::auth::{ApiError, AuthUser, bad_request};
 use crate::pb::{BlockPolicy, BlockRule, BlockStats};
 use crate::state::AppState;
 
-/// The agent capability that accepts `PanelDown.block_policy`.
-pub const CAPABILITY: &str = "block-rules";
 /// Custom rules at most (built-ins come on top).
 pub const MAX_CUSTOM_RULES: i64 = 32;
 /// Entries in one custom rule at most.
@@ -900,7 +898,7 @@ pub struct DayHits {
 }
 
 /// GET /nodes/{id}/block-rules?days=N (admin): the node's switch, whether
-/// its server's agent supports it and runs the current policy, and the
+/// its server's agent runs the current policy, and the
 /// server's daily hits per rule over the last N days (site time zone;
 /// default 7, at most 90; hits are counted per agent, i.e. per server, Q1).
 pub async fn node_view(
@@ -918,14 +916,14 @@ pub async fn node_view(
             max = MAX_STATS_DAYS
         ));
     }
-    let row: Option<(Uuid, bool, Option<Vec<String>>)> = sqlx::query_as(
-        "SELECT s.id, n.block_rules_enabled, s.agent_capabilities FROM nodes n \
+    let row: Option<(Uuid, bool)> = sqlx::query_as(
+        "SELECT s.id, n.block_rules_enabled FROM nodes n \
          JOIN servers s ON s.id = n.server_id WHERE n.id = $1",
     )
     .bind(node)
     .fetch_optional(state.pg())
     .await?;
-    let Some((server, enabled, caps)) = row else {
+    let Some((server, enabled)) = row else {
         return Err(ApiError::not_found());
     };
     let rows: Vec<DayHits> = sqlx::query_as(
@@ -950,7 +948,6 @@ pub async fn node_view(
         .map(str::to_string);
     Ok(Json(json!({
         "enabled": enabled,
-        "agent_supported": caps.as_deref().is_some_and(|c| c.iter().any(|c| c == CAPABILITY)),
         "policy_version": expected,
         "applied_version": applied,
         "in_sync": applied.as_deref() == Some(expected.as_str()),

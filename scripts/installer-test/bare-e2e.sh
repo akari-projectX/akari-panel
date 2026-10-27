@@ -179,9 +179,8 @@ echo "ok: modes, ownership, no secrets in logs, node address $node_addr"
 
 log "system status: host metrics readable under the panel unit"
 # /proc/stat, meminfo and loadavg must be readable under the unit's sandbox
-# (ProcSubset=pid would hide them: CPU / memory / load "unknown").
+# (CPU / memory / load must not be "unknown").
 [ "$(https_code "$origin/$PREFIX/api/v1/system/status" -b /tmp/jar)" = 200 ] || fail "system status"
-cx grep -q '"proc_hidden":false' /tmp/last || fail "the panel unit hides /proc: $(cx cat /tmp/last)"
 cx grep -q '"mem_total_bytes":[1-9]' /tmp/last || fail "no memory total: $(cx cat /tmp/last)"
 cx grep -q '"load":\[' /tmp/last || fail "no load average: $(cx cat /tmp/last)"
 echo "ok: system status host metrics"

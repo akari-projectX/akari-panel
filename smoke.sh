@@ -1487,8 +1487,6 @@ vk exists "akari:server:online:$SERVER_ID" | matches 1 \
   || { echo "FAIL: online key missing"; exit 1; }
 
 echo "== W11: node form fields, multiplier billing, machine status, latency =="
-# Agent-side assertions need the agent capabilities "metrics" / "latency"
-# (W12 gates); the panel-side ones always run.
 # xboard-style fields: display name, tags, multiplier, connect override.
 # W28-a: multiplier, address and tags belong to the (direct) entrance.
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":"冒烟 01","sort":1}')" = "200" ] \
@@ -1718,7 +1716,7 @@ print("ok" if got.endswith(b"w29-probe") else "blocked")
 PY
 w29_view() { code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/block-rules" >/dev/null; }
 for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
-[ "$(last_json "d['in_sync'] and d['agent_supported'] and d['error'] is None")" = "True" ] \
+[ "$(last_json "d['in_sync'] and d['error'] is None")" = "True" ] \
   || { echo "FAIL: agent did not apply the block policy"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "blocked" ] || { echo "FAIL: blocked domain reached its target"; exit 1; }
 [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" ip)" = "ok" ] || { echo "FAIL: unblocked destination failed"; exit 1; }
