@@ -331,6 +331,7 @@ impl Client {
     }
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "used as a map_err callback")]
 fn unreachable(e: FetchError) -> DnsError {
     DnsError::Unreachable(e.to_string())
 }

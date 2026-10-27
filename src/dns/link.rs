@@ -164,7 +164,7 @@ async fn zone_index(state: &AppState) -> Result<(Index, Vec<Value>), ApiError> {
             Some(Err(e)) => ApiError::from(e),
             None => super::token_unreadable(),
         };
-        errors.push(super::error_entry(&row, err));
+        errors.push(super::error_entry(&row, &err));
     }
     Ok((index, errors))
 }
@@ -218,7 +218,7 @@ fn norm_host(raw: &str) -> String {
     raw.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
-fn failure(host: &str, e: ApiError) -> Value {
+fn failure(host: &str, e: &ApiError) -> Value {
     json!({ "host": host, "ok": false, "code": e.code(), "message": e.message(), "params": e.params() })
 }
 
@@ -466,7 +466,7 @@ async fn link(
         let uses = records::uses_of(&managed, &wish.host);
         match plan_one(state, &index, wish, i, uses).await {
             Ok(p) => planned.push(p),
-            Err(e) => results[i] = Some(failure(&wish.host, e)),
+            Err(e) => results[i] = Some(failure(&wish.host, &e)),
         }
     }
     let mut hit: Vec<(String, Vec<Use>)> = Vec::new();
@@ -542,7 +542,7 @@ async fn link(
             }
         }
         results[p.wish_index] = Some(match failed {
-            Some(e) => failure(&host, e),
+            Some(e) => failure(&host, &e),
             None => json!({ "host": host, "ok": true, "changes": changes }),
         });
     }
