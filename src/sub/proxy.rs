@@ -2,7 +2,7 @@
 //! built from the kernel-neutral model (`protocols::xray::parse_as` reads
 //! the stored inbound as the credential's protocol), and what each format
 //! can carry (the manifest's `[[format.unsupported]]`). The format
-//! renderers (`links`, `clash`, `singbox`) never see kernel JSON.
+//! renderers (`links`, the templates) never see kernel JSON.
 
 use std::collections::HashSet;
 
@@ -88,11 +88,6 @@ pub(crate) fn net_of(ib: &Inbound) -> Option<Net> {
 
 pub(crate) struct Proxy {
     pub name: String,
-    /// The entrance (line) this proxy is, its node's region and the
-    /// entrance's tags: what the routing groups select by (`groups.rs`).
-    pub entrance: Option<uuid::Uuid>,
-    pub region: Option<String>,
-    pub tags: Vec<String>,
     /// Manifest protocol id.
     pub protocol: &'static str,
     /// vless/vmess uuid, trojan password, shadowsocks "server_psk:user_key",
@@ -201,9 +196,6 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
         let name = unique_name(&mut names, name);
         proxies.push(Proxy {
             name,
-            entrance: Some(row.entrance_id),
-            region: row.region.clone(),
-            tags: row.tags.clone(),
             protocol: spec.id.as_str(),
             id_or_password,
             flow: flow.to_string(),
@@ -243,49 +235,6 @@ pub(crate) fn encode_fragment(s: &str) -> String {
         }
     }
     out
-}
-
-/// A YAML scalar: plain when it is a safe token, JSON-quoted otherwise
-/// (a JSON string is a valid YAML double-quoted scalar).
-pub(crate) fn yaml(s: &str) -> String {
-    const RESERVED: [&str; 11] = [
-        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "nan", "inf",
-    ];
-    let safe = !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/-_.~".contains(&b))
-        && !s.starts_with(['-', '.', '~'])
-        && (s.starts_with('/')
-            || (s.bytes().any(|b| b.is_ascii_alphabetic())
-                && !RESERVED.contains(&s.to_ascii_lowercase().as_str())
-                && s.parse::<f64>().is_err()));
-    if safe {
-        s.to_string()
-    } else {
-        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
-    }
-}
-
-/// A YAML scalar for a host-like or key-like value (server, SNI, Host
-/// header, REALITY key and short id): plain when it only holds
-/// `[A-Za-z0-9._-]` (so IPv4 addresses and digit-only short ids stay
-/// as they were), JSON-quoted otherwise. Unlike [`yaml`] it never quotes
-/// a value merely for lacking letters. Stored values are validated at save
-/// time; this keeps older or hand-written rows from breaking the document.
-pub(crate) fn yaml_token(s: &str) -> String {
-    const RESERVED: [&str; 11] = [
-        "true", "false", "null", "yes", "no", "on", "off", "y", "n", "~", "nan",
-    ];
-    let plain = !s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-        && !s.starts_with(['-', '.'])
-        && !RESERVED.contains(&s.to_ascii_lowercase().as_str());
-    if plain {
-        s.to_string()
-    } else {
-        serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
-    }
 }
 
 /// The inbound of a test proxy (unit tests of the renderers).

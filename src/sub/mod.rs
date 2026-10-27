@@ -50,11 +50,14 @@ pub enum Format {
     SingBox,
     Clash,
     Links,
+    /// Surge (2026-10-27, subscription templates).
+    Surge,
+    Surfboard,
 }
 
 /// Every output format, by id (the `panel_settings_sub_formats` CHECK;
 /// section 5 switches). A later own-client format joins this list.
-pub const FORMATS: [&str; 3] = ["clash", "sing-box", "links"];
+pub const FORMATS: [&str; 5] = ["clash", "sing-box", "links", "surge", "surfboard"];
 
 impl Format {
     pub fn id(self) -> &'static str {
@@ -62,18 +65,22 @@ impl Format {
             Format::Clash => "clash",
             Format::SingBox => "sing-box",
             Format::Links => "links",
+            Format::Surge => "surge",
+            Format::Surfboard => "surfboard",
         }
     }
 }
 
 /// The portal's one-click import clients and the format each one imports
 /// (the `panel_settings_sub_import_clients` CHECK; SPA `sub-links.ts`).
-pub const IMPORT_CLIENTS: [(&str, Format); 5] = [
+pub const IMPORT_CLIENTS: [(&str, Format); 7] = [
     ("clash", Format::Clash),
     ("stash", Format::Clash),
     ("shadowrocket", Format::Links),
     ("sing-box", Format::SingBox),
     ("hiddify", Format::Links),
+    ("surge", Format::Surge),
+    ("surfboard", Format::Surfboard),
 ];
 
 /// The import buttons to show: the configured ones (None = all) whose
@@ -147,7 +154,7 @@ pub fn all_formats() -> Vec<String> {
     FORMATS.iter().map(|f| (*f).to_string()).collect()
 }
 
-/// W20: `?format=clash|sing-box|links` on the subscription URL picks the
+/// W20: `?format=clash|sing-box|links|surge|surfboard` on the subscription URL picks the
 /// format explicitly (the portal's format selector and one-click import
 /// links); anything else — no query, other keys, unknown values — falls
 /// back to User-Agent detection. Never a rejection: the token alone decides
@@ -157,6 +164,8 @@ fn requested_format(query: Option<&str>) -> Option<Format> {
         "format=clash" => Some(Format::Clash),
         "format=sing-box" | "format=singbox" => Some(Format::SingBox),
         "format=links" | "format=base64" => Some(Format::Links),
+        "format=surge" => Some(Format::Surge),
+        "format=surfboard" => Some(Format::Surfboard),
         _ => None,
     })
 }
@@ -167,6 +176,8 @@ fn requested_format(query: Option<&str>) -> Option<Format> {
 /// - Clash: Clash Verge (Rev), Clash Meta for Android, FlClash, mihomo
 ///   (Mihomo Party: `mihomo.party/`), Stash (`Stash/... Clash/...`),
 ///   NekoBox ("Prefer ClashMeta Format");
+/// - Surge (`Surge iOS/…`, `Surge Mac/…`) and Surfboard (`Surfboard/…`):
+///   their own profile formats (templates);
 /// - links (base64 share links): v2rayN/v2rayNG, Shadowrocket, Hiddify
 ///   (its sing-box core is older than the 1.12 configuration the sing-box
 ///   format targets; it applies its own routing to imported links).
@@ -182,6 +193,10 @@ fn known_client(user_agent: &str) -> Option<Format> {
         .any(|c| ua.contains(c))
     {
         Some(Format::Links)
+    } else if ua.contains("surfboard") {
+        Some(Format::Surfboard)
+    } else if ua.contains("surge") {
+        Some(Format::Surge)
     } else if ua.contains("sing-box") || sing_box_app {
         Some(Format::SingBox)
     } else if ["clash", "mihomo", "stash"].iter().any(|c| ua.contains(c)) {
@@ -202,7 +217,7 @@ struct SubUser {
 /// One usable entrance of the subscribing user (W28-a: every entrance is
 /// its own proxy): the node's public data, the entrance's client-facing
 /// address and the user's credential on it (input of `render`).
-#[derive(FromRow)]
+#[derive(Clone, FromRow)]
 pub struct NodeRow {
     /// The entrance's id (routing pins lines by it) and its node's
     /// user-facing region (region groups).
@@ -231,22 +246,14 @@ pub struct NodeRow {
     pub account: Value,
 }
 
-pub mod catalog;
-mod clash;
-pub(crate) mod dns;
-pub(crate) mod groups;
 mod links;
 pub(crate) mod proxy;
-pub mod routing;
-#[cfg(test)]
-mod routing_db_tests;
-pub mod rulesets;
-mod singbox;
+pub(crate) mod surge;
+pub mod templates;
 
-use clash::render_clash;
 use links::render_links;
 use proxy::collect_proxies;
-use singbox::render_sing_box;
+use templates::{Ctx, Info, TemplateFormat};
 
 /// Round the response body up to fixed-size buckets so subscription size
 /// does not reveal node/user counts.
@@ -260,53 +267,65 @@ fn pad(body: String) -> String {
 }
 
 /// The subscription body for `user_agent` (format by UA) and its content
-/// type, padded (`pad`), with the built-in routing template. Pure: the
-/// benchmarks and the fuzzer use it.
+/// type, padded (`pad`), with the built-in templates. Pure: the benchmarks
+/// and the fuzzer use it.
 pub fn render(user_agent: &str, rows: &[NodeRow]) -> (&'static str, String) {
-    render_for(None, user_agent, rows, &routing::Routing::default())
+    render_for(None, user_agent, rows)
 }
 
 /// `render` with the URL's query string (`requested_format`) taking
-/// precedence over the User-Agent, and the site's routing template.
+/// precedence over the User-Agent.
 pub fn render_for(
     query: Option<&str>,
     user_agent: &str,
     rows: &[NodeRow],
-    routing: &routing::Routing,
 ) -> (&'static str, String) {
     let format = choose_format(query, user_agent, &all_formats(), false).unwrap_or(Format::Links);
-    render_as(format, rows, routing)
+    render_as(format, rows)
 }
 
-/// One format's body and content type, padded (no panel-hosted rule-sets).
-pub fn render_as(
-    format: Format,
-    rows: &[NodeRow],
-    routing: &routing::Routing,
-) -> (&'static str, String) {
-    render_hosted(format, rows, routing, &rulesets::Hosted::default())
-}
-
-/// `render_as` with the panel-hosted copies of remote rule-sets sing-box
-/// profiles may reference (`rulesets::hosted`).
-pub fn render_hosted(
-    format: Format,
-    rows: &[NodeRow],
-    routing: &routing::Routing,
-    hosted: &rulesets::Hosted,
-) -> (&'static str, String) {
-    let proxies = collect_proxies(rows);
-    let body = match format {
-        Format::SingBox => render_sing_box(&proxies, routing, hosted).to_string(),
-        Format::Clash => render_clash(&proxies, routing),
-        Format::Links => render_links(&proxies),
-    };
-    let content_type = match format {
-        Format::SingBox => "application/json; charset=utf-8",
-        Format::Clash => "text/yaml; charset=utf-8",
-        Format::Links => "text/plain; charset=utf-8",
+/// One format's body and content type, padded, from the built-in template.
+pub fn render_as(format: Format, rows: &[NodeRow]) -> (&'static str, String) {
+    let content_type = content_type(format);
+    let body = match TemplateFormat::of(format) {
+        None => render_links(&collect_proxies(rows)),
+        Some(tf) => templates::render_sample_for(tf, tf.default_body(), &collect_proxies(rows))
+            .unwrap_or_default(),
     };
     (content_type, pad(body))
+}
+
+fn content_type(format: Format) -> &'static str {
+    match TemplateFormat::of(format) {
+        Some(tf) => tf.content_type(),
+        None => "text/plain; charset=utf-8",
+    }
+}
+
+/// The user's usable entrances (`NodeRow`s) in the operator's order.
+pub(crate) async fn load_rows(
+    pg: &sqlx::PgPool,
+    user_id: Uuid,
+    name_rate: bool,
+) -> sqlx::Result<Vec<NodeRow>> {
+    sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT e.id AS entrance_id, n.region, n.name, n.display_name, e.tags, e.name AS entrance, \
+         CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
+         coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
+         eu.protocol, eu.account \
+         FROM entrance_users eu \
+         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled AND e.hidden_since IS NULL \
+         JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
+         JOIN servers s ON s.id = n.server_id AND {} \
+         JOIN users u ON u.id = eu.user_id AND u.enabled \
+         WHERE eu.user_id = $1 \
+         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
+        crate::grpc::SERVER_SERVES
+    )))
+    .bind(user_id)
+    .bind(name_rate)
+    .fetch_all(pg)
+    .await
 }
 
 /// GET /{prefix}/sub/{token} — the client-facing subscription. The token is
@@ -381,25 +400,7 @@ pub async fn subscription(
     {
         return reject::not_found();
     }
-    let rows = match sqlx::query_as::<_, NodeRow>(sqlx::AssertSqlSafe(format!(
-        "SELECT e.id AS entrance_id, n.region, n.name, n.display_name, e.tags, e.name AS entrance, \
-         CASE WHEN $2 THEN e.rate_permille END AS name_rate_permille, n.inbound, \
-         coalesce(e.connect_host, s.tls_domain) AS server, e.connect_port AS port, \
-         eu.protocol, eu.account \
-         FROM entrance_users eu \
-         JOIN entrances e ON e.id = eu.entrance_id AND e.enabled AND e.hidden_since IS NULL \
-         JOIN nodes n ON n.id = e.node_id AND n.enabled AND n.visible AND n.inbound IS NOT NULL \
-         JOIN servers s ON s.id = n.server_id AND {} \
-         JOIN users u ON u.id = eu.user_id AND u.enabled \
-         WHERE eu.user_id = $1 \
-         ORDER BY n.sort, coalesce(n.display_name, n.name), n.id, e.kind <> 'direct', e.sort, e.name",
-        crate::grpc::SERVER_SERVES
-    )))
-    .bind(user.id)
-    .bind(state.settings().get().sub_name_rate)
-    .fetch_all(state.pg())
-    .await
-    {
+    let rows = match load_rows(state.pg(), user.id, state.settings().get().sub_name_rate).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::error!(error = %e, "subscription db error");
@@ -422,17 +423,54 @@ pub async fn subscription(
     ) else {
         return reject::not_found();
     };
-    // sing-box: the panel-hosted copies of remote rule-sets, on this
-    // user's subscription origin.
-    let hosted = if format == Format::SingBox {
-        let base = settings
-            .sub_origin(user.id)
-            .map(|o| format!("{}/{}", o.as_string(), state.settings().access().sub_path));
-        rulesets::hosted(&state, &settings.sub_routing, base.as_deref()).await
-    } else {
-        rulesets::Hosted::default()
+    let proxies = collect_proxies(&rows);
+    let site = settings
+        .stored
+        .site_name
+        .as_deref()
+        .unwrap_or(crate::settings::DEFAULT_SITE_NAME);
+    let (content_type, body) = match TemplateFormat::of(format) {
+        None => (content_type(format), pad(render_links(&proxies))),
+        Some(tf) => {
+            let link = state.sub_link(user.id, &token);
+            let link = format!("{link}?format={}", tf.id());
+            let domain = link
+                .split_once("://")
+                .and_then(|(_, r)| r.split('/').next())
+                .unwrap_or_default()
+                .to_string();
+            let ctx = Ctx {
+                subs_link: &link,
+                subs_domain: &domain,
+                site_name: site,
+                info: Info {
+                    upload: 0,
+                    download: user.traffic_used_bytes,
+                    total: user.traffic_limit_bytes.unwrap_or(0),
+                    expire: user.expires_at.map_or(0, |t| t.timestamp()),
+                },
+                format_id: tf.id(),
+            };
+            let stored = match templates::body_of(state.pg(), tf).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::error!(error = %e, "subscription db error");
+                    return reject::not_found();
+                }
+            };
+            let rendered = templates::render(tf, &stored, &proxies, &ctx, false).or_else(|e| {
+                tracing::error!(format = tf.id(), error = %e.message, "stored subscription template unusable; using the built-in one");
+                templates::render(tf, tf.default_body(), &proxies, &ctx, false)
+            });
+            match rendered {
+                Ok(b) => (tf.content_type(), pad(b)),
+                Err(e) => {
+                    tracing::error!(format = tf.id(), error = %e.message, "built-in subscription template failed");
+                    return reject::not_found();
+                }
+            }
+        }
     };
-    let (content_type, body) = render_hosted(format, &rows, &settings.sub_routing, &hosted);
 
     // Quota header only after every failure path is cleared.
     let expire = user
@@ -445,11 +483,6 @@ pub async fn subscription(
         user.traffic_limit_bytes.unwrap_or(0)
     );
 
-    let site = settings
-        .stored
-        .site_name
-        .as_deref()
-        .unwrap_or(crate::settings::DEFAULT_SITE_NAME);
     (
         [
             (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
@@ -680,7 +713,7 @@ pub async fn ensure_token(
 
 #[cfg(test)]
 mod tests {
-    use super::proxy::{Proxy, collect_proxies, net_from_inbound, yaml};
+    use super::proxy::{Proxy, collect_proxies, net_from_inbound};
     use super::*;
     use crate::testdb::TestDb;
     use crate::testdb::http::{Client, rand_ip};
@@ -703,9 +736,6 @@ mod tests {
         });
         Proxy {
             name: "n".into(),
-            entrance: None,
-            region: None,
-            tags: vec![],
             protocol: "vless",
             id_or_password: "u".into(),
             flow: "xtls-rprx-vision".into(),
@@ -716,7 +746,29 @@ mod tests {
         }
     }
 
-    /// A sing-box outbound by tag (the routing groups come first).
+    /// The built-in Clash template rendered for `proxies`.
+    fn render_clash_default(proxies: &[Proxy]) -> String {
+        templates::render_sample_for(
+            TemplateFormat::Clash,
+            TemplateFormat::Clash.default_body(),
+            proxies,
+        )
+        .unwrap()
+    }
+
+    fn render_sing_box_default(proxies: &[Proxy]) -> Value {
+        serde_json::from_str(
+            &templates::render_sample_for(
+                TemplateFormat::SingBox,
+                TemplateFormat::SingBox.default_body(),
+                proxies,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// A sing-box outbound by tag (the template's groups come first).
     fn outbound<'a>(profile: &'a Value, tag: &str) -> &'a Value {
         profile["outbounds"]
             .as_array()
@@ -736,14 +788,10 @@ mod tests {
             let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
             assert!(links.contains(&format!("&fp={want}")), "{links}");
             assert!(
-                render_clash(&p, &routing::Routing::default())
+                render_clash_default(&p)
                     .contains(&format!("    client-fingerprint: {want}\n"))
             );
-            let sb = render_sing_box(
-                &p,
-                &routing::Routing::default(),
-                &rulesets::Hosted::default(),
-            );
+            let sb = render_sing_box_default(&p);
             let ob = outbound(&sb, "n");
             assert_eq!(ob["tls"]["utls"]["fingerprint"], want);
             assert_eq!(ob["tls"]["utls"]["enabled"], true);
@@ -755,9 +803,6 @@ mod tests {
         let inbound = json!({"port": 1, "streamSettings": {"network": "tcp"}});
         let p = [Proxy {
             name: "n".into(),
-            entrance: None,
-            region: None,
-            tags: vec![],
             protocol: "vless",
             id_or_password: "u".into(),
             flow: String::new(),
@@ -768,12 +813,8 @@ mod tests {
         }];
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(!links.contains("fp="));
-        assert!(!render_clash(&p, &routing::Routing::default()).contains("client-fingerprint"));
-        let sb = render_sing_box(
-            &p,
-            &routing::Routing::default(),
-            &rulesets::Hosted::default(),
-        );
+        assert!(!render_clash_default(&p).contains("client-fingerprint"));
+        let sb = render_sing_box_default(&p);
         assert!(outbound(&sb, "n").get("tls").is_none());
     }
 
@@ -1293,9 +1334,6 @@ mod tests {
     fn plain_proxy(protocol: &'static str, server: &str, inbound: &Value) -> Proxy {
         Proxy {
             name: "n".into(),
-            entrance: None,
-            region: None,
-            tags: vec![],
             protocol,
             id_or_password: "6ba7b810-9dad-11d1-80b4-00c04fd430c8".into(),
             flow: String::new(),
@@ -1321,7 +1359,7 @@ mod tests {
                     "shortId": "ab&flow=x"}},
         });
         let p = [plain_proxy("vless", "s.example", &inbound)];
-        let clash = render_clash(&p, &routing::Routing::default());
+        let clash = render_clash_default(&p);
         let doc: Vec<&str> = clash.lines().collect();
         assert!(
             !doc.iter().any(|l| l.trim_start().starts_with("udp:")),
@@ -1365,20 +1403,8 @@ mod tests {
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(links.contains("@203.0.113.7:443?"), "{links}");
         let p = [plain_proxy("vless", "2001:db8::1", &tcp)];
-        let clash = render_clash(&p, &routing::Routing::default());
+        let clash = render_clash_default(&p);
         assert!(clash.contains("    server: \"2001:db8::1\"\n"), "{clash}");
-    }
-
-    #[test]
-    fn yaml_scalars() {
-        assert_eq!(yaml("/ws"), "/ws");
-        assert_eq!(yaml("svc"), "svc");
-        assert_eq!(yaml("123"), "\"123\"");
-        assert_eq!(yaml("true"), "\"true\"");
-        assert_eq!(yaml("a:b"), "\"a:b\"");
-        assert_eq!(yaml("-x"), "\"-x\"");
-        assert_eq!(yaml(""), "\"\"");
-        assert_eq!(yaml("1e5"), "\"1e5\"");
     }
 
     #[test]
@@ -1435,19 +1461,13 @@ mod tests {
             (None, "mihomo", "text/yaml; charset=utf-8"),
         ] {
             assert_eq!(
-                render_for(q, ua, &rows, &routing::Routing::default()).0,
+                render_for(q, ua, &rows).0,
                 ct,
                 "{q:?} {ua}"
             );
         }
         assert_eq!(
-            render_for(
-                Some("format=clash"),
-                "",
-                &rows,
-                &routing::Routing::default()
-            )
-            .1,
+            render_for(Some("format=clash"), "", &rows).1,
             render("clash.meta", &rows).1
         );
     }

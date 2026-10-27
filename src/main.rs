@@ -271,6 +271,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     // warning; never an error.
     akari_panel::billing::methods::import_legacy(&state).await;
     akari_panel::settings::import_legacy(&state).await;
+    akari_panel::sub::templates::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     // D4/D11: the admin prefix (imported from data/state.json once) and
@@ -301,7 +302,6 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
         tokio::spawn(akari_panel::updatecheck::auto_loop(state.clone())),
         tokio::spawn(akari_panel::batch::run_loop(state.clone())),
         tokio::spawn(akari_panel::cleanup::run_loop(state.clone())),
-        tokio::spawn(akari_panel::sub::rulesets::run(state.clone())),
         tokio::spawn(akari_panel::sysstatus::heartbeat_loop(state.clone())),
     ];
 
