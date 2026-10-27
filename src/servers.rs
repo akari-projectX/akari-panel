@@ -119,14 +119,20 @@ pub struct WarnFacts {
     pub traffic_quota_exceeded_at: Option<DateTime<Utc>>,
     #[serde(skip)]
     pub traffic_quota_next_reset_at: Option<DateTime<Utc>>,
+    /// The operator allows users to reach the machine's private, loopback
+    /// and link-local addresses (`ConfigSnapshot.allow_private_destinations`).
+    pub allow_private_destinations: bool,
 }
+
+/// The agent capability that honours `allow_private_destinations`.
+pub const PRIVATE_DESTINATIONS_CAPABILITY: &str = "private-destinations";
 
 /// The `WarnFacts` columns for a server aliased `s` (needs
 /// [`SERVER_EXTRAS_FROM`], which joins `si`).
 pub fn server_warn_cols() -> String {
     "s.tls_domain, s.agent_protocol, s.agent_capabilities, s.cert_not_after, \
      coalesce(si.inbounds, '[]'::jsonb) AS inbounds, \
-     s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at"
+     s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at, s.allow_private_destinations"
         .to_string()
 }
 
@@ -147,8 +153,24 @@ impl WarnFacts {
         ) {
             w.push(q);
         }
+        if let Some(p) = private_destinations_warning(
+            self.allow_private_destinations,
+            self.agent_capabilities.as_deref(),
+        ) {
+            w.push(p);
+        }
         w
     }
+}
+
+/// The setting is on but the connected agent does not know it (an agent
+/// that has not said Hello yet is not judged).
+fn private_destinations_warning(on: bool, capabilities: Option<&[String]>) -> Option<String> {
+    let caps = capabilities?;
+    (on && !caps.iter().any(|c| c == PRIVATE_DESTINATIONS_CAPABILITY)).then(|| {
+        "agent 过旧：不支持“允许用户访问本机内网/回环地址”，设置未生效（升级 agent 后生效）"
+            .to_string()
+    })
 }
 
 /// D5: the quota is used up: what happens and when it ends.
@@ -678,6 +700,11 @@ pub struct UpdateServerReq {
     /// the month's end); null = never resets.
     #[serde(default, deserialize_with = "double_option")]
     pub traffic_quota_reset_day: Option<Option<i16>>,
+    /// Users may reach the machine's private, loopback and link-local
+    /// addresses (cloud metadata, local services) through its nodes.
+    /// Default false. A change bumps config_version (the agent rebuilds
+    /// xray with the new outbound rule).
+    pub allow_private_destinations: Option<bool>,
 }
 
 impl UpdateServerReq {
@@ -688,6 +715,7 @@ impl UpdateServerReq {
             || self.traffic_quota_bytes.is_some()
             || self.traffic_quota_mode.is_some()
             || self.traffic_quota_reset_day.is_some()
+            || self.allow_private_destinations.is_some()
     }
 
     /// D5 field checks (before any lock).
@@ -736,7 +764,7 @@ pub fn clean_name(name: &str) -> Result<String, ApiError> {
 }
 
 /// PATCH /servers/{id} in the caller's transaction: lock the server, update,
-/// bump config_version when the TLS domain changes (D5: the quota trigger bumps it
+/// bump config_version when the TLS domain or the private-destinations switch changes (D5: the quota trigger bumps it
 /// when a quota change stops or restores the server), audit `server.update`.
 /// Returns whether it bumped.
 pub async fn apply_update(
@@ -773,13 +801,25 @@ pub async fn apply_update(
     set.push("updated_at = now()");
     if let Some(v) = &tls_domain {
         set.push("tls_domain = ").push_bind_unseparated(v.clone());
-        // The agent learns the domain from a Snapshot (ConfigSnapshot.acme).
-        set.push(
-            "config_version = config_version + \
-             CASE WHEN tls_domain IS DISTINCT FROM ",
-        )
-        .push_bind_unseparated(v.clone())
-        .push_unseparated(" THEN 1 ELSE 0 END");
+    }
+    if let Some(v) = req.allow_private_destinations {
+        set.push("allow_private_destinations = ")
+            .push_bind_unseparated(v);
+    }
+    // The agent learns both from a Snapshot (ConfigSnapshot.acme,
+    // ConfigSnapshot.allow_private_destinations): one bump when either
+    // actually changes.
+    if tls_domain.is_some() || req.allow_private_destinations.is_some() {
+        set.push("config_version = config_version + CASE WHEN false");
+        if let Some(v) = &tls_domain {
+            set.push_unseparated(" OR tls_domain IS DISTINCT FROM ")
+                .push_bind_unseparated(v.clone());
+        }
+        if let Some(v) = req.allow_private_destinations {
+            set.push_unseparated(" OR allow_private_destinations IS DISTINCT FROM ")
+                .push_bind_unseparated(v);
+        }
+        set.push_unseparated(" THEN 1 ELSE 0 END");
     }
     if let Some(v) = name {
         set.push("name = ").push_bind_unseparated(v);

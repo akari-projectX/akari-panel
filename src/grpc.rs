@@ -1488,6 +1488,7 @@ async fn retire(sess: &Session, why: &'static str) {
             acme: None,
             users: vec![],
             source_filters: vec![],
+            allow_private_destinations: false,
         });
         let sent = match sess.lock().await {
             Some(g) => sess.send(&g, empty).await.unwrap_or(false),
@@ -2034,6 +2035,7 @@ struct ServerRow {
     deleting: bool,
     serves: bool,
     tls_domain: Option<String>,
+    allow_private_destinations: bool,
 }
 
 /// One enabled entrance of a served node (the node's inbound with it).
@@ -2132,7 +2134,7 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
         "SELECT config_version, user_version, \
          failed_config_version, failed_user_version, failed_held_config_version, \
          failed_held_user_version, failed_reason, online_session, \
-         deleting_at IS NOT NULL AS deleting, ({SERVER_SERVES}) AS serves, tls_domain \
+         deleting_at IS NOT NULL AS deleting, ({SERVER_SERVES}) AS serves, tls_domain, allow_private_destinations \
          FROM servers s WHERE id = $1"
     )))
     .bind(server_id)
@@ -2236,6 +2238,7 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
     // W10: an automatic certificate only where an inbound reads the
     // server certificate files (REALITY-only servers never order one).
     // directory_url/email come from the panel config (sync_if_stale).
+    let allow_private_destinations = server.allow_private_destinations;
     let acme = server
         .tls_domain
         .filter(|_| serve && crate::nodetpl::needs_certificate(&inbounds))
@@ -2252,6 +2255,7 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
             users,
             acme,
             source_filters,
+            allow_private_destinations,
         },
         enabled: serve,
         online_session: server.online_session,
@@ -2397,6 +2401,7 @@ async fn sync_if_stale(sess: &Session) -> anyhow::Result<Synced> {
                     users: vec![],
                     acme: None,
                     source_filters: vec![],
+                    allow_private_destinations: false,
                 })
             }
             Plan::Snapshot { empty: false } => {
@@ -3656,6 +3661,27 @@ mod tests {
                 "{bad}"
             );
         }
+        db.drop().await;
+    }
+
+    /// The per-server private-destinations switch reaches the snapshot
+    /// (default off). The state hash has no input for it (it covers the
+    /// inbounds and the users).
+    #[tokio::test]
+    async fn desired_state_carries_the_private_destinations_switch() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _) = db.member().await;
+        let off = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(!off.snapshot.allow_private_destinations);
+        sqlx::query("UPDATE servers SET allow_private_destinations = true WHERE id = $1")
+            .bind(n)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let on = desired_state(&db.pool, n).await.unwrap().unwrap();
+        assert!(on.snapshot.allow_private_destinations);
         db.drop().await;
     }
 
