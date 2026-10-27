@@ -5,7 +5,7 @@
  */
 import type { Me, SubFormat } from '@/api';
 
-export const SUB_FORMATS: SubFormat[] = ['auto', 'clash', 'sing-box', 'links'];
+export const SUB_FORMATS: SubFormat[] = ['auto', 'clash', 'sing-box', 'surge', 'surfboard', 'links'];
 
 /** 面板开着的格式（auto = 按客户端的 User-Agent 在开着的格式里选，总是可选） */
 export function enabledFormats(me: Pick<Me, 'sub_formats'> | undefined): SubFormat[] {
@@ -34,7 +34,7 @@ export type ImportLink = { id: string; name: string; platforms: string; href: st
 /**
  * 一键导入的深链接，按面板给的客户端 id 与顺序（`me.sub_import_clients`，已按开着的格式筛过）。
  * 每个客户端用它自己认得的格式：Clash Verge / mihomo 与 Stash 用 Clash（带分流规则），sing-box 用 sing-box，
- * Shadowrocket 用通用链接；Hiddify 拿原始地址（它的 import 链接不保证保留查询串，面板按 User-Agent 认它）。
+ * Surge 与 Surfboard 各用自己的配置格式（`install-config?url=`），Shadowrocket 用通用链接；Hiddify 拿原始地址（它的 import 链接不保证保留查询串，面板按 User-Agent 认它）。
  * name 是导入后配置的名字（站点名）。
  */
 export function importLinks(url: string, name: string, ids: readonly string[]): ImportLink[] {
@@ -45,6 +45,8 @@ export function importLinks(url: string, name: string, ids: readonly string[]): 
     stash: { id: 'stash', name: 'Stash', platforms: 'iOS · macOS', href: `stash://install-config?url=${enc(clash)}&name=${enc(name)}` },
     shadowrocket: { id: 'shadowrocket', name: 'Shadowrocket', platforms: 'iOS', href: `shadowrocket://add/sub://${base64Url(withFormat(url, 'links'))}?remark=${enc(name)}` },
     'sing-box': { id: 'sing-box', name: 'sing-box', platforms: 'iOS · Android · macOS', href: `sing-box://import-remote-profile?url=${enc(withFormat(url, 'sing-box'))}#${enc(name)}` },
+    surge: { id: 'surge', name: 'Surge', platforms: 'iOS · macOS', href: `surge:///install-config?url=${enc(withFormat(url, 'surge'))}` },
+    surfboard: { id: 'surfboard', name: 'Surfboard', platforms: 'Android', href: `surfboard:///install-config?url=${enc(withFormat(url, 'surfboard'))}` },
     hiddify: { id: 'hiddify', name: 'Hiddify', platforms: 'Android · Windows · macOS', href: `hiddify://import/${url}#${enc(name)}` },
   };
   return ids.flatMap((id) => (all[id] ? [all[id]] : []));

@@ -161,7 +161,7 @@ test('#28 #29 W30: formats and import buttons follow the site switches; an impor
   await dashboard(page);
   const format = page.getByRole('button', { name: '订阅格式' });
   await format.click();
-  for (const f of ['自动识别', 'Clash / mihomo', 'sing-box', '通用链接']) await expect(page.getByRole('menuitem', { name: f })).toBeVisible();
+  for (const f of ['自动识别', 'Clash / mihomo', 'sing-box', 'Surge', 'Surfboard', '通用链接']) await expect(page.getByRole('menuitem', { name: f })).toBeVisible();
   /* 键盘：↓ 移动，Esc 关闭并把焦点还给按钮 */
   await page.keyboard.press('ArrowDown');
   await expect(page.getByRole('menuitem', { name: 'Clash / mihomo' })).toBeFocused();
@@ -182,6 +182,8 @@ test('#28 #29 W30: formats and import buttons follow the site switches; an impor
     await ready(page, '仪表盘');
     await page.getByRole('button', { name: '订阅格式' }).click();
     await expect(page.getByRole('menuitem', { name: 'sing-box' })).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: 'Surge' })).toHaveCount(0);
+    await expect(page.getByRole('menuitem', { name: 'Surfboard' })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: '通用链接' })).toBeVisible();
     await page.keyboard.press('Escape');
     /* sing-box 格式关了：它的导入按钮也不给（面板按开着的格式筛） */
@@ -191,6 +193,16 @@ test('#28 #29 W30: formats and import buttons follow the site switches; an impor
     /* 一键导入 = 客户端自己的深链接（这里只看跳转的地址，浏览器里没有装客户端） */
     await page.getByRole('button', { name: /^Stash/ }).click();
     await expect(page.getByText('正在唤起 Stash').first()).toBeVisible();
+    /* Surge 与 Surfboard：各有自己的格式开关与导入按钮（没开格式就没有按钮） */
+    await expect(page.getByRole('button', { name: /^Surge/ })).toHaveCount(0);
+    const now = await a.call<{ version: number }>('GET', '/api/v1/settings');
+    await a.call('PUT', '/api/v1/settings/subscription', { version: now.version, formats: ['surge', 'surfboard'], import_clients: ['surge', 'surfboard', 'stash'] });
+    await page.reload();
+    await ready(page, '仪表盘');
+    await expect(page.getByRole('button', { name: /^Stash/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Surge/ })).toBeVisible();
+    await page.getByRole('button', { name: /^Surfboard/ }).click();
+    await expect(page.getByText('正在唤起 Surfboard').first()).toBeVisible();
   } finally {
     const now = await a.call<{ version: number }>('GET', '/api/v1/settings');
     await a.call('PUT', '/api/v1/settings/subscription', { version: now.version, formats: null, import_clients: null });
