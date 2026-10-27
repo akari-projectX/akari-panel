@@ -53,9 +53,6 @@ const S = {
   },
   node_ops: {
     install_tls_pin: null,
-    install_fallback_url: null,
-    install_fallback_effective: null,
-    install_fallback_default: "https://gh/{arch}",
     acme_directory_url: null,
     acme_email: null,
     remove_mode: { value: null, effective: "gate" },

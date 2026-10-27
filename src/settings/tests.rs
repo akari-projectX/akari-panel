@@ -172,10 +172,6 @@ fn database_only_no_file_fallback() {
     assert_eq!(e.traffic_daily_retention_days, 400);
     assert_eq!(e.remove_mode, RemoveMode::Gate);
     assert_eq!(e.acme_directory_url, "");
-    assert_eq!(
-        e.install_fallback_url.as_deref(),
-        Some(crate::config::DEFAULT_FALLBACK_BINARY_URL)
-    );
     assert!(e.install_tls_pin.is_none());
     assert_eq!(
         e.release_keys
@@ -198,7 +194,6 @@ fn database_only_no_file_fallback() {
     s.audit_retention_days = Some(0);
     s.traffic_daily_retention_days = Some(40);
     s.remove_mode = Some("rebuild".into());
-    s.install_fallback_url = Some(String::new());
     s.acme_directory_url = Some("https://ca.example/dir".into());
     let e = compute(&c, s, vec![]);
     assert_eq!(
@@ -224,7 +219,6 @@ fn database_only_no_file_fallback() {
         (0, 40)
     );
     assert_eq!(e.remove_mode, RemoveMode::Rebuild);
-    assert_eq!(e.install_fallback_url, None, "\"\" = no fallback");
     assert_eq!(e.acme_directory_url, "https://ca.example/dir");
 
     let e = compute(&c, stored(None, Some("s.example.com"), None), vec![]);
@@ -1442,10 +1436,6 @@ async fn node_ops_and_security_api() {
             "settings.tls_pin_invalid",
         ),
         (
-            json!({"version": version, "install_fallback_url": "http://x/{arch}"}),
-            "settings.fallback_url_invalid",
-        ),
-        (
             json!({"version": version, "acme_directory_url": "http://ca/dir"}),
             "settings.acme_url_invalid",
         ),
@@ -1469,9 +1459,20 @@ async fn node_ops_and_security_api() {
         .status,
         StatusCode::BAD_REQUEST
     );
+    // The agent download fallback is gone: the field is an unknown one.
+    assert_eq!(
+        put(
+            "nodes",
+            json!({"version": version, "install_fallback_url": "https://x.example/{arch}"}),
+        )
+        .await
+        .status,
+        StatusCode::BAD_REQUEST,
+        "install_fallback_url is no longer accepted"
+    );
     let r = put(
         "nodes",
-        json!({"version": version, "install_fallback_disabled": true,
+        json!({"version": version,
                "acme_directory_url": " https://ca.example/dir ", "acme_email": "ops@example.com",
                "remove_mode": "rebuild"}),
     )
@@ -1483,8 +1484,6 @@ async fn node_ops_and_security_api() {
         String::from_utf8_lossy(&r.body)
     );
     let v = r.json();
-    assert_eq!(v["node_ops"]["install_fallback_url"], "");
-    assert_eq!(v["node_ops"]["install_fallback_effective"], Value::Null);
     assert_eq!(
         v["node_ops"]["acme_directory_url"],
         "https://ca.example/dir"
@@ -1987,14 +1986,13 @@ async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
     };
     // Another node setting: no bump.
     save(NodeOpsValues {
-        install_fallback_url: Some(String::new()),
+        install_tls_pin: Some("sha256//pin".into()),
         ..NodeOpsValues::default()
     })
     .await;
     assert_eq!(db.versions(with_domain).await, domain_before);
     // The ACME e-mail.
     save(NodeOpsValues {
-        install_fallback_url: Some(String::new()),
         acme_email: Some("ops@example.com".into()),
         ..NodeOpsValues::default()
     })
@@ -2007,7 +2005,6 @@ async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
     assert_eq!(db.versions(without).await, plain_before);
     // The directory.
     save(NodeOpsValues {
-        install_fallback_url: Some(String::new()),
         acme_email: Some("ops@example.com".into()),
         acme_directory_url: Some("https://acme-staging-v02.api.letsencrypt.org/directory".into()),
         ..NodeOpsValues::default()

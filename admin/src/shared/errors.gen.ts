@@ -417,7 +417,6 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "settings.domain_invalid": ["{field}：{e}", "{field}：{e}"],
   "settings.domain_removal_unconfirmed": ["删除域名 {domains} 前需要先确认影响", "Removing {domains} affects places that use it: review the impact and confirm"],
   "settings.domains_too_many": ["{kind}最多 {max} 个", "{kind}: at most {max}"],
-  "settings.fallback_url_invalid": ["备用下载地址：必须是含 {arch} 的 https:// 地址，不能有引号、空格或 shell 特殊字符", "Fallback download URL: an https:// URL containing {arch}, without quotes, spaces or shell characters"],
   "settings.host_gate": ["保存后面板只接受主域名/订阅域名（以及 IP 地址）的访问，当前访问地址 {host} 将被拒绝。请确认主域名已解析并能打开，再勾选确认后保存。", "After saving, the console answers on the main domain (and IP addresses) only; the current address {host} will be refused. Make sure the main domain resolves and opens, then confirm."],
   "settings.node_domain_cloudflare": ["{detail}", "{detail}"],
   "settings.node_domain_unset": ["节点通信域名未设置：请先在「系统设置 → 节点通信」填写节点连接面板所用的域名或 IP", "The node communication domain is not set: set the domain or IP the agents use to reach the panel first (Settings → Domains)"],

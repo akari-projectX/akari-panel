@@ -42,22 +42,11 @@ fn origins() {
 }
 
 #[test]
-fn pins_and_fallback_urls() {
+fn pins() {
     let pin = format!("sha256//{}", STANDARD.encode([7u8; 32]));
     assert!(valid_pin(&pin));
     assert!(!valid_pin("sha256//abc"));
     assert!(!valid_pin(&STANDARD.encode([7u8; 32])));
-    assert!(fallback_url_ok(crate::config::DEFAULT_FALLBACK_BINARY_URL));
-    for bad in [
-        "http://x.com/a-{arch}",
-        "https://x.com/a",
-        "https://x.com/a-{arch}'",
-        "https://x.com/$(id)-{arch}",
-        "https://x.com/a b-{arch}",
-        "https://x.com/\"-{arch}",
-    ] {
-        assert!(!fallback_url_ok(bad), "{bad}");
-    }
 }
 
 #[test]
