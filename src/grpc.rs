@@ -3098,7 +3098,7 @@ mod tests {
         assert!(drops_credential_digest(&dg, &SetDigest::of(3, &want_state)));
         assert!(!drops_credential_digest(&dg, &dg));
         let only_add = st(&{
-            let mut b = base.clone();
+            let mut b = base;
             b.extend(user_set(&[op(&u(9), &[("t1", "{}")])]));
             b
         });
@@ -3168,7 +3168,7 @@ mod tests {
         assert_eq!(by["d"].op, UserOpKind::Add as i32);
         assert!(diff_user_sets(&st(&want), &st(&want)).is_empty(), "no-op");
         // Applying the ops (REPLACE semantics) to base yields want.
-        let mut applied = base.clone();
+        let mut applied = base;
         for o in &ops {
             applied.remove(&o.user_id);
             applied.extend(user_set(std::slice::from_ref(o)));
@@ -3187,7 +3187,7 @@ mod tests {
         let b = op("b", &[("t1", "{\"id\":\"b\"}")]);
         let base = NodeState::of_snapshot("[]".into(), &[a.clone(), b.clone()]);
         a.speed_limit_bytes_per_sec = 12_500_000;
-        let want = NodeState::of_snapshot("[]".into(), &[a.clone(), b.clone()]);
+        let want = NodeState::of_snapshot("[]".into(), &[a.clone(), b]);
         assert_eq!(want.limits.get("a"), Some(&12_500_000));
         assert!(!want.limits.contains_key("b"), "0 = unlimited, not stored");
         assert_eq!(state_hash(7, &base), state_hash(7, &want));
@@ -3204,7 +3204,7 @@ mod tests {
         assert_eq!(back[0].speed_limit_bytes_per_sec, 0);
         // Collapsing: a later REMOVE or ADD without inbounds drops it.
         let gone = user_limits(&[
-            a.clone(),
+            a,
             UserOp {
                 op: UserOpKind::Remove as i32,
                 user_id: "a".into(),

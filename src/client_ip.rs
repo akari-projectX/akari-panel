@@ -473,7 +473,7 @@ mod tests {
         let caddy = cidrs(&["172.28.0.0/24"]);
         let on = Trust {
             proxies: caddy.clone(),
-            cloudflare: cf.clone(),
+            cloudflare: cf,
         };
         let off = Trust {
             proxies: caddy,

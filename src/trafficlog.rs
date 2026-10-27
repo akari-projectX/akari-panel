@@ -561,8 +561,8 @@ pub async fn my_entrances(
     .await
 }
 
-fn parse(raw: Option<String>, params: Params, clock: &Clock) -> Result<Range, ApiError> {
-    parse_query(raw.as_deref(), clock.today, params).map_err(|e| {
+fn parse(raw: Option<&str>, params: Params, clock: &Clock) -> Result<Range, ApiError> {
+    parse_query(raw, clock.today, params).map_err(|e| {
         crate::auth::bad_request!("request.traffic_query_invalid", "{detail}", detail = e)
     })
 }
@@ -596,7 +596,7 @@ pub async fn user_traffic(
     user.require_admin()?;
     let pg = state.pg();
     let clock = site_clock(pg).await?;
-    let r = parse(q, Params::User, &clock)?;
+    let r = parse(q.as_deref(), Params::User, &clock)?;
     exists(pg, "SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)", id).await?;
     let (rows, sum) = match r.group {
         Group::Day | Group::Month => {
@@ -641,7 +641,7 @@ pub async fn node_traffic(
     user.require_admin()?;
     let pg = state.pg();
     let clock = site_clock(pg).await?;
-    let r = parse(q, Params::Top, &clock)?;
+    let r = parse(q.as_deref(), Params::Top, &clock)?;
     exists(pg, "SELECT EXISTS (SELECT 1 FROM nodes WHERE id = $1)", id).await?;
     let days = node_days(pg, id, r.from, r.to).await?;
     let top = node_top_users(pg, id, r.from, r.to, r.limit).await?;
@@ -667,7 +667,7 @@ pub async fn entrance_traffic(
     user.require_admin()?;
     let pg = state.pg();
     let clock = site_clock(pg).await?;
-    let r = parse(q, Params::Me, &clock)?;
+    let r = parse(q.as_deref(), Params::Me, &clock)?;
     exists(
         pg,
         "SELECT EXISTS (SELECT 1 FROM entrances WHERE id = $1)",
@@ -697,7 +697,7 @@ pub async fn summary(
     user.require_admin()?;
     let pg = state.pg();
     let clock = site_clock(pg).await?;
-    let r = parse(q, Params::Top, &clock)?;
+    let r = parse(q.as_deref(), Params::Top, &clock)?;
     let days = fleet_days(pg, r.from, r.to).await?;
     let top = fleet_top_nodes(pg, r.from, r.to, r.limit).await?;
     Ok(Json(json!({
@@ -719,7 +719,7 @@ pub async fn my_traffic(
 ) -> Result<Json<Value>, ApiError> {
     let pg = state.pg();
     let clock = site_clock(pg).await?;
-    let r = parse(q, Params::Me, &clock)?;
+    let r = parse(q.as_deref(), Params::Me, &clock)?;
     let days = user_days(pg, user.id, r.from, r.to).await?;
     let entrances = my_entrances(pg, user.id, r.from, r.to).await?;
     Ok(Json(json!({
