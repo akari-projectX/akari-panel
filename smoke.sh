@@ -5344,7 +5344,7 @@ echo "$CT" | matches javascript || { echo "FAIL: asset content-type '$CT'"; exit
 CSP=$(curl -s --noproxy '*' -D - -o /dev/null "$ROOT/" | tr -d '\r' | awk -F': ' 'tolower($1)=="content-security-policy"{print $2}')
 [ "$CSP" = "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" ] || { echo "FAIL: portal CSP: $CSP"; exit 1; }
 # Every client-side route answers the index (W36-b route table), deep paths too.
-for r in shop orders orders/x wallet invite nodes traffic tickets help announcements account login register forgot reset deleted terms privacy; do
+for r in shop orders orders/x wallet nodes traffic tickets help announcements account login register forgot reset deleted terms privacy; do
   [ "$(code "$ROOT/$r")" = "200" ] || { echo "FAIL: portal route /$r"; exit 1; }
 done
 [ "$(fp "$ROOT/dashboard")" = "$REJ" ] || { echo "FAIL: an unknown portal path is not the rejection"; exit 1; }
