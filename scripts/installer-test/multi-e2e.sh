@@ -357,6 +357,7 @@ status_ok "$ca" && status_ok "$cb" || fail "an instance is unhealthy after the i
 echo "ok: A upgraded alone, B followed while A runs"
 
 log "the primary cannot be uninstalled while B uses its database"
+sleep 20 # B's first heartbeat after the restart
 if ina akari-ctl uninstall --yes >"$work/refused.log" 2>&1; then fail "A uninstalled while B is online"; fi
 status_ok "$ca" || fail "A is unhealthy after the refused uninstall"
 echo "ok: refused"
