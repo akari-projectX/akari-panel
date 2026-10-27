@@ -75,6 +75,8 @@ use crate::state::AppState;
 
 const SCRIPT: &str = include_str!("nodeinstall.sh");
 const UNINSTALL_FN: &str = include_str!("nodeinstall-uninstall.sh");
+/// Language, palette, steps and prompts shared with the uninstaller it writes.
+const UI: &str = include_str!("nodeinstall-ui.sh");
 const UNIT: &str = include_str!("../deploy/systemd/akari-agent.service");
 /// W18: the agent's privileged updater (its state directory is noexec).
 const UNIT_UPDATE_SERVICE: &str = include_str!("../deploy/systemd/akari-agent-update.service");
@@ -859,7 +861,10 @@ fn render_script(
         .filter(|_| needs_cert)
         .unwrap_or("");
     let vars: [(&str, String); 17] = [
-        ("@@UNINSTALL_FN@@", UNINSTALL_FN.trim_end().to_string()),
+        (
+            "@@UNINSTALL_FN@@",
+            format!("{}\n\n{}", UI.trim_end(), UNINSTALL_FN.trim_end()),
+        ),
         ("@@NODE_NAME@@", tame(&link.name)),
         ("@@EXPIRES@@", link.expires_at.to_rfc3339()),
         ("@@ORIGIN@@", sq(&link.origin)?.to_string()),

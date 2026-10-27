@@ -16,8 +16,6 @@ UNINSTALLER=/usr/local/sbin/akari-agent-uninstall
 BBR_CONF=/etc/sysctl.d/90-akari-bbr.conf
 BBR_MOD=/etc/modules-load.d/akari-bbr.conf
 
-say() { printf 'akari-install: %s\n' "$*" >&2; }
-
 # bbr_remove: drop what the installer added for BBR + fq and put the
 # previous settings back while ours are still in effect (nothing else
 # changed them since).
@@ -41,10 +39,11 @@ bbr_remove() {
 			printf '%s' "$v" >"$f" 2>/dev/null || true
 		fi
 	done
-	say "BBR + fq: removed $BBR_CONF (previous settings put back: ${prev:-none recorded})"
+	note bbr_removed "$BBR_CONF" "${prev:--}"
 }
 
 uninstall() {
+	step uninstalling_agent
 	if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
 		systemctl disable --now akari-agent-update.path >/dev/null 2>&1 || true
 		systemctl stop akari-agent-update.service >/dev/null 2>&1 || true
@@ -80,5 +79,6 @@ uninstall() {
 		systemctl daemon-reload || true
 	fi
 	bbr_remove
-	say "akari-agent removed (binary, services, /etc/akari-agent, state). Delete the node in the panel as well."
+	step_end
+	ok agent_removed
 }
