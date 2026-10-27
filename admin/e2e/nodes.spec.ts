@@ -375,8 +375,8 @@ test("NOD-22 NOD-23: multiplier input safety, stale forms refused, the entrance'
     `INSERT INTO traffic_entrance_daily (entrance_id, node_id, day, up_bytes, down_bytes, billed_bytes, users) ` +
       `VALUES ('${e.id}', '${nodeId}', akari_site_day(now()), 1048576, 2097152, 3145728, 1)`,
   );
-  // Old deep links still open the entrance (on its server page now).
-  const url = `/nodes?open=entrance:${e.id}`;
+  // The entrance opens on its server page.
+  const url = `/nodes/${serverId}?entrance=${e.id}`;
   await openConsole(page, url);
   await expect(page).toHaveURL(new RegExp(`/nodes/${serverId}\\?.*entrance=${e.id}`));
   let d = dialog(page, e.name);
