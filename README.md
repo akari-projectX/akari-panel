@@ -35,7 +35,7 @@ A self-hosted control plane for proxy services: one Rust binary for the panel, o
 - **用户门户**（`/`）：注册 / 登录（邮箱 + 密码，或通行密钥）、套餐与用量、订阅链接、节点线路、商店与订单、钱包与邀请返利、工单、公告与帮助中心、账号注销。Svelte 5，中英双语。
 - **管理后台**（独立应用，位于机密前缀之下）：用户、套餐与节点组、服务器 / 节点 / 入口、订单与退款、优惠券、提现、工单、告警、审计日志、系统设置、批量操作与 CSV 导出。
 - **节点与入口**：一台服务器 = 一个 agent 身份，其上可有多个节点（xray 入站）；每个节点有「直连」入口，可再加**中转入口**（独立凭据、来源 IP 白名单、健康检查、分时段倍率）。
-- **套餐与计费**：按周期定价、库存、换套餐折算、周期重置、限速；订单、优惠券、余额、邀请返利、提现（USDT）、退款（含原路退款）；支付渠道为可插拔结构，目前接入支付宝当面付。
+- **套餐与计费**：按周期定价、库存、换套餐折算、周期重置、限速；订单、优惠券、余额、邀请返利、提现（USDT）、退款（含原路退款）；支付渠道为可插拔结构，目前接入支付宝当面付、易支付、CoinPayments、Coinbase（具体以 `docs/PAYMENTS.md` 为准）。
 - **订阅**：按真实客户端 UA 输出 Clash / sing-box / Surge / Surfboard / 通用链接，每种客户端的订阅模板可编辑，各格式可由后台开关。
 - **协议**：VLESS（REALITY / TLS / WS / gRPC / XHTTP）、VMess、Trojan、Shadowsocks 2022（多用户）、Hysteria 2；协议能力清单是单一数据源（`proto/protocols.toml`）。
 - **审计规则**：按节点开关的域名 / IP / 协议拦截（不记录用户或目标，只记每规则次数）。
@@ -201,7 +201,7 @@ akari-panel/
 
 权威计划在工作区的 `PLAN-next.md`（三仓库：`akari-panel` / `akari-agent` / `akari-client`）。
 
-**已完成（v0.4.x）**：身份与登录（邮箱登录、通行密钥及跨域名 ROR、通行密钥注册 + 绑定邮箱）、域名与前门（多域名、后台前缀与白名单、订阅路径）、服务器 / 节点 / 入口拆分与中转、分时段倍率、服务器流量额度、审计规则、订阅格式与分流模板、系统状态与发信、Alpine（OpenRC）节点、新后台与新门户、订单 / 退款 / 返利 / USDT 提现。
+**已完成（至 v2.1.0）**：身份与登录（邮箱登录、通行密钥及跨域名 ROR、通行密钥注册 + 绑定邮箱）、域名与前门（多域名、后台前缀与白名单、订阅路径）、服务器 / 节点 / 入口拆分与中转、分时段倍率、服务器流量额度、审计规则、订阅格式与可编辑订阅模板、系统状态与发信、DNS 管理（Cloudflare）、Alpine（OpenRC）节点、Svelte 5 门户与新后台、订单 / 退款 / 返利 / USDT 提现、多实例安装、四种支付渠道。
 
 **下一版本**：
 
@@ -229,4 +229,4 @@ akari-panel/
 | [`CLAUDE.md`](CLAUDE.md) · [`src/CLAUDE.md`](src/CLAUDE.md) | 开发者须知：硬性不变量、模块地图 |
 
 面板采用 MIT 许可（[`LICENSE`](LICENSE)）。`akari` 二进制静态链接的依赖在 CI 中由 `cargo deny` 检查（只允许宽松许可证），许可证清单作为 `THIRD_PARTY_LICENSES.txt` 随每个发布版本发布。
-节点 agent 是独立程序，自有源码为 MIT，但其发布的二进制是 GPL-3.0-or-later 的组合作品（xray-core 链接了 GPL 模块），见 akari-agent 的 README「Licence」。面板只负责中继 agent 二进制，不会链接它们。
+节点 agent 是独立程序，自有源码为 MIT，二进制链接 xray-core（MPL-2.0）等模块，许可清单见 akari-agent 的 README「Licence」。面板只负责中继 agent 二进制，不会链接它们。

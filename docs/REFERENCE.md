@@ -111,7 +111,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - `subscription-userinfo` 等配额头仅在成功时发送；错误令牌与其他所有拒绝一样得到同样的空 404。
   - 响应体按 8 KiB 分桶填充，大小不会泄露节点数量。
   - 按客户端地址和按用户限速（内置限额）；超限同样返回空 404。
-- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；类型：支付宝当面付、易支付（C1，MD5 接口，一个方式 = 一个商户的一个渠道），同类型允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
+- 支付（W24/R40）：可插拔的支付方式，在 系统设置 → 支付 中配置（仅存数据库；类型：支付宝当面付、易支付（C1，MD5 接口，一个方式 = 一个商户的一个渠道）、CoinPayments、Coinbase，同类型允许配置多个，密钥加密保存，支持 测试连接），见 docs/PAYMENTS.md。
   自助注册可选择是否做邮箱验证（系统设置 → 注册）。
 
 ## Layout
@@ -383,7 +383,7 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 
 ## Design notes
 
-- **身份（Identity）**：agent 的 TLS 客户端证书序列号就是节点的身份；协议本身不携带凭据。v1 中 agent 密钥由面板签发（CSR 注册是计划中的升级）。
+- **身份（Identity）**：agent 的 TLS 客户端证书序列号就是节点的身份；协议本身不携带凭据。agent 私钥只在节点生成、永不离开节点：节点用一次性 enrollment token 提交 CSR，面板 CA 签发 90 天证书并在到期前自动续期。
 - **收敛（Convergence）**：面板是事实来源。每个节点状态都有单调递增的 `config_version`/`user_version`。在 Hello、Ack 或变更通知上发现版本不一致时：
   - 如果面板知道（本会话内）agent 当前运行的确切用户集，且只有用户变了，就用 `UserDelta` 修复；否则发送完整快照。因此 agent 能从任意状态收敛（包括面板回滚）。
   - delta 携带 base 和 target 版本：agent 只在其 base 之上应用；对 target 的重发按空操作应答；其他一概以 `BASE_MISMATCH` 拒绝（面板随即立刻发送快照）。
@@ -492,14 +492,11 @@ CLI 须以面板的服务用户身份运行，并指向面板所用的同一个 
 ## Licence
 
 面板采用 MIT 许可（`LICENSE`）。`akari` 二进制静态链接 Rust crate，并内嵌由 npm 包构建的 Web 控制台；它们的许可证在 CI 中由 `cargo deny check`（`deny.toml`：只允许宽松许可证——没有 copyleft 会进入面板二进制）检查，并连同许可证文本列在 `THIRD_PARTY_LICENSES.txt` 中，每个发布版本都把它作为附件发布（`make third-party` 把它写到 `target/`；`scripts/third-party.py`）。
-节点 agent 是独立的程序，有自己的许可：源码为 MIT，但其发布的二进制是 GPL-3.0-or-later 的组合作品（xray-core 链接了 GPL 模块）——见 akari-agent 的 README（"Licence"）。面板只负责中继 agent 二进制以供自更新和一行安装，不会链接它们。
+节点 agent 是独立的程序，有自己的许可：源码为 MIT，二进制链接 xray-core（MPL-2.0）等模块——见 akari-agent 的 README（"Licence"）。面板只负责中继 agent 二进制以供自更新和一行安装，不会链接它们。
 
 ## Roadmap
 
-权威计划见工作区 `akari-workspace/PLAN-next.md`（三仓库终态：`akari-panel` / `akari-agent` / `akari-client`）。战略决策：
+权威计划见工作区 `akari-workspace/PLAN-next.md`（三仓库：`akari-panel` / `akari-agent` / `akari-client`）。战略决策：
 
 - **第三方订阅由后台开关控制。** 各订阅格式与一键导入按客户端分别开关（默认开启）；自研客户端 akari-client 发布后，运营者可自行选择关闭第三方格式，不强制只保留自有客户端（2026-10-06 战略决策 2 修订）。
 - **设备限制采用席位绑定**（客户端登记其设备），而非基于 IP——随 akari-client 实现，现在刻意不做。
-
-已完成：控制平面、认证/REST API、内嵌 SPA、订阅（REALITY/TLS/WS 映射、填充、哈希令牌——WS+gRPC 传输映射尚不完整）。
-下一步：拆仓 → akari-client MVP（内嵌 mihomo）→ 席位绑定（+ 订阅淘汰）→ agent CSR/自动更新 → 支付。
