@@ -59,9 +59,7 @@ function sections(page: Page): Locator {
   return page.getByRole("navigation", { name: "设置分类" });
 }
 
-test("SET-25: overview, search by old names, unsaved changes guard, ⌘S", async ({
-  page,
-}, info: TestInfo) => {
+test("SET-25: overview, search by old names, unsaved changes guard, ⌘S", async ({ page }, info: TestInfo) => {
   await openConsole(page, "/settings");
   // Search finds a section by its old name.
   await page.getByLabel("搜索设置").fill("审计规则");
