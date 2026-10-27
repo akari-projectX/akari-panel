@@ -1243,6 +1243,8 @@ struct Synced {
     after: Value,
     /// enabled or expires_at changed: what their nodes serve changed.
     serve_changed: bool,
+    /// The user's used traffic before the rewrite (what a reset cleared).
+    used_before: i64,
 }
 
 /// Rewrite users' enforced `traffic_limit_bytes` / `expires_at` from their
@@ -1256,7 +1258,7 @@ async fn sync_users_from_plan(
     users: &[Uuid],
     reset_traffic: bool,
 ) -> sqlx::Result<Vec<Synced>> {
-    let rows: Vec<(Uuid, Value, Value, bool)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    let rows: Vec<(Uuid, Value, Value, bool, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE users u SET traffic_limit_bytes = up.quota_bytes, \
          expires_at = up.expires_at, \
          expiry_enforced = CASE WHEN u.expires_at IS DISTINCT FROM up.expires_at \
@@ -1267,7 +1269,8 @@ async fn sync_users_from_plan(
          FROM user_plans up \
          WHERE u.id = ANY($1) AND up.user_id = u.id AND up.status = 'active' \
          RETURNING u.id, {}, {}, \
-         (old.enabled <> new.enabled OR old.expires_at IS DISTINCT FROM new.expires_at)",
+         (old.enabled <> new.enabled OR old.expires_at IS DISTINCT FROM new.expires_at), \
+         old.traffic_used_bytes",
         crate::audit::user_snapshot_sql("old"),
         crate::audit::user_snapshot_sql("new"),
     )))
@@ -1277,11 +1280,12 @@ async fn sync_users_from_plan(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(user, before, after, serve_changed)| Synced {
+        .map(|(user, before, after, serve_changed, used_before)| Synced {
             user,
             before,
             after,
             serve_changed,
+            used_before,
         })
         .collect())
 }
@@ -1458,6 +1462,9 @@ pub struct ResetTrafficReq {
 pub struct UserPlanChange {
     pub outcome: Outcome,
     pub served_bumped: Vec<Uuid>,
+    /// Used traffic a renewal's fresh quota cleared (P3-1: a refund of that
+    /// renewal adds it back).
+    pub cleared_used_bytes: i64,
 }
 
 impl UserPlanChange {
@@ -1652,7 +1659,7 @@ pub async fn apply_renew_user_plan(
         "UPDATE user_plans SET \
          expires_at = CASE WHEN $2::text IS NULL \
              THEN GREATEST(expires_at, now()) + make_interval(secs => $4::bigint * 86400) \
-             ELSE akari_period_end(GREATEST(expires_at, now()), $2, $3) END, \
+             ELSE akari_period_end(GREATEST(expires_at, now()), $2, $3, period_anchor) END, \
          term_kind = COALESCE($2, term_kind), \
          term_days = CASE WHEN $2::text IS NULL THEN term_days ELSE $3 END \
          WHERE id = $1 RETURNING expires_at",
@@ -1703,6 +1710,10 @@ pub async fn apply_renew_user_plan(
     if let Some(s) = synced.into_iter().next() {
         if s.serve_changed {
             res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;
+        }
+        if fresh_quota {
+            res.cleared_used_bytes = s.used_before;
+            after["cleared_used_bytes"] = json!(s.used_before);
         }
         after["user"] = s.after;
     }
@@ -1768,10 +1779,13 @@ pub async fn apply_cancel_user_plan(
 pub enum Revoke {
     /// End the subscription (status `cancelled`; access revoked).
     End { user_plan_id: Uuid },
-    /// Take a renewal's term back: the expiry becomes `to` (> now).
+    /// Take a renewal's term back: the expiry becomes `to` (> now), and the
+    /// used traffic the renewal's fresh quota cleared (`restore_used_bytes`,
+    /// P3-1) is added back, capped at the plan's quota.
     Rollback {
         user_plan_id: Uuid,
         to: DateTime<Utc>,
+        restore_used_bytes: i64,
     },
     /// Undo a plan switch: end the subscription the order created and
     /// reactivate the one it replaced, with that one's expiry; the traffic
@@ -1818,7 +1832,11 @@ pub async fn apply_refund_revoke(
                 None,
             )
         }
-        Revoke::Rollback { user_plan_id, to } => {
+        Revoke::Rollback {
+            user_plan_id,
+            to,
+            restore_used_bytes: _,
+        } => {
             let r: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
                 "UPDATE user_plans SET expires_at = $3 \
                  WHERE id = $1 AND user_id = $2 AND status = 'active' \
@@ -1889,6 +1907,34 @@ pub async fn apply_refund_revoke(
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
+    if let Revoke::Rollback {
+        user_plan_id,
+        restore_used_bytes,
+        ..
+    } = revoke
+        && restore_used_bytes > 0
+    {
+        // P3-1: the renewal started a fresh quota; taking the term back must
+        // not leave that free allowance behind. Added back to what was used
+        // since, capped at the subscription's quota snapshot (none =
+        // unlimited). After the reconcile: nodes before user rows.
+        let counted: Option<(i64, i64)> = sqlx::query_as(
+            "UPDATE users u SET traffic_used_bytes = LEAST( \
+                 u.traffic_used_bytes::numeric + $2, \
+                 COALESCE((SELECT quota_bytes FROM user_plans WHERE id = $3)::numeric, \
+                          9223372036854775807))::bigint \
+             WHERE u.id = $1 AND u.traffic_used_bytes < COALESCE( \
+                 (SELECT quota_bytes FROM user_plans WHERE id = $3), 9223372036854775807) \
+             RETURNING old.traffic_used_bytes, new.traffic_used_bytes",
+        )
+        .bind(user_id)
+        .bind(restore_used_bytes)
+        .bind(user_plan_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let (was, now) = counted.unwrap_or_default();
+        after["traffic_restored_bytes"] = json!(now - was);
+    }
     if let Some(carried) = prior {
         // The restored plan counts what was used before the switch plus
         // what was used since (never more than i64::MAX).

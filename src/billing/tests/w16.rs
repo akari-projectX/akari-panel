@@ -2560,3 +2560,154 @@ fn usdt_amounts() {
     assert!(commission::txid_ok(&"f".repeat(64)));
     assert!(!commission::txid_ok("1234567"));
 }
+
+/// P3-9: a partial refund claws back the commission in proportion
+/// (`floor(commission x refunded / paid)`) — from the balance when it was
+/// credited, from the later credit when it is still pending — and gives the
+/// coupon use back only on a full refund.
+#[tokio::test]
+async fn partial_refund_is_proportional() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = catalog_plan(&db, "p39", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let admin = admin_client(&state, &db).await;
+    set_commission(&db, true, 10, false, 7).await;
+    let inviter = db.user().await;
+    let invitee = db.user().await;
+    invite(&db, inviter, invitee).await;
+    let ec = user_client(&state, invitee).await;
+    let refund = |o: Uuid, body: Value| {
+        let admin = &admin;
+        async move {
+            admin
+                .post(&format!("/test/api/v1/orders/{o}/refund"), body)
+                .await
+        }
+    };
+    let mut c = db.pool.acquire().await.unwrap();
+
+    // Pending commission (100): refund 400 of 1000 -> 40 comes off.
+    let o1 = order_id(&buy_with(&ec, plan, "month", json!({})).await);
+    pay(&db, o1).await;
+    let pv = admin
+        .get(&format!(
+            "/test/api/v1/orders/{o1}/refund-preview?gateway_cents=400"
+        ))
+        .await
+        .json();
+    assert_eq!(pv["commission"]["action"], "reduce", "{pv}");
+    assert_eq!(pv["commission"]["undo_cents"], 40);
+    let r = refund(o1, json!({"reason": "r", "external_cents": 400})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["commission"], "reduced");
+    assert_eq!(r.json()["commission_clawback"]["amount_cents"], 40);
+    sqlx::query("UPDATE commissions SET available_at = now() - interval '1 second'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(balance(&db, inviter).await, 60, "only the rest is credited");
+    let (st, claw, rec): (String, Option<i64>, i64) = sqlx::query_as(
+        "SELECT status, clawback_cents, clawback_recovered_cents FROM commissions WHERE order_id = $1",
+    )
+    .bind(o1)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!((st.as_str(), claw, rec), ("credited", Some(40), 40));
+    assert_eq!(ledger::withdrawable(&mut c, inviter).await.unwrap(), 60);
+
+    // Credited commission (100): refund 250 of 1000 -> 25 is taken back.
+    let o2 = order_id(&buy_with(&ec, plan, "month", json!({})).await);
+    pay(&db, o2).await;
+    sqlx::query("UPDATE commissions SET available_at = now() - interval '1 second'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(balance(&db, inviter).await, 160);
+    let r = refund(o2, json!({"reason": "r", "external_cents": 250})).await;
+    assert_eq!(r.json()["commission"], "clawed_back");
+    assert_eq!(
+        r.json()["commission_clawback"],
+        json!({"amount_cents": 25, "recovered_cents": 25, "outstanding_cents": 0})
+    );
+    assert_eq!(balance(&db, inviter).await, 135);
+    assert_ledger_consistent(&db).await;
+
+    // A share worth less than one cent leaves the commission alone.
+    let o3 = order_id(&buy_with(&ec, plan, "month", json!({})).await);
+    pay(&db, o3).await;
+    let r = refund(o3, json!({"reason": "r", "external_cents": 9})).await;
+    assert_eq!(r.json()["commission"], "pending");
+    assert!(r.json()["commission_clawback"].is_null());
+
+    // Coupons: used again on a full refund only.
+    create_coupon(
+        &admin,
+        json!({"code": "HALF", "kind": "percent", "value": 50}),
+    )
+    .await;
+    let used = || scalar_i64(&db, "SELECT used::bigint FROM coupons WHERE code = 'HALF'");
+    let o4 = order_id(&buy_with(&ec, plan, "month", json!({"coupon": "HALF"})).await);
+    pay(&db, o4).await;
+    assert_eq!(used().await, 1);
+    let r = refund(o4, json!({"reason": "r", "external_cents": 200})).await;
+    assert_eq!(r.json()["coupon_released"], false, "{:?}", r.json());
+    assert_eq!(used().await, 1, "partial: the coupon stays used");
+    let o5 = order_id(&buy_with(&ec, plan, "month", json!({"coupon": "HALF"})).await);
+    pay(&db, o5).await;
+    assert_eq!(used().await, 2);
+    let r = refund(o5, json!({"reason": "r", "external_cents": 500})).await;
+    assert_eq!(r.json()["coupon_released"], true);
+    assert_eq!(used().await, 1);
+    drop(c);
+    drop(state);
+    db.drop().await;
+}
+
+/// 低-6: a banned inviter's commission stays pending; unbanning lets the
+/// next pass credit it.
+#[tokio::test]
+async fn banned_inviters_commission_waits() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let (_, plan) = catalog_plan(&db, "l6", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    set_commission(&db, true, 10, false, 7).await;
+    let inviter = db.user().await;
+    let invitee = db.user().await;
+    invite(&db, inviter, invitee).await;
+    let ec = user_client(&state, invitee).await;
+    let o = order_id(&buy_with(&ec, plan, "month", json!({})).await);
+    pay(&db, o).await;
+    sqlx::query("UPDATE commissions SET available_at = now() - interval '1 second'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE users SET enabled = false, disabled_reason = 'admin', disabled_note = 'x' WHERE id = $1",
+    )
+    .bind(inviter)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut c = db.pool.acquire().await.unwrap();
+    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
+    assert_eq!(balance(&db, inviter).await, 0);
+    sqlx::query("UPDATE users SET enabled = true WHERE id = $1")
+        .bind(inviter)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(balance(&db, inviter).await, 100);
+    drop(c);
+    drop(state);
+    db.drop().await;
+}

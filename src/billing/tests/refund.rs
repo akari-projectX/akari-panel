@@ -414,7 +414,12 @@ async fn refund_notice_mail() {
     };
     let c = user_client(&state, u).await;
     let o = bought(&db, &c, plan, "month").await;
-    let r = refund(&admin, o, json!({"reason": "r", "external_cents": 600})).await;
+    let r = refund(
+        &admin,
+        o,
+        json!({"reason": "r", "external_cents": 600, "keep_plan": false}),
+    )
+    .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     let m = mails().await;
     assert_eq!(m.len(), 1);
@@ -517,14 +522,19 @@ async fn original_route_refund() {
         json!({"out_request_no": format!("{otn}R1"), "cents": 400})
     );
     assert_eq!(r.json()["refund_external_cents"], 400);
-    assert_eq!(r.json()["effect"]["kind"], "cancel");
+    // P3-9: a partial refund is money only unless the admin says otherwise.
+    assert_eq!(r.json()["partial"], true);
+    assert_eq!(
+        r.json()["effect"],
+        json!({"kind": "none", "why": "keep_plan"})
+    );
     let v = mine(&c, o).await;
     assert_eq!(v["refund_route"], "original");
     assert_eq!(v["refund_external_cents"], 400);
-    assert_eq!(v["refund_effect"], "cancel");
+    assert_eq!(v["refund_effect"], "none");
     assert_eq!(v["refund_pending"], false);
     assert!(v["refunded_at"].is_string());
-    assert_eq!(credentials(&db, u, node).await, 0);
+    assert_eq!(credentials(&db, u, node).await, 1);
     assert_eq!(
         mock.refunds()[&format!("{otn}R1")],
         (otn.clone(), "4.00".to_string())
@@ -913,5 +923,219 @@ async fn original_route_switch() {
     assert_eq!(r.json()["code"], "order_admin.refund_original_unavailable");
     let r = refund(&admin, o, json!({"reason": "r", "external_cents": 1000})).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    db.drop().await;
+}
+
+/// P3-9: the plan effect follows the refunded share. A partial refund keeps
+/// the plan by default and may still revoke it when asked (`keep_plan:
+/// false`); the preview says so for the amount it is asked about; a refund
+/// of all the gateway payment revokes, as before.
+#[tokio::test]
+async fn partial_refund_keeps_the_plan_unless_asked() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (node, plan) =
+        catalog_plan(&db, "p39-plan", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    let o = bought(&db, &c, plan, "month").await;
+    let full = preview(&admin, o).await.json();
+    assert_eq!(
+        (full["partial"].clone(), full["keep_plan_default"].clone()),
+        (json!(false), json!(false))
+    );
+    assert_eq!(full["effect"]["kind"], "cancel");
+    let part = admin
+        .get(&format!(
+            "/test/api/v1/orders/{o}/refund-preview?gateway_cents=400"
+        ))
+        .await
+        .json();
+    assert_eq!(
+        (
+            part["partial"].clone(),
+            part["keep_plan_default"].clone(),
+            part["gateway_refund_cents"].clone()
+        ),
+        (json!(true), json!(true), json!(400))
+    );
+    assert_eq!(
+        admin
+            .get(&format!(
+                "/test/api/v1/orders/{o}/refund-preview?gateway_cents=1001"
+            ))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let r = refund(&admin, o, json!({"reason": "r", "external_cents": 400})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["partial"], true);
+    assert_eq!(
+        r.json()["effect"],
+        json!({"kind": "none", "why": "keep_plan"})
+    );
+    assert_eq!(credentials(&db, u, node).await, 1);
+    // Asked to revoke: the partial refund cancels the subscription too.
+    let o2 = bought(&db, &c, plan, "month").await;
+    let r = refund(
+        &admin,
+        o2,
+        json!({"reason": "r", "external_cents": 400, "keep_plan": false}),
+    )
+    .await;
+    assert_eq!(r.json()["partial"], true);
+    assert_ne!(r.json()["effect"]["kind"], "none", "{:?}", r.json());
+    // All of the gateway payment, no keep_plan: revoked (unchanged).
+    let o3 = bought(&db, &c, plan, "month").await;
+    let r = refund(&admin, o3, json!({"reason": "r", "external_cents": 1000})).await;
+    assert_eq!(r.json()["partial"], false);
+    assert_ne!(r.json()["effect"]["kind"], "none", "{:?}", r.json());
+    // Explicit keep_plan on a full refund still keeps it.
+    let o4 = bought(&db, &c, plan, "month").await;
+    let r = refund(
+        &admin,
+        o4,
+        json!({"reason": "r", "to_balance": true, "keep_plan": true}),
+    )
+    .await;
+    assert_eq!(
+        r.json()["effect"],
+        json!({"kind": "none", "why": "keep_plan"})
+    );
+    drop(state);
+    db.drop().await;
+}
+
+/// P3-1: a renewal that started a fresh quota (a plan without periodic
+/// resets) records what it cleared; refunding the renewal adds it back to
+/// the usage since, never beyond the plan's quota.
+#[tokio::test]
+async fn refunding_a_renewal_restores_the_cleared_usage() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin(&state, &db).await;
+    let (_, plan) = catalog_plan(&db, "p31-flat", &[(PeriodKind::Month, None, 1000)], |r| {
+        r.period = "none".into()
+    })
+    .await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, plan, "month").await;
+    set_used(&db, u, 400).await;
+    let renewal = bought(&db, &c, plan, "month").await;
+    assert_eq!(used(&db, u).await, 0, "fresh quota");
+    let cleared: Value = sqlx::query_scalar("SELECT fulfil_result FROM orders WHERE id = $1")
+        .bind(renewal)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(cleared["fresh_cleared_bytes"], 400);
+    set_used(&db, u, 100).await;
+    let p = preview(&admin, renewal).await.json();
+    assert_eq!(p["effect"]["restore_used_bytes"], 400);
+    let r = refund(&admin, renewal, json!({"reason": "r", "to_balance": true})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(used(&db, u).await, 500, "cleared usage added back");
+    let audit: Value = sqlx::query_scalar(
+        "SELECT after FROM audit_log WHERE action = 'user.plan.refund' AND target_id = $1::text",
+    )
+    .bind(u.to_string())
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit["traffic_restored_bytes"], 400);
+    // Capped at the quota (1 GiB here).
+    set_used(&db, u, 900).await;
+    let renewal2 = bought(&db, &c, plan, "month").await;
+    set_used(&db, u, (1 << 30) - 100).await;
+    let r = refund(&admin, renewal2, json!({"reason": "r", "to_balance": true})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(used(&db, u).await, 1 << 30);
+    // A renewal that cleared nothing restores nothing.
+    set_used(&db, u, 0).await;
+    let renewal3 = bought(&db, &c, plan, "month").await;
+    set_used(&db, u, 7).await;
+    refund(&admin, renewal3, json!({"reason": "r", "to_balance": true})).await;
+    assert_eq!(used(&db, u).await, 7);
+    drop(state);
+    db.drop().await;
+}
+
+/// P3-5: calendar months keep the subscription's anchor day: bought on the
+/// 31st it renews to the last day of a short month and back to the 31st.
+#[tokio::test]
+async fn month_end_anchor_survives_renewals() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    sqlx::query("UPDATE panel_settings SET timezone = 'UTC' WHERE id = 1")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let at = |sql: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .to_rfc3339()
+        }
+    };
+    // Function level: 31 Jan -> 28 Feb -> 31 Mar with the anchor, the old
+    // drift (28 Mar) without it; an unaligned base keeps its own day.
+    assert_eq!(
+        at("SELECT akari_period_end('2099-01-31 12:00Z', 'month', NULL, '2099-01-31 12:00Z')")
+            .await,
+        "2099-02-28T12:00:00+00:00"
+    );
+    assert_eq!(
+        at("SELECT akari_period_end('2099-02-28 12:00Z', 'month', NULL, '2099-01-31 12:00Z')")
+            .await,
+        "2099-03-31T12:00:00+00:00"
+    );
+    assert_eq!(
+        at("SELECT akari_period_end('2099-02-28 12:00Z', 'month', NULL)").await,
+        "2099-03-28T12:00:00+00:00"
+    );
+    assert_eq!(
+        at("SELECT akari_period_end('2099-02-10 12:00Z', 'month', NULL, '2099-01-31 12:00Z')")
+            .await,
+        "2099-03-10T12:00:00+00:00"
+    );
+    assert_eq!(
+        at("SELECT akari_period_end('2099-08-31 12:00Z', 'quarter', NULL, '2099-08-31 12:00Z')")
+            .await,
+        "2099-11-30T12:00:00+00:00"
+    );
+    // Through a renewal order.
+    let (_, plan) = catalog_plan(&db, "p35", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    bought(&db, &c, plan, "month").await;
+    sqlx::query(
+        "UPDATE user_plans SET period_anchor = '2099-01-31 12:00Z', \
+         expires_at = '2099-02-28 12:00Z' WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    bought(&db, &c, plan, "month").await;
+    assert_eq!(
+        expiry(&db, u).await.unwrap().to_rfc3339(),
+        "2099-03-31T12:00:00+00:00"
+    );
+    drop(state);
     db.drop().await;
 }

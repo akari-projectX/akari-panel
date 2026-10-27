@@ -1356,9 +1356,11 @@ pub struct RefundReq {
     #[serde(default)]
     pub external_cents: Option<i64>,
     /// P1: refund the money only and leave the subscription as it is
-    /// (default: the order's effect on the subscription is undone).
+    /// (true) or undo the order's effect on it (false). Default (P3-9): a
+    /// refund of all the gateway payment undoes it, a partial one keeps the
+    /// plan.
     #[serde(default)]
-    pub keep_plan: bool,
+    pub keep_plan: Option<bool>,
     /// ① Refund through the payment provider (原路退款): the provider
     /// returns `original_cents` (default: all of the gateway amount) to the
     /// payer. Not with `to_balance` / `external_cents`.
@@ -1368,16 +1370,26 @@ pub struct RefundReq {
     pub original_cents: Option<i64>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefundPreviewQuery {
+    #[serde(default)]
+    pub gateway_cents: Option<i64>,
+}
+
 /// GET /orders/{id}/refund-preview: what a refund would do now (money and
 /// the subscription effect), for the confirmation dialog. Admin.
+/// `?gateway_cents=N`: preview a refund returning N of the gateway payment
+/// (default all of it; a smaller one is a partial refund, P3-9).
 pub async fn refund_preview(
     State(state): State<AppState>,
     user: AuthUser,
     Path((_, id)): Path<(String, Uuid)>,
+    Query(q): Query<RefundPreviewQuery>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
-    let mut v = super::refund::preview(&mut c, id).await?;
+    let mut v = super::refund::preview(&mut c, id, q.gateway_cents).await?;
     // ① is offered when the order's method allows it.
     let (method, request): (Option<Uuid>, Option<Value>) =
         sqlx::query_as("SELECT payment_method_id, refund_request FROM orders WHERE id = $1")

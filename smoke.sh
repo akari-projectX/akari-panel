@@ -3292,6 +3292,12 @@ OORDER=$(last_json "d['id']"); OOTN=$(last_json "d['out_trade_no']")
   || { echo "FAIL: original-route refund order notify"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$OORDER/refund-preview")" = "200" ] && last_json "d['original_available']" | matches '^True$' \
   || { echo "FAIL: original-route refund not offered"; cat /tmp/akari-smoke/last; exit 1; }
+# P3-9: a partial refund keeps the plan by default and says so beforehand.
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$OORDER/refund-preview?gateway_cents=600")" = "200" ] \
+  && [ "$(last_json "d['partial']")/$(last_json "d['keep_plan_default']")" = "True/True" ] \
+  || { echo "FAIL: partial refund preview"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/orders/$OORDER/refund-preview?gateway_cents=1001")" = "400" ] \
+  || { echo "FAIL: refund preview beyond the payment"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$OORDER/refund" '{"reason":"原路退款","original":true,"original_cents":600}')" = "200" ] \
   && [ "$(last_json "d['original']['out_request_no']")/$(last_json "d['refund_external_cents']")" = "${OOTN}R1/600" ] \
   || { echo "FAIL: original-route refund: $(cat /tmp/akari-smoke/last)"; exit 1; }
@@ -3302,7 +3308,7 @@ OORDER=$(last_json "d['id']"); OOTN=$(last_json "d['out_trade_no']")
 [ "$(psql_q "SELECT balance_cents FROM user_balances WHERE user_id='$W16U'")" = "1100" ] || { echo "FAIL: refund not on the balance"; exit 1; }
 # W36-b: the customer's order view says where each refund went (the three
 # routes) and what it did to the subscription.
-for o in "$CORDER:balance:800:0:cancel" "$XORDER:manual:0:1000:" "$OORDER:original:0:600:"; do
+for o in "$CORDER:balance:800:0:cancel" "$XORDER:manual:0:1000:" "$OORDER:original:0:600:none"; do
   IFS=: read -r oid route bal ext effect <<EOF
 $o
 EOF
