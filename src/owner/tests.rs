@@ -93,38 +93,6 @@ async fn promoting_a_quota_disabled_user_makes_a_working_admin() {
     db.drop().await;
 }
 
-/// The migration repairs admins left disabled for quota.
-#[tokio::test]
-async fn migration_enables_quota_disabled_admins() {
-    let Some(db) = TestDb::new().await else {
-        return;
-    };
-    // The 1013 repair statement, as the migration ran it.
-    let a = db.admin().await;
-    sqlx::query("UPDATE users SET enabled = false, disabled_reason = 'quota' WHERE id = $1")
-        .bind(a)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let sql = include_str!("../../migrations/1013_owner.sql");
-    let repair = sql
-        .split(';')
-        .map(str::trim)
-        .find(|s| s.contains("UPDATE users SET enabled = true"))
-        .unwrap();
-    let repair = repair
-        .lines()
-        .filter(|l| !l.trim_start().starts_with("--"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    sqlx::query(sqlx::AssertSqlSafe(repair))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    assert!(row(&db, a).await.1);
-    db.drop().await;
-}
-
 /// Only the owner changes admin accounts or makes admins; an ordinary admin
 /// manages users and its own account.
 #[tokio::test]

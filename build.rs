@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=admin/dist");
     emit_git_sha();
     println!("cargo:rerun-if-changed=proto/agent.proto");
+    println!("cargo:rerun-if-changed=migrations");
 
     protocols_manifest()?;
 
