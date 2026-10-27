@@ -1,5 +1,0 @@
-payload:
-  - DOMAIN-SUFFIX,claude.ai
-  - "DOMAIN,cdn.example.com"
-  - IP-CIDR,160.79.104.0/23,no-resolve
-  - PROCESS-NAME,Claude.exe
