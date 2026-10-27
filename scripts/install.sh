@@ -532,7 +532,11 @@ ui_install_locale() {
 			DEBIAN_FRONTEND=noninteractive
 			export DEBIAN_FRONTEND
 			apt-get install -y --no-install-recommends locales >>"$_l" 2>&1 </dev/null ||
-				{ apt-get update >>"$_l" 2>&1 </dev/null && apt-get install -y --no-install-recommends locales >>"$_l" 2>&1 </dev/null; }
+				{
+					# a source that fails (a dead repository on the host) must not stop the others
+					apt-get update >>"$_l" 2>&1 </dev/null || true
+					apt-get install -y --no-install-recommends locales >>"$_l" 2>&1 </dev/null
+				}
 		) || return 1
 	fi
 	if [ "$(ui_os_id)" = ubuntu ]; then

@@ -9,7 +9,10 @@
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
 ```
 
-安装器按系统语言显示中文或英文提示，每一项都有默认值，直接回车即可：
+安装器界面默认是简体中文（带 AKARI 横幅、编号步骤 `[2/7]`、进度动画与耗时、安装完成卡片），每一项提示都有默认值，直接回车即可。
+**你的终端（SSH 客户端）必须是 UTF-8 才能正确显示中文**。选项用编号选择（没有方向键菜单：`curl | sh` 与 busybox 下 `stty` 原始模式不可靠）；
+输错的值会当场提示并重新询问。没有终端、设置了 `NO_COLOR` 或 `TERM=dumb` 时不输出颜色与动画，日志文件 `/var/log/akari-install.log` 永远是纯文本。
+语言与 locale 见下文「安装器语言与 locale」：
 
 | 提示 | 默认 | 说明 |
 |---|---|---|
@@ -84,7 +87,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 
 以 root 或有 sudo 的用户运行（脚本会通过 `sudo` 重新执行自身，管道方式下同样如此）。
 支持：Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，systemd；其他系统一律拒绝，并指向附录。
-默认交互式（按 locale 显示中文或英文，`--lang zh|en`），每个提示都有默认值；`--yes` 取默认值，其余全部由参数/环境变量提供：
+默认交互式（中文，`--lang zh|en` / `AKARI_LANG`，见下），每个提示都有默认值；`--yes` 取默认值，其余全部由参数/环境变量提供：
 
 | Option | Environment | Default |
 |---|---|---|
@@ -1669,6 +1672,17 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 
 Caddy 会在新主机上获取新证书（主域名在启动时，其他的按需）。
 
+### 安装器语言与 locale（面板安装器与节点安装脚本相同）
+
+- 界面**默认简体中文**，英文是回退。每条用户可见的文字都在脚本里的消息表中（`msg_zh` / `msg_en`，按键查找；`scripts/installer-test/ui-check.py` 在 `make shellcheck` 里保证两种语言的键一致、占位符个数一致、没有无用的键，并保证面板安装器与节点安装脚本里共用的界面代码逐字节相同）。参数名、环境变量、路径、日志键始终是 ASCII。
+- 脚本**最先**做的事（横幅之前）：确保本机有 `zh_CN.UTF-8`，然后在 `LC_ALL=zh_CN.UTF-8` 下运行（只对安装器进程及其子进程生效，**从不修改系统默认语言**：不写 `/etc/default/locale`、`/etc/locale.conf`、任何 profile）。
+  - 已有（`locale -a` 列出 `zh_CN.utf8`）：直接用。
+  - 缺少且是 Debian/Ubuntu：先打印一行英文说明，然后 `apt-get install locales`、在 `/etc/locale.gen` 启用 `zh_CN.UTF-8 UTF-8`（没有则追加，可重复执行）并 `locale-gen`（Ubuntu：`locale-gen zh_CN.UTF-8`）。`locales` 软件包本身会在系统里留下一个空的 `/etc/default/locale`（不含 `LANG=`），系统默认语言不变。
+  - Alpine / musl（节点脚本）：musl 原生支持 UTF-8，直接 `LC_ALL=C.UTF-8` 用中文。
+  - **装不上**（离线、只读镜像、没有 `locale-gen`）：整个运行改用**英文**（有 `C.UTF-8` 就用它，否则 `C`，后者横幅与 ✓/✗ 退化为 ASCII），并说明一行原因，**绝不因此中止**。
+- `--lang zh|en` 或 `AKARI_LANG=zh|en` 明确指定（`en` 不安装 locale）。`akari-ctl` 在 `/etc/akari/install.env` 的 `UI_LANG` 记住安装时的语言，之后的 `upgrade`、`info` 等沿用（每次仍会检查 locale 是否存在）。节点安装脚本同样接受 `--lang` / `AKARI_LANG`：`curl -fsSL '<安装链接>' | sh -s -- --lang en`。
+- 子进程（`apt-get`、`ufw`、`pg_lsclusters` 等）在需要解析其输出的地方一律用 `LC_ALL=C` 运行，所以语言选择不会改变安装器的判断。
+
 ## Installer tests (CI)（安装器测试）
 
 `.github/workflows/ci.yml`，jobs `installer-*`，脚本在 `scripts/installer-test/`。在 pull request 中，当安装器、部署包、备份/恢复或 Dockerfile 改变时
@@ -1686,7 +1700,8 @@ Caddy 会在新主机上获取新证书（主域名在启动时，其他的按�
 - `installer (host, docker + migration)`：`host-e2e.sh` 在 runner 上运行：Docker 安装最新发布版本（ghcr 镜像）→ 其到 PR 镜像的升级被原样拒绝 → purge →
   Docker 安装 PR 镜像（本地 registry，按 digest 固定）→ purge；裸机安装 PR 构建，注册一个真实 agent（`../akari-agent`），
   `migrate --to docker` 再 `--to bare` 回来：前缀相同，agent 无需重新注册即可重连，订阅仍能应答。
-- `shellcheck`：`make shellcheck`（也是 `make check` 的一部分），它还运行 `scripts/installer-test/validators.sh`：
+- 语言与 locale：`bare-e2e.sh` 在没有 `zh_CN` 的镜像上先让 `apt-get` 拒绝安装 `locales`，断言运行改为英文并说明原因、本机仍无该 locale；随后的默认安装断言 `zh_CN.UTF-8` 已装好、日志是中文、`/etc/default/locale` 与 `/etc/locale.conf` 没有 `LANG=`、没有写入任何 profile。smoke 的节点安装段（Debian 容器与 Alpine/OpenRC）走默认（中文）路径。
+- `shellcheck`：`make shellcheck`（也是 `make check` 的一部分），它还运行 `scripts/installer-test/ui-check.py`（消息表与共用界面块），以及 `scripts/installer-test/validators.sh`：
   安装器的输入校验函数（`valid_domain`、`valid_node_addr` 等，用 `AKARI_INSTALL_LIB=1` 引入）在 dash + GNU grep 下对已接受和已拒绝的值的测试；
   该 job 还会在 busybox sh + grep（alpine）下再运行一次。正则方言不同（WSL 的 grep 即 ugrep，在方括号里接受 `[\]]`；GNU grep 不接受），
   所以安装器的模式请保持为可移植的 ERE，并在那里添加用例。

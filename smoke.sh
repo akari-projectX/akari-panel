@@ -4460,7 +4460,7 @@ assert n['update_status']['rollout_status']=='aborted' and n['update_status']['s
   UPD_CMD2=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['command'])")
   udx "$UPD_CMD2" >"$LOG/upd-reinstall.out" 2>&1 || { echo "FAIL: reinstall (update node)"; cat "$LOG/upd-reinstall.out"; exit 1; }
   # As root on an image without sudo: the plain uninstall form.
-  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall" "$LOG/upd-reinstall.out" \
+  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall\|以后卸载（root）：/usr/local/sbin/akari-agent-uninstall" "$LOG/upd-reinstall.out" \
     || { echo "FAIL: uninstall hint"; cat "$LOG/upd-reinstall.out"; exit 1; }
   grep -q "sudo /usr/local/sbin" "$LOG/upd-reinstall.out" && { echo "FAIL: sudo hint without sudo"; exit 1; }
   code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
@@ -4570,13 +4570,13 @@ host_cc() { echo "$(cat /proc/sys/net/core/default_qdisc 2>/dev/null) $(cat /pro
 # bbr_installed CONTAINER OUTPUT: what the installer said matches the node
 # and the host; prints "enabled" or "skipped".
 bbr_installed() {
-  if grep -q "BBR + fq: enabled (was " "$2"; then
+  if grep -q "BBR + fq: enabled (was \|BBR + fq：已启用（原为 " "$2"; then
     docker exec "$1" sh -c 'grep -q "^# akari-previous: net.core.default_qdisc=" /etc/sysctl.d/90-akari-bbr.conf &&
       grep -q "^net.ipv4.tcp_congestion_control = bbr$" /etc/sysctl.d/90-akari-bbr.conf &&
       grep -q "^tcp_bbr$" /etc/modules-load.d/akari-bbr.conf' || { echo "FAIL: BBR drop-in on $1" >&2; return 1; }
     [ "$(host_cc)" = "fq bbr" ] || { echo "FAIL: BBR + fq not in effect: $(host_cc)" >&2; return 1; }
     echo enabled
-  elif matches -E "BBR \+ fq: (skipped|already enabled)" "$2"; then
+  elif matches -E "BBR \+ fq(: |：)(skipped|already enabled|已跳过|本机已启用)" "$2"; then
     docker exec "$1" test ! -e /etc/sysctl.d/90-akari-bbr.conf || { echo "FAIL: BBR drop-in although skipped" >&2; return 1; }
     echo skipped
   else
@@ -4603,7 +4603,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   # Exactly what the admin copies, as root on an image without sudo.
   docker exec akari-smoke-node sh -c "$INST_CMD" >"$LOG/install.out" 2>&1 \
     || { echo "FAIL: installer failed"; cat "$LOG/install.out"; exit 1; }
-  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
+  grep -q "SUCCESS: the agent enrolled and is connected\|成功：agent 已注册并连接" "$LOG/install.out" || { echo "FAIL: installer output"; cat "$LOG/install.out"; exit 1; }
   BBR_STATE=$(bbr_installed akari-smoke-node "$LOG/install.out") || { cat "$LOG/install.out"; exit 1; }
   for _ in $(seq 1 20); do [ "$(psql_q "SELECT status FROM servers WHERE id='$INST_SRV'")" = "online" ] && break; sleep 1; done
   [ "$(psql_q "SELECT status FROM servers WHERE id='$INST_SRV'")" = "online" ] || { echo "FAIL: installed node not online"; exit 1; }
@@ -4637,14 +4637,14 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ]; then
   # The reinstall without BBR (--no-bbr): nothing changed.
   docker exec akari-smoke-node sh -c "curl -fsSL '$INST_URL2' | sh -s -- --no-bbr" >"$LOG/install-nobbr.out" 2>&1 \
     || { echo "FAIL: reinstall"; tail -20 "$LOG/install-nobbr.out"; exit 1; }
-  grep -q "BBR + fq: not changed (--no-bbr)" "$LOG/install-nobbr.out" || { echo "FAIL: --no-bbr"; cat "$LOG/install-nobbr.out"; exit 1; }
+  grep -q "BBR + fq: not changed (--no-bbr)\|BBR + fq：未改动（--no-bbr）" "$LOG/install-nobbr.out" || { echo "FAIL: --no-bbr"; cat "$LOG/install-nobbr.out"; exit 1; }
   docker exec akari-smoke-node test ! -e /etc/sysctl.d/90-akari-bbr.conf || { echo "FAIL: --no-bbr wrote the drop-in"; exit 1; }
   [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: --no-bbr changed $(host_cc)"; exit 1; }
   cat "$LOG/install-nobbr.out" >>"$LOG/install.out"
   [ "$(fp "$INST_URL2")" = "$REJ" ] || { echo "FAIL: second link not burned"; exit 1; }
   # The helper never uninstalls by accident: --help prints usage, unknown options exit 2,
   # and without --yes (no terminal here) it refuses and leaves the agent in place.
-  docker exec akari-smoke-node akari-agent-uninstall --help 2>&1 | matches 'Usage: akari-agent-uninstall' \
+  docker exec akari-smoke-node akari-agent-uninstall --help 2>&1 | matches 'Usage: akari-agent-uninstall\|用法：akari-agent-uninstall' \
     || { echo "FAIL: uninstall helper --help"; exit 1; }
   docker exec akari-smoke-node akari-agent-uninstall -h >/dev/null 2>&1 || { echo "FAIL: uninstall helper -h exit code"; exit 1; }
   rc=0; docker exec akari-smoke-node akari-agent-uninstall --bogus >/dev/null 2>&1 || rc=$?
@@ -4691,8 +4691,8 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   ax() { docker exec akari-smoke-alp sh -c "$1"; }
   for _ in $(seq 1 30); do ax 'test -e /run/openrc/softlevel && rc-status >/dev/null 2>&1' && break; sleep 0.5; done
   ax "$ALP_CMD" >"$LOG/alp-install.out" 2>&1 || { echo "FAIL: installer (Alpine)"; cat "$LOG/alp-install.out"; exit 1; }
-  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/alp-install.out" || { echo "FAIL: Alpine installer output"; cat "$LOG/alp-install.out"; exit 1; }
-  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall" "$LOG/alp-install.out" \
+  grep -q "SUCCESS: the agent enrolled and is connected\|成功：agent 已注册并连接" "$LOG/alp-install.out" || { echo "FAIL: Alpine installer output"; cat "$LOG/alp-install.out"; exit 1; }
+  grep -q "uninstall later with (as root): /usr/local/sbin/akari-agent-uninstall\|以后卸载（root）：/usr/local/sbin/akari-agent-uninstall" "$LOG/alp-install.out" \
     || { echo "FAIL: Alpine uninstall hint"; cat "$LOG/alp-install.out"; exit 1; }
   ALP_BBR=$(bbr_installed akari-smoke-alp "$LOG/alp-install.out") || { cat "$LOG/alp-install.out"; exit 1; }
   for _ in $(seq 1 20); do [ "$(psql_q "SELECT status || ' ' || coalesce(agent_version, '-') FROM servers WHERE id='$ALP_ID'")" = "online v900.0.1" ] && break; sleep 1; done
@@ -4724,13 +4724,13 @@ if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
   docker exec -e AKARI_BBR=0 akari-smoke-alp sh -c "$ALP_CMD2" >"$LOG/alp-reinstall.out" 2>&1 \
     || { echo "FAIL: Alpine reinstall"; cat "$LOG/alp-reinstall.out"; exit 1; }
   if [ "$ALP_BBR" = enabled ]; then
-    grep -q "BBR + fq: removed /etc/sysctl.d/90-akari-bbr.conf" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0 kept BBR"; cat "$LOG/alp-reinstall.out"; exit 1; }
+    grep -q "BBR + fq: removed /etc/sysctl.d/90-akari-bbr.conf\|BBR + fq：已移除 /etc/sysctl.d/90-akari-bbr.conf" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0 kept BBR"; cat "$LOG/alp-reinstall.out"; exit 1; }
   else
-    grep -q "BBR + fq: not changed (--no-bbr)" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0"; cat "$LOG/alp-reinstall.out"; exit 1; }
+    grep -q "BBR + fq: not changed (--no-bbr)\|BBR + fq：未改动（--no-bbr）" "$LOG/alp-reinstall.out" || { echo "FAIL: AKARI_BBR=0"; cat "$LOG/alp-reinstall.out"; exit 1; }
   fi
   ax 'test ! -e /etc/sysctl.d/90-akari-bbr.conf && test ! -e /etc/modules-load.d/akari-bbr.conf' || { echo "FAIL: BBR drop-in after AKARI_BBR=0"; exit 1; }
   [ "$(host_cc)" = "$BBR_BEFORE" ] || { echo "FAIL: AKARI_BBR=0 did not restore '$BBR_BEFORE' ($(host_cc))"; exit 1; }
-  grep -q "SUCCESS: the agent enrolled and is connected" "$LOG/alp-reinstall.out" || { echo "FAIL: Alpine reinstall output"; cat "$LOG/alp-reinstall.out"; exit 1; }
+  grep -q "SUCCESS: the agent enrolled and is connected\|成功：agent 已注册并连接" "$LOG/alp-reinstall.out" || { echo "FAIL: Alpine reinstall output"; cat "$LOG/alp-reinstall.out"; exit 1; }
   # Uninstall: services, scripts, user, mount, state, logs: all gone.
   ax 'akari-agent-uninstall --yes' >>"$LOG/alp-install.out" 2>&1 || { echo "FAIL: Alpine uninstall"; exit 1; }
   ax 'test ! -e /etc/init.d/akari-agent && test ! -e /etc/init.d/akari-agent-update && test ! -e /usr/local/bin/akari-agent &&
