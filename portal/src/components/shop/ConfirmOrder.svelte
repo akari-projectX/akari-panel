@@ -85,7 +85,7 @@
   const base = $derived(offers.length > 1 ? 1 : 0);
 
   /* 面板的 icon 是后台填的短名字：认得的换成对应图标（同 React 门户 payment-method-picker） */
-  const ICONS: Record<string, typeof QrCode> = { alipay: QrCode, wechat: QrCode, qq: QrCode, balance: Wallet, usdt: CircleDollarSign };
+  const ICONS: Record<string, typeof QrCode> = { alipay: QrCode, wechat: QrCode, qq: QrCode, balance: Wallet, usdt: CircleDollarSign, crypto: CircleDollarSign };
   const methodIcon = (m: PayMethod) => ICONS[m.icon ?? m.kind] ?? CreditCard;
 
   function applyCoupon(e: SubmitEvent) {

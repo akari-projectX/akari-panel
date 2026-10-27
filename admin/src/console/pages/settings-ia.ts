@@ -637,6 +637,8 @@ export const SETTINGS_IA: SectionGroup[] = [
 export const PAY_TILES: Record<string, { tint: string; glyph: string }> = {
   alipay_f2f: { tint: "#1677ff", glyph: "支" },
   epay: { tint: "#f97316", glyph: "易" },
+  coinpayments: { tint: "#0f766e", glyph: "CP" },
+  coinbase: { tint: "#0052ff", glyph: "C" },
 };
 export const PAY_TILE_DEFAULT = "#2563eb";
 

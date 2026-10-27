@@ -22,6 +22,8 @@ export function savePercent(offers: Offer[], o: Offer): number | null {
 export const METHOD_HINT: Record<string, string> = {
   alipay_f2f: '扫码付款',
   epay: '跳转到收银台',
+  coinpayments: '加密货币，跳转到收银台',
+  coinbase: '加密货币，跳转到收银台',
 };
 
 export const methodHint = (m: PayMethod): string | undefined => METHOD_HINT[m.kind];

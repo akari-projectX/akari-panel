@@ -120,6 +120,15 @@ const FIELD_EN: Record<string, string> = {
   channel: "Channel",
   api_mode: "Order mode",
   product_name: "Product name (optional, default “Akari - plan name”)",
+  instance: "Platform instance (the CoinPayments instance your account belongs to)",
+  client_id: "Client ID (the API integration's clientId)",
+  client_secret: "Client secret (clientSecret; also verifies webhook signatures)",
+  currency: "Invoice currency code (ISO, e.g. USD; USDC for Coinbase; no rate needed for CNY)",
+  currency_id: "Invoice currency ID (the fiat currency's numeric ID at CoinPayments)",
+  rate_cents: "Exchange rate: 1.00 of the currency = how many CNY cents (e.g. 720 for USD; empty for CNY)",
+  key_id: "API key name (the CDP API key ID / name)",
+  api_secret: "API private key (Ed25519 base64 secret, or ECDSA PEM)",
+  webhook_secret: "Webhook signing secret (the secret returned when the subscription was created)",
 };
 const OPTION_EN: Record<string, string> = {
   production: "Production",
@@ -130,8 +139,16 @@ const OPTION_EN: Record<string, string> = {
   qqpay: "QQ Wallet",
   mapi: "API (mapi.php; the payment page when refused)",
   submit: "Payment page (submit.php)",
+  a: "Instance A (a-api.coinpayments.net)",
+  b: "Instance B (b-api.coinpayments.net)",
+  c: "Instance C (c-api.coinpayments.net)",
 };
-const KIND_EN: Record<string, string> = { alipay_f2f: "Alipay face-to-face", epay: "EPay" };
+const KIND_EN: Record<string, string> = {
+  alipay_f2f: "Alipay face-to-face",
+  epay: "EPay",
+  coinpayments: "CoinPayments",
+  coinbase: "Coinbase",
+};
 const KIND_DESC = (id: string, tr: Tr) =>
   ({
     alipay_f2f: tr(
@@ -141,6 +158,14 @@ const KIND_DESC = (id: string, tr: Tr) =>
     epay: tr(
       "易支付（MD5 接口）：一个支付方式对应一个商户的一个渠道；不支持原路退款",
       "EPay (MD5 interface): one method = one merchant's channel; no refunds to the original payment",
+    ),
+    coinpayments: tr(
+      "CoinPayments（API v2）：托管的加密货币收银台，只在发票完成（已到账）时开通；不支持原路退款",
+      "CoinPayments (API v2): a hosted crypto checkout, fulfilled only when the invoice is completed; no refunds to the original payment",
+    ),
+    coinbase: tr(
+      "Coinbase（Business Checkouts API）：托管的加密货币收银台，只在收银台完成时开通；不支持原路退款",
+      "Coinbase (Business Checkouts API): a hosted crypto checkout, fulfilled only when the checkout is completed; no refunds to the original payment",
     ),
   })[id];
 /** The portal name an EPay method suggests for its channel (until the admin edits the name). */
