@@ -472,18 +472,23 @@ jobs:
       # rust-toolchain.toml pins the compiler (same as the Dockerfile).
       - run: rustup toolchain install --profile minimal
         working-directory: akari-panel
+      # The job builds and runs the akari-agent checkout. A dispatched
+      # agent_ref other than main is code we have not reviewed, so the job
+      # then only reads caches: nothing it runs can be saved into a cache
+      # that main and release builds restore.
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && (inputs.agent_ref || 'main') == 'main' }}
           workspaces: akari-panel
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: akari-agent/go.mod
+          cache: ${{ (inputs.agent_ref || 'main') == 'main' }}
           cache-dependency-path: akari-agent/go.sum
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          cache: npm
+          cache: ${{ (inputs.agent_ref || 'main') == 'main' && 'npm' || '' }}
           cache-dependency-path: |
             akari-panel/portal/package-lock.json
             akari-panel/admin/package-lock.json
