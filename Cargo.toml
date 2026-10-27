@@ -103,6 +103,14 @@ manual_string_new = "warn"
 redundant_clone = "warn"
 needless_pass_by_value = "warn"
 
+# cargo-machete (make machete, ci.yml `dead code`) reads manifests and
+# sources only; these two are used where it cannot see:
+#  - md-5: the library is named `md5` (src/billing/epay.rs `md5::Md5`).
+#  - tonic-prost: the code tonic-prost-build writes to OUT_DIR (crate::pb)
+#    calls `tonic_prost::ProstCodec`.
+[package.metadata.cargo-machete]
+ignored = ["md-5", "tonic-prost"]
+
 # CI-only build of the static binary/image (Dockerfile CARGO_PROFILE=ci,
 # ci.yml `build`): same code as `release`, without the Dockerfile's
 # release-only thin LTO and single codegen unit, so it compiles much faster.

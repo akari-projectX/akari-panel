@@ -11,12 +11,12 @@
 
 /* ───────────── 认证与站点 ───────────── */
 
-export type Role = 'user' | 'admin';
+type Role = 'user' | 'admin';
 
-export const PLATFORMS = ['windows', 'macos', 'linux', 'android', 'ios', 'harmony', 'other'] as const;
-export type ClientPlatform = (typeof PLATFORMS)[number];
+const PLATFORMS = ['windows', 'macos', 'linux', 'android', 'ios', 'harmony', 'other'] as const;
+type ClientPlatform = (typeof PLATFORMS)[number];
 
-export type Branding = {
+type Branding = {
   version: number;
   /** 相对面板根（"brand/logo?v=…"），用 base.brandUrl 解析 */
   logo_url: string | null;
@@ -209,7 +209,7 @@ export type MyNode = {
   latency_measured_at: string | null;
 };
 
-export type TrafficBytes = { up_bytes: number; down_bytes: number; billed_bytes: number };
+type TrafficBytes = { up_bytes: number; down_bytes: number; billed_bytes: number };
 
 /** GET /me/traffic：按全站时区的日界 */
 export type MyTraffic = {
@@ -232,7 +232,7 @@ export type RateRule = { weekdays: number[]; start: number; end: number; rate: n
 
 /* ───────────── 商店与订单 ───────────── */
 
-export const PERIOD_KINDS = [
+const PERIOD_KINDS = [
   'month', 'quarter', 'half_year', 'year', 'two_year', 'three_year', 'days', 'onetime', 'reset',
 ] as const;
 export type PeriodKind = (typeof PERIOD_KINDS)[number];
@@ -466,7 +466,7 @@ export type TicketRow = {
   unread: boolean;
 };
 
-export type TicketMessage = { id: number; staff: boolean; body: string; created_at: string };
+type TicketMessage = { id: number; staff: boolean; body: string; created_at: string };
 
 export type TicketDetail = {
   id: string;

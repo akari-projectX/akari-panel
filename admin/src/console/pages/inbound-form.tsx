@@ -36,7 +36,7 @@ export type TemplateKind =
   | "shadowsocks_2022"
   | "hysteria2";
 
-export const TEMPLATES: TemplateKind[] = [
+const TEMPLATES: TemplateKind[] = [
   "vless_reality",
   "vless_reality_xhttp",
   "vless_tls_vision",
@@ -49,7 +49,7 @@ export const TEMPLATES: TemplateKind[] = [
   "hysteria2",
 ];
 
-export function templateLabel(k: TemplateKind, tr: Tr): string {
+function templateLabel(k: TemplateKind, tr: Tr): string {
   return {
     vless_reality: tr(
       "VLESS + REALITY + Vision（推荐，无需证书与域名）",
@@ -200,7 +200,7 @@ export function toSpec(r: TemplateForm, tr: Tr, nodeDomain = ""): Record<string,
   }
 }
 
-export function useCatalog() {
+function useCatalog() {
   return useQuery({
     queryKey: ["inbound-templates"],
     queryFn: () => get<Catalog>("/inbound-templates"),

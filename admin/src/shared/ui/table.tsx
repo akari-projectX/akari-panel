@@ -395,7 +395,7 @@ export function DataTable<T extends { id: string }>({
   );
 }
 
-export const PAGE_SIZES = [20, 50, 100, 200];
+const PAGE_SIZES = [20, 50, 100, 200];
 
 /** Pager: total, page n / m with jump, page size (when `onLimit` is given). */
 export function Pager({

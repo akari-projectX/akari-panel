@@ -18,7 +18,7 @@ export type DocCategory = {
 };
 
 /** 按界面语言选：英文有内容就用英文，否则中文 */
-export function pick<T>(locale: string, zh: T, en: T | null | undefined): T {
+function pick<T>(locale: string, zh: T, en: T | null | undefined): T {
   return locale === 'en' && en != null && en !== '' ? en : zh;
 }
 

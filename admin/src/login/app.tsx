@@ -46,7 +46,7 @@ const card = "rounded-[22px] bg-card p-6 shadow-dialog max-sm:p-5";
 
 // The codes the sign-in page can meet (the console has the full table;
 // scripts/check-error-codes.mjs keeps these in step with it).
-export const LOGIN_ERRORS: ErrorTable = {
+const LOGIN_ERRORS: ErrorTable = {
   "auth.captcha_failed": ["人机验证未通过，请重试", "Human verification failed, please try again"],
   "auth.captcha_unavailable": [
     "人机验证服务暂不可用，请稍后再试",

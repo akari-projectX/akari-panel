@@ -11,8 +11,6 @@ import { useTr, type Tr } from "../../shared/i18n";
 import { Button } from "../../shared/ui/button";
 import { Field, Input } from "../../shared/ui/form";
 
-export { intErr, intError, intOf, numText } from "./settings-kit";
-
 /**
  * Error text of a number typed as a string (undefined = valid).
  * `allowEmpty`: blank is valid (the caller decides what blank means, e.g.
@@ -317,7 +315,7 @@ export function GroupChips({
 }
 
 /** 0–4: length, mixed case, digits, symbols. */
-export function passwordStrength(p: string): number {
+function passwordStrength(p: string): number {
   let s = 0;
   if (p.length >= 8) s++;
   if (p.length >= 12) s++;

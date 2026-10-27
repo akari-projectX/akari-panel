@@ -8,12 +8,12 @@ import { Field, Input, Select } from "../../shared/ui/form";
 export type TermForm = { planId: string; period: string; days: string };
 export const EMPTY_TERM: TermForm = { planId: "", period: "month", days: "" };
 
-export function termDaysRule(period: string): "required" | "optional" | "none" {
+function termDaysRule(period: string): "required" | "optional" | "none" {
   return period === "days" ? "required" : period === "onetime" ? "optional" : "none";
 }
 
 /** The days box's error (empty is fine where days are optional), or undefined. */
-export function termDaysError(f: TermForm, tr: Tr): string | undefined {
+function termDaysError(f: TermForm, tr: Tr): string | undefined {
   const rule = termDaysRule(f.period);
   const t = f.days.trim();
   if (rule === "none" || (rule === "optional" && t === "")) return undefined;

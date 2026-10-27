@@ -146,7 +146,7 @@ function useNow(ms = 1000): number {
 }
 
 /** Delete a server: the impact, the name typed; then back to the fleet. */
-export function useDeleteServer() {
+function useDeleteServer() {
   const tr = useTr();
   const confirm = useConfirm();
   const toast = useToast();
@@ -1090,7 +1090,7 @@ type NodeTraffic = {
   top_users: { user_id: string; email: string | null; billed_bytes: number }[];
 };
 
-export function useNodeTraffic(id: string) {
+function useNodeTraffic(id: string) {
   const to = siteToday();
   const from = daysBefore(to, 29);
   return useQuery({
@@ -1750,7 +1750,7 @@ function useDomainCheck() {
   return { res, setRes, checking, check };
 }
 
-export function CheckResult({ res }: { res: ReturnType<typeof useDomainCheck>["res"] }) {
+function CheckResult({ res }: { res: ReturnType<typeof useDomainCheck>["res"] }) {
   const tr = useTr();
   if (!res) return null;
   const color = {

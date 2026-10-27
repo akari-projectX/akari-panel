@@ -53,7 +53,7 @@ export type Subscription = {
   speed_limit_mbps: number | null;
   status: "active" | "expired" | "over_quota" | "banned";
 };
-export type BanInfo = {
+type BanInfo = {
   reason: string | null;
   banned_at: string | null;
   banned_by_id: string | null;
@@ -82,7 +82,7 @@ function ymd(d: Date): string {
 }
 
 /** `day` + n days (YYYY-MM-DD). */
-export function addDays(day: string, n: number): string {
+function addDays(day: string, n: number): string {
   const d = new Date(`${day}T00:00:00Z`);
   d.setUTCDate(d.getUTCDate() + n);
   return ymd(d);
@@ -106,7 +106,7 @@ const MONTHS: Record<string, number> = {
 };
 
 /** End day of a term started on `from` (null = no expiry, undefined = unknown). */
-export function termEnd(from: string, period: string, days: number | null): string | null | undefined {
+function termEnd(from: string, period: string, days: number | null): string | null | undefined {
   if (MONTHS[period]) return addMonths(from, MONTHS[period]);
   if (period === "days") return days ? addDays(from, days) : undefined;
   if (period === "onetime") return days ? addDays(from, days) : null;

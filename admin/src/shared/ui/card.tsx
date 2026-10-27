@@ -31,10 +31,6 @@ export function CardHeader({
   );
 }
 
-export function CardBody({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("px-4 pt-2 pb-4", className)}>{children}</div>;
-}
-
 /** System-settings style group: rounded list, hairline separators, label left / control right. */
 export function Group({
   title,

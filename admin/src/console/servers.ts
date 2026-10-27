@@ -4,8 +4,6 @@
 // touches it (a plan saved refreshes the groups' plan lists and back).
 import { useQuery } from "@tanstack/react-query";
 import { get } from "../shared/api";
-import type { Tr } from "../shared/i18n";
-import type { Tone } from "../shared/ui/badge";
 import type { NodeGroup, PlanView, ServerView } from "./types";
 
 export const serversQuery = { queryKey: ["servers"], queryFn: () => get<ServerView[]>("/servers") };
@@ -31,12 +29,4 @@ export function holdersOf(entranceIds: string[], groups: NodeGroup[], plans: Pla
   const ids = new Set(entranceIds);
   const gs = new Set(groups.filter((g) => g.entrance_ids.some((e) => ids.has(e))).map((g) => g.id));
   return plans.filter((p) => p.group_ids.some((g) => gs.has(g))).reduce((n, p) => n + p.active_users, 0);
-}
-
-export function serverState(s: ServerView, tr: Tr): [string, Tone] {
-  if (s.deleting_at) return [tr("删除中", "Deleting"), "neutral"];
-  if (!s.enrolled) return [tr("待安装", "Not installed"), "info"];
-  if (s.traffic_quota.exceeded_at) return [tr("超额停用", "Over quota"), "danger"];
-  if (s.online) return [tr("在线", "Online"), "success"];
-  return [tr("离线", "Offline"), "danger"];
 }

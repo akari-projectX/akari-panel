@@ -1,4 +1,4 @@
-import type { Offer, PayMethod } from '@/api';
+import type { Offer } from '@/api';
 import { PERIOD_MONTHS, type StatusTone } from '@/lib/format';
 
 /**
@@ -17,16 +17,6 @@ export function savePercent(offers: Offer[], o: Offer): number | null {
   const p = Math.round((1 - o.price_cents / (month.price_cents * m)) * 100);
   return p >= 5 ? p : null;
 }
-
-/** 支付方式下面的一行说明（按面板的种类；不认得的不写） */
-export const METHOD_HINT: Record<string, string> = {
-  alipay_f2f: '扫码付款',
-  epay: '跳转到收银台',
-  coinpayments: '加密货币，跳转到收银台',
-  coinbase: '加密货币，跳转到收银台',
-};
-
-export const methodHint = (m: PayMethod): string | undefined => METHOD_HINT[m.kind];
 
 /**
  * 一个地址能不能交给浏览器打开：只挡会执行代码的协议。

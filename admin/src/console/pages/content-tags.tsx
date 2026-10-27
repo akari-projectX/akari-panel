@@ -39,7 +39,7 @@ export type AnnouncementTag = {
 };
 
 /** The preset colour keys, in the palette's order (the server accepts exactly these). */
-export const TAG_COLORS = [
+const TAG_COLORS = [
   "red",
   "orange",
   "amber",
@@ -53,7 +53,7 @@ export const TAG_COLORS = [
   "slate",
 ] as const;
 
-export function colorName(c: string, tr: Tr) {
+function colorName(c: string, tr: Tr) {
   return (
     (
       {

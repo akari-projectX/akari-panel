@@ -6,7 +6,7 @@ import { ApiError } from "../../shared/api";
 import { apiBase } from "../../shared/base";
 
 /** The file name of a `Content-Disposition` header, if any. */
-export function dispositionName(header: string | null): string | null {
+function dispositionName(header: string | null): string | null {
   if (!header) return null;
   const star = /filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i.exec(header);
   if (star) {

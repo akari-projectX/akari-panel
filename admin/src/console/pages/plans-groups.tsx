@@ -32,7 +32,7 @@ import { useGroups, usePlanList, useServers } from "../servers";
 import type { NodeGroup, PlanView } from "../types";
 
 /** The delete confirmation of a group (menu and editor share it). */
-export function useDeleteGroup() {
+function useDeleteGroup() {
   const tr = useTr();
   const confirm = useConfirm();
   const toast = useToast();
@@ -278,7 +278,7 @@ function GroupCard({
  * New / edit a node group (lg dialog). `onSaved` gets the group's id (the
  * plan editor ticks a group created from inside it).
  */
-export function GroupEditor({
+function GroupEditor({
   group,
   groups,
   plans,

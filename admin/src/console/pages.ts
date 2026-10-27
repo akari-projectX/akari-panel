@@ -66,7 +66,7 @@ function prefetchData(id: string): Promise<void> {
 }
 
 /** Start loading a page's chunk (idempotent: the module cache dedupes) and its first data. */
-export function prefetchPage(id: string): void {
+function prefetchPage(id: string): void {
   void PAGES[id]?.().catch(() => {});
   void prefetchData(id);
 }

@@ -1123,9 +1123,6 @@ export const EN: Record<string, string> = {
   '密码要求': 'Password requirements',
   '通知': 'Notifications',
   /* ── 门户 v2：商店、订单 ── */
-  '扫码付款': 'Scan to pay',
-  '跳转到收银台': 'Pay on the checkout page',
-  '加密货币，跳转到收银台': 'Crypto: pay on the checkout page',
   '订单进度': 'Order progress',
   '付款二维码': 'Payment QR code',
   '按状态筛选': 'Filter by status',

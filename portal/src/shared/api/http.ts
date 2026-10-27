@@ -43,7 +43,7 @@ export function onSessionEvent(fn: Listener): () => void {
 /* 这几个请求的 401 是「没登录」的正常答复，不是「会话中途失效」，不广播 */
 const QUIET_401 = new Set([`${apiBase}/me`, `${authBase}/login`, `${authBase}/passkey/login`]);
 
-export async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(url, {
     credentials: 'same-origin',
     ...init,

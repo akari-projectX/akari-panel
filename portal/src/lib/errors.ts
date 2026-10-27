@@ -11,7 +11,7 @@ import { t } from './i18n.svelte';
 type Vars = Record<string, string | number>;
 
 /** 错误的占位符：params 原样，外加每个 `<p>_cents` 的 `<p>_yuan` */
-export function errorVars(params: ApiError['params']): Vars {
+function errorVars(params: ApiError['params']): Vars {
   const vars: Vars = {};
   for (const [k, v] of Object.entries(params)) {
     if (v == null) continue;

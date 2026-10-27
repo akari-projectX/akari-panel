@@ -28,7 +28,6 @@ import {
 } from "react";
 import { cn } from "../../shared/cn";
 import { useTr, type Tr } from "../../shared/i18n";
-import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Input, Kbd, MOD_KEY, Switch } from "../../shared/ui/form";
 import { Dialog } from "../../shared/ui/dialog";
@@ -59,7 +58,7 @@ export type SaveRegistry = {
   bump: () => void;
 };
 
-export const SaveContext = createContext<SaveRegistry | null>(null);
+const SaveContext = createContext<SaveRegistry | null>(null);
 
 /** Register a form part with the section's save bar. */
 export function useSavePart(part: SavePart): void {
@@ -255,7 +254,7 @@ export function SectionForm({
  * the bottom of the window (above the phone tab bar); `style` aligns it with
  * the content column.
  */
-export function SaveBar({
+function SaveBar({
   count,
   errors,
   saving,
@@ -371,12 +370,6 @@ export function intError(raw: string, min: number, max: number, tr: Tr, blankOk 
   const n = Number(t);
   if (n < min || n > max) return tr(`请输入 ${min}–${max} 的整数`, `Enter a whole number from ${min} to ${max}`);
   return undefined;
-}
-
-/** v2 name: integer in [min, max]; `blank` = what an empty field means (then blank is allowed). */
-export function intErr(raw: string, min: number, max: number, tr: Tr, blank?: string): string | undefined {
-  const e = intError(raw, min, max, tr, blank !== undefined);
-  return e && blank && raw.trim() !== "" ? tr(`${e}，留空 = ${blank}`, `${e}; blank = ${blank}`) : e;
 }
 
 /** The integer of a validated field (null = blank). */
@@ -542,27 +535,6 @@ export function SwitchRow({
   );
 }
 
-/** A read-only line in a group (label left, value right). */
-export function InfoRow({
-  label,
-  description,
-  children,
-}: {
-  label: ReactNode;
-  description?: ReactNode;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 py-2.5">
-      <div className="min-w-0 flex-1 basis-56">
-        <div className="text-body font-medium">{label}</div>
-        {description && <div className="mt-0.5 text-footnote text-muted-foreground">{description}</div>}
-      </div>
-      {children && <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">{children}</div>}
-    </div>
-  );
-}
-
 /** The separate, red-outlined area at the bottom of a section. */
 export function DangerZone({ children }: { children: ReactNode }) {
   const tr = useTr();
@@ -576,17 +548,6 @@ export function DangerZone({ children }: { children: ReactNode }) {
         {children}
       </div>
     </section>
-  );
-}
-
-/** "Only the owner may change this" (R47). */
-export function OwnerBadge() {
-  const tr = useTr();
-  return (
-    <Badge tone="neutral">
-      <Lock aria-hidden="true" />
-      {tr("仅所有者可修改", "Owner only")}
-    </Badge>
   );
 }
 

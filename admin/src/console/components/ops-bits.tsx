@@ -3,7 +3,6 @@
 // times and the small "settings live elsewhere" link (v2 ops-bits.tsx).
 import {
   Activity,
-  ChevronRight,
   Cpu,
   FileWarning,
   Gauge,
@@ -15,23 +14,8 @@ import {
   Unplug,
   type LucideIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { Link } from "react-router";
 import { daysBefore, siteToday } from "../../shared/format";
 import { trFor, type Lang, type Tr } from "../../shared/i18n";
-
-export const ALERT_KINDS = [
-  "offline",
-  "cpu",
-  "memory",
-  "disk",
-  "latency",
-  "cert",
-  "agent_cert",
-  "last_error",
-  "entrance_down",
-  "traffic_quota",
-] as const;
 
 /** Alert kind → name (same words as the server page's alert rules). */
 export function alertKindName(k: string, tr: Tr): string {
@@ -48,26 +32,6 @@ export function alertKindName(k: string, tr: Tr): string {
         last_error: tr("配置应用失败", "Apply failed"),
         entrance_down: tr("中转入口不可用", "Relay entrance down"),
         traffic_quota: tr("流量额度已用完", "Traffic quota used up"),
-      } as Record<string, string>
-    )[k] ?? k
-  );
-}
-
-/** Short kind label for chips ("CPU", "离线"). */
-export function alertKindShort(k: string, tr: Tr): string {
-  return (
-    (
-      {
-        offline: tr("离线", "Offline"),
-        cpu: "CPU",
-        memory: tr("内存", "Memory"),
-        disk: tr("磁盘", "Disk"),
-        latency: tr("测速", "Probes"),
-        cert: tr("证书", "Certificate"),
-        agent_cert: tr("Agent 证书", "Agent cert"),
-        last_error: tr("配置应用", "Apply"),
-        entrance_down: tr("中转入口", "Relay entrance"),
-        traffic_quota: tr("流量额度", "Traffic quota"),
       } as Record<string, string>
     )[k] ?? k
   );
@@ -119,19 +83,6 @@ export function waitText(iso: string | null | undefined, lang: Lang, until?: str
   if (d) return tr(`${d} 天 ${h} 小时`, `${d}d ${h}h`);
   if (h) return tr(`${h} 小时 ${mm} 分`, `${h}h ${mm}m`);
   return m < 1 ? tr("不到 1 分钟", "<1 min") : tr(`${mm} 分钟`, `${mm} min`);
-}
-
-/** Small link line: "阈值与通道在 系统设置 → 告警通道与阈值 ›". */
-export function SettingsHint({ to, children }: { to: string; children: ReactNode }) {
-  return (
-    <Link
-      to={to}
-      className="inline-flex items-center gap-0.5 text-footnote text-muted-foreground transition-colors hover:text-primary"
-    >
-      {children}
-      <ChevronRight className="size-3.5" aria-hidden="true" />
-    </Link>
-  );
 }
 
 /** Day header label for a site day (YYYY-MM-DD): 今天 / 昨天 / 10 月 10 日 周六. */

@@ -8,7 +8,7 @@ import { R } from './routes';
  *   · public —— 重置密码、注销结果、条款、隐私：谁都能看（访客布局）。
  * 还没迁移的页面是 Placeholder（页面名 + 「此页面迁移中」），后续 PR 逐个换成真页面。
  */
-export type Layout = 'dash' | 'guest' | 'public';
+type Layout = 'dash' | 'guest' | 'public';
 export type PageProps = { title: string; params?: Record<string, string> };
 /** 页面组件收到 title、params；用不到它们的页面可以不声明 props */
 export type PageModule = { default: Component<PageProps> | Component<Record<string, never>> };

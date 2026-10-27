@@ -16,7 +16,7 @@ import { allowed, R, type Scope } from './routes';
  */
 
 /** effectiveType 只有 slow-2g / 2g / 3g / 4g 四档；拿不到这个值的浏览器（Safari、Firefox）按快网络处理 */
-export function fastNetwork(): boolean {
+function fastNetwork(): boolean {
   const net = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
   if (net?.saveData) return false;
   return !net?.effectiveType || net.effectiveType === '4g';
