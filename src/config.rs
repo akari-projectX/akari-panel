@@ -2,20 +2,14 @@
 //! directory, database, Valkey, listeners. Everything an operator changes
 //! at runtime lives in the database (系统设置, `settings.rs`); internal
 //! tuning knobs are built-in constants (`Limits`). There is no file
-//! fallback and no precedence merging.
-//!
-//! Keys of older releases are OBSOLETE, never an error: `load` takes them
-//! out of the file before the strict parse (typos in the kept sections
-//! still fail, `deny_unknown_fields`) and keeps them in `Legacy`, which
-//! only the one-time import (`settings::import_legacy`, W24 pattern for
-//! `[payments]`) and `config check` read.
+//! fallback and no precedence merging. The parse is strict
+//! (`deny_unknown_fields`): any other key is an error.
 
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -31,9 +25,6 @@ pub struct PanelConfig {
     /// `AKARI_TEST_LIMITS` (test runs only, logged) shortens a few timers.
     #[serde(skip)]
     pub limits: Limits,
-    /// Obsolete keys found in the file (import / warnings only).
-    #[serde(skip)]
-    pub legacy: Legacy,
 }
 
 /// Prometheus metrics (M1-4). Served on its OWN listener, never on the
@@ -98,7 +89,6 @@ impl Default for PanelConfig {
             metrics: MetricsConfig::default(),
             tls_ask: TlsAskConfig::default(),
             limits: Limits::default(),
-            legacy: Legacy::default(),
         }
     }
 }
@@ -140,187 +130,14 @@ impl PanelConfig {
         Ok(cfg)
     }
 
-    /// Parse a panel.toml: obsolete keys go to `legacy`, the rest is
-    /// parsed strictly (unknown keys are errors).
+    /// Parse a panel.toml strictly (unknown keys are errors).
     pub fn parse(text: &str) -> Result<Self> {
-        let mut table: toml::Table = toml::from_str(text)?;
-        let legacy = Legacy::extract(&mut table);
-        let mut cfg: PanelConfig = toml::Value::Table(table).try_into()?;
-        cfg.legacy = legacy;
-        Ok(cfg)
+        Ok(toml::from_str(text)?)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Obsolete keys (W24/W25)
-// ---------------------------------------------------------------------------
-
-/// What became of an obsolete key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fate {
-    /// Moved to 系统设置 (the page named): imported once, then ignored.
-    Moved(&'static str),
-    /// A built-in constant now: ignored.
-    Constant,
-    /// The feature itself is gone (why, shown to the operator): ignored.
-    Removed(&'static str),
-}
-
-/// Every key earlier releases read from panel.toml and this one does not,
-/// as "section.key" (a whole obsolete section: "section.*").
-pub const OBSOLETE: &[(&str, Fate)] = &[
-    ("web.advertised_names", Fate::Moved("节点通信 → 证书域名")),
-    ("web.sub_domain", Fate::Moved("站点 → 订阅域名")),
-    (
-        "web.trust_cloudflare",
-        Fate::Moved("站点 → 信任 Cloudflare"),
-    ),
-    (
-        "web.cloudflare_ranges",
-        Fate::Moved("安全 → Cloudflare 网段"),
-    ),
-    ("grpc.advertise", Fate::Moved("节点通信 → 节点通信域名")),
-    ("grpc.server_name", Fate::Moved("节点通信 → 证书域名")),
-    ("grpc.lease_seconds", Fate::Constant),
-    ("install.public_url", Fate::Moved("站点 → 主域名")),
-    (
-        "install.tls_pin",
-        Fate::Moved("节点通信 → 安装命令公钥钉扎"),
-    ),
-    (
-        "install.fallback_binary_url",
-        Fate::Moved("节点通信 → 备用下载地址"),
-    ),
-    ("install.token_ttl_secs", Fate::Constant),
-    ("install.rate_per_ip", Fate::Constant),
-    ("install.rate_window_secs", Fate::Constant),
-    ("probe.interval_secs", Fate::Moved("测速 → 测速间隔")),
-    ("probe.urls", Fate::Moved("测速 → 测速地址")),
-    ("probe.panel_tcp", Fate::Moved("测速 → 面板 TCP 测速")),
-    ("probe.timeout_ms", Fate::Constant),
-    ("probe.attempts", Fate::Constant),
-    ("probe.manual_cooldown_secs", Fate::Constant),
-    ("acme.directory_url", Fate::Moved("节点通信 → ACME 目录")),
-    ("acme.email", Fate::Moved("节点通信 → ACME 邮箱")),
-    (
-        "audit.retention_days",
-        Fate::Moved("安全 → 审计日志保留天数"),
-    ),
-    (
-        "traffic.daily_retention_days",
-        Fate::Moved("安全 → 流量明细保留天数"),
-    ),
-    ("traffic.max_rate_bytes_per_sec", Fate::Constant),
-    ("traffic.node_max_rate_bytes_per_sec", Fate::Constant),
-    ("traffic.node_burst_secs", Fate::Constant),
-    ("traffic.departed_grace_secs", Fate::Constant),
-    (
-        "auth.require_admin_2fa",
-        Fate::Removed("two-factor authentication (TOTP) was removed in v0.4; use passkeys"),
-    ),
-    ("agent.remove_mode", Fate::Moved("节点通信 → 撤权方式")),
-    ("agent.cert_validity_secs", Fate::Constant),
-    ("agent.enroll_token_ttl_secs", Fate::Constant),
-    ("agent.enroll_rate_per_ip", Fate::Constant),
-    ("agent.enroll_rate_global", Fate::Constant),
-    ("agent.enroll_rate_window_secs", Fate::Constant),
-    ("sub.rate_per_ip", Fate::Constant),
-    ("sub.rate_per_token", Fate::Constant),
-    ("sub.rate_window_secs", Fate::Constant),
-    (
-        "updates.release_keys",
-        Fate::Moved("安全 → 额外信任的发布公钥"),
-    ),
-    ("updates.max_concurrent_downloads", Fate::Constant),
-    ("tls_ask.rate_per_sec", Fate::Constant),
-    ("alerts.eval_interval_secs", Fate::Constant),
-    (
-        "alerts.telegram_api_url",
-        Fate::Moved("告警 → Telegram API 地址"),
-    ),
-    ("payments.*", Fate::Moved("支付")),
-];
-
-/// The fate of an obsolete "section.key" (None = not obsolete).
-pub fn fate(key: &str) -> Option<Fate> {
-    let section = key.split_once('.').map(|(s, _)| s).unwrap_or(key);
-    OBSOLETE
-        .iter()
-        .find_map(|(k, f)| (*k == key || k.strip_suffix(".*") == Some(section)).then_some(*f))
-}
-
-/// Obsolete keys found in a panel.toml, verbatim ("section.key" → value).
-/// Read leniently: a value of the wrong type is reported and skipped, it
-/// never stops the start.
-#[derive(Debug, Clone, Default)]
-pub struct Legacy {
-    pub keys: BTreeMap<String, toml::Value>,
-}
-
-impl Legacy {
-    /// Move every obsolete key out of `table`. Kept keys and unknown keys
-    /// (typos) stay; an obsolete section left empty is removed.
-    pub fn extract(table: &mut toml::Table) -> Self {
-        let mut keys = BTreeMap::new();
-        let sections: Vec<String> = table.keys().cloned().collect();
-        for section in sections {
-            let whole = OBSOLETE
-                .iter()
-                .any(|(k, _)| k.strip_suffix(".*") == Some(section.as_str()));
-            let Some(toml::Value::Table(sub)) = table.get_mut(&section) else {
-                continue;
-            };
-            if whole {
-                if let Some(v) = table.remove(&section) {
-                    keys.insert(format!("{section}.*"), v);
-                }
-                continue;
-            }
-            let names: Vec<String> = sub.keys().cloned().collect();
-            for name in names {
-                let dotted = format!("{section}.{name}");
-                if fate(&dotted).is_some()
-                    && let Some(v) = sub.remove(&name)
-                {
-                    keys.insert(dotted, v);
-                }
-            }
-            // A section that only held obsolete keys (e.g. [probe]) and is
-            // not part of the kept schema goes away entirely.
-            if sub.is_empty() && !KEPT_SECTIONS.contains(&section.as_str()) {
-                table.remove(&section);
-            }
-        }
-        Self { keys }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-
-    /// The obsolete keys found (sorted). Keys of a known section that are
-    /// neither kept nor obsolete stay in the file table: the strict parse
-    /// rejects them as typos.
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.keys.keys().map(String::as_str)
-    }
-
-    /// A typed obsolete value; Err = present but unreadable.
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<Result<T, String>> {
-        let v = self.keys.get(key)?;
-        Some(
-            v.clone()
-                .try_into()
-                .map_err(|e: toml::de::Error| e.message().to_string()),
-        )
-    }
-}
-
-/// Sections of the kept schema (the strict parse knows them).
-const KEPT_SECTIONS: &[&str] = &["web", "grpc", "metrics", "tls_ask"];
-
-// ---------------------------------------------------------------------------
-// Built-in constants (formerly panel.toml knobs; src/CLAUDE.md)
+// Built-in constants (src/CLAUDE.md)
 // ---------------------------------------------------------------------------
 
 /// Fail-closed lease granted to agents after every successful read of their
@@ -601,85 +418,22 @@ impl RemoveMode {
 mod tests {
     use super::*;
 
-    /// The minimal file parses; obsolete keys of every older release go to
-    /// `legacy` instead of failing the start; typos still fail.
+    /// The shipped examples parse; any other key (a typo, a key that moved
+    /// to 系统设置) fails the start.
     #[test]
-    fn obsolete_keys_are_extracted_typos_still_fail() {
-        let old = r#"
-data_dir = "/var/lib/akari"
-[web]
-bind = "127.0.0.1:8080"
-advertised_names = ["panel.example.com"]
-sub_domain = "sub.example.com"
-cookie_secure = true
-[grpc]
-bind = "0.0.0.0:8443"
-advertise = "panel.example.com:8443"
-server_name = "panel.example.com"
-lease_seconds = 7200
-[probe]
-urls = ["https://example.com/204"]
-[updates]
-release_keys = ["abc label"]
-max_concurrent_downloads = 4
-[payments.alipay]
-app_id = "1"
-[tls_ask]
-bind = "127.0.0.1:8082"
-rate_per_sec = 5
-"#;
-        let c = PanelConfig::parse(old).unwrap();
-        assert_eq!(c.grpc.bind.port(), 8443);
-        assert_eq!(c.tls_ask.bind.map(|b| b.port()), Some(8082));
-        let names: Vec<&str> = c.legacy.names().collect();
-        assert_eq!(
-            names,
-            [
-                "grpc.advertise",
-                "grpc.lease_seconds",
-                "grpc.server_name",
-                "payments.*",
-                "probe.urls",
-                "tls_ask.rate_per_sec",
-                "updates.max_concurrent_downloads",
-                "updates.release_keys",
-                "web.advertised_names",
-                "web.sub_domain",
-            ]
-        );
-        assert_eq!(
-            c.legacy.get::<Vec<String>>("web.advertised_names"),
-            Some(Ok(vec!["panel.example.com".to_string()]))
-        );
-        assert_eq!(c.legacy.get::<u64>("grpc.lease_seconds"), Some(Ok(7200)));
-        assert!(c.legacy.get::<u64>("web.sub_domain").unwrap().is_err());
-        // Typos in a kept section, an unknown section and an unknown key
-        // inside an obsolete section's neighbour all still fail.
+    fn unknown_keys_fail() {
+        PanelConfig::parse(include_str!("../deploy/panel.toml.example")).unwrap();
+        PanelConfig::parse(include_str!("../deploy/panel.toml.compose.example")).unwrap();
         for bad in [
             "[web]\nbnd = \"127.0.0.1:1\"",
             "[nope]\nx = 1",
             "datadir = \"x\"",
-            "[probe]\nurl = [\"https://x/\"]",
+            "[grpc]\nadvertise = \"panel.example.com:8443\"",
+            "[probe]\nurls = [\"https://x/\"]",
+            "[payments.alipay]\napp_id = \"1\"",
         ] {
             assert!(PanelConfig::parse(bad).is_err(), "{bad}");
         }
-        // The minimal example parses with nothing obsolete.
-        let minimal = PanelConfig::parse(include_str!("../deploy/panel.toml.example")).unwrap();
-        assert!(minimal.legacy.is_empty(), "{:?}", minimal.legacy.keys);
-        let compose =
-            PanelConfig::parse(include_str!("../deploy/panel.toml.compose.example")).unwrap();
-        assert!(compose.legacy.is_empty());
-    }
-
-    #[test]
-    fn every_obsolete_key_has_one_fate() {
-        for (k, _) in OBSOLETE {
-            assert!(fate(k).is_some(), "{k}");
-            assert_eq!(OBSOLETE.iter().filter(|(x, _)| x == k).count(), 1, "{k}");
-        }
-        assert_eq!(fate("payments.alipay"), Some(Fate::Moved("支付")));
-        assert_eq!(fate("web.bind"), None);
-        assert_eq!(fate("grpc.lease_seconds"), Some(Fate::Constant));
     }
 
     #[test]
