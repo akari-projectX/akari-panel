@@ -1112,7 +1112,7 @@ agent 的做法（详见 akari-agent 的 `acme.go`）：
   更改 节点域名 会向节点发送新配置（重建：其连接断开一次）。节点没有设置公网地址时，订阅使用 节点域名 作为服务器地址。
 - 不支持：ZeroSSL / EAB CA（任何不需要 external account binding 的 CA 都可通过 `directory_url` 使用）、每个节点多个域名、DNS-01。
 
-## 3h. 审计规则（节点拦截，W29，agent 能力 `block-rules`）
+## 3h. 审计规则（节点拦截，W29）
 
 后台「审计规则」在节点上拦截指定流量（xray 路由 + `blackhole` 出站，被拦截的连接直接关闭）。规则在**面板**里编译好，agent 只把结果写进 xray 路由。
 
@@ -1139,9 +1139,8 @@ agent 的做法（详见 akari-agent 的 `acme.go`）：
   - **保留**：raw TCP / TLS / REALITY（含 Vision）、WebSocket、HTTPUpgrade、VMess TCP、Shadowsocks 2022、以及 TLS/REALITY 上的 XHTTP（一条长 HTTP/2 请求）。
   - **断开一次、客户端自动重连**：gRPC（流属于监听端的 HTTP/2 服务）、明文 HTTP 上的 XHTTP（客户端 packet-up 模式，每次上传都是新请求）、Hysteria 2（QUIC 连接属于监听端）。
 - **修改规则内容**（增删改规则、开关某个规则集）**不断开任何连接**：agent 原子替换整套路由规则，不重建入站、不重建 xray。规则只作用于新建立的连接（路由在每次分发时决定）：已经建立的连接即使命中新规则也继续转发，直到客户端重连。
-- agent 版本过旧（没有 `block-rules` 能力）时开关无效，`GET /api/v1/nodes/{id}/block-rules` 的 `agent_supported` 为 false。
 
-**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、agent 是否支持、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（按站点时区的日，见 §2b「站点时区」）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
+**统计**：`GET /api/v1/nodes/{id}/block-rules?days=7`（1–90）返回开关状态、当前生效的规则版本是否与面板一致（`in_sync`、`error`）、以及最近 N 天（按站点时区的日，见 §2b「站点时区」）每条规则的拦截次数；规则列表里的 `hits_7d` 是全部节点近 7 天合计。**只记录每个节点每条规则的拦截次数，不记录任何用户或访问目标。**日数据保留 90 天。
 
 ## 3c. Resource footprint (measured)（资源占用，实测）
 
@@ -1164,8 +1163,7 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
   主机 CPU/内存/负载/数据目录磁盘、进程内存、版本、持有的 agent 连接数、数据库连接池、后台任务统计）。
   30 秒没有心跳 = 已退出。每次重启 / 升级都是新的实例 id：同一主机（按主机名）上有更晚启动的在线实例时，
   已退出的旧实例立即移除；否则 10 分钟后移除。后台任务统计只计在线实例。多实例部署时任一实例都能给出全部实例的状态。
-  主机 CPU / 内存 / 负载读自 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`：服务沙箱把它们藏起来时（systemd `ProcSubset=pid`），
-  页面显示「未知」并提示原因。
+  主机 CPU / 内存 / 负载读自 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`；读不到的值显示「未知」。
 - **PostgreSQL**：版本、是否只读副本、连接数 / `max_connections`、库大小、往返延迟。
 - **Valkey**：版本、内存、客户端数、运行时长、往返延迟。
 - **Caddy（反向代理）**：经系统设置的主域名探测（TCP → TLS（证书到期时间）→ `HEAD /`，任何 HTTP

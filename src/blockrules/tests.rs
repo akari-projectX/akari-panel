@@ -761,7 +761,7 @@ async fn ingest_exactly_once_and_bounded() {
     db.drop().await;
 }
 
-/// GET /nodes/{id}/block-rules: switch, capability, sync state from the
+/// GET /nodes/{id}/block-rules: switch, sync state from the
 /// heartbeat blob, daily hits with rule names, bounded range.
 #[tokio::test]
 async fn node_view_endpoint() {
@@ -772,11 +772,6 @@ async fn node_view_endpoint() {
     let admin = client_for(&state, db.admin().await).await;
     let node = db.node().await;
     sqlx::query("UPDATE nodes SET block_rules_enabled = true WHERE id = $1")
-        .bind(node)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE servers SET agent_capabilities = ARRAY['block-rules'] WHERE id = $1")
         .bind(node)
         .execute(&db.pool)
         .await
@@ -798,7 +793,6 @@ async fn node_view_endpoint() {
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(v["enabled"], true);
-    assert_eq!(v["agent_supported"], true);
     assert_eq!(v["in_sync"], true, "{v}");
     assert_eq!(v["days"][0]["hits"], 7);
     assert_eq!(v["days"][0]["name"], "BitTorrent 协议识别");
@@ -824,11 +818,10 @@ async fn node_view_endpoint() {
     db.drop().await;
 }
 
-/// End to end over the real gRPC server: a capable agent gets the (off)
+/// End to end over the real gRPC server: an agent gets the (off)
 /// policy after its Hello, the compiled one when the switch turns on and
 /// again when a rule changes, never a Snapshot for either; its heartbeat
-/// counters land in the daily table once. An agent without the
-/// capability never gets a policy.
+/// counters land in the daily table once.
 #[tokio::test]
 async fn session_sends_policy_and_stores_counters() {
     use crate::pb::agent_up::Msg as UpMsg;
@@ -841,7 +834,7 @@ async fn session_sends_policy_and_stores_counters() {
     let panel = PanelHarness::start(&db).await;
     let creds = panel.register(&db, n).await;
     let mut agent = panel.connect(&creds).await.unwrap();
-    agent.hello_caps((0, 0), String::new(), &[CAPABILITY]).await;
+    agent.hello((0, 0), String::new()).await;
     let mut first = None;
     let mut snap = None;
     while first.is_none() || snap.is_none() {
@@ -926,22 +919,6 @@ async fn session_sends_policy_and_stores_counters() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     assert_eq!(got, [(bt as i64, 9)]);
-    drop(agent);
-
-    // No capability: no policy, however the switch stands.
-    let mut agent = panel.connect(&creds).await.unwrap();
-    agent.hello_caps((0, 0), String::new(), &["metrics"]).await;
-    panel.state.wakeups().wake(n);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(800);
-    while let Ok(m) = tokio::time::timeout_at(deadline, agent.next()).await {
-        match m {
-            Some(Ok(DownMsg::BlockPolicy(_))) => {
-                panic!("policy sent to an agent without the capability")
-            }
-            Some(Ok(_)) => {}
-            _ => break,
-        }
-    }
     drop(agent);
     panel.stop().await;
     db.drop().await;

@@ -192,9 +192,9 @@ async fn server_for_serial_from(
 /// served the empty desired state (no inbounds, no users) and their
 /// Hello/Ack are never trusted for convergence (N5). Protocol 8 is the first
 /// whose xray removes Shadowsocks 2022 users in place, so every removal and
-/// rotation is an ordinary delta; the capabilities the panel reads
-/// (`metrics`, `latency`, `updater`, `metrics-presence`, `block-rules`,
-/// `source-filter`) are all present from it on.
+/// rotation is an ordinary delta; it also has every optional feature the
+/// panel talks to (machine metrics, latency tests, the updater, block rules,
+/// source filters), so none of them is negotiated per session.
 pub const MIN_AGENT_PROTOCOL: u32 = 8;
 
 /// A server's user set as the agent must run it: user id -> inbound tag ->
@@ -998,13 +998,9 @@ struct Session {
     /// Hello / ack of the empty state, while retiring.
     hello: Notify,
     retire_ack: Notify,
-    /// W11: the agent listed the "latency" capability in its Hello.
-    latency_capable: AtomicBool,
     /// The LatencyProbeConfig last sent on this stream (None = none sent
     /// yet; re-sent when the token or, W12, the 系统设置 values change).
     probe_sent: Mutex<Option<crate::pb::LatencyProbeConfig>>,
-    /// W29: the agent listed the "block-rules" capability in its Hello.
-    block_capable: AtomicBool,
     /// The BlockPolicy last sent on this stream (None = none sent yet).
     block_sent: Mutex<Option<crate::pb::BlockPolicy>>,
     /// The block counters last stored from this stream (repeated
@@ -1037,9 +1033,7 @@ impl Session {
             closed: tokio::sync::watch::channel(false).0,
             hello: Notify::new(),
             retire_ack: Notify::new(),
-            latency_capable: AtomicBool::new(false),
             probe_sent: Mutex::new(None),
-            block_capable: AtomicBool::new(false),
             block_sent: Mutex::new(None),
             block_stored: Mutex::new(None),
             state,
@@ -1307,20 +1301,9 @@ async fn session<S>(
                         "failed to sync after hello",
                     );
                     on_hello_update(&sess, &hello).await;
-                    // W11: latency tests for agents that support them.
-                    let capable = hello.capabilities.iter().any(|c| c == "latency");
-                    if sess.latency_capable.swap(capable, Ordering::SeqCst) != capable || !capable {
-                        *lock_or_recover(&sess.probe_sent) = None;
-                    }
+                    // W11: the latency test settings; W29: the compiled
+                    // block policy, after every Hello.
                     maybe_send_probe(&sess).await;
-                    // W29: the compiled block policy, after every Hello.
-                    sess.block_capable.store(
-                        hello
-                            .capabilities
-                            .iter()
-                            .any(|c| c == crate::blockrules::CAPABILITY),
-                        Ordering::SeqCst,
-                    );
                     *lock_or_recover(&sess.block_sent) = None;
                     maybe_send_block_policy(&sess).await;
                 }
@@ -1340,9 +1323,7 @@ async fn session<S>(
                 }
                 Some(UpMsg::Heartbeat(hb)) => {
                     store_heartbeat(&state, server_id, &hb).await;
-                    if let Some(b) = hb.block.as_ref()
-                        && sess.block_capable.load(Ordering::SeqCst)
-                    {
+                    if let Some(b) = hb.block.as_ref() {
                         store_block_stats(&sess, b).await;
                     }
                     if let Some(h) = online_retry.take() {
@@ -1727,11 +1708,11 @@ async fn maybe_offer_update(sess: &Session) {
 }
 
 /// W11: send the latency test settings (and the latest "立即测速" token)
-/// to an agent with the "latency" capability: once per stream, and again
+/// to the agent: once per stream, and again
 /// whenever the token or the effective settings (W12: 系统设置, reload
 /// wakes every session) changed. Read on every wake/tick (one indexed row).
 async fn maybe_send_probe(sess: &Session) {
-    if !sess.latency_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
+    if sess.retiring() || sess.terminated() {
         return;
     }
     let requested = match crate::nodestat::requested_at(sess.state.pg(), sess.server_id).await {
@@ -1761,7 +1742,7 @@ async fn maybe_send_probe(sess: &Session) {
 /// last sent on this stream (the first one after every Hello, even "off":
 /// a restarted agent starts off, an agent that kept running may not).
 async fn maybe_send_block_policy(sess: &Session) {
-    if !sess.block_capable.load(Ordering::SeqCst) || sess.retiring() || sess.terminated() {
+    if sess.retiring() || sess.terminated() {
         return;
     }
     let policy = match crate::blockrules::server_policy(sess.state.pg(), sess.server_id).await {
@@ -2029,8 +2010,7 @@ fn heartbeat_value(hb: &Heartbeat) -> serde_json::Value {
     if let Some(b) = &hb.block {
         blob["block"] = crate::blockrules::status_json(b);
     }
-    // W28-a: the relay entrances' source allowlists (capability
-    // "source-filter"); agent text bounded like the certificate's.
+    // W28-a: the relay entrances' source allowlists (agent text bounded like the certificate's.
     if let Some(f) = &hb.source_filter {
         let err = crate::nodestat::agent_text(&f.error, 512);
         blob["source_filter"] = serde_json::json!({
@@ -3921,7 +3901,12 @@ mod tests {
                     None => return None,
                     Some(Err(st)) => return Some(Err(st)),
                     Some(Ok(PanelDown {
-                        msg: Some(DownMsg::Lease(_)),
+                        msg:
+                            Some(
+                                DownMsg::Lease(_)
+                                | DownMsg::LatencyProbe(_)
+                                | DownMsg::BlockPolicy(_),
+                            ),
                     })) => continue,
                     Some(Ok(PanelDown { msg: Some(m) })) => return Some(Ok(m)),
                     Some(Ok(PanelDown { msg: None })) => continue,

@@ -1610,9 +1610,15 @@ mod db_tests {
         // the offer without waiting for the reconcile tick.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let id = create(&db, req("v1.1.0")).await.unwrap();
-        let offer = match a.next().await {
-            Some(Ok(crate::pb::panel_down::Msg::UpdateOffer(o))) => o,
-            other => panic!("expected an update offer, got {other:?}"),
+        let offer = loop {
+            match a.next().await {
+                Some(Ok(crate::pb::panel_down::Msg::UpdateOffer(o))) => break o,
+                Some(Ok(
+                    crate::pb::panel_down::Msg::LatencyProbe(_)
+                    | crate::pb::panel_down::Msg::BlockPolicy(_),
+                )) => {}
+                other => panic!("expected an update offer, got {other:?}"),
+            }
         };
         assert_eq!(offer.rollout_id, id.to_string());
         assert_eq!(offer.signatures.len(), 1);

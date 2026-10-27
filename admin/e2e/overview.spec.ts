@@ -74,7 +74,7 @@ test("ST-01 ST-02 ST-03: verdict, panel instances, PostgreSQL, Valkey, proxy, ba
   // The verdict comes first: all fine, or the issues listed.
   await expect(page.locator("[data-verdict]")).toContainText(/全部正常|个问题需要关注/);
   await expect(page.getByText("当前实例")).toBeVisible();
-  await expect(page.getByRole("img", { name: /^CPU/ }).or(page.getByText(/ProcSubset=pid/))).toBeVisible();
+  await expect(page.getByRole("img", { name: /^CPU/ })).toBeVisible();
   await expect(page.getByText("面板进程内存")).toBeVisible();
   await expect(page.getByText("PostgreSQL", { exact: true })).toBeVisible();
   await expect(page.getByText("Valkey", { exact: true })).toBeVisible();
@@ -146,9 +146,8 @@ test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail que
   await expect(page).not.toHaveURL(/mail=/);
 });
 
-test("ST-05: exited instances are folded away; hidden /proc is explained", async ({ page }) => {
-  // The live answer, plus an exited instance and this instance's /proc hidden
-  // (a sandbox with ProcSubset=pid).
+test("ST-05: exited instances are folded away", async ({ page }) => {
+  // The live answer, plus an exited instance.
   await page.route(/\/api\/v1\/system\/status$/, async (route) => {
     const res = await route.fetch();
     const j = await res.json();
@@ -159,7 +158,6 @@ test("ST-05: exited instances are folded away; hidden /proc is explained", async
       load: null,
       mem_total_bytes: null,
       mem_used_bytes: null,
-      proc_hidden: true,
     };
     j.instances.push({
       ...me,
@@ -177,7 +175,6 @@ test("ST-05: exited instances are folded away; hidden /proc is explained", async
   await expect(page.getByText("1 个已退出的实例")).toBeVisible();
   await expect(page.getByText(/old-panel · v0\.4\.1-rc\.1/)).toBeVisible();
   await expect(page.getByText("失联")).toHaveCount(0);
-  await expect(page.getByText(/ProcSubset=pid/)).toBeVisible();
   // Only the live instance gets a card (its agent sessions, not the exited one's 42).
   await expect(page.getByText("agent 会话")).toHaveCount(1);
 });

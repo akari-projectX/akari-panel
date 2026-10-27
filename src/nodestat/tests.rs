@@ -804,7 +804,7 @@ async fn api_status_metrics_probe_and_portal_visibility() {
     db.drop().await;
 }
 
-/// End to end over the real gRPC server: a capable agent gets the probe
+/// End to end over the real gRPC server: an agent gets the probe
 /// config (and a fresh token after "立即测速"); its LatencyReport is
 /// stored; its heartbeat metrics reach Valkey and the history.
 #[tokio::test]
@@ -817,9 +817,7 @@ async fn session_probe_config_report_and_heartbeat() {
     let panel = PanelHarness::start(&db).await;
     let creds = panel.register(&db, n).await;
     let mut agent = panel.connect(&creds).await.unwrap();
-    agent
-        .hello_caps((0, 0), String::new(), &["metrics", "latency"])
-        .await;
+    agent.hello((0, 0), String::new()).await;
     let mut got_config = None;
     let mut snap = None;
     while got_config.is_none() || snap.is_none() {
@@ -928,7 +926,7 @@ async fn session_heartbeat_unknown_values() {
     let panel = PanelHarness::start(&db).await;
     let creds = panel.register(&db, n).await;
     let mut agent = panel.connect(&creds).await.unwrap();
-    agent.hello_caps((0, 0), String::new(), &["metrics"]).await;
+    agent.hello((0, 0), String::new()).await;
     loop {
         match agent.next().await {
             Some(Ok(DownMsg::Snapshot(_))) => break,

@@ -1090,7 +1090,6 @@ type FullNode = {
 };
 type BlockStatus = {
   enabled: boolean;
-  agent_supported: boolean;
   in_sync: boolean;
   error: string | null;
   days: { day: string; rule_id: number; name: string; hits: number }[];
@@ -1561,11 +1560,7 @@ function BlockSection({ status, on, onChange }: { status: BlockStatus; on: boole
         <span className="min-w-0 flex-1">
           <span className="block text-body font-semibold">{tr("出站拦截", "Outbound blocking")}</span>
           <span className="text-footnote text-muted-foreground">
-            {!status.agent_supported ? (
-              <span className="text-warning">
-                {tr("这台服务器的 agent 不支持，升级后生效", "This server's agent lacks support; update it")}
-              </span>
-            ) : status.enabled && !status.in_sync ? (
+            {status.enabled && !status.in_sync ? (
               <span className="text-warning">
                 {tr("规则已改，等待节点同步（约 30 秒）", "Changed; waiting for the node (about 30 s)")}
               </span>

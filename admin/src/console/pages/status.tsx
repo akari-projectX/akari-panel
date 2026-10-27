@@ -51,7 +51,6 @@ type Host = {
   disk_used_bytes: number | null;
   rss_bytes: number | null;
   /** /proc/stat, meminfo, loadavg hidden by the service sandbox. */
-  proc_hidden?: boolean;
 };
 type Instance = {
   id: string;
@@ -580,39 +579,21 @@ function InstanceCard({ i }: { i: Instance }) {
           </div>
         </div>
       </div>
-      {h.proc_hidden ? (
-        <div className="mx-4 mb-3 flex items-start gap-2.5 rounded-lg bg-window px-3 py-2.5 text-footnote ring-1 ring-border ring-inset">
-          <ShieldCheck className="mt-px size-4 shrink-0 text-info" aria-hidden="true" />
-          <div>
-            <div className="font-medium">
-              {tr("看不到这台主机的 CPU、内存和负载", "This host's CPU, memory and load are hidden")}
-            </div>
-            <div className="mt-0.5 text-muted-foreground">
-              {tr(
-                "服务沙箱（systemd 的 ProcSubset=pid）隐藏了 /proc/stat、/proc/meminfo、/proc/loadavg，所以这些显示为未知。",
-                "The service sandbox (systemd ProcSubset=pid) hides /proc/stat, /proc/meminfo and /proc/loadavg, so these are unknown.",
-              )}
-              {disk != null && tr(` 磁盘已用 ${disk}%。`, ` Disk ${disk}% used.`)}
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-4 gap-2 px-3 pb-3 max-sm:gap-1 max-sm:px-1">
-          {gauge("CPU", cpu, h.cores ? tr(`${h.cores} 核`, `${h.cores} cores`) : undefined)}
-          {gauge(tr("内存", "Memory"), mem, `${bytes(h.mem_used_bytes)} / ${bytes(h.mem_total_bytes)}`)}
-          {gauge(tr("负载", "Load"), load, h.load ? h.load.map((x) => x.toFixed(2)).join(" ") : "—")}
-          {gauge(
-            tr("磁盘", "Disk"),
-            disk,
-            h.disk_total_bytes != null
-              ? tr(
-                  `剩 ${bytes(h.disk_total_bytes - (h.disk_used_bytes ?? 0))}`,
-                  `${bytes(h.disk_total_bytes - (h.disk_used_bytes ?? 0))} free`,
-                )
-              : "—",
-          )}
-        </div>
-      )}
+      <div className="grid grid-cols-4 gap-2 px-3 pb-3 max-sm:gap-1 max-sm:px-1">
+        {gauge("CPU", cpu, h.cores ? tr(`${h.cores} 核`, `${h.cores} cores`) : undefined)}
+        {gauge(tr("内存", "Memory"), mem, `${bytes(h.mem_used_bytes)} / ${bytes(h.mem_total_bytes)}`)}
+        {gauge(tr("负载", "Load"), load, h.load ? h.load.map((x) => x.toFixed(2)).join(" ") : "—")}
+        {gauge(
+          tr("磁盘", "Disk"),
+          disk,
+          h.disk_total_bytes != null
+            ? tr(
+                `剩 ${bytes(h.disk_total_bytes - (h.disk_used_bytes ?? 0))}`,
+                `${bytes(h.disk_total_bytes - (h.disk_used_bytes ?? 0))} free`,
+              )
+            : "—",
+        )}
+      </div>
       <dl className="mt-auto grid grid-cols-3 divide-x divide-separator border-t border-separator text-center">
         {(
           [
