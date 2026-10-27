@@ -6,8 +6,8 @@
 // the multiplier change are confirmed together on save; SET-10 the path in
 // the danger zone: rotate to a random or custom path, optional mail to every
 // user, typed confirmation, then the new address and the mail job's
-// progress). 分流规则 (SET-11) is its own lazily loaded file,
-// settings-routing.tsx.
+// progress). The client files themselves are subscription templates
+// (PR 2 brings their editor; until then this tab only switches formats).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, Code2, Eye, EyeOff, Mail, RefreshCw, Shuffle } from "lucide-react";
 import { useState } from "react";
@@ -28,8 +28,8 @@ import { CopyText } from "../components/kit";
 import { fresh, useAccess, useSettings, type SettingsView } from "./settings-data";
 import { DangerRow, DangerZone, Loaded, Panel, SwitchRow, useDraft, useSavePart } from "../components/settings-kit";
 
-const FORMATS = ["clash", "sing-box", "links"];
-const CLIENTS = ["clash", "stash", "shadowrocket", "sing-box", "hiddify"];
+const FORMATS = ["clash", "sing-box", "links", "surge", "surfboard"];
+const CLIENTS = ["clash", "stash", "shadowrocket", "sing-box", "hiddify", "surge", "surfboard"];
 
 function formatName(f: string, tr: Tr) {
   return (
@@ -38,6 +38,8 @@ function formatName(f: string, tr: Tr) {
         clash: "Clash / mihomo",
         "sing-box": "sing-box",
         links: tr("通用链接（v2rayN、Shadowrocket…）", "Share links (v2rayN, Shadowrocket…)"),
+        surge: "Surge",
+        surfboard: "Surfboard",
       } as Record<string, string>
     )[f] ?? f
   );
@@ -51,6 +53,8 @@ function clientName(c: string) {
         shadowrocket: "Shadowrocket",
         "sing-box": "sing-box",
         hiddify: "Hiddify",
+        surge: "Surge",
+        surfboard: "Surfboard",
       } as Record<string, string>
     )[c] ?? c
   );
@@ -63,14 +67,18 @@ const NEEDS: Record<string, string> = {
   shadowrocket: "links",
   "sing-box": "sing-box",
   hiddify: "sing-box",
+  surge: "surge",
+  surfboard: "surfboard",
 };
 
 function formatDesc(f: string, tr: Tr) {
   return (
     (
       {
-        clash: tr("YAML，含分流规则", "YAML with routing rules"),
-        "sing-box": tr("JSON，含分流规则", "JSON with routing rules"),
+        clash: tr("YAML，按订阅模板生成", "YAML from the subscription template"),
+        "sing-box": tr("JSON，按订阅模板生成", "JSON from the subscription template"),
+        surge: tr("文本配置，按订阅模板生成", "A text profile from the subscription template"),
+        surfboard: tr("文本配置，按订阅模板生成", "A text profile from the subscription template"),
         links: tr("Base64 节点链接列表", "A Base64 list of share links"),
       } as Record<string, string>
     )[f] ?? ""

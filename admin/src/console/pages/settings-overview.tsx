@@ -200,22 +200,12 @@ export function useOverview() {
       ...(d.subscription.own_client_only
         ? [{ k: tr("客户端", "Clients"), v: tr("仅自研客户端", "Own client only") }]
         : [
-            { k: tr("格式", "Formats"), v: `${d.subscription.formats.effective.length} / 3` },
-            { k: tr("一键导入", "Import"), v: `${d.subscription.import_clients.effective.length} / 5` },
+            { k: tr("格式", "Formats"), v: `${d.subscription.formats.effective.length} / 5` },
+            { k: tr("一键导入", "Import"), v: `${d.subscription.import_clients.effective.length} / 7` },
           ]),
       { k: tr("倍率", "Multiplier"), v: d.subscription.name_rate ? tr("显示", "Shown") : tr("不显示", "Hidden") },
     ];
-    sum.routing = [
-      {
-        k: tr("模板", "Template"),
-        v: d.subscription.routing.value === null ? tr("默认", "Default") : tr("自定义", "Custom"),
-      },
-      {
-        k: tr("规则", "Rules"),
-        v: String(d.subscription.routing.effective.block.length + d.subscription.routing.effective.direct.length),
-      },
-      { k: tr("服务", "Services"), v: String(d.subscription.routing.effective.services.length) },
-    ];
+    sum.routing = [{ k: tr("客户端", "Clients"), v: "4" }];
     const o = d.node_ops;
     sum.install = [
       { k: tr("钉扎", "Pin"), v: o.install_tls_pin ? tr("开", "On") : tr("关", "Off") },
