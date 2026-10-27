@@ -197,7 +197,6 @@ export const ACTIONS: Record<string, [string, string]> = {
   "rollout.halt": ["灰度更新自动停止", "Rollout halted"],
   "rollout.complete": ["灰度更新完成", "Rollout completed"],
   "settings.update": ["修改域名设置", "Domain settings changed"],
-  "settings.import": ["导入旧配置", "Old configuration imported"],
   "settings.access.import": ["导入后台前缀", "Admin prefix imported"],
   "settings.admin_prefix.rotate": ["轮换后台前缀", "Admin prefix rotated"],
   "settings.admin_allowlist.update": ["修改后台 IP 白名单", "Admin allowlist changed"],
