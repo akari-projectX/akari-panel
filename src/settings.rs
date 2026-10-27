@@ -4125,7 +4125,7 @@ fn legacy_value(
             }
             let auth = match o.port {
                 Some(p) if p != 443 => format!("{}:{p}", o.host),
-                _ => o.host.clone(),
+                _ => o.host,
             };
             put_first(&mut new.main_domains, domain(&auth)?)
         }

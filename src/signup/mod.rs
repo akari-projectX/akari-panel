@@ -479,7 +479,7 @@ pub async fn options(State(state): State<AppState>) -> Response {
                 // 允许用户邀请: off = the register page has no invite field
                 // (every code would be refused).
                 "invites": s.register_enabled && s.user_invites,
-                "email_domains": if s.register_enabled { s.email_domains.clone() } else { Vec::new() },
+                "email_domains": if s.register_enabled { s.email_domains } else { Vec::new() },
                 // W24: false = register with email + password (no code;
                 // a proof-of-work challenge instead).
                 "email_verify": verify,
@@ -541,6 +541,7 @@ pub(crate) fn check_password(p: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "used as a map_err callback")]
 fn valkey_err(e: fred::error::Error) -> ApiError {
     tracing::error!(error = %e, "signup rate limit unavailable");
     ApiError::internal()
