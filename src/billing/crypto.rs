@@ -95,15 +95,26 @@ impl Pricing {
     }
 
     /// The gateway's amount `text` is exactly this order's invoice amount.
-    /// `dotted`: the text must carry a decimal point (CoinPayments' amount
-    /// strings could be minor units in a format the documentation does not
-    /// pin down; an integer-looking string is therefore never trusted).
-    pub fn matches(&self, cny_cents: i64, text: &str, dotted: bool) -> bool {
-        match (self.minor(cny_cents), parse_decimal(text, dotted)) {
+    /// `format`: whether an integer-looking text is accepted (CoinPayments'
+    /// amount strings could be minor units in a format the documentation
+    /// does not pin down; an integer-looking string is therefore never
+    /// trusted there).
+    pub fn matches(&self, cny_cents: i64, text: &str, format: AmountFormat) -> bool {
+        match (self.minor(cny_cents), parse_decimal(text, format)) {
             (Some(want), Some(got)) => want == got,
             _ => false,
         }
     }
+}
+
+/// How strictly an amount text must look like a decimal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmountFormat {
+    /// "12", "12.3", "12.34": major units, the point is optional.
+    Plain,
+    /// The decimal point is mandatory ("12.00"): an integer-looking text is
+    /// ambiguous (major or minor units) and never trusted.
+    Dotted,
 }
 
 /// Integer minor units as "d.dd".
@@ -113,12 +124,12 @@ pub fn format_minor(minor: i64) -> String {
 
 /// Strict decimal → minor units (2 places): digits, optional '.', at most 8
 /// decimals of which everything past the second must be '0'; no sign, no
-/// exponent, no spaces. `dotted` = the '.' is mandatory.
-pub fn parse_decimal(s: &str, dotted: bool) -> Option<i64> {
+/// exponent, no spaces. `Dotted` = the '.' is mandatory.
+pub fn parse_decimal(s: &str, format: AmountFormat) -> Option<i64> {
     let (int, frac) = match s.split_once('.') {
         Some((i, f)) if !f.is_empty() => (i, f),
         Some(_) => return None,
-        None if dotted => return None,
+        None if format == AmountFormat::Dotted => return None,
         None => (s, ""),
     };
     if int.is_empty()
@@ -329,17 +340,17 @@ mod tests {
         assert_eq!(usd.minor(1), Some(1));
         assert_eq!(usd.minor(0), None);
         assert_eq!(usd.minor(-5), None);
-        assert!(usd.matches(990, "1.38", true));
-        assert!(usd.matches(990, "1.380", true));
-        assert!(usd.matches(990, "1.38000000", true));
-        assert!(!usd.matches(990, "1.37", true));
-        assert!(!usd.matches(990, "1.39", true));
+        assert!(usd.matches(990, "1.38", AmountFormat::Dotted));
+        assert!(usd.matches(990, "1.380", AmountFormat::Dotted));
+        assert!(usd.matches(990, "1.38000000", AmountFormat::Dotted));
+        assert!(!usd.matches(990, "1.37", AmountFormat::Dotted));
+        assert!(!usd.matches(990, "1.39", AmountFormat::Dotted));
         // An integer-looking amount is ambiguous for CoinPayments.
         let one = Pricing::new("USD", Some(100)).unwrap();
-        assert!(one.matches(1000, "10.00", true));
-        assert!(!one.matches(1000, "10", true));
-        assert!(one.matches(1000, "10", false));
-        assert!(!one.matches(1000, "1000", false));
+        assert!(one.matches(1000, "10.00", AmountFormat::Dotted));
+        assert!(!one.matches(1000, "10", AmountFormat::Dotted));
+        assert!(one.matches(1000, "10", AmountFormat::Plain));
+        assert!(!one.matches(1000, "1000", AmountFormat::Plain));
         let cny = Pricing::new("CNY", Some(3)).unwrap();
         assert_eq!(cny.rate_cents, 100, "CNY ignores the rate");
         assert_eq!(cny.text(990).as_deref(), Some("9.90"));
@@ -354,26 +365,27 @@ mod tests {
 
     #[test]
     fn decimals_are_strict() {
-        for (s, dotted, want) in [
-            ("9.90", true, Some(990)),
-            ("9.9", true, Some(990)),
-            ("0.01", true, Some(1)),
-            ("12", false, Some(1200)),
-            ("12", true, None),
-            ("9.900", true, Some(990)),
-            ("9.905", true, None),
-            ("9.", true, None),
-            (".5", true, None),
-            ("", true, None),
-            ("-1.00", true, None),
-            ("+1.00", true, None),
-            ("1e2", false, None),
-            ("1,00", true, None),
-            (" 1.00", true, None),
-            ("1.000000000", true, None),
-            ("1234567890123.00", true, None),
+        use AmountFormat::{Dotted, Plain};
+        for (s, format, want) in [
+            ("9.90", Dotted, Some(990)),
+            ("9.9", Dotted, Some(990)),
+            ("0.01", Dotted, Some(1)),
+            ("12", Plain, Some(1200)),
+            ("12", Dotted, None),
+            ("9.900", Dotted, Some(990)),
+            ("9.905", Dotted, None),
+            ("9.", Dotted, None),
+            (".5", Dotted, None),
+            ("", Dotted, None),
+            ("-1.00", Dotted, None),
+            ("+1.00", Dotted, None),
+            ("1e2", Plain, None),
+            ("1,00", Dotted, None),
+            (" 1.00", Dotted, None),
+            ("1.000000000", Dotted, None),
+            ("1234567890123.00", Dotted, None),
         ] {
-            assert_eq!(parse_decimal(s, dotted), want, "{s:?} dotted={dotted}");
+            assert_eq!(parse_decimal(s, format), want, "{s:?} {format:?}");
         }
         assert_eq!(format_minor(5), "0.05");
         assert_eq!(format_minor(123456), "1234.56");

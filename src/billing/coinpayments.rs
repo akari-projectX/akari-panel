@@ -65,7 +65,9 @@ use base64::engine::general_purpose::STANDARD;
 use hyper::body::Bytes;
 use serde_json::{Value, json};
 
-use super::crypto::{self, MAX_SKEW_SECS, Pricing, link_ok, text_field, token_ok, utc_stamp};
+use super::crypto::{
+    self, AmountFormat, MAX_SKEW_SECS, Pricing, link_ok, text_field, token_ok, utc_stamp,
+};
 use super::provider::{
     BoxFut, CallError, Checkout, Close, CreateReq, NotifyCheck, NotifyEvent, NotifyRequest,
     PaymentProvider, ProviderKind, Query, TestOutcome, Validated,
@@ -450,7 +452,7 @@ impl CoinPayments {
             f.currency_id.as_deref() == Some(self.params.currency_id.as_str())
                 && f.total
                     .as_deref()
-                    .is_some_and(|t| self.params.pricing.matches(*c, t, true))
+                    .is_some_and(|t| self.params.pricing.matches(*c, t, AmountFormat::Dotted))
         });
         (f.status == "completed", cents)
     }
@@ -579,17 +581,16 @@ impl CoinPayments {
         let Some(out_trade_no) = f.out_trade_no.clone() else {
             return reject(true, "unknown_order", None, Some(kind), Some(params));
         };
-        let (completed, total_cents) = self.judge(&f);
+        let (completed, verified_cents) = self.judge(&f);
+        let paid = completed && kind == "invoicecompleted";
         NotifyCheck::Verified(NotifyEvent {
             out_trade_no,
             trade_no: f.id,
-            status: if f.status.is_empty() {
-                kind.clone()
-            } else {
-                f.status
-            },
-            paid: completed && kind == "invoicecompleted",
-            total_cents,
+            status: if f.status.is_empty() { kind } else { f.status },
+            paid,
+            // Only a payment needs the verified amount; any other event just
+            // names the order it is about (acknowledged, nothing settles).
+            total_cents: if paid { verified_cents } else { f.cents },
             params,
         })
     }
@@ -1048,7 +1049,10 @@ pub(crate) mod tests {
             let body = payload(kind, state, "AK1", "1.38", 990);
             let h = signed_headers(&body, &utc_stamp(NOW), NOTIFY_URL);
             match check(&c, &body, &h, Some(NOTIFY_URL), NOW) {
-                NotifyCheck::Verified(ev) => assert!(!ev.paid, "{kind}/{state}"),
+                NotifyCheck::Verified(ev) => {
+                    assert!(!ev.paid, "{kind}/{state}");
+                    assert_eq!(ev.total_cents, Some(990), "{kind}/{state} names its order");
+                }
                 r => panic!("{r:?}"),
             }
         }
