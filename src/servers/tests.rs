@@ -8,13 +8,10 @@ fn cert_expiry_warning() {
     assert_eq!(cert_warning(None, now), None, "unknown expiry");
     assert_eq!(cert_warning(Some(now + d(15)), now), None);
     let w = cert_warning(Some(now + d(10)), now).unwrap();
-    assert!(
-        w.contains("将在 9 天后") || w.contains("将在 10 天后"),
-        "{w}"
-    );
-    assert!(w.contains("没有按时续期"), "{w}");
+    assert!(w.contains("将在 9 天后") || w.contains("将在 10 天后"));
+    assert!(w.contains("没有按时续期"));
     let w = cert_warning(Some(now - d(1)), now).unwrap();
-    assert!(w.contains("已于") && w.contains("过期"), "{w}");
+    assert!(w.contains("已于") && w.contains("过期"));
 }
 
 fn tls(sni: &str) -> Value {
