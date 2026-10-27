@@ -81,7 +81,7 @@ fn fields_validation() {
             url: "https://status.example/".into(),
         }],
         tos_url: Some("/app/help/x".into()),
-        privacy_url: Some("".into()),
+        privacy_url: Some(String::new()),
         client_downloads: vec![Download {
             platform: "android".into(),
             label: None,
@@ -126,7 +126,7 @@ fn fields_validation() {
             "branding.label_invalid",
             BrandingReq {
                 footer_links: vec![FooterLink {
-                    label: "".into(),
+                    label: String::new(),
                     url: "https://x".into(),
                 }],
                 ..base.clone()
@@ -191,7 +191,7 @@ fn fields_validation() {
                     };
                     MAX_DOWNLOADS + 1
                 ],
-                ..base.clone()
+                ..base
             },
         ),
     ] {

@@ -158,10 +158,7 @@ fn compiling_rules() {
     let a = assemble(vec!["in-a".into()], vec![ip.clone()]);
     assert_eq!(a.version.len(), 24);
     assert_eq!(a, assemble(vec!["in-a".into()], vec![ip.clone()]));
-    assert_ne!(
-        a.version,
-        assemble(vec!["in-b".into()], vec![ip.clone()]).version
-    );
+    assert_ne!(a.version, assemble(vec!["in-b".into()], vec![ip]).version);
     assert_ne!(a.version, assemble(vec!["in-a".into()], vec![bt]).version);
     // On with no rules: tags still listed (sniffing follows the switch, so
     // a later rule change never re-creates an inbound).

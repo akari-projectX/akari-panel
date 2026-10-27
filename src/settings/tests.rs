@@ -1995,7 +1995,7 @@ fn d8_lists_are_checked() {
     let v = request_values(
         &[
             " Panel.Example.com ".into(),
-            "".into(),
+            String::new(),
             "例子.example:8446".into(),
         ],
         &["sub.example.com".into()],
@@ -2285,14 +2285,14 @@ async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
     };
     // Another node setting: no bump.
     save(NodeOpsValues {
-        install_fallback_url: Some("".into()),
+        install_fallback_url: Some(String::new()),
         ..NodeOpsValues::default()
     })
     .await;
     assert_eq!(db.versions(with_domain).await, domain_before);
     // The ACME e-mail.
     save(NodeOpsValues {
-        install_fallback_url: Some("".into()),
+        install_fallback_url: Some(String::new()),
         acme_email: Some("ops@example.com".into()),
         ..NodeOpsValues::default()
     })
@@ -2305,7 +2305,7 @@ async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
     assert_eq!(db.versions(without).await, plain_before);
     // The directory.
     save(NodeOpsValues {
-        install_fallback_url: Some("".into()),
+        install_fallback_url: Some(String::new()),
         acme_email: Some("ops@example.com".into()),
         acme_directory_url: Some("https://acme-staging-v02.api.letsencrypt.org/directory".into()),
         ..NodeOpsValues::default()

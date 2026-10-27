@@ -84,12 +84,7 @@ fn trap_reasons() {
         "empty honeypot"
     );
     assert_eq!(
-        trap_reason(
-            &k,
-            &on,
-            Some(&guard(Some(old.clone()), Some("http://spam"))),
-            now
-        ),
+        trap_reason(&k, &on, Some(&guard(Some(old), Some("http://spam"))), now),
         Some("honeypot")
     );
     assert_eq!(
@@ -208,7 +203,7 @@ fn seen(r: &crate::testdb::http::Resp) -> crate::testdb::http::Fingerprint {
     )
 }
 
-fn login_body(email: &str, pw: &str, guard: Value) -> Value {
+fn login_body(email: &str, pw: &str, guard: &Value) -> Value {
     json!({ "email": email, "password": pw, "guard": guard })
 }
 
@@ -248,7 +243,7 @@ async fn honeypot_and_minimum_submit_time() {
     let wrong = c
         .post(
             "/test/auth/login",
-            login_body(&email, "wrong-password", json!({})),
+            login_body(&email, "wrong-password", &json!({})),
         )
         .await;
     assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
@@ -274,7 +269,10 @@ async fn honeypot_and_minimum_submit_time() {
             gd
         };
         let r = c
-            .post("/test/auth/login", login_body(&email, "right-password", gd))
+            .post(
+                "/test/auth/login",
+                login_body(&email, "right-password", &gd),
+            )
             .await;
         assert_eq!(seen(&r), seen(&wrong), "{what}");
     }
@@ -297,7 +295,7 @@ async fn honeypot_and_minimum_submit_time() {
             login_body(
                 &email,
                 "right-password",
-                json!({ "form_token": aged, "website": "" }),
+                &json!({ "form_token": aged, "website": "" }),
             ),
         )
         .await;
@@ -429,8 +427,8 @@ async fn turnstile_settings_and_login() {
         let c = &c;
         let email = email.clone();
         let body = match t {
-            Some(t) => login_body(&email, "right-password", json!({ "turnstile": t })),
-            None => login_body(&email, "right-password", json!({})),
+            Some(t) => login_body(&email, "right-password", &json!({ "turnstile": t })),
+            None => login_body(&email, "right-password", &json!({})),
         };
         async move { c.post("/test/auth/login", body).await }
     };
@@ -731,7 +729,7 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
     let login = |t: &str| {
         c.post(
             "/test/auth/login",
-            login_body(&email, &pw, json!({ "turnstile": t })),
+            login_body(&email, &pw, &json!({ "turnstile": t })),
         )
     };
 
@@ -755,7 +753,7 @@ async fn turnstile_misconfiguration_is_not_the_visitors_failure() {
         (StatusCode::BAD_REQUEST, json!("auth.captcha_failed"))
     );
     let r = c
-        .post("/test/auth/login", login_body(&email, &pw, json!({})))
+        .post("/test/auth/login", login_body(&email, &pw, &json!({})))
         .await;
     assert_eq!(r.json()["code"], "auth.captcha_failed");
     let r = login("good-token").await;

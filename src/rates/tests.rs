@@ -12,7 +12,7 @@ fn req(days: &[i16], start: &str, end: &str, rate: f64) -> RuleReq {
     }
 }
 
-fn code(e: ApiError) -> String {
+fn code(e: &ApiError) -> String {
     e.code().to_string()
 }
 
@@ -48,17 +48,17 @@ fn parse_validates_and_normalizes() {
         req(&[1], "08:00", "x", 1.0),
     ] {
         assert_eq!(
-            code(parse(&[bad]).unwrap_err()),
+            code(&parse(&[bad]).unwrap_err()),
             "entrance.rate_rule_invalid"
         );
     }
     assert_eq!(
-        code(parse(&[req(&[1], "08:00", "09:00", 1.0005)]).unwrap_err()),
+        code(&parse(&[req(&[1], "08:00", "09:00", 1.0005)]).unwrap_err()),
         "entrance.rate_invalid"
     );
     let many = vec![req(&[1], "08:00", "09:00", 1.0); MAX_RULES + 1];
     assert_eq!(
-        code(parse(&many).unwrap_err()),
+        code(&parse(&many).unwrap_err()),
         "entrance.rate_rules_too_many"
     );
 }

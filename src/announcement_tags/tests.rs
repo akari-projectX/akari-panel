@@ -91,7 +91,7 @@ fn text_and_colour_rules() {
         check(&r).unwrap_err().code(),
         "announcement_tag.color_invalid"
     );
-    let mut r = ok.clone();
+    let mut r = ok;
     r.name_en = Some("  ".into());
     assert!(check(&r).unwrap().name_en.is_none());
     assert!(

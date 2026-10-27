@@ -723,7 +723,7 @@ async fn admin_client(state: &crate::state::AppState, db: &TestDb) -> Client {
     c
 }
 
-fn put_body(version: i64, extra: serde_json::Value) -> serde_json::Value {
+fn put_body(version: i64, extra: &serde_json::Value) -> serde_json::Value {
     let mut b = json!({
         "version": version, "enabled": false, "host": null, "port": 587,
         "security": "starttls", "username": null, "from_addr": "noreply@example.com",
@@ -752,7 +752,7 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
     let r = c
         .put(
             "/test/api/v1/settings/mail",
-            put_body(v, json!({ "enabled": true, "provider": "resend" })),
+            put_body(v, &json!({ "enabled": true, "provider": "resend" })),
         )
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
@@ -760,7 +760,7 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
     let r = c
         .put(
             "/test/api/v1/settings/mail",
-            put_body(v, json!({ "provider": "mailgun" })),
+            put_body(v, &json!({ "provider": "mailgun" })),
         )
         .await;
     assert_eq!(r.json()["code"], "mail.provider_invalid");
@@ -770,7 +770,7 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
             "/test/api/v1/settings/mail",
             put_body(
                 v,
-                json!({ "enabled": true, "provider": "resend", "api_key": "re_abc" }),
+                &json!({ "enabled": true, "provider": "resend", "api_key": "re_abc" }),
             ),
         )
         .await;
@@ -795,7 +795,7 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
     let r = c
         .put(
             "/test/api/v1/settings/mail",
-            put_body(s.version, json!({ "enabled": true, "from_name": "Shop" })),
+            put_body(s.version, &json!({ "enabled": true, "from_name": "Shop" })),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
@@ -815,7 +815,7 @@ async fn resend_settings_seal_the_key_and_gate_enabling() {
     let r = c
         .put(
             "/test/api/v1/settings/mail",
-            put_body(s.version + 1, json!({ "enabled": true, "api_key": null })),
+            put_body(s.version + 1, &json!({ "enabled": true, "api_key": null })),
         )
         .await;
     assert_eq!(r.json()["code"], "mail.enable_needs_api_key");
