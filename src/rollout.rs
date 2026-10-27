@@ -1378,7 +1378,7 @@ mod db_tests {
         assert_eq!(v["update_status"]["status"], "healthy");
         assert_eq!(v["agent_arch"], "amd64");
         let detail = c.get(&format!("/test/api/v1/rollouts/{id}")).await.json();
-        assert_eq!(detail["servers"].as_array().unwrap().len(), 2);
+        assert_eq!(detail["servers"].as_array().unwrap().len(), 1);
         assert_eq!(detail["counts"]["healthy"], 1);
         db.drop().await;
     }

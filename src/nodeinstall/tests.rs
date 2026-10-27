@@ -709,7 +709,7 @@ fn openrc_and_bbr_in_the_script() {
         // OpenRC: the release's scripts, never a copy of ours.
         r#""$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u""#,
         "for u in akari-agent akari-agent-update; do",
-        "has no OpenRC support",
+        "die no_service_units",
         r#"rc-update add akari-agent default"#,
         r#"rc-update add akari-agent-update default"#,
         // BBR + fq: opt-out, own drop-in, previous values recorded.
