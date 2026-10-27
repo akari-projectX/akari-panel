@@ -690,10 +690,9 @@ struct Link {
     expires_at: DateTime<Utc>,
     /// What the agent will run (the inbounds of the server's nodes).
     inbounds: serde_json::Value,
-    /// R22: endpoint fixed when the link was issued (NULL for links issued
-    /// before 0060: the current node endpoint).
-    panel_addr: Option<String>,
-    server_name: Option<String>,
+    /// R22: endpoint fixed when the link was issued.
+    panel_addr: String,
+    server_name: String,
     /// W10: the server's TLS domain (automatic certificate).
     tls_domain: Option<String>,
 }
@@ -729,8 +728,8 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
         DateTime<Utc>,
         String,
         serde_json::Value,
-        Option<String>,
-        Option<String>,
+        String,
+        String,
         Option<String>,
     );
     let row: Option<Row> = match sqlx::query_as(
@@ -813,17 +812,10 @@ fn render_script(
     token: &str,
     releases: &HashMap<String, ReleaseRef>,
 ) -> anyhow::Result<String> {
-    // Links issued before 0060 carry no endpoint: the current one.
-    let current = state.settings().get();
-    let (panel_addr, server_name) = match (&link.panel_addr, &link.server_name, &current.node) {
-        (Some(a), Some(n), _) => (a.as_str(), n.as_str()),
-        (_, _, Some(e)) => (e.panel_addr.as_str(), e.server_name.as_str()),
-        _ => anyhow::bail!("no node communication domain set"),
-    };
     let bootstrap = crate::enroll::bootstrap_toml(
         &tame(&link.name),
-        sq(panel_addr)?,
-        sq(server_name)?,
+        sq(&link.panel_addr)?,
+        sq(&link.server_name)?,
         &state.install().ca_pem,
         token,
         link.expires_at,

@@ -1,7 +1,7 @@
 //! Nodes (admin API): one inbound (protocol) on a server (D2, Q1).
 //!
 //! A node carries its inbound (`nodes.inbound`), its display fields
-//! (region, display name, sort, visibility, tags; W11 `nodemeta.rs`), its
+//! (region, display name, sort, visibility; W11 `nodemeta.rs`), its
 //! enable switch and its entrances (`entrances.rs`); the machine — agent,
 //! certificate, versions, metrics, TLS domain — is its server
 //! (`servers.rs`). Node views embed their server's machine state, so a
@@ -53,12 +53,10 @@ pub struct NodeView {
     /// M3: free-text region shown to users (portal node list).
     region: Option<String>,
     /// W11 (xboard-style form, `nodemeta.rs`): user-facing name (null =
-    /// `name`), display order, shown to users. `tags`: legacy node-level
-    /// labels, shown nowhere since tags moved to entrances (1104).
+    /// `name`), display order, shown to users.
     display_name: Option<String>,
     sort: i32,
     visible: bool,
-    tags: Vec<String>,
     /// W29: block rules on for this node's inbound.
     block_rules_enabled: bool,
     /// W11: bytes accepted on this node (before the multipliers) and billed
@@ -97,7 +95,7 @@ fn node_view_cols() -> String {
     format!(
         "nodes.id, nodes.server_id, s.name AS server_name, nodes.name, nodes.enabled, \
          nodes.inbound, {} AS entrances, nodes.region, nodes.display_name, nodes.sort, \
-         nodes.visible, nodes.tags, nodes.block_rules_enabled, nodes.traffic_raw_bytes, \
+         nodes.visible, nodes.block_rules_enabled, nodes.traffic_raw_bytes, \
          nodes.traffic_billed_bytes, nodes.created_at, {}",
         crate::entrances::ENTRANCES_JSON_SQL,
         crate::servers::server_cols(),
@@ -168,7 +166,6 @@ pub struct NodeSummary {
     last_error: Option<String>,
     sort: i32,
     visible: bool,
-    tags: Vec<String>,
     /// W28-a: the node's entrances (as in NodeView).
     entrances: Value,
     /// The agent's best url-test result (first success in order, else the
@@ -225,7 +222,7 @@ pub fn node_summary_sql() -> String {
          nodes.region, s.agent_version, s.agent_os, s.agent_arch, ro.update_status, \
          s.lease_expires_at, s.cert_serial IS NOT NULL AS enrolled, \
          enr.expires_at AS enroll_token_expires_at, s.last_seen_at, s.last_error, nodes.sort, \
-         nodes.visible, nodes.tags, {entrances} AS entrances, lb.latency, \
+         nodes.visible, {entrances} AS entrances, lb.latency, \
          coalesce(al.n, 0) AS alerts_firing, nodes.inbound, {warn} \
          FROM nodes JOIN servers s ON s.id = nodes.server_id {SERVER_EXTRAS_FROM} \
          LEFT JOIN (SELECT DISTINCT ON (l.server_id) l.server_id, jsonb_build_object( \
@@ -392,10 +389,6 @@ pub struct CreateNodeReq {
     pub sort: Option<i32>,
     #[serde(default)]
     pub visible: Option<bool>,
-    /// Legacy node-level labels (shown nowhere; 1104 moved tags to
-    /// entrances: `direct.tags`).
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
     /// W28-a: settings of the built-in direct entrance (address, port,
     /// multiplier, groups; as PATCH /entrances/{id}).
     #[serde(default)]
@@ -548,7 +541,6 @@ pub async fn create_node(
         display_name: req.display_name.clone().map(Some),
         sort: req.sort.map(Some),
         visible: req.visible.map(Some),
-        tags: req.tags.clone().map(Some),
         ..Default::default()
     };
     if w11.has_fields() {
@@ -635,10 +627,6 @@ pub struct UpdateNodeReq {
     /// Shown to users (portal, subscription); hidden nodes keep serving.
     #[serde(default, deserialize_with = "double_option")]
     pub visible: Option<Option<bool>>,
-    /// Legacy node-level labels ([] clears; shown nowhere since 1104:
-    /// tags are per entrance).
-    #[serde(default, deserialize_with = "double_option")]
-    pub tags: Option<Option<Vec<String>>>,
 }
 
 impl UpdateNodeReq {
@@ -649,7 +637,6 @@ impl UpdateNodeReq {
             || self.display_name.is_some()
             || self.sort.is_some()
             || self.visible.is_some()
-            || self.tags.is_some()
     }
 }
 
@@ -679,9 +666,6 @@ pub(crate) async fn apply_update_node(
         .map(crate::nodemeta::sort)
         .transpose()?;
     let visible = non_null("visible", &req.visible)?;
-    let tags = non_null("tags", &req.tags)?
-        .map(|t| crate::nodemeta::tags(&t))
-        .transpose()?;
     let name = match name {
         Some(n) if n.trim().is_empty() => {
             return Err(bad_request!("node.name_empty", "name must not be empty"));
@@ -724,9 +708,6 @@ pub(crate) async fn apply_update_node(
     }
     if let Some(v) = visible {
         set.push("visible = ").push_bind_unseparated(v);
-    }
-    if let Some(v) = tags {
-        set.push("tags = ").push_bind_unseparated(v);
     }
     qb.push(" WHERE id = ").push_bind(id);
     qb.push(format!(
