@@ -199,8 +199,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "谁可以注册、是否验证邮箱与需要邀请码、新用户试用、找回密码。",
           "Who can sign up, email verification and invite codes, trials, password reset.",
         ],
-        keywords:
-          "开放注册 邮箱验证 邀请码 通行密钥注册 白名单 试用 找回密码 sign-up register invite trial reset",
+        keywords: "开放注册 邮箱验证 邀请码 通行密钥注册 白名单 试用 找回密码 sign-up register invite trial reset",
       },
       {
         id: "login",
@@ -224,8 +223,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "Password and passkey policies; Turnstile, honeypot and minimum submit time.",
         ],
         danger: true,
-        keywords:
-          "人机验证 登录方式 通行密钥 仅通行密钥 Turnstile 蜜罐 最短提交时间 passkey captcha honeypot",
+        keywords: "人机验证 登录方式 通行密钥 仅通行密钥 Turnstile 蜜罐 最短提交时间 passkey captcha honeypot",
       },
       {
         id: "cleanup",
