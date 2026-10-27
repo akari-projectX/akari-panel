@@ -344,12 +344,12 @@ export const shots: Shot[] = [
       await expect(page.getByRole("dialog")).toBeVisible();
     },
   },
-  // The subscription template editor (full width; the old "routing" section leads here).
-  { name: "settings-routing", open: go("/settings/sub-templates") },
-  { name: "settings-routing-clash", open: go("/settings/sub-templates?format=clash") },
-  { name: "settings-routing-surge", open: go("/settings/sub-templates?format=surge") },
+  // The subscription template editor (full width).
+  { name: "settings-sub-templates", open: go("/settings/sub-templates") },
+  { name: "settings-sub-templates-clash", open: go("/settings/sub-templates?format=clash") },
+  { name: "settings-sub-templates-surge", open: go("/settings/sub-templates?format=surge") },
   {
-    name: "settings-routing-preview",
+    name: "settings-sub-templates-preview",
     open: async (page) => {
       await goto(page, "/settings/sub-templates?format=clash");
       await page.getByRole("button", { name: "预览", exact: true }).last().click();
@@ -357,7 +357,7 @@ export const shots: Shot[] = [
     },
   },
   {
-    name: "settings-routing-error",
+    name: "settings-sub-templates-error",
     open: async (page) => {
       await goto(page, "/settings/sub-templates?format=clash");
       const editor = page.getByRole("textbox", { name: "Clash 订阅模板" });
@@ -369,7 +369,7 @@ export const shots: Shot[] = [
     },
   },
   {
-    name: "settings-routing-phone-vars",
+    name: "settings-sub-templates-phone-vars",
     devices: ["mobile"],
     open: async (page) => {
       await goto(page, "/settings/sub-templates");

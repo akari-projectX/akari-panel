@@ -38,7 +38,7 @@ export type SectionId =
   | "login"
   | "cleanup"
   | "subscription"
-  | "routing"
+  | "sub-templates"
   | "install"
   | "probe"
   | "block"
@@ -279,7 +279,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "订阅 订阅路径 格式 Clash mihomo sing-box 通用链接 一键导入 Stash Shadowrocket Hiddify 倍率 线路名 subscription path formats import",
       },
       {
-        id: "routing",
+        id: "sub-templates",
         rows: [
           ["Sing-box 模板", "Sing-box template"],
           ["Clash 模板", "Clash template"],
@@ -295,9 +295,8 @@ export const SETTINGS_IA: SectionGroup[] = [
           "Sing-box、Clash、Surge、Surfboard 各自的订阅模板：占位符、预览与恢复默认。",
           "The subscription template of Sing-box, Clash, Surge and Surfboard: placeholders, preview and reset to default.",
         ],
-        href: "/settings/sub-templates",
         keywords:
-          "订阅模板 模板 Clash sing-box Surge Surfboard 分流 规则 template routing proxies proxy_group subs_link",
+          "订阅模板 模板 Clash sing-box Surge Surfboard 规则 占位符 template rules placeholders proxies proxy_group subs_link",
       },
     ],
   },
