@@ -525,7 +525,7 @@ function Editor({
           </p>
         )}
       </div>
-      <div className="h-[45dvh] min-h-[240px] overflow-hidden bg-window/40 lg:h-auto lg:min-h-0 lg:flex-1">
+      <div className="isolate h-[45dvh] min-h-[240px] overflow-hidden bg-window/40 lg:h-auto lg:min-h-0 lg:flex-1">
         {previewError ? (
           <ErrorState error={previewError} onRetry={() => void run()} compact />
         ) : rendered ? (
@@ -576,7 +576,7 @@ function Editor({
         {formatTabs}
         <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
           <section aria-label={tr("编辑", "Edit")} className="flex min-h-0 flex-col lg:border-r lg:border-separator">
-            <div className="h-[55dvh] min-h-[320px] overflow-hidden bg-window/40 lg:h-auto lg:min-h-0 lg:flex-1">
+            <div className="isolate h-[55dvh] min-h-[320px] overflow-hidden bg-window/40 lg:h-auto lg:min-h-0 lg:flex-1">
               {editorPane}
             </div>
             {errorStrip}
