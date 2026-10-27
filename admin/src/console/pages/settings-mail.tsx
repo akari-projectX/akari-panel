@@ -97,6 +97,10 @@ function mailBody(m: Mail, secrets: { password?: string; api_key?: string } = {}
     notify_expired: m.notify_expired,
     notify_quota: m.notify_quota,
     notify_refund: m.notify_refund,
+    notify_ban: m.notify_ban,
+    notify_plan_change: m.notify_plan_change,
+    notify_withdrawal: m.notify_withdrawal,
+    notify_commission: m.notify_commission,
   };
 }
 
@@ -245,7 +249,17 @@ function TransportForm({ m, onDiagnose }: { m: Mail; onDiagnose: () => void }) {
   }).data;
   const kinds = tpl ? new Set(tpl.map((t) => t.kind)).size : undefined;
   const custom = tpl ? new Set(tpl.filter((t) => t.custom).map((t) => t.kind)).size : undefined;
-  const notices = [m.notify_order_paid, m.notify_expiry_days > 0, m.notify_expired, m.notify_quota, m.notify_refund];
+  const notices = [
+    m.notify_order_paid,
+    m.notify_expiry_days > 0,
+    m.notify_expired,
+    m.notify_quota,
+    m.notify_refund,
+    m.notify_ban,
+    m.notify_plan_change,
+    m.notify_withdrawal,
+    m.notify_commission,
+  ];
   return (
     <>
       <StatusStrip m={m} onDiagnose={onDiagnose} />
@@ -630,6 +644,10 @@ function NoticesForm({ m }: { m: Mail }) {
     notify_expired: m.notify_expired,
     notify_quota: m.notify_quota,
     notify_refund: m.notify_refund,
+    notify_ban: m.notify_ban,
+    notify_plan_change: m.notify_plan_change,
+    notify_withdrawal: m.notify_withdrawal,
+    notify_commission: m.notify_commission,
     days: String(m.notify_expiry_days || 3),
   });
   const v = f.value!;
@@ -650,6 +668,10 @@ function NoticesForm({ m }: { m: Mail }) {
               notify_expired: v.notify_expired,
               notify_quota: v.notify_quota,
               notify_refund: v.notify_refund,
+              notify_ban: v.notify_ban,
+              notify_plan_change: v.notify_plan_change,
+              notify_withdrawal: v.notify_withdrawal,
+              notify_commission: v.notify_commission,
               notify_expiry_days: v.expiry ? (intOf(v.days) ?? 0) : 0,
             }),
           ),
@@ -663,7 +685,16 @@ function NoticesForm({ m }: { m: Mail }) {
   const sent = (...kinds: string[]) => kinds.reduce((n, k) => n + (m.sent_30d?.[k] ?? 0), 0);
   const failed = m.dead_24h ?? 0;
   const row = (
-    key: "notify_order_paid" | "expiry" | "notify_expired" | "notify_quota" | "notify_refund",
+    key:
+      | "notify_order_paid"
+      | "expiry"
+      | "notify_expired"
+      | "notify_quota"
+      | "notify_refund"
+      | "notify_ban"
+      | "notify_plan_change"
+      | "notify_withdrawal"
+      | "notify_commission",
     label: string,
     when: string,
     kinds: string[],
@@ -759,6 +790,33 @@ function NoticesForm({ m }: { m: Mail }) {
           ["quota_80", "quota_100"],
         )}
         {row("notify_refund", tr("退款通知", "Refund notice"), tr("退款完成后", "After a refund"), ["refund"])}
+        {row(
+          "notify_ban",
+          tr("封禁 / 解封通知", "Ban / unban notice"),
+          tr("管理员封禁或解封账号后", "After an admin bans or unbans an account"),
+          ["account_banned", "account_unbanned"],
+        )}
+        {row(
+          "notify_plan_change",
+          tr("管理员变更套餐", "Plan changed by an admin"),
+          tr(
+            "管理员分配、续期、延长、取消套餐或重置流量后",
+            "After an admin assigns, renews, extends, cancels or resets traffic",
+          ),
+          ["plan_changed"],
+        )}
+        {row(
+          "notify_withdrawal",
+          tr("提现结果", "Withdrawal decision"),
+          tr("管理员通过或拒绝提现后", "After an admin approves or rejects"),
+          ["withdrawal_approved", "withdrawal_rejected"],
+        )}
+        {row(
+          "notify_commission",
+          tr("邀请返利入账", "Commission credited"),
+          tr("返利冻结期满记入余额时", "When a commission is credited"),
+          ["commission_credited"],
+        )}
       </Group>
     </OwnerOnly>
   );

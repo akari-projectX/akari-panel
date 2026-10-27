@@ -1405,7 +1405,7 @@ async fn settings_api_validates_seals_and_audits() {
             "security": "tls", "username": "mailer", "password": "s3cret-pw",
             "from_addr": "No-Reply@Example.com", "from_name": "Akari 测试",
             "notify_order_paid": true, "notify_expiry_days": 3, "notify_expired": true,
-            "notify_quota": true,
+            "notify_quota": true, "notify_refund": true, "notify_ban": true, "notify_plan_change": true, "notify_withdrawal": true, "notify_commission": true,
         });
         for (k, val) in extra.as_object().unwrap() {
             b[k] = val.clone();

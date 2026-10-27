@@ -231,6 +231,10 @@ fn settings(port: u16, security: &str, password: Option<&str>) -> MailSettings {
         notify_expired: true,
         notify_quota: true,
         notify_refund: true,
+        notify_ban: true,
+        notify_plan_change: true,
+        notify_withdrawal: true,
+        notify_commission: true,
         site_name: None,
     }
 }

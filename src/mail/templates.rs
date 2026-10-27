@@ -154,6 +154,93 @@ pub enum Template {
         ip: Option<String>,
         portal_url: Option<String>,
     },
+    /// An administrator banned the account (to its verified address); the
+    /// reason is the text the portal shows the user as well.
+    AccountBanned {
+        reason: String,
+        portal_url: Option<String>,
+    },
+    /// An administrator lifted the ban.
+    AccountUnbanned {
+        portal_url: Option<String>,
+    },
+    /// An administrator changed the account's plan (`PlanAction`).
+    PlanChanged {
+        action: PlanAction,
+        plan_name: String,
+        /// The subscription's expiry; None = none / permanent / cancelled.
+        expires_at: Option<DateTime<Utc>>,
+        portal_url: Option<String>,
+    },
+    /// An administrator approved a withdrawal and paid it out in USDT.
+    WithdrawalApproved {
+        amount_cents: i64,
+        usdt_micros: i64,
+        /// The chain's display name (`billing::usdt::CHAINS`).
+        network: String,
+        txid: String,
+        portal_url: Option<String>,
+    },
+    /// An administrator rejected a withdrawal; the amount is back in the
+    /// balance.
+    WithdrawalRejected {
+        amount_cents: i64,
+        reason: String,
+        portal_url: Option<String>,
+    },
+    /// An invite commission was credited to the balance.
+    CommissionCredited {
+        amount_cents: i64,
+        /// The order's number (never the invitee's address).
+        order_no: String,
+        portal_url: Option<String>,
+    },
+}
+
+/// What an administrator did to a customer's plan (the mail's one-line
+/// description).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAction {
+    /// A plan was assigned (or replaced the previous one).
+    Assigned,
+    /// A further term was added.
+    Renewed,
+    /// The expiry was moved out by some days.
+    Extended,
+    Cancelled,
+    TrafficReset,
+}
+
+impl PlanAction {
+    /// The sentence in the mail.
+    pub fn text(self, zh: bool, plan_name: &str) -> String {
+        match (self, zh) {
+            (Self::Assigned, true) => format!("管理员为你的账号分配了套餐「{plan_name}」。"),
+            (Self::Assigned, false) => {
+                format!("An administrator assigned the plan \"{plan_name}\" to your account.")
+            }
+            (Self::Renewed, true) => format!("管理员为你的套餐「{plan_name}」续期。"),
+            (Self::Renewed, false) => {
+                format!("An administrator renewed your plan \"{plan_name}\".")
+            }
+            (Self::Extended, true) => format!("管理员延长了你的套餐「{plan_name}」的有效期。"),
+            (Self::Extended, false) => {
+                format!("An administrator extended your plan \"{plan_name}\".")
+            }
+            (Self::Cancelled, true) => {
+                format!("管理员取消了你的套餐「{plan_name}」，节点与订阅已停止服务。")
+            }
+            (Self::Cancelled, false) => format!(
+                "An administrator cancelled your plan \"{plan_name}\"; your nodes and subscription have stopped."
+            ),
+            (Self::TrafficReset, true) => {
+                format!("管理员重置了你的套餐「{plan_name}」的已用流量。")
+            }
+            (Self::TrafficReset, false) => {
+                format!("An administrator reset the used traffic of your plan \"{plan_name}\".")
+            }
+        }
+    }
 }
 
 /// What changed about an account's sign-in security (audit batch 2, P2-1).
@@ -233,7 +320,7 @@ pub enum RefundPlan {
 }
 
 /// Every template kind (= `mail_outbox.kind` / `mail_templates.kind`).
-pub const KINDS: [&str; 18] = [
+pub const KINDS: [&str; 24] = [
     "register_code",
     "register_exists",
     "email_code",
@@ -252,6 +339,12 @@ pub const KINDS: [&str; 18] = [
     "refund",
     "security_notice",
     "login_code",
+    "account_banned",
+    "account_unbanned",
+    "plan_changed",
+    "withdrawal_approved",
+    "withdrawal_rejected",
+    "commission_credited",
 ];
 
 impl Template {
@@ -275,6 +368,12 @@ impl Template {
             Template::Announcement { .. } => "announcement",
             Template::Refund { .. } => "refund",
             Template::SecurityNotice { .. } => "security_notice",
+            Template::AccountBanned { .. } => "account_banned",
+            Template::AccountUnbanned { .. } => "account_unbanned",
+            Template::PlanChanged { .. } => "plan_changed",
+            Template::WithdrawalApproved { .. } => "withdrawal_approved",
+            Template::WithdrawalRejected { .. } => "withdrawal_rejected",
+            Template::CommissionCredited { .. } => "commission_credited",
         }
     }
 
@@ -377,6 +476,34 @@ impl Template {
                 ip: Some("203.0.113.7".into()),
                 portal_url: portal,
             },
+            "account_banned" => Template::AccountBanned {
+                reason: "违反服务条款 / Terms of service violation".into(),
+                portal_url: portal,
+            },
+            "account_unbanned" => Template::AccountUnbanned { portal_url: portal },
+            "plan_changed" => Template::PlanChanged {
+                action: PlanAction::Renewed,
+                plan_name: "Pro".into(),
+                expires_at: Some(t + chrono::Duration::days(30)),
+                portal_url: portal,
+            },
+            "withdrawal_approved" => Template::WithdrawalApproved {
+                amount_cents: 5000,
+                usdt_micros: 6_890_000,
+                network: "TRC20 (Tron)".into(),
+                txid: "0xa1b2c3d4e5f60718".into(),
+                portal_url: portal,
+            },
+            "withdrawal_rejected" => Template::WithdrawalRejected {
+                amount_cents: 5000,
+                reason: "地址无效 / Invalid address".into(),
+                portal_url: portal,
+            },
+            "commission_credited" => Template::CommissionCredited {
+                amount_cents: 120,
+                order_no: "AK20261002EXAMPLE".into(),
+                portal_url: portal,
+            },
             _ => return None,
         })
     }
@@ -423,6 +550,25 @@ pub fn human_bytes(b: i64) -> String {
 
 fn when(t: &DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M UTC").to_string()
+}
+
+/// USDT with its 6 decimals, trailing zeros dropped ("6.89", "12").
+fn usdt(micros: i64) -> String {
+    let whole = micros / 1_000_000;
+    let frac = format!("{:06}", micros % 1_000_000);
+    match frac.trim_end_matches('0') {
+        "" => whole.to_string(),
+        f => format!("{whole}.{f}"),
+    }
+}
+
+/// An amount with its currency marker, like the receipt's.
+fn currency(zh: bool, cents: i64) -> String {
+    if zh {
+        format!("¥{}", yuan(cents))
+    } else {
+        format!("CNY {}", yuan(cents))
+    }
 }
 
 fn yuan(cents: i64) -> String {
@@ -507,6 +653,35 @@ const SECURITY_PH: [Placeholder; 4] = [
     ph("ip", "操作来源 IP（管理员代为操作时为空）"),
     ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
 ];
+const ACCOUNT_BANNED_PH: [Placeholder; 2] = [
+    ph("reason", "管理员填写的封禁原因"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
+const PORTAL_ONLY_PH: [Placeholder; 1] =
+    [ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）")];
+const PLAN_CHANGED_PH: [Placeholder; 4] = [
+    ph("action", "管理员做了什么（一句话，含套餐名称）"),
+    ph("plan_name", "套餐名称"),
+    ph("expiry_line", "套餐到期行（无到期时间时为空）"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
+const WITHDRAWAL_APPROVED_PH: [Placeholder; 5] = [
+    ph("amount", "提现金额（含货币符号）"),
+    ph("usdt", "实付 USDT 数量"),
+    ph("network", "收款网络"),
+    ph("txid", "链上交易哈希"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
+const WITHDRAWAL_REJECTED_PH: [Placeholder; 3] = [
+    ph("amount", "提现金额（含货币符号，已退回余额）"),
+    ph("reason", "管理员填写的拒绝原因"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
+const COMMISSION_PH: [Placeholder; 3] = [
+    ph("amount", "入账的返利金额（含货币符号）"),
+    ph("order_no", "产生返利的订单号（不含被邀请人信息）"),
+    ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
+];
 const ANNOUNCEMENT_PH: [Placeholder; 3] = [
     ph("title", "公告标题"),
     ph("body", "公告正文（已渲染）"),
@@ -531,6 +706,12 @@ pub fn spec(kind: &str) -> Option<(&'static [Placeholder], &'static [&'static st
         "admin_notice" => (&ADMIN_NOTICE_PH, &["body"]),
         "refund" => (&REFUND_PH, &["order_no"]),
         "security_notice" => (&SECURITY_PH, &["event"]),
+        "account_banned" => (&ACCOUNT_BANNED_PH, &["reason"]),
+        "account_unbanned" => (&PORTAL_ONLY_PH, &[]),
+        "plan_changed" => (&PLAN_CHANGED_PH, &["action"]),
+        "withdrawal_approved" => (&WITHDRAWAL_APPROVED_PH, &["txid"]),
+        "withdrawal_rejected" => (&WITHDRAWAL_REJECTED_PH, &["reason"]),
+        "commission_credited" => (&COMMISSION_PH, &["amount"]),
         _ => return None,
     })
 }
@@ -556,6 +737,12 @@ pub fn kind_label(kind: &str) -> &'static str {
         "admin_notice" => "管理员群发邮件",
         "refund" => "订单退款通知",
         "security_notice" => "账号安全通知",
+        "account_banned" => "账号被封禁",
+        "account_unbanned" => "账号已解封",
+        "plan_changed" => "管理员变更套餐",
+        "withdrawal_approved" => "提现已通过",
+        "withdrawal_rejected" => "提现被拒绝",
+        "commission_credited" => "邀请返利入账",
         _ => "",
     }
 }
@@ -649,13 +836,7 @@ impl Template {
                 paid_at,
                 expires_at,
             } => {
-                let amount = |c: i64| {
-                    if zh {
-                        format!("¥{}", yuan(c))
-                    } else {
-                        format!("CNY {}", yuan(c))
-                    }
-                };
+                let amount = |c: i64| currency(zh, c);
                 let mut lines = Vec::new();
                 for (cents, zh_label, en_label) in [
                     (money.discount_cents, "优惠券", "Coupon"),
@@ -786,13 +967,7 @@ impl Template {
                 plan,
                 portal_url,
             } => {
-                let amount = |c: i64| {
-                    if zh {
-                        format!("¥{}", yuan(c))
-                    } else {
-                        format!("CNY {}", yuan(c))
-                    }
-                };
+                let amount = |c: i64| currency(zh, c);
                 let mut lines = Vec::new();
                 if *to_balance_cents > 0 {
                     lines.push(if zh {
@@ -894,6 +1069,92 @@ impl Template {
                     } else {
                         "Review account security"
                     },
+                ),
+            ],
+            Template::AccountBanned { reason, portal_url } => vec![
+                text("reason", reason.clone()),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh {
+                        "打开用户门户"
+                    } else {
+                        "Open the portal"
+                    },
+                ),
+            ],
+            Template::AccountUnbanned { portal_url } => vec![link(
+                "portal_url",
+                portal_url.as_ref(),
+                if zh {
+                    "打开用户门户"
+                } else {
+                    "Open the portal"
+                },
+            )],
+            Template::PlanChanged {
+                action,
+                plan_name,
+                expires_at,
+                portal_url,
+            } => vec![
+                text("action", action.text(zh, plan_name)),
+                text("plan_name", plan_name.clone()),
+                text(
+                    "expiry_line",
+                    match expires_at {
+                        Some(e) if zh => format!("套餐到期：{}", when(e)),
+                        Some(e) => format!("Plan expires: {}", when(e)),
+                        None => String::new(),
+                    },
+                ),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh { "查看账户" } else { "View account" },
+                ),
+            ],
+            Template::WithdrawalApproved {
+                amount_cents,
+                usdt_micros,
+                network,
+                txid,
+                portal_url,
+            } => vec![
+                text("amount", currency(zh, *amount_cents)),
+                text("usdt", format!("{} USDT", usdt(*usdt_micros))),
+                text("network", network.clone()),
+                text("txid", txid.clone()),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh { "查看账户" } else { "View account" },
+                ),
+            ],
+            Template::WithdrawalRejected {
+                amount_cents,
+                reason,
+                portal_url,
+            } => vec![
+                text("amount", currency(zh, *amount_cents)),
+                text("reason", reason.clone()),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh { "查看账户" } else { "View account" },
+                ),
+            ],
+            Template::CommissionCredited {
+                amount_cents,
+                order_no,
+                portal_url,
+            } => vec![
+                text("amount", currency(zh, *amount_cents)),
+                text("order_no", order_no.clone()),
+                link(
+                    "portal_url",
+                    portal_url.as_ref(),
+                    if zh { "查看账户" } else { "View account" },
                 ),
             ],
             Template::Announcement {
@@ -1048,6 +1309,54 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ("security_notice", false) => (
             "{site}: security alert for your account",
             "{event}\n\nTime: {time}\n\nFrom IP: {ip}\n\nIf this was not you, reset your password right away, remove any passkey you do not recognise, and contact the site owner.\n\n{portal_url}",
+        ),
+        ("account_banned", true) => (
+            "{site}：账号已被封禁",
+            "你的账号已被管理员封禁，节点与订阅已停止服务。\n\n原因：{reason}\n\n你仍可登录用户门户查看详情或提交工单申诉。\n\n{portal_url}",
+        ),
+        ("account_banned", false) => (
+            "{site}: your account was suspended",
+            "An administrator suspended your account; your nodes and subscription have stopped.\n\nReason: {reason}\n\nYou can still sign in to the portal to see the details or open a ticket.\n\n{portal_url}",
+        ),
+        ("account_unbanned", true) => (
+            "{site}：账号已解封",
+            "你的账号已解除封禁。如果你有生效的套餐，节点与订阅会恢复服务。\n\n{portal_url}",
+        ),
+        ("account_unbanned", false) => (
+            "{site}: your account was reinstated",
+            "The suspension of your account was lifted. If you have an active plan, your nodes and subscription work again.\n\n{portal_url}",
+        ),
+        ("plan_changed", true) => (
+            "{site}：你的套餐有变更",
+            "{action}\n\n{expiry_line}\n\n{portal_url}",
+        ),
+        ("plan_changed", false) => (
+            "{site}: your plan was changed",
+            "{action}\n\n{expiry_line}\n\n{portal_url}",
+        ),
+        ("withdrawal_approved", true) => (
+            "{site}：提现已通过",
+            "你的提现申请已通过，款项已打出：\n\n提现金额：{amount}\n\n实付：{usdt}\n\n网络：{network}\n\n交易哈希：{txid}\n\n{portal_url}",
+        ),
+        ("withdrawal_approved", false) => (
+            "{site}: your withdrawal was paid",
+            "Your withdrawal request was approved and paid out:\n\nAmount: {amount}\n\nPaid: {usdt}\n\nNetwork: {network}\n\nTransaction hash: {txid}\n\n{portal_url}",
+        ),
+        ("withdrawal_rejected", true) => (
+            "{site}：提现被拒绝",
+            "你的提现申请未通过，{amount} 已退回账户余额。\n\n原因：{reason}\n\n{portal_url}",
+        ),
+        ("withdrawal_rejected", false) => (
+            "{site}: your withdrawal was declined",
+            "Your withdrawal request was declined; {amount} is back in your balance.\n\nReason: {reason}\n\n{portal_url}",
+        ),
+        ("commission_credited", true) => (
+            "{site}：邀请返利已入账",
+            "一笔邀请返利已记入你的账户余额：\n\n金额：{amount}\n\n来自订单：{order_no}\n\n{portal_url}",
+        ),
+        ("commission_credited", false) => (
+            "{site}: an invite commission was credited",
+            "An invite commission was added to your balance:\n\nAmount: {amount}\n\nFrom order: {order_no}\n\n{portal_url}",
         ),
         _ => return None,
     })
@@ -2176,5 +2485,123 @@ mod tests {
         let e = validate_html(REG, "{code}<meta http-equiv=refresh>").unwrap_err();
         assert_eq!(at(&e), ("html_source".into(), Some(1), Some(13)));
         assert_eq!(e.params()["what"], "<meta http-equiv>");
+    }
+
+    /// The admin-action mails: each in both locales names what it must,
+    /// escapes admin-typed text, and its required placeholder cannot be
+    /// edited away.
+    #[test]
+    fn admin_action_templates() {
+        let render_kind =
+            |kind: &str, loc| render(&Template::sample(kind).expect(kind), loc, "Akari");
+        let ban = render(
+            &Template::AccountBanned {
+                reason: "<b>abuse</b>".into(),
+                portal_url: Some("https://p.example".into()),
+            },
+            Locale::En,
+            "Akari",
+        );
+        assert_eq!(ban.subject, "Akari: your account was suspended");
+        assert!(ban.text.contains("Reason: <b>abuse</b>") && ban.html.contains("&lt;b&gt;abuse"));
+        assert!(!ban.html.contains("<b>abuse"));
+        let ban_zh = render_kind("account_banned", Locale::Zh);
+        assert_eq!(ban_zh.subject, "Akari：账号已被封禁");
+        assert!(ban_zh.text.contains("原因："));
+        assert!(
+            render_kind("account_unbanned", Locale::En)
+                .text
+                .contains("lifted")
+        );
+
+        for (action, zh, en) in [
+            (
+                PlanAction::Assigned,
+                "分配了套餐「Pro」",
+                "assigned the plan \"Pro\"",
+            ),
+            (
+                PlanAction::Renewed,
+                "为你的套餐「Pro」续期",
+                "renewed your plan \"Pro\"",
+            ),
+            (
+                PlanAction::Extended,
+                "延长了你的套餐「Pro」",
+                "extended your plan \"Pro\"",
+            ),
+            (
+                PlanAction::Cancelled,
+                "取消了你的套餐「Pro」",
+                "cancelled your plan \"Pro\"",
+            ),
+            (
+                PlanAction::TrafficReset,
+                "重置了你的套餐「Pro」",
+                "reset the used traffic",
+            ),
+        ] {
+            for (loc, want) in [(Locale::Zh, zh), (Locale::En, en)] {
+                let r = render(
+                    &Template::PlanChanged {
+                        action,
+                        plan_name: "Pro".into(),
+                        expires_at: None,
+                        portal_url: None,
+                    },
+                    loc,
+                    "Akari",
+                );
+                assert!(r.text.contains(want), "{action:?} {loc:?}: {}", r.text);
+                assert!(!r.text.contains("expires") && !r.text.contains("到期："));
+            }
+        }
+        assert!(
+            render_kind("plan_changed", Locale::En)
+                .text
+                .contains("Plan expires: 2026-11-01")
+        );
+
+        let paid = render_kind("withdrawal_approved", Locale::En);
+        for want in [
+            "CNY 50.00",
+            "6.89 USDT",
+            "TRC20 (Tron)",
+            "0xa1b2c3d4e5f60718",
+        ] {
+            assert!(paid.text.contains(want), "{want}: {}", paid.text);
+        }
+        let declined = render_kind("withdrawal_rejected", Locale::Zh);
+        assert!(declined.text.contains("¥50.00") && declined.text.contains("地址无效"));
+        let commission = render_kind("commission_credited", Locale::En);
+        assert!(
+            commission.text.contains("CNY 1.20") && commission.text.contains("AK20261002EXAMPLE")
+        );
+
+        assert_eq!(usdt(6_890_000), "6.89");
+        assert_eq!(usdt(12_000_000), "12");
+        assert_eq!(usdt(1), "0.000001");
+
+        for (kind, required) in [
+            ("account_banned", "reason"),
+            ("plan_changed", "action"),
+            ("withdrawal_approved", "txid"),
+            ("withdrawal_rejected", "reason"),
+            ("commission_credited", "amount"),
+        ] {
+            assert_eq!(spec(kind).expect(kind).1, [required], "{kind}");
+            let e = validate(kind, "{site}", "no placeholder").unwrap_err();
+            assert_eq!(e.code(), "mail_template.placeholder_missing", "{kind}");
+            let e = validate(kind, "{site}", &format!("{{{required}}} {{nope}}")).unwrap_err();
+            assert_eq!(e.code(), "mail_template.placeholder_unknown", "{kind}");
+        }
+        // A commission mail has no placeholder for the invitee.
+        assert!(
+            spec("commission_credited")
+                .unwrap()
+                .0
+                .iter()
+                .all(|p| p.name != "user_email")
+        );
     }
 }

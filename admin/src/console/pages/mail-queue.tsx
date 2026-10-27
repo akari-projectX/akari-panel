@@ -72,6 +72,12 @@ function mailKindName(k: string, tr: Tr): string {
     announcement: ["公告", "Announcement"],
     refund: ["退款通知", "Refund notice"],
     security_notice: ["账号安全提醒", "Security alert"],
+    account_banned: ["账号封禁通知", "Account banned"],
+    account_unbanned: ["账号解封通知", "Account unbanned"],
+    plan_changed: ["管理员变更套餐", "Plan changed by admin"],
+    withdrawal_approved: ["提现已通过", "Withdrawal approved"],
+    withdrawal_rejected: ["提现被拒绝", "Withdrawal rejected"],
+    commission_credited: ["邀请返利入账", "Commission credited"],
   };
   const n = names[k];
   return n ? tr(n[0], n[1]) : k;

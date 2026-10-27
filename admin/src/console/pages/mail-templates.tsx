@@ -72,7 +72,7 @@ type Rendered = { subject: string; text: string; html: string };
 type Locale = "zh" | "en";
 type Mode = "auto" | "source";
 
-/** The 18 kinds by purpose (the server's labels are Chinese; English here). */
+/** Every kind by purpose (the server's labels are Chinese; English here). */
 const GROUPS: { zh: string; en: string; kinds: [string, string][] }[] = [
   {
     zh: "账户",
@@ -84,6 +84,8 @@ const GROUPS: { zh: string; en: string; kinds: [string, string][] }[] = [
       ["register_exists", "Sign-up: address taken"],
       ["password_reset", "Password reset"],
       ["security_notice", "Security alert"],
+      ["account_banned", "Account banned"],
+      ["account_unbanned", "Account unbanned"],
     ],
   },
   {
@@ -96,6 +98,10 @@ const GROUPS: { zh: string; en: string; kinds: [string, string][] }[] = [
       ["quota_80", "80% of traffic used"],
       ["quota_100", "Traffic used up"],
       ["refund", "Refund notice"],
+      ["plan_changed", "Plan changed by an admin"],
+      ["withdrawal_approved", "Withdrawal approved"],
+      ["withdrawal_rejected", "Withdrawal rejected"],
+      ["commission_credited", "Invite commission credited"],
     ],
   },
   {

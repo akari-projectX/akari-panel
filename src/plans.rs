@@ -44,6 +44,8 @@ use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::billing::catalog::{PeriodKind, PeriodKindText};
 use crate::entitle::{self, Outcome, Scope};
+use crate::mail::{self, templates::PlanAction};
+use crate::mailhook;
 use crate::state::AppState;
 
 const MAX_NAME: usize = 64;
@@ -1448,6 +1450,14 @@ impl Renewal {
         }
         Ok(Renewal::ExtendDays(days))
     }
+
+    /// How the customer's mail describes it.
+    pub fn plan_action(self) -> PlanAction {
+        match self {
+            Renewal::Term(_) => PlanAction::Renewed,
+            Renewal::ExtendDays(_) => PlanAction::Extended,
+        }
+    }
 }
 
 /// `POST /users/{id}/plan/reset-traffic`: the console's confirmation.
@@ -2130,6 +2140,13 @@ pub async fn set_user_plan(
     let assign = req.assignment()?;
     let mut tx = state.pg().begin().await?;
     apply_set_user_plan(&mut tx, &Actor::of(&user), id, &assign).await?;
+    mailhook::plan_changed(
+        &mut tx,
+        id,
+        PlanAction::Assigned,
+        mail::portal_url(&state).as_deref(),
+    )
+    .await;
     let view = user_plan_state(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
@@ -2145,6 +2162,13 @@ pub async fn renew_user_plan(
     let renewal = req.renewal()?;
     let mut tx = state.pg().begin().await?;
     apply_renew_user_plan(&mut tx, &Actor::of(&user), id, renewal).await?;
+    mailhook::plan_changed(
+        &mut tx,
+        id,
+        renewal.plan_action(),
+        mail::portal_url(&state).as_deref(),
+    )
+    .await;
     let view = user_plan_state(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
@@ -2158,6 +2182,13 @@ pub async fn cancel_user_plan(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_cancel_user_plan(&mut tx, &Actor::of(&user), id).await?;
+    mailhook::plan_changed(
+        &mut tx,
+        id,
+        PlanAction::Cancelled,
+        mail::portal_url(&state).as_deref(),
+    )
+    .await;
     tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -2179,6 +2210,13 @@ pub async fn reset_user_traffic(
     }
     let mut tx = state.pg().begin().await?;
     apply_admin_reset_traffic(&mut tx, &Actor::of(&user), id).await?;
+    mailhook::plan_changed(
+        &mut tx,
+        id,
+        PlanAction::TrafficReset,
+        mail::portal_url(&state).as_deref(),
+    )
+    .await;
     let sub = subscription(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(json!({ "subscription": sub })))
