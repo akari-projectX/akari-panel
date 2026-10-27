@@ -40,6 +40,7 @@
 pub mod alipay;
 pub mod api;
 pub mod catalog;
+pub mod coinbase;
 pub mod coinpayments;
 pub mod commission;
 pub mod coupon_batches;

@@ -292,6 +292,10 @@ order_admin.superseded
 order_admin.user_gone
 order_admin.user_has_pending
 payments.app_id_invalid
+payments.coinbase_api_base_invalid
+payments.coinbase_key_id_invalid
+payments.coinbase_secret_invalid
+payments.coinbase_webhook_secret_invalid
 payments.coinpayments_api_base_invalid
 payments.coinpayments_client_id_invalid
 payments.coinpayments_currency_id_invalid
