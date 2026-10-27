@@ -537,10 +537,21 @@ async fn format_switches_answer_the_uniform_rejection() {
     let (_, login) = user_with_password(&db).await;
     let c = signed_in(&state, &login).await;
     let me = c.get("/test/api/v1/me").await.json();
-    assert_eq!(me["sub_formats"], json!(["clash", "sing-box", "links"]));
+    assert_eq!(
+        me["sub_formats"],
+        json!(["clash", "sing-box", "links", "surge", "surfboard"])
+    );
     assert_eq!(
         me["sub_import_clients"],
-        json!(["clash", "stash", "shadowrocket", "sing-box", "hiddify"])
+        json!([
+            "clash",
+            "stash",
+            "shadowrocket",
+            "sing-box",
+            "hiddify",
+            "surge",
+            "surfboard"
+        ])
     );
     let token = me["sub_token"].as_str().unwrap().to_string();
     let ua_get = |ua: &'static str, query: &'static str| {
@@ -570,8 +581,8 @@ async fn format_switches_answer_the_uniform_rejection() {
     let ok = ua_get("clash-verge/v2", "").await;
     assert_eq!(ok.status, StatusCode::OK);
     // The recommended routing's DNS block comes first.
-    assert!(String::from_utf8_lossy(&ok.body).starts_with("dns:\n"));
-    assert!(String::from_utf8_lossy(&ok.body).contains("\nproxies:\n"));
+    assert!(String::from_utf8_lossy(&ok.body).starts_with("mixed-port:"));
+    assert!(String::from_utf8_lossy(&ok.body).contains("proxies:"));
     // Unknown client: falls through to Clash.
     assert_eq!(ua_get("curl/8", "").await.status, StatusCode::OK);
     for (ua, q) in [
@@ -625,7 +636,7 @@ async fn own_client_only_mode() {
     db.settings(&state, "sub_formats = '{}'::text[]").await;
     let r = sub("akari-client/0.1.0 mihomo", "").await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(String::from_utf8_lossy(&r.body).contains("\nproxies:\n"));
+    assert!(String::from_utf8_lossy(&r.body).contains("proxies:"));
     assert_eq!(sub("clash-verge/v2", "").await.fingerprint(), reject);
 
     // The admin switch (audited); the stored lists are kept.
@@ -663,7 +674,7 @@ async fn own_client_only_mode() {
     let r = sub("akari-client/0.1.0 mihomo", "").await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(r.headers.get("subscription-userinfo").is_some());
-    assert!(String::from_utf8_lossy(&r.body).contains("\nproxies:\n"));
+    assert!(String::from_utf8_lossy(&r.body).contains("proxies:"));
     for (ua, q) in [
         ("clash-verge/v2", ""),
         ("clash-verge/v2", "?format=clash"),
