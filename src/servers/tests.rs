@@ -24,6 +24,16 @@ fn tls(sni: &str) -> Value {
 /// W10: an inbound naming another SNI keeps the automatic certificate from
 /// working; said on the server (over all its nodes).
 #[test]
+fn private_destinations_warning_needs_a_hello_without_the_capability() {
+    let caps = |c: &[&str]| Some(c.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let w = |on, c: Option<Vec<String>>| private_destinations_warning(on, c.as_deref());
+    assert!(w(true, caps(&["metrics"])).is_some());
+    assert!(w(true, caps(&["metrics", PRIVATE_DESTINATIONS_CAPABILITY])).is_none());
+    assert!(w(false, caps(&["metrics"])).is_none());
+    assert!(w(true, None).is_none(), "no Hello yet");
+}
+
+#[test]
 fn tls_domain_warnings_flag_other_names() {
     let d = Some("n1.example.com");
     let one = |ib: Value| json!([ib]);
@@ -325,6 +335,36 @@ async fn two_nodes_on_one_server_share_one_agent() {
         StatusCode::OK
     );
     assert_eq!(db.versions(sid).await.0, v2.0 + 1, "a rename does not");
+    // The private-destinations switch: off by default, one bump when it
+    // changes (also together with the domain), none when it does not.
+    assert_eq!(r.json()["allow_private_destinations"], false);
+    let patch = |body: Value| async {
+        c.req(
+            Method::PATCH,
+            &format!("/test/api/v1/servers/{sid}"),
+            Some(body),
+        )
+        .await
+    };
+    let r = patch(json!({"allow_private_destinations": true})).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json()["allow_private_destinations"], true);
+    assert_eq!(db.versions(sid).await.0, v2.0 + 2, "the switch bumps");
+    patch(json!({"allow_private_destinations": true})).await;
+    assert_eq!(
+        db.versions(sid).await.0,
+        v2.0 + 2,
+        "the same value does not"
+    );
+    patch(json!({"allow_private_destinations": false, "tls_domain": "hk2.example.com"})).await;
+    assert_eq!(db.versions(sid).await.0, v2.0 + 3, "both at once bump once");
+    assert_eq!(
+        patch(json!({"allow_private_destinations": null}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST,
+        "nothing to update"
+    );
     let r = c
         .post(
             &format!("/test/api/v1/servers/{sid}/enroll-token"),

@@ -42,8 +42,10 @@ if [ -z "${SMOKE_VALKEY_DB:-}" ]; then
 fi
 export VALKEY_URL="redis://127.0.0.1:6379/$SMOKE_VALKEY_DB"
 # xray >= 26.4 refuses user connections to loopback/private addresses by default
-# (freedom final rules); the smoke relays to 127.0.0.1 echo servers. Agents
-# before the xray 26.10 upgrade ignore the variable.
+# (freedom final rules); the smoke relays to 127.0.0.1 echo servers. The
+# per-server setting (allow_private_destinations) replaces this variable once
+# the agent honours it (capability private-destinations); until the agent
+# main has it the variable stays.
 export AKARI_ALLOW_PRIVATE_DESTINATIONS=1
 vk() { docker compose exec -T valkey valkey-cli -n "$SMOKE_VALKEY_DB" "$@"; }
 docker compose exec -T postgres psql -U akari -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$SMOKE_DB'" | matches 1 \
@@ -2037,6 +2039,29 @@ for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && break
 python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: not restored after the quota was removed"; exit 1; }
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='server.update' AND target_id='$SERVER_ID'")" -ge 2 ] || { echo "FAIL: quota changes not audited"; exit 1; }
 echo "d5 server traffic quota: ok"
+
+echo "== server setting: users may reach the machine's private addresses (default off) =="
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] && [ "$(last_json "d['allow_private_destinations']")" = "False" ] \
+  || { echo "FAIL: private destinations not off by default"; exit 1; }
+PD_V=$(psql_q "SELECT config_version FROM servers WHERE id='$SERVER_ID'")
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"allow_private_destinations":"yes"}')" = "400" ] || { echo "FAIL: non-boolean private destinations accepted"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"allow_private_destinations":true}')" = "200" ] \
+  && [ "$(last_json "d['allow_private_destinations']")" = "True" ] \
+  && [ "$(psql_q "SELECT config_version FROM servers WHERE id='$SERVER_ID'")" = "$((PD_V + 1))" ] \
+  || { echo "FAIL: allow private destinations (value or config_version bump)"; cat /tmp/akari-smoke/last; exit 1; }
+# The NodeView warning is exactly for agents without the capability.
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
+  && last_json "('private-destinations' in (d.get('agent_capabilities') or [])) == (not any('允许用户访问本机内网' in w for w in d['warnings']))" | matches '^True$' \
+  || { echo "FAIL: private destinations warning vs agent capability"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"allow_private_destinations":true}')" = "200" ] \
+  && [ "$(psql_q "SELECT config_version FROM servers WHERE id='$SERVER_ID'")" = "$((PD_V + 1))" ] \
+  || { echo "FAIL: unchanged private destinations bumped"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"allow_private_destinations":false}')" = "200" ] \
+  && [ "$(psql_q "SELECT config_version FROM servers WHERE id='$SERVER_ID'")" = "$((PD_V + 2))" ] \
+  || { echo "FAIL: disallow private destinations"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='server.update' AND target_id='$SERVER_ID' AND after->>'allow_private_destinations' = 'true'")" -ge 1 ] \
+  || { echo "FAIL: private destinations change not audited"; exit 1; }
+echo "private destinations setting: ok"
 
 # Machine status: the heartbeat blob carries metrics; history and
 # Prometheus fleet gauges follow.

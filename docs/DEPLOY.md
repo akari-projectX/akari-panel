@@ -1013,7 +1013,7 @@ XHTTP mode（`auto`、`packet-up`、`stream-up`、`stream-one`）或 gRPC servic
 **内嵌内核不支持：** TUIC（xray-core 没有 TUIC）。不会添加其他内核。
 Hysteria 2 之所以受支持，是因为 xray-core v26.10.21 把它实现为多用户入站。
 
-**用户不能访问节点的内网（xray-core ≥ 26.4，随 agent 升级生效）。** 内嵌内核的直连出站（freedom）默认拒绝用户经 vless/vmess/trojan/hysteria/shadowsocks 入站去往私有、回环、链路本地地址（被拦的连接约 30–90 秒后才断开）。这是上游的安全默认，面板与 agent 保持不变；节点自身所在内网里的服务因此不会被用户借道访问。需要放行（例如自建测试环境把回显服务放在 127.0.0.1）时，在 agent 的环境里设置 `AKARI_ALLOW_PRIVATE_DESTINATIONS=1`（面板 `smoke.sh` 即如此）。
+**用户不能访问节点的内网（xray-core ≥ 26.4，随 agent 升级生效）。** 内嵌内核的直连出站（freedom）默认拒绝用户经 vless/vmess/trojan/hysteria/shadowsocks 入站去往私有、回环、链路本地地址（被拦的连接约 30–90 秒后才断开）。这是上游的安全默认，面板与 agent 保持不变；节点自身所在内网里的服务因此不会被用户借道访问。需要放行（例如要让用户访问本机上只监听回环的服务）时，在后台 服务器 → 设置 → 访问范围 打开“允许用户访问本机内网/回环地址”（每台服务器一个开关，默认关；API：`PATCH /servers/{id}` 的 `allow_private_destinations`）。**风险**：云厂商元数据服务（169.254.169.254，可能取得实例凭据）、本机服务和同一内网里其他机器（含其他租户）都会被用户访问到；改动会重建该服务器的入站，在线用户自动重连。需要 agent 带能力 `private-destinations`，较旧的 agent 忽略此开关（后台显示“agent 过旧”警告）。agent 的环境变量 `AKARI_ALLOW_PRIVATE_DESTINATIONS=1` 目前只剩面板 `smoke.sh` 在 agent 尚未支持该开关时使用。
 
 ## 3e. Node status, latency tests and the traffic multiplier (W11)（节点状态、延迟测试与流量倍率）
 

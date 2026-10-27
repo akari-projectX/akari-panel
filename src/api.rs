@@ -2437,6 +2437,42 @@ mod tests {
                 true,
             ),
             (
+                "allow private destinations (the agent rebuilds xray with the rule)",
+                server(
+                    n1,
+                    crate::servers::UpdateServerReq {
+                        allow_private_destinations: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                true,
+            ),
+            (
+                "same private destinations setting (no-op)",
+                server(
+                    n1,
+                    crate::servers::UpdateServerReq {
+                        allow_private_destinations: Some(true),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                false,
+            ),
+            (
+                "disallow private destinations again",
+                server(
+                    n1,
+                    crate::servers::UpdateServerReq {
+                        allow_private_destinations: Some(false),
+                        ..Default::default()
+                    },
+                ),
+                vec![n1],
+                true,
+            ),
+            (
                 "node display fields (W11, no access change)",
                 node(
                     n1,
