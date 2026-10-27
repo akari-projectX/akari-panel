@@ -50,7 +50,7 @@ export type Redemption = {
   created_at: string;
 };
 
-export type BatchTemplate = {
+type BatchTemplate = {
   kind: "percent" | "fixed";
   value: number;
   plan_ids: string[] | null;
@@ -86,7 +86,7 @@ export const MAX_LIMIT = 100_000_000;
 /** Fixed discounts and minimums: at most this many fen (catalog.rs MAX_PRICE_CENTS). */
 export const MAX_PRICE_YUAN = 1_000_000;
 /** The unambiguous alphabet of generated codes (coupon_batches.rs ALPHABET). */
-export const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export function randomCode(len: number): string {
   const buf = new Uint8Array(len);
@@ -105,7 +105,7 @@ export function discountLabel(kind: "percent" | "fixed", value: number, tr: Tr):
 }
 
 /** Whole yuan when there are no fen ("¥30"), else two decimals. */
-export function yuanShort(cents: number): string {
+function yuanShort(cents: number): string {
   return cents % 100 ? yuan(cents) : `¥${(cents / 100).toLocaleString("en")}`;
 }
 

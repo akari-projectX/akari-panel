@@ -45,7 +45,7 @@ function run(cmd: string, args: string[], input?: string): Promise<string> {
 }
 
 /** psql against the e2e database; several statements run as one transaction. */
-export const psql = (q: string) =>
+const psql = (q: string) =>
   run("docker", ["compose", "exec", "-T", "postgres", "psql", "-U", "akari", "-d", DB, "-At", "-c", q]);
 
 /** valkey-cli commands (one per line) against the e2e Valkey database. */

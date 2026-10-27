@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/main.ts",
+    "e2e/perf/summary.mjs",
+    "e2e/support/seed.ts",
+    "e2e/support/tls-proxy.mjs",
+    "playwright.perf.config.ts",
+    "src/boot/boot.js",
+    "src/boot/head.css"
+  ],
+  "ignore": ["scripts/strings.d.mts"],
+  "ignoreDependencies": ["@typescript/native"]
+}

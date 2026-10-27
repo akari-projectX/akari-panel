@@ -2,7 +2,7 @@
 // the sign-in page `/{prefix}/app`, the console `/{prefix}/admin/...`, the
 // API `/{prefix}/api/v1`, auth `/{prefix}/auth`. Nothing is baked in: the
 // prefix is the first path segment of the current location.
-export const prefix: string = location.pathname.split("/")[1] ?? "";
+const prefix: string = location.pathname.split("/")[1] ?? "";
 export const prefixBase = `/${prefix}`;
 export const loginBase = `${prefixBase}/app`;
 export const adminBase = `${prefixBase}/admin`;

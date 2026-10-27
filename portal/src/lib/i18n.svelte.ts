@@ -28,7 +28,7 @@ export const i18n = $state<{ locale: Locale; en: Record<string, string> | null }
 
 let enLoading: Promise<void> | null = null;
 /** 取英文词典；失败时清掉在途的 Promise，下一次还能重试 */
-export function loadEN(): Promise<void> {
+function loadEN(): Promise<void> {
   enLoading ??= import('@/i18n/dict').then(
     (m) => { i18n.en = m.EN; },
     (e: unknown) => { enLoading = null; throw e; },

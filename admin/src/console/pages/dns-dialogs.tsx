@@ -81,7 +81,7 @@ export function useGuarded() {
 }
 
 /** The panel's dependencies on a record, as a list. */
-export function UsesBanner({ record }: { record: DnsRecord }) {
+function UsesBanner({ record }: { record: DnsRecord }) {
   const tr = useTr();
   if (record.uses.length === 0) return null;
   return (

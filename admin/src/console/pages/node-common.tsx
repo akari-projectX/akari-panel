@@ -4,75 +4,12 @@
 // number fields that keep the typed string and validate it (never NaN, never
 // "empty = 0"), tags and the node-group picker.
 import { useLang, useTr, type Tr } from "../../shared/i18n";
-import { ago } from "../../shared/format";
-import type { EntranceView, NodeGroup } from "../types";
-import type { Tone } from "../../shared/ui/badge";
-import { Checkbox, Field } from "../../shared/ui/form";
+import { Field } from "../../shared/ui/form";
 import { Callout } from "../../shared/ui/layout";
-import { CircleAlert, X, type LucideIcon } from "lucide-react";
-import { Card } from "../../shared/ui/card";
+import { CircleAlert, X } from "lucide-react";
 import { cn } from "../../shared/cn";
-import type { ReactNode } from "react";
-
-export function entranceState(e: EntranceView, tr: Tr): [string, Tone] {
-  if (!e.enabled) return [tr("已停用", "Disabled"), "neutral"];
-  if (e.hidden_since) return [tr("已隐藏", "Hidden"), "danger"];
-  return [tr("订阅中", "In subscriptions"), "success"];
-}
-
-export function healthText(e: EntranceView, tr: Tr, lang: "zh" | "en"): [string, Tone] {
-  if (e.kind === "direct") return [tr("直连", "direct"), "neutral"];
-  if (e.health_ok === null) return [tr("未探测", "not tested"), "neutral"];
-  if (e.health_ok) return [tr(`正常 · ${ago(e.health_at, lang)}`, `ok · ${ago(e.health_at, lang)}`), "success"];
-  return [
-    tr(
-      `失败 ${e.health_failures} 次 · ${ago(e.health_at, lang)}`,
-      `failed ×${e.health_failures} · ${ago(e.health_at, lang)}`,
-    ),
-    "danger",
-  ];
-}
 
 // --- Summary tiles (nodes and plans pages) -----------------------------------
-
-/** A summary tile: tinted icon, label, number, one line under it. */
-export function Summary({
-  icon: Icon,
-  label,
-  value,
-  foot,
-  tone,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: ReactNode;
-  foot: string;
-  tone?: "warning" | "danger";
-}) {
-  return (
-    <Card className="flex items-center gap-3 p-3.5">
-      <span
-        className={cn(
-          "inline-flex size-9 shrink-0 items-center justify-center rounded-[10px]",
-          tone === "danger"
-            ? "bg-destructive-soft text-destructive"
-            : tone === "warning"
-              ? "bg-warning-soft text-warning"
-              : "bg-primary-soft text-primary",
-        )}
-      >
-        <Icon className="size-[18px]" aria-hidden="true" />
-      </span>
-      <div className="min-w-0">
-        <div className="text-footnote text-muted-foreground">{label}</div>
-        <div className="tnum text-title3 font-semibold">{value}</div>
-        <div className="truncate text-caption text-faint" title={foot}>
-          {foot}
-        </div>
-      </div>
-    </Card>
-  );
-}
 
 // --- Backend warnings -------------------------------------------------------
 
@@ -120,29 +57,6 @@ export function WarningList({ warnings, tone = "warning" }: { warnings: string[]
           </li>
         ))}
       </ul>
-    </Callout>
-  );
-}
-
-/** `last_error` is the agent's own text (English, technical): a plain title, the raw text on demand. */
-export function ApplyError({ error, at }: { error: string; at?: string | null }) {
-  const tr = useTr();
-  const lang = useLang();
-  return (
-    <Callout tone="danger" title={tr("配置应用失败", "Apply failed")}>
-      <p>
-        {tr(
-          "agent 没能应用最新配置，仍在运行上一份配置。常见原因：端口被占用、证书文件缺失、入站参数不被这个版本支持。",
-          "The agent could not apply the latest configuration and keeps running the previous one. Usual causes: a port in use, a missing certificate file, an inbound setting this version does not support.",
-        )}
-        {at ? ` (${ago(at, lang)})` : ""}
-      </p>
-      <details className="mt-1">
-        <summary className="cursor-pointer text-footnote text-muted-foreground">
-          {tr("agent 的原始错误", "The agent's error text")}
-        </summary>
-        <pre className="mt-1 font-mono text-caption break-all whitespace-pre-wrap">{error}</pre>
-      </details>
     </Callout>
   );
 }
@@ -222,16 +136,11 @@ function parts(text: string, split: RegExp): string[] {
 }
 
 /** Every value, committed or still typed, without duplicates (what is sent). */
-export function chipValues(c: Chips, split: RegExp = TAG_SPLIT): string[] {
+function chipValues(c: Chips, split: RegExp = TAG_SPLIT): string[] {
   return [...new Set([...c.items, ...parts(c.draft, split)])];
 }
 export const tagValues = (c: Chips) => chipValues(c, TAG_SPLIT);
 export const addrValues = (c: Chips) => chipValues(c, ADDR_SPLIT);
-
-/** "IPLC, 原生" → ["IPLC", "原生"] (the panel trims and deduplicates). */
-export function splitTags(v: string): string[] {
-  return parts(v, TAG_SPLIT);
-}
 
 /** An IPv4 / IPv6 address or network the panel accepts (entrances.rs `clean_cidrs`). */
 export function isIpOrCidr(v: string): boolean {
@@ -381,54 +290,6 @@ export function TagsField({
       />
     </Field>
   );
-}
-
-export function GroupPicker({
-  groups,
-  value,
-  onChange,
-  empty,
-}: {
-  groups: NodeGroup[];
-  value: string[];
-  onChange: (v: string[]) => void;
-  /** Shown when there are no groups (e.g. a "create one" button). */
-  empty?: ReactNode;
-}) {
-  const tr = useTr();
-  return (
-    <fieldset>
-      <legend className="mb-1.5 text-footnote font-medium text-muted-foreground">{tr("节点组", "Node groups")}</legend>
-      {groups.length === 0 ? (
-        (empty ?? (
-          <p className="text-footnote text-muted-foreground">
-            {tr("还没有节点组（在「套餐 → 节点组」创建）。", "No node groups yet (Plans → Node groups).")}
-          </p>
-        ))
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {groups.map((g) => (
-            <label
-              key={g.id}
-              className="flex min-h-9 items-center gap-2 rounded-lg px-2.5 text-body ring-1 ring-border ring-inset"
-            >
-              <Checkbox
-                checked={value.includes(g.id)}
-                label={g.name}
-                onChange={(on) => onChange(on ? [...value, g.id] : value.filter((x) => x !== g.id))}
-              />
-              {g.name}
-            </label>
-          ))}
-        </div>
-      )}
-    </fieldset>
-  );
-}
-
-/** Same arrays regardless of order. */
-export function sameSet(a: string[], b: string[]): boolean {
-  return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 }
 
 export const ALERT_KINDS = [

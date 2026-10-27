@@ -1,12 +1,10 @@
 // Small page helpers shared by the console's views (writes go through
 // data.ts `useAction`).
-import { Copy, type LucideIcon } from "lucide-react";
+import { Copy } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { cn } from "../shared/cn";
 import { errorCode, errorText } from "../shared/errors";
 import { copyText } from "../shared/format";
 import { useLang, useTr } from "../shared/i18n";
-import { Badge, type Tone } from "../shared/ui/badge";
 import { Button } from "../shared/ui/button";
 import { useConfirm } from "../shared/ui/confirm";
 import { useToast } from "../shared/ui/toast";
@@ -62,49 +60,6 @@ export function Mono({ children }: { children: ReactNode }) {
   return <code className="rounded bg-secondary px-1.5 py-0.5 font-mono text-footnote break-all">{children}</code>;
 }
 
-export function StatusBadge({ tone, children }: { tone: Tone; children: ReactNode }) {
-  return (
-    <Badge tone={tone} dot>
-      {children}
-    </Badge>
-  );
-}
-
-/** A KPI card: label, big number, one line under it. */
-export function Stat({
-  label,
-  value,
-  hint,
-  tone,
-  icon: Icon,
-}: {
-  label: ReactNode;
-  value: ReactNode;
-  hint?: ReactNode;
-  tone?: "danger" | "warning" | "success";
-  icon?: LucideIcon;
-}) {
-  return (
-    <div className="rounded-xl bg-card p-4 shadow-card">
-      <div className="flex items-center gap-2 text-footnote text-muted-foreground">
-        {Icon && <Icon className="size-3.5" aria-hidden="true" />}
-        {label}
-      </div>
-      <div
-        className={cn(
-          "tnum mt-1.5 text-title2 font-semibold tracking-[-0.02em]",
-          tone === "danger" && "text-destructive",
-          tone === "warning" && "text-warning",
-          tone === "success" && "text-success",
-        )}
-      >
-        {value}
-      </div>
-      {hint && <div className="mt-1 text-footnote text-muted-foreground">{hint}</div>}
-    </div>
-  );
-}
-
 /** Saving 0x makes the entrance free: ask first (never reached from an empty field). */
 export function useConfirmFree() {
   const tr = useTr();
@@ -119,4 +74,3 @@ export function useConfirmFree() {
       tone: "warning",
     });
 }
-export { SectionTitle } from "../shared/ui/layout";

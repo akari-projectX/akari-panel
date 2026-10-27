@@ -183,8 +183,3 @@ export function portalFiles(root = PORTAL) {
     return { file: path.relative(root, file), strings: r.strings, markup: r.markup };
   });
 }
-
-/** portal/src 用到的全部字符串 */
-export function portalStrings(root = PORTAL) {
-  return new Set(portalFiles(root).flatMap((f) => f.strings));
-}

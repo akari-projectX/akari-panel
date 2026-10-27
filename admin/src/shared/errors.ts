@@ -6,7 +6,7 @@ import { ERRORS } from "./errors.gen";
 import type { Lang } from "./i18n";
 
 /** Template variables from the error params: strings as-is, numbers, and `<p>_yuan` for each `<p>_cents`. */
-export function errorVars(params: Record<string, unknown>): Record<string, string> {
+function errorVars(params: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(params)) {
     if (v === null || v === undefined) continue;
@@ -16,7 +16,7 @@ export function errorVars(params: Record<string, unknown>): Record<string, strin
   return out;
 }
 
-export function fill(template: string, vars: Record<string, string>): string {
+function fill(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? vars[name] : m));
 }
 

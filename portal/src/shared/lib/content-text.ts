@@ -58,7 +58,7 @@ export type DescriptionBlock = { kind: 'p'; lines: string[] } | { kind: 'ul'; it
 const BULLET = /^\s*[-*•](?:\s+(.*))?$/;
 
 /** 套餐说明（Markdown-lite 纯文本）→ 段落与列表 */
-export function parseDescription(text: string | null | undefined): DescriptionBlock[] {
+function parseDescription(text: string | null | undefined): DescriptionBlock[] {
   const blocks: DescriptionBlock[] = [];
   let cur: DescriptionBlock | null = null;
   for (const raw of (text ?? '').replace(/\r\n?/g, '\n').split('\n')) {

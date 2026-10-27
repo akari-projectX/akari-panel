@@ -877,6 +877,239 @@ impl FromRequestParts<AppState> for MaybeClientIp {
     }
 }
 
+/// Route ↔ auth coverage. `src/route_auth.txt` lists every registered route
+/// (`METHOD path class`), `class` being what its handler demands:
+/// `admin` (`AuthUser` + an admin check), `user` (`AuthUser`, any role),
+/// `shop` (`ShopUser`), `portal` (`PortalUser`), `pending` (`PendingUser`),
+/// `public` (no session extractor: the handler guards itself or serves
+/// anyone). axum cannot list the routes of a built `Router`, so the test
+/// reads the router registrations and the handlers' signatures from the source; a new route without a table
+/// line, a stale line, or a line whose class differs from the handler's
+/// extractor fails. Update the table (sorted by path, then method) when you
+/// add or change a route.
+#[cfg(test)]
+mod route_auth_tests {
+    use regex::Regex;
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    /// Handlers that reach `require_admin` through a helper they call
+    /// instead of in their own body.
+    const ADMIN_VIA_HELPER: &[&str] = &[
+        "rollout::pause_rollout",
+        "rollout::resume_rollout",
+        "rollout::abort_rollout",
+    ];
+
+    struct Source {
+        path: PathBuf,
+        /// The file without its `#[cfg(test)] mod … {` tail.
+        text: String,
+    }
+
+    fn sources() -> Vec<Source> {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p.file_name().is_some_and(|n| n != "tests") {
+                        walk(&p, out);
+                    }
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && p.file_name()
+                        .is_some_and(|n| n != "tests.rs" && n != "mock.rs")
+                {
+                    out.push(p);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let test_mod =
+            Regex::new(r"(?m)^#\[cfg\(test\)\]\s*\n(?:pub(?:\([a-z]+\))? )?mod \w+ \{").unwrap();
+        files.sort();
+        files
+            .into_iter()
+            .map(|path| {
+                let mut text = std::fs::read_to_string(&path).unwrap();
+                if let Some(m) = test_mod.find(&text) {
+                    text.truncate(m.start());
+                }
+                Source { path, text }
+            })
+            .collect()
+    }
+
+    /// Index just past the `)` closing the call whose `(` ends at `from`.
+    fn after_call(s: &str, from: usize) -> usize {
+        let mut depth = 1;
+        for (i, c) in s[from..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return from + i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced parentheses");
+    }
+
+    struct Handler<'a> {
+        signature: &'a str,
+        body: &'a str,
+    }
+
+    /// The free function a route names (`name` or `module::name`): among
+    /// functions of that name, those in the module's file, then the ones
+    /// nearest the registering file.
+    fn resolve<'a>(srcs: &'a [Source], from: &Path, handler: &str) -> Handler<'a> {
+        let handler = handler.strip_prefix("self::").unwrap_or(handler);
+        let segments: Vec<&str> = handler.split("::").collect();
+        let name = segments[segments.len() - 1];
+        let decl = Regex::new(&format!(r"\bfn\s+{name}\s*(?:<[^>]*>)?\(")).unwrap();
+        let mut found = Vec::new();
+        for file in srcs {
+            for m in decl.find_iter(&file.text) {
+                found.push((file, m.end()));
+            }
+        }
+        let keep = |found: &mut Vec<(&'a Source, usize)>, f: &dyn Fn(&Path) -> bool| {
+            let narrowed: Vec<_> = found.iter().filter(|(s, _)| f(&s.path)).copied().collect();
+            if !narrowed.is_empty() {
+                *found = narrowed;
+            }
+        };
+        if found.len() > 1 {
+            if segments.len() == 1 {
+                keep(&mut found, &|p| p == from);
+            } else {
+                let module = segments[..segments.len() - 1].join("/");
+                keep(&mut found, &|p| {
+                    p.ends_with(format!("{module}.rs")) || p.ends_with(format!("{module}/mod.rs"))
+                });
+                if found.len() > 1 {
+                    let last = segments[segments.len() - 2];
+                    keep(&mut found, &|p| {
+                        p.ends_with(format!("{last}.rs")) || p.ends_with(format!("{last}/mod.rs"))
+                    });
+                }
+                if found.len() > 1 {
+                    let dir = from.parent().unwrap().to_path_buf();
+                    keep(&mut found, &|p| p.starts_with(&dir));
+                }
+            }
+        }
+        assert_eq!(
+            found.len(),
+            1,
+            "cannot tell which function `{handler}` is ({} candidates); give the route a more specific path",
+            found.len()
+        );
+        let (file, after_open) = found[0];
+        let end = after_call(&file.text, after_open);
+        let body_end = file.text[end..]
+            .find("\n}\n")
+            .map_or(file.text.len(), |i| end + i);
+        Handler {
+            signature: &file.text[after_open..end],
+            body: &file.text[end..body_end],
+        }
+    }
+
+    fn class(h: &Handler, name: &str) -> &'static str {
+        let has = |t: &str| {
+            Regex::new(&format!(r"\b{t}\b"))
+                .unwrap()
+                .is_match(h.signature)
+        };
+        if has("AuthUser") {
+            let admin = h.body.contains("require_admin")
+                || h.body.contains("is_admin(")
+                || ADMIN_VIA_HELPER.contains(&name);
+            if admin { "admin" } else { "user" }
+        } else if has("ShopUser") {
+            "shop"
+        } else if has("PortalUser") {
+            "portal"
+        } else if has("PendingUser") {
+            "pending"
+        } else {
+            "public"
+        }
+    }
+
+    /// `METHOD path class` for every `.route(…)` in the non-test source.
+    fn registered() -> BTreeSet<String> {
+        let srcs = sources();
+        let route = Regex::new(r#"\.route\(\s*"((?:[^"\\]|\\.)*)"\s*,"#).unwrap();
+        let method =
+            Regex::new(r"\b(get|post|put|patch|delete)\(\s*([A-Za-z_][\w:]*)\s*\)").unwrap();
+        let any_method =
+            Regex::new(r"\b(get|post|put|patch|delete|head|options|any|on)\(").unwrap();
+        let mut out = BTreeSet::new();
+        for src in &srcs {
+            for banned in [".nest(", ".route_service(", ".nest_service("] {
+                assert!(
+                    !src.text.contains(banned),
+                    "{}: `{banned}` hides routes from the auth table; register with `.route(`",
+                    src.path.display()
+                );
+            }
+            for m in route.captures_iter(&src.text) {
+                let whole = m.get(0).unwrap();
+                let path = &m[1];
+                let end = after_call(&src.text, whole.end());
+                let call = &src.text[whole.end()..end - 1];
+                let named: Vec<_> = method.captures_iter(call).collect();
+                assert_eq!(
+                    named.len(),
+                    any_method.find_iter(call).count(),
+                    "{}: route {path} has a handler this test cannot read (use `get(module::handler)`)",
+                    src.path.display()
+                );
+                assert!(!named.is_empty(), "route {path} has no method");
+                for n in named {
+                    let h = resolve(&srcs, &src.path, &n[2]);
+                    let name = n[2].to_string();
+                    out.insert(format!(
+                        "{} {path} {}",
+                        n[1].to_uppercase(),
+                        class(&h, &name)
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_route_is_in_the_auth_table_with_the_right_class() {
+        let table: BTreeSet<String> = include_str!("route_auth.txt")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect();
+        let routes = registered();
+        let missing: Vec<_> = routes.difference(&table).collect();
+        let stale: Vec<_> = table.difference(&routes).collect();
+        assert!(
+            missing.is_empty(),
+            "routes (or classes) missing from src/route_auth.txt: {missing:#?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "src/route_auth.txt lines without a matching route or class: {stale:#?}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod error_code_tests {
     use super::*;

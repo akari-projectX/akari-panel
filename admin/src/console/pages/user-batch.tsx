@@ -59,7 +59,7 @@ export type Selection = { ids: string[] } | { filter: UserFilter };
 
 type Preview = { total: number; admins: number; sample: string[] };
 
-export const BATCH_KINDS = [
+const BATCH_KINDS = [
   "extend_expiry",
   "reset_traffic",
   "ban",
@@ -82,7 +82,7 @@ const ICON: Record<Kind, LucideIcon> = {
   send_email: Mail,
 };
 
-export function batchKindName(k: string, tr: Tr): string {
+function batchKindName(k: string, tr: Tr): string {
   switch (k) {
     case "extend_expiry":
       return tr("延长 N 天", "Extend N days");
@@ -577,7 +577,7 @@ type Item = { user_id: string; user_label: string; user_email: string | null; st
 const ACTIVE = ["pending", "running"];
 
 /** The job's state in Chinese: done with failures is 部分失败. */
-export function jobStatus(j: Pick<Job, "status" | "failed">, tr: Tr): [string, Tone] {
+function jobStatus(j: Pick<Job, "status" | "failed">, tr: Tr): [string, Tone] {
   switch (j.status) {
     case "pending":
       return [tr("排队中", "Queued"), "neutral"];
@@ -1022,7 +1022,7 @@ export function useBulkDelete(): [(selection: Selection, label: string) => Promi
 }
 
 /** Body text for a finished bulk delete (used by the toast). */
-export function deletedText(r: { deleted: number; anonymized: number; failed: number }, tr: Tr): string {
+function deletedText(r: { deleted: number; anonymized: number; failed: number }, tr: Tr): string {
   return tr(
     `已删除 ${r.deleted}，匿名化 ${r.anonymized}，失败 ${r.failed}`,
     `${r.deleted} deleted, ${r.anonymized} anonymized, ${r.failed} failed`,

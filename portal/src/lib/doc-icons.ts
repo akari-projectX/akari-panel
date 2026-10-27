@@ -12,10 +12,10 @@ import type { DocCategory } from '@/lib/doc-categories';
  * 认得出平台的用平台的品牌标（单色实心 SVG 路径，components/DocIcon.svelte 画），路由器没有品牌标用 lucide 的通用图标；
  * 其余按名字里的关键词挑一个，都对不上就是一本书（只是装饰，图标一律 aria-hidden）。
  */
-export type Icon = typeof BookOpen;
+type Icon = typeof BookOpen;
 
 /* v1.4.0 components/platform-icon.tsx 的 PATHS（simple-icons；Windows 四窗格自行绘制，该商标已从 simple-icons 移除），键 = data/platforms 的 icon */
-export const BRAND_PATHS: Record<string, string> = {
+const BRAND_PATHS: Record<string, string> = {
   windows:
     'M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801',
   apple:

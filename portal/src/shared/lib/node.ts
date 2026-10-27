@@ -48,7 +48,7 @@ const KEYWORDS: [string[], string][] = [
   [['中国', '中國', '国内', '國內', 'china', 'cn'], 'CN'],
 ];
 
-export function guessCC(name: string): string | null {
+function guessCC(name: string): string | null {
   const fromEmoji = ccFromEmoji(name);
   if (fromEmoji) return fromEmoji;
   const lower = name.toLowerCase();

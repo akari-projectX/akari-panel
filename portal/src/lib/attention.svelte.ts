@@ -54,7 +54,7 @@ export function loadSheetFacts(s: Scope | undefined) {
   if (s === 'full') fetchInto('nodes', K.nodes, () => meApi.nodes());
 }
 
-export function reset() {
+function reset() {
   att.orders = undefined;
   att.tickets = undefined;
   att.announcements = undefined;
@@ -67,9 +67,5 @@ export function reset() {
 export const pendingOrders = () => (att.orders ?? []).filter((o) => o.status === 'pending').length;
 /** 有新回复（客服回了、还没看）的未关闭工单数 */
 export const repliedTickets = () => (att.tickets ?? []).filter((t) => t.unread && t.status !== 'closed').length;
-/** 未读公告数 */
-export const unreadAnnouncements = () => att.announcements?.unread ?? 0;
-/** 线路：在线 / 全部 */
-export const nodesUp = () => (att.nodes ? { up: att.nodes.filter((n) => n.status === 'online').length, all: att.nodes.length } : undefined);
 /** 未关闭的工单数 */
 export const openTickets = () => (att.tickets ?? []).filter((t) => t.status !== 'closed').length;

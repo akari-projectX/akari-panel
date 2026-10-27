@@ -1014,11 +1014,11 @@ pub async fn cancel(
 }
 
 pub fn routes() -> axum::Router<AppState> {
-    use axum::routing::{get as g, post};
+    use axum::routing::{get, post};
     axum::Router::new()
-        .route("/{prefix}/api/v1/users/batch", g(list).post(create))
+        .route("/{prefix}/api/v1/users/batch", get(list).post(create))
         .route("/{prefix}/api/v1/users/batch/preview", post(preview))
-        .route("/{prefix}/api/v1/users/batch/{id}", g(get))
+        .route("/{prefix}/api/v1/users/batch/{id}", get(self::get))
         .route("/{prefix}/api/v1/users/batch/{id}/cancel", post(cancel))
 }
 

@@ -24,14 +24,14 @@ export interface ManifestProtocol {
   options: ManifestField[];
 }
 
-export interface ManifestLayer {
+interface ManifestLayer {
   id: string;
   label: string;
   label_zh: string;
   fields: ManifestField[];
 }
 
-export interface ManifestRule {
+interface ManifestRule {
   id: string;
   template_only: boolean;
   when: Record<string, string[]>;
@@ -39,7 +39,7 @@ export interface ManifestRule {
   doc: string;
 }
 
-export interface ManifestUnsupported {
+interface ManifestUnsupported {
   protocol: string[];
   protocol_not: string[];
   transport: string[];
@@ -47,7 +47,7 @@ export interface ManifestUnsupported {
   reason: string;
 }
 
-export interface ManifestFormat {
+interface ManifestFormat {
   id: string;
   label: string;
   unsupported: ManifestUnsupported[];

@@ -76,7 +76,7 @@ import { periodLabel, resetLabel } from "../terms";
 import type { PlanView } from "../types";
 import { UserMarks } from "./users";
 
-export { AdjustBalanceDialog, CreateUserDialog, absoluteUrl } from "../components/people-detail-dialogs";
+export { AdjustBalanceDialog, CreateUserDialog } from "../components/people-detail-dialogs";
 import { AdjustBalanceDialog } from "../components/people-detail-dialogs";
 
 type PlanHistory = {
@@ -135,7 +135,7 @@ type UserOrder = {
 type Tab = "overview" | "traffic" | "billing" | "security";
 type Sub = null | "plan" | "ban" | "password" | "balance" | "mail";
 
-export function subStatusText(s: Subscription["status"], tr: Tr): string {
+function subStatusText(s: Subscription["status"], tr: Tr): string {
   return {
     active: tr("正常", "Active"),
     expired: tr("已到期", "Expired"),
@@ -159,7 +159,7 @@ function planStatus(s: string, tr: Tr): [string, "success" | "neutral" | "warnin
   }
 }
 
-export function ledgerKind(k: string, tr: Tr): string {
+function ledgerKind(k: string, tr: Tr): string {
   switch (k) {
     case "commission":
       return tr("邀请返利", "Commission");
@@ -1684,7 +1684,7 @@ type EntranceRow = {
   billed_bytes: number;
 };
 
-export function UserTraffic({ id }: { id: string }) {
+function UserTraffic({ id }: { id: string }) {
   const tr = useTr();
   const [range, setRange] = useState<"7" | "30">("30");
   const to = siteToday();

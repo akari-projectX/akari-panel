@@ -14,7 +14,7 @@ import { useLang, useTr } from "../i18n";
 import { Button } from "./button";
 import { Input, Kbd } from "./form";
 
-export type ConfirmOptions = {
+type ConfirmOptions = {
   title: string;
   description?: ReactNode;
   /** One highlighted impact line ("3 users lose access"). */

@@ -45,15 +45,6 @@ type LinkAnswer = {
 };
 type Item = { host: string; address?: string; proxied?: boolean };
 
-/** The panel's own public addresses (GET /dns/panel-addresses). */
-export function usePanelAddresses() {
-  return useQuery({
-    queryKey: ["dns-panel"],
-    queryFn: () => get<PanelAddr>("/dns/panel-addresses"),
-    meta: SECONDARY,
-  });
-}
-
 /** The site domains with their Cloudflare records (GET /dns/domains). */
 export function useDnsDomains() {
   return useQuery({
@@ -65,7 +56,7 @@ export function useDnsDomains() {
 }
 
 /** The writes: link names, link a server, switch records to grey. Each resolves true when something was written. */
-export function useLinkActions() {
+function useLinkActions() {
   const tr = useTr();
   const lang = useLang();
   const toast = useToast();
@@ -118,7 +109,7 @@ export function useLinkActions() {
 }
 
 /** "A 203.0.113.5 · 仅 DNS" chips of a name's records. */
-export function RecordChips({ h }: { h: HostState }) {
+function RecordChips({ h }: { h: HostState }) {
   const tr = useTr();
   if (h.records.length === 0)
     return (
@@ -137,7 +128,7 @@ export function RecordChips({ h }: { h: HostState }) {
 }
 
 /** The panel's public IPv4 / IPv6 (owner): what "point at this panel" uses. */
-export function PanelAddressDialog({
+function PanelAddressDialog({
   open,
   onClose,
   panel,

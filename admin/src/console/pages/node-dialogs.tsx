@@ -71,8 +71,6 @@ import {
 import { NodeTrafficBody, useDeleteNode, useDomainCheck, useToggleNode } from "./node-server";
 
 // The alerts page imports these from here (moved to node-common.tsx).
-export { ALERT_KINDS, alertKindName } from "./node-common";
-
 /* ================= Install command / enrollment ================= */
 
 type InstallView = {
@@ -1097,7 +1095,7 @@ type BlockStatus = {
 type BlockRules = { rules: { id: number; name: string; enabled: boolean; entries: number; kind: string }[] };
 
 /** A node: display fields, the inbound and the block switch in one form (?ntab=basic|inbound|audit). */
-export function NodeDialog({ id, onClose }: { id: string; onClose: () => void }) {
+function NodeDialog({ id, onClose }: { id: string; onClose: () => void }) {
   const tr = useTr();
   const q = useQuery({ queryKey: ["nodes", "full", id], queryFn: () => get<FullNode>(`/nodes/${id}`) });
   const block = useQuery({

@@ -11,9 +11,9 @@
 
 const RELOAD_KEY = 'akari.chunk-reload';
 
-export const CHUNK_ERROR = /Loading chunk|Loading CSS chunk|dynamically imported module|Importing a module script failed|error loading dynamically imported/i;
+const CHUNK_ERROR = /Loading chunk|Loading CSS chunk|dynamically imported module|Importing a module script failed|error loading dynamically imported/i;
 
-export function isChunkError(e: unknown): boolean {
+function isChunkError(e: unknown): boolean {
   return CHUNK_ERROR.test(String(e instanceof Error ? e.message : e));
 }
 
@@ -30,7 +30,7 @@ function retry<T>(load: () => Promise<T>): Promise<T> {
 }
 
 /** 新版本上线导致的分包失败：整页重新加载一次。返回 true = 已经在重新加载 */
-export function reloadOnce(): boolean {
+function reloadOnce(): boolean {
   try {
     if (sessionStorage.getItem(RELOAD_KEY)) return false;
     sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
