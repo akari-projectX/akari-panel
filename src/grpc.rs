@@ -3673,6 +3673,45 @@ mod tests {
         db.drop().await;
     }
 
+    /// A session whose stream ends aborts the task that reads the desired
+    /// state (`watcher.abort()`), so the read can be dropped at any point of
+    /// its `BEGIN ... READ ONLY` transaction. Whatever statement is on the
+    /// wire at that moment, the next use of the pool's only connection must
+    /// start clean: its writes work and are durable (a connection handed
+    /// back inside the read-only transaction refused them: "cannot execute
+    /// UPDATE in a read-only transaction").
+    #[tokio::test]
+    async fn aborted_desired_state_leaves_the_pool_usable() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let (n, _) = db.member().await;
+        let one = db.single_connection().await;
+        for micros in (0..1500).step_by(25) {
+            let pg = one.clone();
+            let task = tokio::spawn(async move { desired_state(&pg, n).await });
+            tokio::time::sleep(Duration::from_micros(micros)).await;
+            task.abort();
+            let _ = task.await;
+            let bumped =
+                sqlx::query("UPDATE servers SET config_version = config_version + 1 WHERE id = $1")
+                    .bind(n)
+                    .execute(&one)
+                    .await
+                    .unwrap_or_else(|e| panic!("write after an abort at {micros} us: {e}"));
+            assert_eq!(bumped.rows_affected(), 1);
+        }
+        let v: i64 = sqlx::query_scalar("SELECT config_version FROM servers WHERE id = $1")
+            .bind(n)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        // 60 sweeps, each a durable +1 on top of the starting version.
+        assert!(v >= 60, "writes must be visible to other sessions: {v}");
+        one.close().await;
+        db.drop().await;
+    }
+
     /// The desired state is read in one snapshot and hashes like the agent
     /// would hash what it applied from it.
     #[tokio::test]

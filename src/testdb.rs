@@ -85,7 +85,7 @@ impl TestDb {
             .await
             .unwrap();
         migrator.close().await;
-        let pool = PgPoolOptions::new()
+        let pool = crate::db::pool_options()
             .max_connections(8)
             .connect_with(base.options(extra.iter().copied()))
             .await
@@ -95,6 +95,17 @@ impl TestDb {
             pool,
             schema,
         })
+    }
+
+    /// A second pool on the same schema with exactly one connection and the
+    /// serving pool's options: whatever a cancelled call leaves on that
+    /// connection is the next call's.
+    pub async fn single_connection(&self) -> PgPool {
+        crate::db::pool_options()
+            .max_connections(1)
+            .connect_with((*self.pool.connect_options()).clone())
+            .await
+            .unwrap()
     }
 
     /// W25: write 系统设置 columns directly (`assignments` is SQL such as
