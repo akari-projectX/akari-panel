@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
 
-use crate::config::{Fate, PanelConfig};
+use crate::config::PanelConfig;
 
 #[derive(Debug, Default)]
 pub struct Report {
@@ -61,36 +61,6 @@ impl PanelConfig {
             ));
         }
         r
-    }
-
-    /// W24/W25 (R39): keys of older releases (`config check`; `serve` logs
-    /// what the import did with each instead). Never an error (an old file
-    /// keeps starting): moved settings are imported once into 系统设置 on
-    /// the first start that sees them (when the database has no value),
-    /// then ignored; built-in constants are ignored.
-    pub fn obsolete_warnings(&self) -> Vec<String> {
-        let mut r = Report::default();
-        for key in self.legacy.names() {
-            let shown = key
-                .strip_suffix(".*")
-                .map_or(key.to_string(), |s| format!("[{s}]"));
-            match crate::config::fate(key) {
-                Some(Fate::Moved(place)) => r.warn(format!(
-                    "{shown} is obsolete: it is set in 系统设置 → {place} (database). The first \
-                     start imports it once if that setting is empty; afterwards it is ignored. \
-                     Delete it from panel.toml"
-                )),
-                Some(Fate::Constant) => r.warn(format!(
-                    "{shown} is obsolete: the value is built in now and the key is ignored. \
-                     Delete it from panel.toml"
-                )),
-                Some(Fate::Removed(why)) => r.warn(format!(
-                    "{shown} is obsolete: {why}; the key is ignored. Delete it from panel.toml"
-                )),
-                None => {}
-            }
-        }
-        r.warnings
     }
 
     /// `[tls_ask]` listener (R22).
@@ -271,47 +241,6 @@ mod tests {
         v.iter().any(|e| e.contains(needle))
     }
 
-    /// W25: obsolete keys are warnings (never errors), one per key, naming
-    /// where the value lives now.
-    #[test]
-    fn obsolete_keys_are_warnings() {
-        let c = PanelConfig::parse(
-            "[web]\nsub_domain = \"s.example.com\"\n[grpc]\nlease_seconds = 5\n\
-             [payments.alipay]\napp_id = \"1\"\n[alerts]\neval_interval_secs = 5\n",
-        )
-        .unwrap();
-        let rep = c.validate();
-        assert!(rep.errors.is_empty(), "{:?}", rep.errors);
-        assert!(
-            rep.warnings.is_empty(),
-            "serve logs the import outcome instead"
-        );
-        let w = c.obsolete_warnings();
-        assert!(
-            has(
-                &w,
-                "web.sub_domain is obsolete: it is set in 系统设置 → 站点 → 订阅域名"
-            ),
-            "{w:?}"
-        );
-        assert!(
-            has(
-                &w,
-                "grpc.lease_seconds is obsolete: the value is built in now"
-            ),
-            "{w:?}"
-        );
-        assert!(has(&w, "alerts.eval_interval_secs is obsolete"), "{w:?}");
-        assert!(
-            has(&w, "[payments] is obsolete: it is set in 系统设置 → 支付"),
-            "{w:?}"
-        );
-        assert_eq!(w.len(), 4, "{w:?}");
-        // The minimal file has nothing obsolete and nothing to warn about.
-        assert!(PanelConfig::default().validate().warnings.is_empty());
-        assert!(PanelConfig::default().obsolete_warnings().is_empty());
-    }
-
     #[test]
     fn test_limits_are_announced() {
         let mut c = PanelConfig::default();
@@ -410,10 +339,8 @@ mod tests {
         assert!(!t.contains("s3cr3t") && !t.contains("valkeypw"), "{t}");
         assert!(t.contains("postgres://akari:***@db:5432/akari"), "{t}");
         assert!(t.contains("10.0.0.0/8"), "{t}");
-        // The printed form is itself a loadable config, with nothing
-        // obsolete in it.
-        let back = PanelConfig::parse(&t).unwrap();
-        assert!(back.legacy.is_empty(), "{t}");
+        // The printed form is itself a loadable config.
+        PanelConfig::parse(&t).unwrap();
     }
 
     #[test]

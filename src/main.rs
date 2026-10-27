@@ -204,8 +204,7 @@ fn validate_startup(cfg: &PanelConfig) -> Result<Vec<String>> {
 }
 
 fn config_check(cfg: &PanelConfig) -> Result<()> {
-    let mut warnings = validate_startup(cfg)?;
-    warnings.extend(cfg.obsolete_warnings());
+    let warnings = validate_startup(cfg)?;
     print!("{}", cfg.effective_toml()?);
     for w in &warnings {
         eprintln!("warning: {w}");
@@ -266,10 +265,6 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
 
     let valkey = state::connect_valkey(&cfg).await?;
     let state = state::AppState::new(cfg.clone(), install, pg, valkey);
-    // W24/W25 (R39): obsolete panel.toml keys are imported once into
-    // 系统设置 ([payments.alipay] into an empty 支付) and then ignored with a
-    // warning; never an error.
-    akari_panel::billing::methods::import_legacy(&state).await;
     // R22: database settings and the gRPC certificate covering every
     // recorded server name, before any agent can connect.
     // D4/D11: the admin prefix (imported from data/state.json once) and
