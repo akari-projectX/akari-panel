@@ -1,8 +1,6 @@
-//! The master key (`data/master.key`, v0.4 D7; `data/totp.key` before) and
-//! the keys derived from it.
+//! The master key (`data/master.key`) and the keys derived from it.
 //!
-//! Key material: 32 random bytes, hex, 0600 (install.rs `ensure_master_key`;
-//! an install that still has only `totp.key` gets it renamed once). Every
+//! Key material: 32 random bytes, hex, 0600 (install.rs `ensure_master_key`). Every
 //! key below is HMAC-SHA-256(material, label) with a fixed label. The labels
 //! are part of the stored data's format: changing one makes everything
 //! sealed under it unreadable, so they stay byte-identical even where the
