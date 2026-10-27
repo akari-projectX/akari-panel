@@ -65,6 +65,10 @@ MODULES = {
     "src/billing/usdt.rs": 90.0,
     # C1: 易支付 (EPay) provider (MD5 signing, notify, query, configuration).
     "src/billing/epay.rs": 90.0,
+    # Hosted crypto gateways (CoinPayments, Coinbase) and their shared pricing.
+    "src/billing/crypto.rs": 90.0,
+    "src/billing/coinpayments.rs": 90.0,
+    "src/billing/coinbase.rs": 90.0,
     # The shared SSRF guard of operator-supplied URLs (remote rule-sets).
     "src/outbound.rs": 90.0,
 }
