@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(s["protocol"], "vless");
         assert_eq!(s["security"], "reality");
         assert_eq!(s["port"], 443);
-        let mut changed = inb.clone();
+        let mut changed = inb;
         changed["streamSettings"]["realitySettings"]["privateKey"] = json!("other");
         assert_ne!(inbound_summary(Some(&changed))["sha256"], s["sha256"]);
         assert_eq!(inbound_summary(None), Value::Null);

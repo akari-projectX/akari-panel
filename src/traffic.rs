@@ -4856,7 +4856,7 @@ mod db_tests {
 /// `--cfg fuzzing`); absent from release builds.
 #[cfg(any(test, fuzzing))]
 mod introspect {
-    use super::*;
+    use super::{Arc, HashMap, HashSet, Member, TrafficBuffer, Uuid};
 
     /// (members, dirty members) of one session.
     type SessionUsers = (HashSet<Member>, HashSet<Member>);
