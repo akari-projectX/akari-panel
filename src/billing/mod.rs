@@ -8,7 +8,7 @@
 //!   `alipay_f2f` provider kind.
 //! - `epay` (C1): 易支付 (EPay, the common MD5 interface: mapi/submit,
 //!   GET/POST notify, api.php query), the `epay` provider kind.
-//! - `crypto`: shared pieces of the hosted crypto gateways
+//! - `crypto`, `coinpayments`, `coinbase`: the hosted crypto gateways
 //!   (invoices priced in fiat, settled only on the gateway's terminal paid
 //!   state, verified signature on the raw body, reconciled by query).
 //! - `http`: the minimal HTTPS client those calls use.
@@ -40,6 +40,7 @@
 pub mod alipay;
 pub mod api;
 pub mod catalog;
+pub mod coinpayments;
 pub mod commission;
 pub mod coupon_batches;
 pub mod coupons;
