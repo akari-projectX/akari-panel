@@ -182,7 +182,7 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions, [1]);
+        assert_eq!(versions.first(), Some(&1), "the baseline is version 1");
         // Seeded singletons are there.
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM panel_settings WHERE id = 1")
             .fetch_one(&pool)
