@@ -130,7 +130,8 @@ for (const verify of [false, true]) {
         /* 错码被拒，对话框还在 */
         await bind.getByLabel('邮箱验证码').fill(code === '000000' ? '111111' : '000000');
         await bind.getByRole('button', { name: '完成绑定' }).click();
-        await expect(bind.getByText('验证码不正确或已失效，请重新获取')).toBeVisible();
+        await expect(bind.getByLabel('邮箱验证码')).toHaveAttribute('aria-invalid', 'true');
+        await expect(page.getByText('邮箱已绑定')).toHaveCount(0);
         await bind.getByLabel('邮箱验证码').fill(code);
       }
       await bind.getByLabel(/^密码/).fill(password);
