@@ -66,6 +66,11 @@ pub async fn login(
             "email and password are required"
         ));
     }
+    // Hash line full: busy before any database or Valkey work (nothing is
+    // reserved, nothing counts as a failed attempt).
+    if auth::argon2_line_full() {
+        return Err(auth::Argon2Busy.into());
+    }
     let client = state.client_ip(addr.ip(), &headers);
     // Addresses are case-insensitive: one rate-limit bucket per address.
     let email = req.email.trim().to_lowercase();
