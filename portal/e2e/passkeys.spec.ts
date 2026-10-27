@@ -158,7 +158,9 @@ for (const verify of [false, true]) {
 /*
  * Chromium 与关联来源的标签上限：6 个主域名（各有不同的注册域标签），中心域名自己的标签（e2e）不与它们重复。
  * 在每个主域名的页面上，用 RP = 中心域名直接调 WebAuthn（创建、获取）：谁被接受，就是浏览器认下的关联来源。
- * RP 自己不算：lab1…lab5 通过、lab6 被拒；RP 算在内：只有 lab1…lab4。观察到的结果写在期望里。
+ * RP 自己不算：lab1…lab5 通过、lab6 被拒；RP 算在内：只有 lab1…lab4。观察到的结果（CI 实测，Chromium 随 Playwright）：
+ * 获取（get）前 5 个被接受、第 6 个 SecurityError，所以 RP 自己的标签不计入 5 个。创建（create）在 lab4、lab5 上
+ * 得到 NotAllowedError（虚拟认证器一路上已建了几条凭据；与标签上限无关，第 6 个才是 SecurityError），所以判据用 get。
  */
 test('Chromium: how many related-origin labels are accepted, and does the RP\'s own label count', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'a browser property, measured once');
@@ -192,7 +194,7 @@ test('Chromium: how many related-origin labels are accepted, and does the RP\'s 
         return result;
       }, CENTRE_LABELS);
     }
-    const accepted = LABEL_HOSTS.filter((h) => outcome[h].create === 'ok' && outcome[h].get === 'ok');
+    const accepted = LABEL_HOSTS.filter((h) => outcome[h].get === 'ok');
     console.log(`related-origins label limit (${LABEL_HOSTS.length} main domains, ${CENTRE_LABELS} as the RP): ${JSON.stringify(outcome)}`);
     info.annotations.push({ type: 'chromium-related-origin-labels', description: JSON.stringify(outcome) });
     expect(accepted).toEqual(LABEL_HOSTS.slice(0, 5));
