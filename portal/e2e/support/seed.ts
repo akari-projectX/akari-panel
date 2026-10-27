@@ -22,7 +22,8 @@ await admin.call('PUT', '/api/v1/settings', {
 await admin.call('PUT', '/api/v1/settings/mail', {
   version: 0, enabled: true, host: '127.0.0.1', port: Number(process.env.E2E_SMTP_PORT), security: 'none', username: null,
   from_addr: 'noreply@e2e.test', from_name: 'Akari E2E', notify_order_paid: true, notify_expiry_days: 3,
-  notify_expired: true, notify_quota: true,
+  notify_expired: true, notify_quota: true, notify_refund: true, notify_ban: true, notify_plan_change: true,
+  notify_withdrawal: true, notify_commission: true,
 });
 
 /* ── 支付：指向模拟网关的支付宝当面付，允许原路退款 ── */
