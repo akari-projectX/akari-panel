@@ -574,8 +574,11 @@ function Editor({
       </div>
       <Card className="flex flex-col max-sm:-mx-4 max-sm:rounded-none lg:h-[calc(100dvh-190px)] lg:min-h-[620px] lg:overflow-hidden">
         {formatTabs}
-        <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
-          <section aria-label={tr("编辑", "Edit")} className="flex min-h-0 flex-col lg:border-r lg:border-separator">
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_400px]">
+          <section
+            aria-label={tr("编辑", "Edit")}
+            className="flex min-h-0 min-w-0 flex-col lg:border-r lg:border-separator"
+          >
             <div className="isolate h-[55dvh] min-h-[320px] overflow-hidden bg-window/40 lg:h-auto lg:min-h-0 lg:flex-1">
               {editorPane}
             </div>
@@ -584,7 +587,7 @@ function Editor({
           </section>
           <aside
             aria-label={tr("占位符与预览", "Placeholders and preview")}
-            className="flex min-h-0 flex-col max-lg:border-t max-lg:border-separator"
+            className="flex min-h-0 min-w-0 flex-col max-lg:border-t max-lg:border-separator"
           >
             <div className="flex items-center gap-2 border-b border-separator px-3 py-2">
               <Segmented
