@@ -10,7 +10,8 @@
 //! signature; a verified event is `paid` only for a `checkout.payment.success`
 //! event of a COMPLETED checkout whose echoed fiat currency and amount equal
 //! what the pricing computes from the order cents in the metadata (other
-//! events only name the order); a checkout id picked from a list is 24 hex digits;
+//! events only name the order); the echoed texts are compared the way the
+//! gateway client reads them (trimmed, cents as an integer); a checkout id picked from a list is 24 hex digits;
 //! an error body is classified by a fixed word.
 #![no_main]
 
@@ -132,7 +133,10 @@ fuzz_target!(|data: &[u8]| {
         NotifyCheck::Verified(ev) => {
             let v: Value = serde_json::from_str(text).expect("verified bodies are JSON");
             if ev.paid {
-                assert_eq!(v["eventType"].as_str(), Some("checkout.payment.success"));
+                assert_eq!(
+                    v["eventType"].as_str().map(str::trim),
+                    Some("checkout.payment.success")
+                );
                 assert_eq!(
                     v["status"].as_str().map(str::to_ascii_uppercase).as_deref(),
                     Some("COMPLETED")
@@ -140,14 +144,16 @@ fuzz_target!(|data: &[u8]| {
             }
             if let Some(cents) = ev.total_cents {
                 assert_eq!(
-                    v["metadata"]["akari_cents"].as_str(),
-                    Some(cents.to_string()).as_deref()
+                    v["metadata"]["akari_cents"]
+                        .as_str()
+                        .and_then(|c| c.parse::<i64>().ok()),
+                    Some(cents)
                 );
                 if ev.paid {
-                    assert_eq!(v["fiatCurrency"].as_str(), Some("USD"));
+                    assert_eq!(v["fiatCurrency"].as_str().map(str::trim), Some("USD"));
                     assert!(pricing().matches(
                         cents,
-                        v["fiatAmount"].as_str().expect("an amount"),
+                        v["fiatAmount"].as_str().expect("an amount").trim(),
                         AmountFormat::Plain
                     ));
                 }

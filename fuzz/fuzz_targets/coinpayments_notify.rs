@@ -9,7 +9,8 @@
 //! signature; a verified event is `paid` only for an `InvoiceCompleted` event
 //! of an invoice in state `Completed`, and carries an amount only when the
 //! invoice's currency id and total equal what the pricing computes from the
-//! order cents it echoes (other events only name the order); a create answer's link is http(s) and fits the order
+//! order cents it echoes, read as an integer (other events only name the
+//! order); a create answer's link is http(s) and fits the order
 //! column; an invoice id picked from a list is safe in a request path.
 #![no_main]
 
@@ -115,9 +116,9 @@ fuzz_target!(|data: &[u8]| {
             let v: Value = serde_json::from_str(text).expect("verified bodies are JSON");
             let kind = v["type"].as_str().unwrap_or_default().to_ascii_lowercase();
             let inv = &v["invoice"];
-            let state = inv["state"]
+            let state = inv["status"]
                 .as_str()
-                .or_else(|| inv["status"].as_str())
+                .or_else(|| inv["state"].as_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             if ev.paid {
@@ -127,9 +128,13 @@ fuzz_target!(|data: &[u8]| {
             if let Some(cents) = ev.total_cents {
                 // Every event names its order's cents as echoed; a payment
                 // additionally needs the exact invoice currency and total.
+                let echoed = &inv["customData"]["akari_cents"];
                 assert_eq!(
-                    inv["customData"]["akari_cents"].as_str(),
-                    Some(cents.to_string()).as_deref()
+                    echoed
+                        .as_str()
+                        .and_then(|c| c.parse::<i64>().ok())
+                        .or_else(|| echoed.as_i64()),
+                    Some(cents)
                 );
                 if ev.paid {
                     let total = inv["amount"]["total"].as_str().expect("an amount");
