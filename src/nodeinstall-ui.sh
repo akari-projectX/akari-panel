@@ -20,7 +20,7 @@
 
 UI_LANG=zh UI_UTF=1 UI_TTY=0 UI_ANSI=0 UI_COLOR=0 UI_ECOLOR=0
 UI_TOTAL=0 UI_N=0 UI_T0=0 UI_OPEN=0 UI_MARK=0 UI_LABEL='' UI_SHOWLOG=1
-G_OK='✓' G_ERR='✗' G_DOT='·' G_ARROW='›' G_WARN='!' G_Q='?'
+G_OK='✓' G_ERR='✗' G_DOT='·' G_ARROW='›' G_WARN='!' G_Q='?' G_EL='✗ '
 c_accent='' c_dim='' c_ok='' c_warn='' c_err='' c_bold='' c_reset='' g1='' g2='' g3='' g4='' g5=''
 
 msg_tab() {
@@ -42,9 +42,9 @@ ui_init() {
 	[ "$UI_ANSI" = 1 ] && [ -z "${NO_COLOR:-}" ] && UI_COLOR=1
 	[ "$UI_COLOR" = 1 ] && [ -t 2 ] && UI_ECOLOR=1
 	if [ "$UI_UTF" = 1 ]; then
-		G_OK='✓' G_ERR='✗' G_DOT='·' G_ARROW='›' G_WARN='!' G_Q='?'
+		G_OK='✓' G_ERR='✗' G_DOT='·' G_ARROW='›' G_WARN='!' G_Q='?' G_EL='✗ '
 	else
-		G_OK='OK' G_ERR='FAIL' G_DOT='-' G_ARROW='>' G_WARN='!' G_Q='?'
+		G_OK='OK' G_ERR='FAIL' G_DOT='-' G_ARROW='>' G_WARN='!' G_Q='?' G_EL=''
 	fi
 	[ "$UI_COLOR" = 1 ] || return 0
 	_e=$(printf '\033')
@@ -126,9 +126,9 @@ die() {
 		printf '      %s%s%s %s%s%s\n' "$c_err" "$G_ERR" "$c_reset" "$c_dim" "$(ui_elapsed)" "$c_reset"
 	fi
 	if [ "$UI_ECOLOR" = 1 ]; then
-		printf '\n  %s%s %s%s %s\n' "$c_err" "$G_ERR" "$(msg ui_error)" "$c_reset" "$_m" >&2
+		printf '\n  %s%s%s%s %s\n' "$c_err" "$G_EL" "$(msg ui_error)" "$c_reset" "$_m" >&2
 	else
-		printf '\n  %s %s %s\n' "$G_ERR" "$(msg ui_error)" "$_m" >&2
+		printf '\n  %s%s %s\n' "$G_EL" "$(msg ui_error)" "$_m" >&2
 	fi
 	[ "$_tail" = 1 ] && ui_tail_log
 	[ "$UI_SHOWLOG" = 1 ] && [ -n "${UI_LOG:-}" ] && [ "$UI_LOG" != /dev/null ] && printf '  %s%s %s%s\n' "$c_dim" "$(msg ui_log_is)" "$UI_LOG" "$c_reset" >&2
@@ -167,7 +167,7 @@ step() {
 	printf '\n%s%s%s %s%s%s\n' "$c_accent" "$_p" "$c_reset" "$c_bold" "$_m" "$c_reset"
 	ui_log "==> $_p $_m"
 	UI_OPEN=1 UI_T0=$(date +%s) UI_LABEL=$_m
-	UI_MARK=$(wc -l <"${UI_LOG:-/dev/null}" 2>/dev/null || echo 0)
+	UI_MARK=$( { wc -l <"${UI_LOG:-/dev/null}"; } 2>/dev/null || echo 0)
 	UI_MARK=$((UI_MARK + 0))
 }
 step_end() {
@@ -411,7 +411,7 @@ ui_os_id() {
 # ui_use_english WHY: the run is English; UTF-8 where the system has it.
 ui_use_english() {
 	UI_LANG=en
-	if ui_has_c_utf8; then
+	if [ "$(ui_os_id)" = alpine ] || ui_has_c_utf8; then
 		LC_ALL=C.UTF-8 UI_UTF=1
 	else
 		LC_ALL=C UI_UTF=0
