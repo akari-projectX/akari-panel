@@ -3038,12 +3038,12 @@ lock = threading.Lock()
 cp, cb = {}, {}
 def pad(s): return s + "=" * (-len(s) % 4)
 def cp_ok(h, method, path, body):
-    msg = "﻿" + method + BASE + path + CP_CLIENT + h.get("X-CoinPayments-Timestamp", "") + body
+    msg = "\ufeff" + method + BASE + path + CP_CLIENT + h.get("x-coinpayments-timestamp", "") + body
     want = base64.b64encode(hmac.new(CP_SECRET.encode(), msg.encode(), hashlib.sha256).digest()).decode()
-    return h.get("X-CoinPayments-Client") == CP_CLIENT and hmac.compare_digest(want, h.get("X-CoinPayments-Signature", ""))
+    return h.get("x-coinpayments-client") == CP_CLIENT and hmac.compare_digest(want, h.get("x-coinpayments-signature", ""))
 def cb_ok(h, method, path):
     try:
-        a, b, c = h.get("Authorization", "")[7:].split(".")
+        a, b, c = h.get("authorization", "")[7:].split(".")
         head = json.loads(base64.urlsafe_b64decode(pad(a))); claims = json.loads(base64.urlsafe_b64decode(pad(b)))
         with lock:
             open(D + "/jwt.msg", "wb").write((a + "." + b).encode()); open(D + "/jwt.sig", "wb").write(base64.urlsafe_b64decode(pad(c)))
@@ -3068,7 +3068,7 @@ class H(BaseHTTPRequestHandler):
     def handle_any(self, method):
         u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
         body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
-        h = {k: v for k, v in self.headers.items()}
+        h = {k.lower(): v for k, v in self.headers.items()}  # hyper sends lower-case names
         if u.path == "/control/cp":
             cp[next(i for i in cp.values() if i["otn"] == q["otn"][0])["id"]]["status"] = q["status"][0]; return self.send(200, {})
         if u.path == "/control/cb":
@@ -3120,7 +3120,7 @@ if kind == "cp":
     body = json.dumps({"type": event, "invoice": {"invoiceId": otn, "id": "inv-smoke", "amount": {"currencyId": 5057, "total": total},
                         "customData": {"akari_cents": cents}, "state": state, "payments": [{"state": "Completed"}]}})
     stamp = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-    msg = "﻿POST" + url + "smoke-cp-client-0001" + stamp + body
+    msg = "\ufeffPOST" + url + "smoke-cp-client-0001" + stamp + body
     hdr = ["Content-Type: application/json", "X-CoinPayments-Client: smoke-cp-client-0001", "X-CoinPayments-Timestamp: " + stamp,
            "X-CoinPayments-Signature: " + base64.b64encode(hmac.new(key, msg.encode(), hashlib.sha256).digest()).decode()]
 else:
