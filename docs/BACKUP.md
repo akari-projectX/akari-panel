@@ -58,7 +58,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 丢失 `data/` 但保留数据库的后果：需要新建 CA；每个 agent 都需要新的注册令牌
 （`akari server enroll-token <id>`，并生成新的 bootstrap 文件）；所有用 master key 加密的密钥都无法再解密，
 需要重新填写 SMTP 密码、支付方式密钥和告警渠道密钥；订阅链接仍可使用，但在用户重置之前无法显示。
-`master.key`（v0.4 之前叫 `totp.key`，面板会自动改名一次）与数据库属于同一份备份：必须一起恢复。
+`master.key` 与数据库属于同一份备份：必须一起恢复。
 丢失数据库则意味着丢失其余一切。
 
 agent 的密钥和证书保存在它自己的状态目录中（按随附 unit 为 `/var/lib/private/akari-agent`）。

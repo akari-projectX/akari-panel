@@ -140,10 +140,6 @@ PGDG 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu �
 升级固定版本（维护者）：改 `CADDY_VERSION`，下载两个 tarball 与该发布的 `caddy_<版本>_checksums.txt`，`sha512sum -c` 核对后把 `sha256sum` 的结果填入
 `CADDY_SHA_amd64`/`CADDY_SHA_arm64`。
 
-**已配置 Cloudsmith 源的旧主机。** 旧版安装器添加过 `/etc/apt/sources.list.d/caddy-stable.list`。安装器/`akari-ctl` 每次执行 `apt-get update`
-时，若失败且**所有**错误都来自该仓库，就把引用它的 `sources.list.d` 文件改名为 `<原名>.akari.disabled`（apt 忽略该后缀），打印警告后重试；
-其他软件源的错误照常报错退出，`/etc/apt/sources.list` 主文件里的该源只提示手动删除（不改主文件）。已装的 Caddy 照常运行，只是不再经 apt 更新。
-Cloudsmith 恢复后如需改回 apt 更新：把文件改回原名即可。CI 的安装器测试把 `dl.cloudsmith.io` 解析到 127.0.0.1，并用本地 402 服务模拟旧源。
 `curl | sh` 执行的就是这个脚本本身：如果你的策略要求，请先审阅（`curl -fsSLO …/install.sh`；`akari-ctl` 就是这个文件）。
 
 **Secrets（密钥）。** 生成的密码不会出现在命令行或日志（`/var/log/akari-install.log`，0600）中；
@@ -210,25 +206,8 @@ Telegram API origin (alert channel)     系统设置 → 告警
 内部调优参数（限流、令牌有效期、fail-closed 租约、计费合理性上限、告警节奏、agent 证书有效期等）是内置常量（`src/CLAUDE.md`
 "Built-in constants"）。
 
-`akari config check` 校验配置文件，打印隐去密钥的生效配置，列出已废弃的键（警告），并在数据库可达时列出 系统设置 的值；
+`akari config check` 校验配置文件，打印隐去密钥的生效配置，并在数据库可达时列出 系统设置 的值；
 `akari serve` 执行同样的校验，出错则拒绝启动。
-
-### Upgrading: obsolete keys（升级：废弃的键）
-
-旧版本的键（`web.advertised_names`、`web.sub_domain`、`web.trust_cloudflare`、
-`web.cloudflare_ranges`、`grpc.advertise`、`grpc.server_name`、`install.*`、`[probe]`、`[acme]`、
-`[audit]`、`[traffic]`、`[auth]`、`[agent]`、`[sub]`、`[updates]`、`[alerts]`、
-`tls_ask.rate_per_sec`、`grpc.lease_seconds`、W24 的 `[payments]`）不会阻止面板启动：
-
-- 已迁到 系统设置 的每个键，会在第一次看到它的那次启动中**导入一次**，前提是数据库中还没有对应的值
-  （一个事务，审计记录为 `settings.import`，操作者 `system`；所有实例同时重载）。
-  `web.advertised_names` 和 `grpc.server_name` 并入 gRPC 证书的名称列表（`grpc_server_names`，来源 `config`），
-  使已注册的 agent 继续连得上；`install.public_url` 成为主域名（这会打开 host 检查，见下）；
-  `updates.release_keys` 只保留非内置官方密钥的那些。
-- 此后该键会被**忽略**，并在启动时给出警告：即使你在控制台修改或清空了该值也一样（文件不会让它复活；`legacy_config_imports` 记录已处理的内容）。
-- 已变成常量的键会被忽略并给出警告。
-
-所以：升级、启动一次、检查 系统设置（以及 `config check` 的警告），然后**从 panel.toml 中删除这些废弃的键**。
 
 ## 1b. Domains (系统设置) and Cloudflare（域名与 Cloudflare）
 
@@ -624,7 +603,6 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
 这需要节点上有 `nft`（缺少时安装器会安装 `nftables` 包）以及最新的更新器 unit
 （在本版本之前安装的节点，会随 agent 自更新获得，或重新运行安装命令）。
 在更新器应答之前，以及它失败的任何时候，中转入口仍可工作，只是仅有凭据隔离；失败或缺少更新器时，节点页显示“来源 IP 过滤未生效”。
-旧版 agent 忽略白名单（节点页警告），并且在协议版本 7 以下，按入口分别计算用户的限速。
 
 **中转入口健康检查。** 面板每分钟对每个已启用的中转入口的地址（其 连接地址:连接端口，即中转机本身）发起一次 TCP 连接。
 连续失败 3 次后，该中转入口会从订阅和门户中隐藏，并在已配置的渠道上触发节点的 **中转入口不可用** 告警（`entrance_down`）。
@@ -661,10 +639,9 @@ W32：也支持带 OpenRC >= 0.45 的 Alpine Linux，已在 3.22 上测试，见
    systemd unit（`akari-agent.service`，以及 agent 的特权更新器 `akari-agent-update.service` +
    `akari-agent-update.path`；path unit 会被启用，§5b）和一个用于 TLS credentials 的 drop-in。
    **这些 unit 就是所下载发布版本自带的**（W23：经校验的二进制会打印它们，`akari-agent -print-unit <name>`；
-   其正本在 agent 仓库的 `systemd/`）。只有比这更旧的发布版本才使用脚本里内嵌的副本
-   （面板的 `deploy/systemd/`，由 agent 的 CI 保持逐字节一致）；此时输出会显示 `does not carry its systemd units`。
+   其正本在 agent 仓库的 `systemd/`）；面板没有单元副本，打印不出单元的发布版本会被安装脚本拒绝。
    自更新会随二进制一起安装每个新版本的 unit（§5b），所以不要编辑已安装的 unit 文件：本地改动请放进 drop-in
-   （`/etc/systemd/system/akari-agent.service.d/*.conf`；被编辑过的 unit 会在节点页提示，并在下次更新或重装时被替换）；
+   （`/etc/systemd/system/akari-agent.service.d/*.conf`；被编辑过的 unit 会在下次更新或重装时被替换）；
    在 Alpine（OpenRC）上则改为安装该发布版本的 OpenRC 脚本（`/etc/init.d/akari-agent`、
    `/etc/init.d/akari-agent-update`）和系统用户 `akari-agent`（§3h）；
 3. 在内核支持且机器允许时，开启 TCP BBR 和 fq 队列（W32，§3h；`--no-bbr` / `AKARI_BBR=0` 可跳过）；
@@ -1148,13 +1125,11 @@ CPU %、负载 1/5/15、内存和 swap、`/` 的磁盘、默认路由网卡（�
 在线用户（有活动连接的不同用户）、agent RSS、运行时间和 xray 版本，全部来自 `/proc` 和 `statfs`，无需额外软件包或权限。
 面板把最新值保存在 Valkey（任何实例都能提供），历史保存在 PostgreSQL：每个节点每分钟一行（48 小时），由 reaper 循环汇总为小时（90 天）；
 200 个节点时最多约 576k 条分钟行和约 432k 条小时行，每个节点每次心跳一次小 upsert（限流为每 5 秒一次）。
-节点是否离线的判定与之前完全一样（90 秒内没有新会话）。较旧的 agent 照常工作：其节点只显示 CPU/内存/连接数。
+节点是否离线的判定是 90 秒内有没有新会话。
 
 **Unknown is not 0（未知不等于 0，W23）。** agent 读不到的值（来源文件缺失或被沙箱隐藏；第一次心跳或计数器重置后的速率）
 显示为 **未知**：在节点列表、节点页和历史图表中表现为断点，绝不是 0；CPU/内存告警规则把这样的分钟视为未决。
-具备 `metrics-presence` 能力的 agent（W23 起的 agent 发布版）把这类值留空；对于较旧的 agent，留空仍表示 0。
-使用 W23 之前 unit（`ProcSubset=pid`）安装的节点，CPU、内存、负载、网络和 socket 显示为 未知，并附带提示，
-从第一个 W23 agent 起还会有 “systemd 单元” 警告：执行一次 **重装命令** 即可（§5b “Units”）。
+agent 把这类值留空（`metrics-presence` 能力）。
 
 **Latency（延迟，Clash Verge url-test 语义）。** 每个 测速间隔（系统设置 → 测速，默认 5 小时，±10 % 抖动）以及点击 “立即测速” 时
 （管理员节点详情；每个节点最多每 30 秒一次，内置）：
@@ -1170,7 +1145,7 @@ CPU %、负载 1/5/15、内存和 swap、`/` 的磁盘、默认路由网卡（�
 绝不会看到地址或机器数据。
 
 间隔（600 秒 – 7 天）、测试 URL 和 面板 TCP 测速 只在管理控制台中设置
-（系统设置 → 测速；`PUT /api/v1/settings/probe`；W25：panel.toml 中不再有 `[probe]`，旧段落会被导入一次，见 §1 “Upgrading”）。
+（系统设置 → 测速；`PUT /api/v1/settings/probe`）。
 每次更改都有版本并写入审计（`settings.probe.update`），每个面板实例立即应用，并把新设置重新发给已连接的 agent
 （无需重启；间隔变化时 agent 会重新调度）；间隔缩短也会把已排期的面板 TCP 测试提前。`akari settings unset probe` 恢复上述默认值。
 
@@ -1237,8 +1212,6 @@ agent 的做法（详见 akari-agent 的 `acme.go`）：
   原始 ACME 错误在 详细错误 下。
 - **面板设置**（系统设置 → 节点通信）：ACME 目录（空 = Let's Encrypt 正式环境；staging：`https://acme-staging-v02.api.letsencrypt.org/directory`）
   和 ACME 邮箱（可选的账号联系人）。更改会立即到达每个已连接的节点（对使用节点证书的节点是新的 Snapshot）。
-  W25：panel.toml 中的 `[acme]` 会被导入一次，之后被忽略。
-- **协议低于 6 的 agent** 忽略该域名，照旧读取 §3 的文件；节点页会提示（升级 agent，§5b）。
   更改 节点域名 会向节点发送新配置（重建：其连接断开一次）。节点没有设置公网地址时，订阅使用 节点域名 作为服务器地址。
 - 不支持：ZeroSSL / EAB CA（任何不需要 external account binding 的 CA 都可通过 `directory_url` 使用）、每个节点多个域名、DNS-01。
 
@@ -1504,14 +1477,13 @@ akari-ctl upgrade                    # the newest release; --version vX.Y.Z for 
 4. `akari config check`、`/healthz`，确认节点为 `online`。
 
 **Compose 部署：deploy 文件也会变。** `deploy/` 下的检出（compose 文件、Caddyfile）是发布的一部分。
-panel.toml 只保留启动键（W25）；其余一切都在 系统设置 中，所以新版本从不需要新的 panel.toml 段落，
-废弃的键会被导入一次，之后只给警告（§1 “Upgrading: obsolete keys”）。每次升级：
+panel.toml 只保留启动键（W25）；其余一切都在 系统设置 中，所以新版本从不需要新的 panel.toml 段落（多余的键会被 `deny_unknown_fields` 拒绝，`config check` 报出）。每次升级：
 
 ```bash
 cd /opt/akari-panel && git status --short       # local edits to tracked files (e.g. the Caddyfile)?
 git checkout deploy/caddy/Caddyfile             # only after saving anything you still need
 git pull --ff-only
-cd deploy && docker compose run --rm panel config check   # lists obsolete keys to delete
+cd deploy && docker compose run --rm panel config check
 docker compose up -d --force-recreate           # Caddyfile is a single-file bind mount (§A)
 ```
 
@@ -1523,38 +1495,13 @@ docker compose up -d --force-recreate           # Caddyfile is a single-file bin
 `(… column "<name>" does not exist …)`（0.2 → 0.3：`probe_interval_secs`）：迁移尚未运行；这无害，首次启动后即消失。
 真正有意义的是它上面的结论行（`configuration OK (0 warnings)`）。
 
-**在 updater unit 之前安装的节点（W18；v0.4.0 及之前的 agent）：需手动处理一次。** 这些 agent 的自更新会从其 StateDirectory 执行新二进制，
-而 systemd ≥ 256（Debian 13 带的是 257）会把 `DynamicUser` 服务的该目录以 `noexec` 挂载：更新会失败，报
-`switch to vX: permission denied`（灰度发布会显示原因和修复办法；节点视图对每个没有 `updater` 能力的 agent 都会警告）。
-对该节点执行一次 **重装命令**（先在 **Updates** 下上传当前发布版本）：它会原地安装当前 agent 和 updater unit
-（`akari-agent-update.path/.service`），保留入站、用户和流量；此后更新经由面板进行。手动安装的 agent 也需要这两个 unit 文件
-（`akari-agent -print-unit akari-agent-update.path` / `akari-agent-update.service`，§3 手动路径）；
-没有它们时，当前版本的 agent 会以 “updater unit missing” 拒绝更新提议。
-
-**unit 早于 W23 的节点（v0.4.x 及之前的 agent）：需手动处理一次。** unit 文件过去只在重装时改变；从 W23 起，每次更新都会安装新发布版本的 unit（§5b “Units”）。
-执行这件事的是节点上*已安装的* updater unit，而 W23 之前的 `akari-agent-update.service` 对 `/etc/systemd/system` 是只读的：
-更新到 W23 版本仍能完成（二进制可以，unit 不行，见 `journalctl -u akari-agent-update` 中的 `systemd units NOT refreshed`），
-随后新 agent 会上报 unit 过期（节点警告 “systemd 单元…重装命令”；在此之前，其机器状态里的 CPU、内存、负载和网络显示为 未知，§3e）。
-对该节点执行一次 **重装命令**（先在 **Updates** 下上传发布版本）；此后 unit 随发布版本更新，无需手动步骤。
-这一步无法绕开：旧 updater unit 自己的沙箱禁止了写入，而新版本带来的任何东西在这次重装之前都无法在其沙箱之外运行。
-
-**没有固定发布密钥的 agent**（协议 1/2，以及早于 v0.2.0 的协议 3 构建；`akari-agent -release-keys` 打印 “no release keys pinned”）无法自更新（§5b）。
-在 **Updates** 下上传发布版本（你运行的每种架构），然后在节点页使用 **重装命令**（`POST /api/v1/servers/{id}/install`），并在节点上运行打印出的命令：
-它会原地安装最新上传的发布版本并重新注册该节点（新证书签发后，其之前的证书被吊销；入站、用户和流量保持不变）。
-这种情况下可以先升级面板：它向下兼容到协议 1 的 agent。
-
-W11（节点状态、延迟、倍率）不需要提升协议版本：功能通过 `Hello.capabilities` 协商，较旧的 agent 照常服务（没有机器状态，没有 agent 延迟测试），
-所以任一顺序都行；但仍然遵循先升级 agent 的规则。
-
-为什么是这个顺序：新面板会丢弃没有 `session_id` 的流量上报，并对低于 `MIN_AGENT_PROTOCOL` 的 agent 返回空状态。
-（M1c：协议 2 的 agent 可与旧面板配合：续期会因 “unimplemented” 失败并每小时重试；M1c 之前的证书有效期为 2 年。）
-agent 的 unit 文件在 M1c 中增加了 `StateDirectory=`：请随 agent 一起安装新的 unit。
+为什么是这个顺序：新面板会丢弃没有 `session_id` 的流量上报，并对低于 `MIN_AGENT_PROTOCOL`（8）的 agent 返回空状态。
 
 ## 5b. Agent updates (M6: signed self-update, staged rollout)（agent 更新：签名自更新、分批灰度）
 
-协议 3 的 agent 可以从面板更新。面板只做**中继**：agent 只有在其 manifest 由**编译进 agent** 的发布密钥签名（akari-agent 中的 `release-keys.txt`）、
+agent 可以从面板更新。面板只做**中继**：agent 只有在其 manifest 由**编译进 agent** 的发布密钥签名（akari-agent 中的 `release-keys.txt`）、
 平台匹配、且版本比当前运行的更新时，才会运行新二进制（签名的 `rollback` manifest 是唯一的降级方式，并且永远不会降到该节点已经回滚过的版本；rollback manifest 还绑定它所替换的版本并带有效期，见下文「签名的 rollback」）。
-被攻破的面板可以扣留或延迟更新，但不能推送未签名的、外来的或更旧的二进制。协议 1/2 的 agent 永远不会收到任何提议（需手动更新一次）。
+被攻破的面板可以扣留或延迟更新，但不能推送未签名的、外来的或更旧的二进制。
 
 **Release key custody（发布密钥保管）。** 一把 Ed25519 密钥，离线生成并保管（不在面板上，也不在构建主机上）：
 在 akari-agent 中执行 `go run ./cmd/akari-sign keygen -out release.key`，会打印要加入 `release-keys.txt` 的公钥行。
@@ -1583,7 +1530,7 @@ W25：当 `[updates] release_keys` 与官方集合不同时，会被导入该列
 - **不允许降级：** 如果源的最新版本比面板已持有的最新发布更旧，检查会被拒绝（`agent_update.downgrade`）。签名的 rollback 仍需手动上传。
 - **自动检查**（默认关闭）：每 6 小时由一个面板实例以同样方式检查（审计操作者 `system`）。跨实例同一时间只运行一次检查（advisory lock）：
   第二次点击会得到 “已有更新检查在进行中”。
-- 当最新的完整发布版本比某个可更新节点（协议 ≥ 3，平台已覆盖）运行的版本更新时，节点列表和仪表盘显示 **「有新版本 vX」**。
+- 当最新的完整发布版本比某个可更新节点（平台已覆盖）运行的版本更新时，节点列表和仪表盘显示 **「有新版本 vX」**。
 - API：`GET /api/v1/agent-updates`（设置、上次检查、最新发布、过期节点数）、
   `PUT /api/v1/agent-updates/settings {version, source_url|null, auto_check}`、
   `POST /api/v1/agent-updates/check`（202；轮询 GET 获取 `last_check`）。
@@ -1601,7 +1548,7 @@ curl -b cookies -X PUT --data-binary @akari-agent-linux-amd64 "$BASE/api/v1/agen
 max_failure_ratio?}`；默认 100 %、所有已注册节点、`[100]`、600 秒、0.2）。waves 是所选节点的累计百分比（如 `[10, 50, 100]`），按固定的随机顺序；
 当前一波的每个节点都健康、失败或被跳过后，下一波才开始。节点在以新版本重新连接并在超时内确认其配置时为 **healthy**；
 在 agent 拒绝提议、下载/验证失败、回滚或超时时为 **failed**；在无法被提供更新时为 **skipped**
-（协议 < 3、没有其平台的构件、开发构建、整个超时期间离线）。当 failed / (healthy + failed) > `max_failure_ratio` 时灰度 **halted**；
+（没有其平台的构件、开发构建、整个超时期间离线）。当 failed / (healthy + failed) > `max_failure_ratio` 时灰度 **halted**；
 halted 的灰度只能被中止。暂停会停止发出新的提议（进行中的更新会完成）。每个操作和每次自动状态转换都在审计日志中
 （`agent_release.*`、`rollout.*`；自动的以操作者 `system` 记录）。
 

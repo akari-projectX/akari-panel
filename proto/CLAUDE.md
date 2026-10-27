@@ -15,23 +15,15 @@ agent 仓库的 `make sync-proto`/`check-proto` 写死 `../akari-panel`；在 wo
 
 语义要点（完整定义见 proto 注释）：
 - `TrafficReport.session_id` 是计费键（与计数原子读取）；Hello 的 session 仅供展示/日志。
-- `Hello.protocol_version`：当前 8（SS2022 原生移除/轮换，见下）。各版本含义：
-  - 8：SS2022 的移除与凭据轮换是原生 delta（agent 的 xray 按 hash/email 查用户，无墓碑；面板对协议 ≥8 的 SS 节点不再把轮换改发 Snapshot，`grpc::SS_NATIVE_REMOVE_PROTOCOL`）。5–7 的 agent 保留墓碑规则。
-  - 6：agent 自己用 ACME 申请/续期节点证书（W10）。`ConfigSnapshot.acme`（AcmeConfig：domain、directory_url（空 = Let's Encrypt）、email），`Heartbeat.cert`（CertStatus：state PENDING/VALID/FAILED、not_after、next_attempt、last_error ≤512 字节、error_kind DNS/CONNECTION/RATE_LIMITED/PORT_BUSY/CAA/REJECTED/CA_UNREACHABLE、challenge、failures）。acme 不进 state hash（改域名 bump config_version → Snapshot）。**字段号分段**：W10 用既有消息的 10–19，W11 用 20–49。
-  - 5：SS2022 墓碑删除（协议 8 起被原生删除取代，仍用于 5–7 的旧 agent）。
-  - 4：执行 `UserOp.speed_limit_bytes_per_sec` 每用户限速（W7）。
-  - 3：自更新。
-  - 2：会用 `AgentChannel.Renew` 续期证书。
-  - 1：不续期，面板照常服务（NodeView 在证书 14 天内到期时警告）。旧 agent 不发 = 0。
-  - 面板 `MIN_AGENT_PROTOCOL` 以下给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
-- `UserOp.speed_limit_bytes_per_sec`（协议 4）：每用户、上下行各自、该用户在本节点所有连接共享，0 = 不限；**不进** state hash（持有版本即带该版本的限速，应用不会单独失败），面板会话记录每用户限速（`SetDigest.limits`），所以只改限速也是一次 UserDelta（不算掉凭据）（ADD 原凭据 + 新限速，连接保留；从无到有会断开该用户的活连接以便限速生效）。
+- `Hello.protocol_version`：当前 8，也是面板的 `MIN_AGENT_PROTOCOL`。8 = SS2022 的移除与凭据轮换是原生 delta（agent 的 xray 按 hash/email 查用户，无墓碑），一个用户可有多个 UserOp（`<用户>#<n>`，限速与在线人数按账号），agent 自己用 ACME 申请/续期节点证书（`ConfigSnapshot.acme`（AcmeConfig：domain、directory_url（空 = Let's Encrypt）、email），`Heartbeat.cert`（CertStatus：state PENDING/VALID/FAILED、not_after、next_attempt、last_error ≤512 字节、error_kind DNS/CONNECTION/RATE_LIMITED/PORT_BUSY/CAA/REJECTED/CA_UNREACHABLE、challenge、failures）；acme 不进 state hash，改域名 bump config_version → Snapshot），执行每用户限速、续期证书（`AgentChannel.Renew`）、签名自更新。面板对低于 `MIN_AGENT_PROTOCOL` 的 agent 给空状态并标记，不拒绝连接。**先升级 agent 再升级面板**；改协议语义时加版本号并更新两侧常量。
+- `UserOp.speed_limit_bytes_per_sec`：每用户、上下行各自、该用户在本节点所有连接共享，0 = 不限；**不进** state hash（持有版本即带该版本的限速，应用不会单独失败），面板会话记录每用户限速（`SetDigest.limits`），所以只改限速也是一次 UserDelta（不算掉凭据）（ADD 原凭据 + 新限速，连接保留；从无到有会断开该用户的活连接以便限速生效）。
 - `ConfigSnapshot` 是完整期望状态；`UserDelta` 带 base/target：持有 == base 才应用，持有 == target 按 no-op ack，其余 `BASE_MISMATCH`；delta 不改 config_version。`UserOp.ADD` = REPLACE（恰好列出的 inbound，旧/轮换凭据的活连接被断开）。
 - `Ack.reason`（OK / APPLY_FAILED / BASE_MISMATCH）+ `held_*`（处理后 agent 实际持有）+ `state_hash`。
 - State hash v2：SHA-256，`"akari-state-v2\n"` + u64be(config_version) + 按 (user_id, tag) 字节序的长度前缀四元组 + u32be(32)‖SHA-256(inbounds_json 原文，无实例时 "")；account_json **原样**参与（面板用 serde_json 紧凑+键排序输出，agent 不重新序列化）。向量由 `testdata/gen_vectors.py`（独立 Python 参考实现）生成，改算法先改它再重生成、同步到 agent。
 - `LeaseGrant.remove_mode`（`RemoveMode` GATE/REBUILD）：REBUILD 时删除/轮换走 Snapshot，agent 拒收此类 delta。
 - `LeaseGrant`：面板读库成功后才发；agent 用 CLOCK_BOOTTIME、0=24h、≥1h、只接受当前流；到期拆 xray、持有版本归 (0,0)、最终计数留待重连上报。`Heartbeat.lease_remaining_seconds` 未武装时不设置。
 - gRPC 方法名不可叫 `Connect`（与 tonic 客户端构造函数撞名）。
-- **自更新（协议 3，M6）**：`UpdateOffer{rollout_id, manifest（签名字节原样）, signatures, panel_protocol}` → agent 用**编译进来的**公钥验签 + 平台/单调版本（或签名 rollback）/未回滚过/`min_panel_protocol` → `UpdateStatus`（REJECTED/DOWNLOADING/FAILED/RESTARTING/ROLLED_BACK/CONFIRMED）；制品经 `AgentChannel.FetchArtifact(sha256, offset)` 流式下载（需客户端证书）。签名 = Ed25519("akari-agent-manifest-v1\n" ‖ manifest)，key id = SHA-256(pub)[:8] hex；共享向量 `update_vector.json`（agent 侧 `proto/update_vector.json`，由 akari-sign 生成，两边测试都读）。协议 1/2 的 agent 永不收到 offer。
+- **自更新（M6）**：`UpdateOffer{rollout_id, manifest（签名字节原样）, signatures, panel_protocol}` → agent 用**编译进来的**公钥验签 + 平台/单调版本（或签名 rollback）/未回滚过/`min_panel_protocol` → `UpdateStatus`（REJECTED/DOWNLOADING/FAILED/RESTARTING/ROLLED_BACK/CONFIRMED）；制品经 `AgentChannel.FetchArtifact(sha256, offset)` 流式下载（需客户端证书）。签名 = Ed25519("akari-agent-manifest-v1\n" ‖ manifest)，key id = SHA-256(pub)[:8] hex；共享向量 `update_vector.json`（agent 侧 `proto/update_vector.json`，由 akari-sign 生成，两边测试都读）。协议 1/2 的 agent 永不收到 offer。
 - **TLS 与两个服务（M1c）**：客户端证书在 TLS 层可选；`AgentEnrollment.Enroll(token, CSR)` 是唯一无证书可调用的方法（agent 仍用 bootstrap 里的 CA 校验服务端）；`AgentChannel` 每个方法都必须有已验证客户端证书。CSR：ECDSA P-256 + ecdsa-with-SHA256、零 attribute/扩展（无 SAN），subject 忽略。所有 token 问题 = PERMISSION_DENIED "enrollment refused"；坏 CSR = INVALID_ARGUMENT（token 不消耗）；限速 = RESOURCE_EXHAUSTED。`Renew(CSR 新密钥)`：面板记录新序列号，调用证书在新证书首次被看到前一直有效（之后墓碑），没收到回复的 agent 用旧证书重试即可（未见过的那张被墓碑）。agent 只在用新证书的流上收到第一条面板消息后才把它提升为当前身份。
 - `Heartbeat.connections` = gate 跟踪的分发数，`uptime_seconds` = agent 进程运行秒数。
 - **W29（字段号 40–44 段）**：`PanelDown.block_policy = 40`（`BlockPolicy`：`inbound_tags`（空 = 关）、`rules`（`BlockRule`：id、domains/cidrs/protocols）、`version`）、`Heartbeat.block = 41`（`BlockStats`：`epoch`、累计 `hits`、`applied`、`error`）；能力 `block-rules`，不占协议号。策略**不是** `ConfigSnapshot` 的一部分：不进 state hash、不 bump 版本、不触发 Snapshot；agent 改规则内容原子替换路由（不断线），开关只换相关入站的 handler。
