@@ -2100,6 +2100,20 @@ pub async fn get_user_plan(
     Ok(Json(user_plan_state(&mut c, id).await?))
 }
 
+/// The tail of the admin plan handlers that answer with the plan state:
+/// queue the plan-changed mail, read the new state and commit.
+async fn mail_and_view(
+    state: &AppState,
+    mut tx: sqlx::Transaction<'static, sqlx::Postgres>,
+    id: Uuid,
+    action: PlanAction,
+) -> Result<Json<Value>, ApiError> {
+    mailhook::plan_changed(&mut tx, id, action, mail::portal_url(state).as_deref()).await;
+    let view = user_plan_state(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(Json(view))
+}
+
 pub async fn set_user_plan(
     State(state): State<AppState>,
     user: AuthUser,
@@ -2110,16 +2124,7 @@ pub async fn set_user_plan(
     let assign = req.assignment()?;
     let mut tx = state.pg().begin().await?;
     apply_set_user_plan(&mut tx, &Actor::of(&user), id, &assign).await?;
-    mailhook::plan_changed(
-        &mut tx,
-        id,
-        PlanAction::Assigned,
-        mail::portal_url(&state).as_deref(),
-    )
-    .await;
-    let view = user_plan_state(&mut tx, id).await?;
-    tx.commit().await?;
-    Ok(Json(view))
+    mail_and_view(&state, tx, id, PlanAction::Assigned).await
 }
 
 pub async fn renew_user_plan(
@@ -2132,16 +2137,7 @@ pub async fn renew_user_plan(
     let renewal = req.renewal()?;
     let mut tx = state.pg().begin().await?;
     apply_renew_user_plan(&mut tx, &Actor::of(&user), id, renewal).await?;
-    mailhook::plan_changed(
-        &mut tx,
-        id,
-        renewal.plan_action(),
-        mail::portal_url(&state).as_deref(),
-    )
-    .await;
-    let view = user_plan_state(&mut tx, id).await?;
-    tx.commit().await?;
-    Ok(Json(view))
+    mail_and_view(&state, tx, id, renewal.plan_action()).await
 }
 
 pub async fn cancel_user_plan(
