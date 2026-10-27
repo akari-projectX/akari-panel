@@ -407,7 +407,6 @@ settings.domain_duplicate
 settings.domain_invalid
 settings.domain_removal_unconfirmed
 settings.domains_too_many
-settings.fallback_url_invalid
 settings.host_gate
 settings.node_domain_cloudflare
 settings.node_domain_unset

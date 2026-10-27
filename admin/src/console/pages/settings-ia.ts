@@ -308,7 +308,6 @@ export const SETTINGS_IA: SectionGroup[] = [
         id: "install",
         rows: [
           ["公钥钉扎", "Pinned key"],
-          ["备用下载地址", "Fallback download"],
           ["ACME 目录", "ACME directory"],
           ["ACME 邮箱", "ACME email"],
           ["撤权方式", "How access is removed"],
@@ -319,10 +318,10 @@ export const SETTINGS_IA: SectionGroup[] = [
         icon: Download,
         tint: "#0284c7",
         desc: [
-          "节点安装命令的公钥钉扎与备用下载、节点证书（ACME）与撤权方式。",
-          "Install command pinning and fallback download, node certificates (ACME) and how access is removed.",
+          "节点安装命令的公钥钉扎、节点证书（ACME）与撤权方式。",
+          "Install command pinning, node certificates (ACME) and how access is removed.",
         ],
-        keywords: "安装命令 公钥钉扎 备用下载 ACME 撤权方式 install pin fallback acme remove mode",
+        keywords: "安装命令 公钥钉扎 ACME 撤权方式 install pin acme remove mode",
       },
       {
         id: "probe",

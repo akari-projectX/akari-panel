@@ -42,9 +42,6 @@ export type SettingsView = {
   };
   node_ops: {
     install_tls_pin: string | null;
-    install_fallback_url: string | null;
-    install_fallback_effective: string | null;
-    install_fallback_default: string;
     acme_directory_url: string | null;
     acme_email: string | null;
     remove_mode: { value: string | null; effective: string };

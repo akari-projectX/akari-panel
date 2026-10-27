@@ -56,8 +56,6 @@ function InstallForm({ d }: { d: SettingsView }) {
   const o = d.node_ops;
   const f = useDraft({
     pin: o.install_tls_pin ?? "",
-    fallback: o.install_fallback_url ?? "",
-    noFallback: o.install_fallback_url === "",
     acmeCustom: !!o.acme_directory_url,
     acmeUrl: o.acme_directory_url ?? "",
     acmeEmail: o.acme_email ?? "",
@@ -68,7 +66,6 @@ function InstallForm({ d }: { d: SettingsView }) {
     v.pin.trim() && !/^sha256\/\/[A-Za-z0-9+/=]{20,}$/.test(v.pin.trim())
       ? tr("格式为 sha256//<base64>", "Format: sha256//<base64>")
       : undefined;
-  const fallbackError = v.noFallback ? undefined : urlError(v.fallback.replace("{arch}", "amd64"), tr);
   const acmeError = v.acmeCustom
     ? v.acmeUrl.trim()
       ? urlError(v.acmeUrl, tr)
@@ -78,7 +75,7 @@ function InstallForm({ d }: { d: SettingsView }) {
     v.acmeEmail.trim() && !EMAIL.test(v.acmeEmail.trim()) ? tr("邮箱格式不对", "Not an email address") : undefined;
   useSavePart({
     count: f.edited.length,
-    errors: [pinError, fallbackError, acmeError, emailError].filter(Boolean).length,
+    errors: [pinError, acmeError, emailError].filter(Boolean).length,
     discard: f.reset,
     save: async () => {
       const cur = fresh(qc, ["settings"], d);
@@ -87,8 +84,6 @@ function InstallForm({ d }: { d: SettingsView }) {
           put("/settings/nodes", {
             version: cur.version,
             install_tls_pin: v.pin.trim() || null,
-            install_fallback_url: v.noFallback ? null : v.fallback.trim() || null,
-            install_fallback_disabled: v.noFallback,
             acme_directory_url: v.acmeCustom ? v.acmeUrl.trim() || null : null,
             acme_email: v.acmeEmail.trim() || null,
             remove_mode: v.remove || null,
@@ -121,34 +116,6 @@ function InstallForm({ d }: { d: SettingsView }) {
         >
           {(a) => <Input {...a} className="font-mono" value={v.pin} onChange={(e) => f.set("pin", e.target.value)} />}
         </FieldRow>
-        <SwitchRow
-          label={tr("不使用备用下载", "No fallback download")}
-          description={tr("面板下载失败时不再尝试备用地址", "Never try the fallback when the panel download fails")}
-          checked={v.noFallback}
-          onChange={(x) => f.set("noFallback", x)}
-          changed={f.isEdited("noFallback")}
-        />
-        {!v.noFallback && (
-          <FieldRow
-            label={tr("备用下载地址", "Fallback download URL")}
-            description={tr(
-              `含 {arch}；留空 = 默认 ${o.install_fallback_default}`,
-              `With {arch}; empty = ${o.install_fallback_default}`,
-            )}
-            error={fallbackError}
-            changed={f.isEdited("fallback")}
-            stack
-          >
-            {(a) => (
-              <Input
-                {...a}
-                className="font-mono"
-                value={v.fallback}
-                onChange={(e) => f.set("fallback", e.target.value)}
-              />
-            )}
-          </FieldRow>
-        )}
       </Group>
       <Group
         title={tr("节点 TLS 证书（ACME）", "Node TLS certificates (ACME)")}

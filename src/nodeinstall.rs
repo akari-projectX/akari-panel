@@ -20,8 +20,8 @@
 //! with the bootstrap file inside (panel address, server name, CA, the same
 //! token) and `GET .../install/{token}/agent/{sha256}` the binary of the
 //! newest complete signed linux/<arch> release (`agent_release_chunks`; the
-//! script checks its SHA-256; without a release it falls back to
-//! `install.fallback_binary_url` + `SHA256SUMS`). Both answer only while the
+//! script checks the SHA-256 the panel wrote into it; without a release the
+//! script stops: there is no download from anywhere else). Both answer only while the
 //! token is live: once the agent enrolls (burning the token) or the link
 //! expires, every request is the canonical `reject::not_found()`, as are
 //! unknown tokens, CLI/bootstrap tokens (install_origin NULL), deleting
@@ -172,16 +172,6 @@ pub fn valid_pin(p: &str) -> bool {
     p.strip_prefix("sha256//")
         .and_then(|b| STANDARD.decode(b).ok())
         .is_some_and(|b| b.len() == 32)
-}
-
-/// https URL containing "{arch}", only URL characters that mean nothing to
-/// a shell or a curl config line.
-pub fn fallback_url_ok(u: &str) -> bool {
-    u.starts_with("https://")
-        && u.contains("{arch}")
-        && u.len() <= 512
-        && u.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._~:/?#[]@+,=%{}".contains(&b))
 }
 
 /// The SPKI pin of a DER certificate (curl --pinnedpubkey format).
@@ -494,9 +484,8 @@ pub struct InstallView {
     pub uninstall_command: String,
     pub expires_at: DateTime<Utc>,
     pub pin: Option<String>,
-    /// arch → panel release; missing arch = fallback URL (or none).
+    /// arch → panel release (a missing arch cannot be installed).
     pub releases: HashMap<String, ReleaseRef>,
-    pub fallback_binary_url: Option<String>,
     /// Problems the admin should know before running it.
     pub warnings: Vec<String>,
 }
@@ -626,7 +615,6 @@ pub async fn view(
     let url = format!("{}/install/{token}", p.origin);
     let (command, command_wget) = install_commands(&url, p.pin.as_deref());
     let releases = latest_releases(state.pg()).await?;
-    let fallback = state.settings().get().install_fallback_url.clone();
     let mut warnings = p.warnings;
     for (arch, version) in held_back_releases(state.pg()).await? {
         let newer_served = releases.get(&arch).is_some_and(|r| {
@@ -641,10 +629,9 @@ pub async fn view(
         }
     }
     for a in ARCHES {
-        if !releases.contains_key(a) && fallback.is_none() {
+        if !releases.contains_key(a) {
             warnings.push(format!(
-                "没有 linux/{a} 的 agent 程序：请在「更新」页上传发布，或在 系统设置 → 节点通信 \
-                 设置备用下载地址"
+                "没有 linux/{a} 的 agent 程序：请在「更新」页检查更新或上传发布"
             ));
         }
     }
@@ -656,7 +643,6 @@ pub async fn view(
         expires_at,
         pin: p.pin,
         releases,
-        fallback_binary_url: fallback,
         warnings,
     })
 }
@@ -826,13 +812,6 @@ fn render_script(
     let rel = |arch: &str, f: fn(&ReleaseRef) -> &str| {
         releases.get(arch).map(f).unwrap_or("").to_string()
     };
-    let fallback = state
-        .settings()
-        .get()
-        .install_fallback_url
-        .clone()
-        .unwrap_or_default();
-    let fallback = &fallback;
     let needs_cert = crate::nodetpl::needs_certificate(&link.inbounds);
     // W10: the agent obtains the certificate itself (only where an inbound
     // needs one, like ConfigSnapshot.acme).
@@ -841,7 +820,7 @@ fn render_script(
         .as_deref()
         .filter(|_| needs_cert)
         .unwrap_or("");
-    let vars: [(&str, String); 14] = [
+    let vars: [(&str, String); 13] = [
         (
             "@@UNINSTALL_FN@@",
             format!("{}\n\n{}", UI.trim_end(), UNINSTALL_FN.trim_end()),
@@ -856,7 +835,6 @@ fn render_script(
         ),
         ("@@NEEDS_CERT@@", if needs_cert { "1" } else { "0" }.into()),
         ("@@TLS_DOMAIN@@", sq(acme_domain)?.to_string()),
-        ("@@FALLBACK_URL@@", sq(fallback)?.to_string()),
         ("@@SHA_AMD64@@", rel("amd64", |r| &r.sha256)),
         ("@@SHA_ARM64@@", rel("arm64", |r| &r.sha256)),
         (

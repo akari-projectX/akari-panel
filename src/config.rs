@@ -189,9 +189,6 @@ pub const TURNSTILE_VERIFY_URL: &str = "https://challenges.cloudflare.com/turnst
 /// hide it from subscriptions (the first success shows it again).
 pub const ENTRANCE_HEALTH_INTERVAL_SECS: u64 = 60;
 pub const ENTRANCE_HEALTH_FAILURES: i32 = 3;
-/// Where the install script downloads the agent when no complete signed
-/// release was uploaded (系统设置 → 节点通信 → 备用下载地址 overrides it).
-pub const DEFAULT_FALLBACK_BINARY_URL: &str = "https://github.com/akari-projectX/akari-agent/releases/latest/download/akari-agent-linux-{arch}";
 
 /// The Cloudflare API root every DNS call goes to (`dns::cloudflare`).
 pub const CLOUDFLARE_API_BASE: &str = "https://api.cloudflare.com/client/v4";

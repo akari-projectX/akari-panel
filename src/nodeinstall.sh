@@ -43,7 +43,6 @@ PIN='@@PIN@@'
 NEEDS_CERT='@@NEEDS_CERT@@'
 # Node TLS domain: the agent obtains and renews its certificate itself.
 TLS_DOMAIN='@@TLS_DOMAIN@@'
-FALLBACK_URL='@@FALLBACK_URL@@'
 SHA_amd64='@@SHA_AMD64@@'
 SHA_arm64='@@SHA_ARM64@@'
 VER_amd64='@@VER_AMD64@@'
@@ -70,10 +69,7 @@ msg_zh() {
 	downloading_agent) m '下载并校验 agent' ;;
 	downloading_from_panel) m '从面板下载 akari-agent %s（%s）' ;;
 	download_from_panel_failed) m '从面板下载失败' ;;
-	no_release_downloading) m '面板上没有 %s 的 agent 发布，改从 %s 下载' ;;
-	download_failed) m '下载失败：%s' ;;
-	not_listed_in) m '%s 不在 %s 中' ;;
-	no_agent_binary) m '没有适用于 %s 的 agent 二进制：请在面板（更新）上传发布，或设置 install.fallback_binary_url' ;;
+	no_agent_binary) m '没有适用于 %s 的 agent 二进制：请在面板「更新」页检查更新或上传发布' ;;
 	sha256_mismatch) m 'agent 二进制的 SHA-256 不符（期望 %s，得到 %s）' ;;
 	agent_does_not_run) m '下载的 agent 无法在本机运行' ;;
 	verified) m '已校验 %s' ;;
@@ -138,10 +134,7 @@ msg_en() {
 	downloading_agent) m 'Downloading and verifying the agent' ;;
 	downloading_from_panel) m 'downloading akari-agent %s (%s) from the panel' ;;
 	download_from_panel_failed) m 'download from the panel failed' ;;
-	no_release_downloading) m 'no agent release for %s on the panel; downloading %s' ;;
-	download_failed) m 'download failed: %s' ;;
-	not_listed_in) m '%s is not listed in %s' ;;
-	no_agent_binary) m 'no agent binary available for %s: upload a release in the panel (Updates) or set install.fallback_binary_url' ;;
+	no_agent_binary) m 'no agent binary available for %s: check for updates or upload a release in the panel (Updates)' ;;
 	sha256_mismatch) m 'SHA-256 mismatch for the agent binary (expected %s, got %s)' ;;
 	agent_does_not_run) m 'the downloaded agent does not run on this machine' ;;
 	verified) m 'verified %s' ;;
@@ -277,16 +270,6 @@ fetch_panel() {
 	fi
 }
 
-# fetch_public URL OUT: public HTTPS (fallback release download).
-fetch_public() {
-	if [ "$HAVE_CURL" = 1 ]; then
-		printf 'url = "%s"\noutput = "%s"\n' "$1" "$2" |
-			curl -fsSL --retry 3 --proto '=https' -K - || return 1
-	else
-		printf '%s\n' "$1" | wget -q -O "$2" -i - || return 1
-	fi
-}
-
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
@@ -302,15 +285,6 @@ step downloading_agent
 if [ -n "$want" ]; then
 	note downloading_from_panel "$ver" "$ARCH"
 	ui_bg fetch_panel "$BASE/agent/$want" "$TMP/akari-agent" || die download_from_panel_failed
-elif [ -n "$FALLBACK_URL" ]; then
-	url=$(printf '%s' "$FALLBACK_URL" | sed "s/{arch}/$ARCH/g")
-	sums="${url%/*}/SHA256SUMS"
-	file="${url##*/}"
-	note no_release_downloading "$ARCH" "$url"
-	ui_bg fetch_public "$url" "$TMP/akari-agent" || die download_failed "$url"
-	ui_bg fetch_public "$sums" "$TMP/SHA256SUMS" || die download_failed "$sums"
-	want=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1; exit }' "$TMP/SHA256SUMS")
-	[ -n "$want" ] || die not_listed_in "$file" "$sums"
 else
 	die no_agent_binary "$ARCH"
 fi

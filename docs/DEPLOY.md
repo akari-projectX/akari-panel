@@ -3,7 +3,7 @@
 ## 快速开始（一键安装，中文）
 
 在一台全新的 **Debian 12/13 或 Ubuntu 22.04/24.04**（amd64 / arm64，≥ 1 GB 内存）上，以 root
-或有 sudo 权限的用户执行**一条命令**：
+或有 sudo 权限的用户执行**一条命令**（root 用 `| sh`，其他用户用 `| sudo sh`）：
 
 ```bash
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
@@ -81,7 +81,8 @@ akari-ctl uninstall                 # 卸载服务，保留数据与配置；--p
 curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
 ```
 
-以 root 或有 sudo 的用户运行（脚本会通过 `sudo` 重新执行自身，管道方式下同样如此）。
+以 root 运行；非 root 用户把最后的 `sh` 换成 `sudo sh`（`curl … | sudo sh`）。管道方式的安装器不会为了提权再下载一次自己
+（再次下载的字节没有签名保护）：非 root 且走管道时，它会停下并给出 `| sudo sh` 的命令；先保存成文件再 `sh install.sh` 则会通过 `sudo` 重新执行该文件。
 支持：Debian 12/13、Ubuntu 22.04/24.04，amd64/arm64，systemd；其他系统一律拒绝，并指向附录。
 默认交互式（中文，`--lang zh|en` / `AKARI_LANG`，见下），每个提示都有默认值；`--yes` 取默认值，其余全部由参数/环境变量提供：
 
@@ -189,7 +190,7 @@ table inet filter {
 ```
 主域名 / 订阅域名 / 信任 Cloudflare     系统设置 → 站点
 节点通信域名 (host agents dial)          系统设置 → 节点通信   (required before the first node)
-install pin, download fallback, ACME, remove mode   系统设置 → 节点通信
+install pin, ACME, remove mode   系统设置 → 节点通信
 retention, Cloudflare ranges, extra release keys               系统设置 → 安全
 latency tests                           系统设置 → 测速
 Telegram API origin (alert channel)     系统设置 → 告警
@@ -617,8 +618,7 @@ W32：也支持带 OpenRC >= 0.45 的 Alpine Linux，已在 3.22 上测试，见
 它会：
 
 1. 从面板下载 agent（在 **Updates** 下上传的最新完整发布版本，§5b）并校验其 SHA-256；
-   如果没有上传过发布版本，则回退到 系统设置 → 节点通信 → **备用下载地址**
-   （默认：最新的 GitHub release 资源，对照该发布的 `SHA256SUMS` 校验；可设为镜像或关闭）；两者都没有时，在改动任何东西之前报出明确错误并停止；
+   没有上传过发布版本时，安装在改动任何东西之前报出明确错误并停止（到 **更新 → 检查更新** 取回签名发布，或手动上传）；**没有备用下载源**：脚本里每个下载都按面板写进脚本的 SHA-256 核对；
 2. 写入 `/etc/akari-agent/bootstrap.toml`（0600：面板地址、gRPC server name、面板 CA、一次性注册令牌，不含私钥）、
    systemd unit（`akari-agent.service`，以及 agent 的特权更新器 `akari-agent-update.service` +
    `akari-agent-update.path`；path unit 会被启用，§5b）和一个用于 TLS credentials 的 drop-in。

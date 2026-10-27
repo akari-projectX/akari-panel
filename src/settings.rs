@@ -1,6 +1,6 @@
 //! System settings (R22, admin "系统设置"): the three domains, "trust
 //! Cloudflare" and (W25/R39) everything else an operator changes: latency
-//! tests, Cloudflare ranges, install-command pin and download fallback,
+//! tests, Cloudflare ranges, install-command pin,
 //! ACME, retention, remove mode, extra release keys.
 //!
 //! * **Main domain** (`main_domain`): admin console, user portal, install
@@ -251,10 +251,8 @@ pub struct Stored {
     pub site_name: Option<String>,
     /// W25: Cloudflare edge ranges (NULL = the shipped list).
     pub cloudflare_ranges: Option<Vec<String>>,
-    /// W25: install command pin (NULL = probed) and agent download
-    /// fallback (NULL = the official release; "" = none).
+    /// W25: install command pin (NULL = probed).
     pub install_tls_pin: Option<String>,
-    pub install_fallback_url: Option<String>,
     /// W25: ACME directory (NULL = Let's Encrypt) and contact e-mail.
     pub acme_directory_url: Option<String>,
     pub acme_email: Option<String>,
@@ -290,7 +288,7 @@ pub struct Stored {
 
 const STORED_COLS: &str = "version, sub_domain_per_user, trust_cloudflare, \
      probe_interval_secs, probe_urls, probe_panel_tcp, site_name, cloudflare_ranges, \
-     install_tls_pin, install_fallback_url, acme_directory_url, acme_email, \
+     install_tls_pin, acme_directory_url, acme_email, \
      audit_retention_days, traffic_daily_retention_days, remove_mode, \
      extra_release_keys, timezone, \
      sub_formats, sub_import_clients, sub_own_client_only, sub_name_rate, passkey_domain, updated_at";
@@ -453,8 +451,6 @@ pub struct Effective {
     pub probe_sources: ProbeSources,
     /// W25: install command pin (None = probe when issuing).
     pub install_tls_pin: Option<String>,
-    /// W25: agent download fallback (None = none).
-    pub install_fallback_url: Option<String>,
     /// W25: ACME directory ("" = Let's Encrypt) and contact e-mail.
     pub acme_directory_url: String,
     pub acme_email: String,
@@ -691,16 +687,10 @@ pub fn compute(cfg: &PanelConfig, stored: Stored, server_names: Vec<ServerName>)
     let (probe, probe_sources) = effective_probe(cfg, &stored);
     let days =
         |v: Option<i32>, default: u32| v.and_then(|v| u32::try_from(v).ok()).unwrap_or(default);
-    let fallback = match stored.install_fallback_url.as_deref() {
-        None => Some(crate::config::DEFAULT_FALLBACK_BINARY_URL.to_string()),
-        Some("") => None,
-        Some(u) => Some(u.to_string()),
-    };
     Effective {
         probe,
         probe_sources,
         install_tls_pin: stored.install_tls_pin.clone(),
-        install_fallback_url: fallback,
         acme_directory_url: stored.acme_directory_url.clone().unwrap_or_default(),
         acme_email: stored.acme_email.clone().unwrap_or_default(),
         audit_retention_days: days(stored.audit_retention_days, DEFAULT_AUDIT_RETENTION_DAYS),
@@ -1917,8 +1907,6 @@ impl SubscriptionView {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NodeOpsValues {
     pub install_tls_pin: Option<String>,
-    /// Some("") = no download fallback.
-    pub install_fallback_url: Option<String>,
     pub acme_directory_url: Option<String>,
     pub acme_email: Option<String>,
     pub remove_mode: Option<String>,
@@ -1928,7 +1916,6 @@ impl NodeOpsValues {
     fn of(s: &Stored) -> Self {
         Self {
             install_tls_pin: s.install_tls_pin.clone(),
-            install_fallback_url: s.install_fallback_url.clone(),
             acme_directory_url: s.acme_directory_url.clone(),
             acme_email: s.acme_email.clone(),
             remove_mode: s.remove_mode.clone(),
@@ -1937,7 +1924,6 @@ impl NodeOpsValues {
     fn audit(&self) -> serde_json::Value {
         json!({
             "install_tls_pin": self.install_tls_pin,
-            "install_fallback_url": self.install_fallback_url,
             "acme_directory_url": self.acme_directory_url,
             "acme_email": self.acme_email,
             "remove_mode": self.remove_mode,
@@ -1999,13 +1985,12 @@ pub async fn apply_update_node_ops(
         return Ok(cur);
     }
     let row: Stored = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "UPDATE panel_settings SET install_tls_pin = $1, install_fallback_url = $2, \
-             acme_directory_url = $3, acme_email = $4, remove_mode = $5, \
+        "UPDATE panel_settings SET install_tls_pin = $1, \
+             acme_directory_url = $2, acme_email = $3, remove_mode = $4, \
              version = version + 1, updated_at = now() \
          WHERE id = 1 RETURNING {STORED_COLS}"
     )))
     .bind(&new.install_tls_pin)
-    .bind(&new.install_fallback_url)
     .bind(&new.acme_directory_url)
     .bind(&new.acme_email)
     .bind(&new.remove_mode)
@@ -2093,11 +2078,6 @@ pub struct NodeOpsReq {
     pub version: i64,
     /// null/"" = probe when a command is issued.
     pub install_tls_pin: Option<String>,
-    /// null = the official release; "" with `install_fallback_disabled`
-    /// would be ambiguous, so "no fallback" is its own switch.
-    pub install_fallback_url: Option<String>,
-    #[serde(default)]
-    pub install_fallback_disabled: bool,
     /// null/"" = Let's Encrypt.
     pub acme_directory_url: Option<String>,
     pub acme_email: Option<String>,
@@ -2116,20 +2096,6 @@ pub fn node_ops_values(req: &NodeOpsReq) -> Result<NodeOpsValues, ApiError> {
             "安装命令公钥钉扎：格式应为 sha256//<SPKI 的 SHA-256 的 base64>（留空 = 自动探测）"
         ));
     }
-    let fallback = if req.install_fallback_disabled {
-        Some(String::new())
-    } else {
-        let u = opt_trim(&req.install_fallback_url);
-        if let Some(u) = &u
-            && !crate::nodeinstall::fallback_url_ok(u)
-        {
-            return Err(bad_request!(
-                "settings.fallback_url_invalid",
-                "备用下载地址：必须是含 {{arch}} 的 https:// 地址，不能有引号、空格或 shell 特殊字符"
-            ));
-        }
-        u.filter(|u| u != crate::config::DEFAULT_FALLBACK_BINARY_URL)
-    };
     let dir = opt_trim(&req.acme_directory_url);
     if let Some(d) = &dir
         && !acme_url_ok(d)
@@ -2150,7 +2116,6 @@ pub fn node_ops_values(req: &NodeOpsReq) -> Result<NodeOpsValues, ApiError> {
     }
     Ok(NodeOpsValues {
         install_tls_pin: pin,
-        install_fallback_url: fallback,
         acme_directory_url: dir,
         acme_email: email,
         remove_mode: req
@@ -2742,10 +2707,6 @@ pub struct ProbeView {
 pub struct NodeOpsView {
     /// null = probed when a command is issued.
     pub install_tls_pin: Option<String>,
-    /// Stored value: null = official release, "" = no fallback.
-    pub install_fallback_url: Option<String>,
-    pub install_fallback_effective: Option<String>,
-    pub install_fallback_default: &'static str,
     pub acme_directory_url: Option<String>,
     pub acme_email: Option<String>,
     pub remove_mode: Field<RemoveMode>,
@@ -2792,9 +2753,6 @@ fn node_ops_view(eff: &Effective) -> NodeOpsView {
     let s = &eff.stored;
     NodeOpsView {
         install_tls_pin: s.install_tls_pin.clone(),
-        install_fallback_url: s.install_fallback_url.clone(),
-        install_fallback_effective: eff.install_fallback_url.clone(),
-        install_fallback_default: crate::config::DEFAULT_FALLBACK_BINARY_URL,
         acme_directory_url: s.acme_directory_url.clone(),
         acme_email: s.acme_email.clone(),
         remove_mode: Field::of(
@@ -3584,10 +3542,6 @@ fn describe_lines(eff: &Effective) -> Vec<String> {
         format!(
             "install pin:      {}",
             s.install_tls_pin.as_deref().unwrap_or("(probed)")
-        ),
-        format!(
-            "install fallback: {}",
-            eff.install_fallback_url.as_deref().unwrap_or("(none)")
         ),
         format!(
             "acme:             {} {}",

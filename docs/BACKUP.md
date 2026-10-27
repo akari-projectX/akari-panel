@@ -16,8 +16,7 @@
 （2026-10 测试部署中 6 个发布生成了 84 MB 的转储）。它们是 GitHub 上公开、已签名的发布资产的副本，
 因此备份默认不含这些行：相关表只转储结构（`pg_dump --exclude-table-data`），MANIFEST 记为
 `agent_releases=excluded`。恢复后面板中没有任何已存储的发布：到 更新 → **检查更新**（或手动上传）即可找回。
-在此之前，节点一键安装会回退到 系统设置 → 节点通信 → 备用下载地址（默认为 GitHub 发布），
-且只有重新存入发布后才能创建灰度发布（rollout）。已安装的 agent 不受影响（保留自己的二进制）。
+在此之前，节点一键安装会停下并提示取回发布，且只有重新存入发布后才能创建灰度发布（rollout）。已安装的 agent 不受影响（保留自己的二进制）。
 
 如需包含：使用 `akari-ctl backup --with-agent-releases`，或为 `akari-ctl backup` / `scripts/backup.sh`
 设置 `AKARI_BACKUP_AGENT_RELEASES=1`（MANIFEST：`agent_releases=included`）。
