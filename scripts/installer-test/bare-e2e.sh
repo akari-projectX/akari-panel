@@ -82,6 +82,8 @@ cx() { docker exec -e LANG=C.UTF-8 "$c" "$@"; }
 # installs zh_CN.UTF-8 for itself and speaks Chinese.
 log "locale: zh_CN.UTF-8 cannot be installed -> English"
 cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "the image already has zh_CN.UTF-8"
+default_locale() { cx sh -c 'ls -l /etc/default/locale /etc/locale.conf 2>&1; cat /etc/default/locale /etc/locale.conf 2>&1; cat /etc/environment 2>&1'; }
+locale_before=$(default_locale)
 cx sh -c 'mkdir -p /fakebin && printf "%s\n" "#!/bin/sh" "case \"\$*\" in *locales*) exit 100 ;; esac" "exec /usr/bin/apt-get \"\$@\"" >/fakebin/apt-get && chmod +x /fakebin/apt-get'
 docker exec -e LANG=C.UTF-8 -e PATH=/fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$c" \
 	sh /src/scripts/install.sh info >/tmp/akari-en.out 2>&1 && fail "akari-ctl info succeeded without an installation"
@@ -221,7 +223,7 @@ cx grep -q 'disabled Caddy.s Cloudsmith apt repository\|已停用 Caddy 的 Clou
 # and the system default locale untouched.
 cx sh -c 'locale -a | grep -i "^zh_cn\.utf-\?8$"' >/dev/null || fail "zh_CN.UTF-8 was not installed"
 cx grep -q '下载并验证' /var/log/akari-install.log || fail "the default run was not Chinese"
-cx sh -c '! grep -qs "^LANG=" /etc/default/locale /etc/locale.conf' || fail "the installer changed the system default locale"
+[ "$(default_locale)" = "$locale_before" ] || { default_locale; fail "the installer changed the system default locale"; }
 cx sh -c '! grep -qs "zh_CN" /etc/environment /etc/profile /etc/profile.d/* /root/.profile /root/.bashrc' || fail "the installer wrote the locale into a profile"
 echo "ok: locale: Chinese by default (zh_CN.UTF-8 installed), English fallback when it cannot be, system default untouched"
 cx apt-get update >/dev/null 2>&1 || fail "apt-get update still fails"
