@@ -1,0 +1,6 @@
+[Proxy]
+$proxies
+[Proxy Group]
+G = select, $proxy_group
+[Rule]
+FINAL,G

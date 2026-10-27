@@ -112,8 +112,11 @@ pub(super) fn render(
     ];
     let mut out: Vec<String> = Vec::new();
     for l in body.lines() {
-        if l.trim() == "$proxies" {
+        let t = l.trim();
+        if t == "$proxies" {
             out.extend(lines.iter().cloned());
+        } else if t.starts_with(['#', ';']) && !t.starts_with("#!MANAGED-CONFIG") {
+            out.push(l.to_string()); // comments are not templates
         } else {
             out.push(fill(l, &tokens));
         }

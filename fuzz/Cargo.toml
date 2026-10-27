@@ -200,8 +200,8 @@ test = false
 doc = false
 
 [[bin]]
-name = "rule_sets"
-path = "fuzz_targets/rule_sets.rs"
+name = "sub_templates"
+path = "fuzz_targets/sub_templates.rs"
 test = false
 doc = false
 bench = false
