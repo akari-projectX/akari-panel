@@ -57,7 +57,7 @@ async fn bounded(
 /// A CSV download response whose body is produced by `producer` on its own
 /// task: rows are sent as they are read.
 fn download(
-    filename: String,
+    filename: &str,
     producer: impl Future<Output = anyhow::Result<()>> + Send + 'static,
     tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
@@ -95,7 +95,7 @@ fn download(
 
 /// A complete (small, already built) CSV as a download, same headers as
 /// the streamed exports.
-pub(crate) fn csv_response(filename: String, bytes: Vec<u8>) -> Response {
+pub(crate) fn csv_response(filename: &str, bytes: Vec<u8>) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     let producer = {
         let tx = tx.clone();
@@ -332,7 +332,7 @@ pub async fn users(
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let sink = Sink::new(tx.clone(), USER_COLS);
     Ok(download(
-        filename("users", today),
+        &filename("users", today),
         produce_users(state, q, sink),
         tx,
         rx,
@@ -546,7 +546,7 @@ pub async fn orders(
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let sink = Sink::new(tx.clone(), ORDER_COLS);
     Ok(download(
-        filename("orders", today),
+        &filename("orders", today),
         produce_orders(state, q, from, to, sink),
         tx,
         rx,
@@ -636,7 +636,7 @@ pub async fn traffic(
     };
     let sink = Sink::new(tx.clone(), cols);
     Ok(download(
-        filename("traffic", today),
+        &filename("traffic", today),
         produce_traffic(state, from, to, by_node, sink),
         tx,
         rx,

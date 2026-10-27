@@ -432,7 +432,7 @@ pub async fn export(
     .await?;
     tx.commit().await?;
     Ok(crate::export::csv_response(
-        crate::export::filename("coupons", today),
+        &crate::export::filename("coupons", today),
         bytes,
     ))
 }
