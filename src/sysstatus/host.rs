@@ -84,7 +84,7 @@ pub struct Host {
     pub rss_bytes: Option<u64>,
     /// The machine-wide `/proc` files (stat, meminfo, loadavg) cannot be
     /// read while this process's own can: the service sandbox hides them
-    /// (systemd `ProcSubset=pid`, in panel units before v0.4.1). The page
+    /// (systemd `ProcSubset=pid`). The page
     /// says so instead of a bare "unknown".
     #[serde(default)]
     pub proc_hidden: bool,

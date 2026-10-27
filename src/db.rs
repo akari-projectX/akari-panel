@@ -28,39 +28,6 @@ pub async fn require_supported_server(pg: &PgPool) -> Result<()> {
     check_version(&v)
 }
 
-/// v0.4 squashed migrations 0001-0168 into `1000_baseline.sql`. A database
-/// whose history holds any older version was created by panel v0.3.x and
-/// cannot be upgraded in place (sqlx would only report an opaque
-/// `VersionMissing`).
-pub const BASELINE_VERSION: i64 = 1000;
-
-pub const PRE_BASELINE_ERROR: &str =
-    "database from v0.3.x — fresh install required; see docs/DEPLOY.md";
-
-/// Refuses a database migrated by the pre-baseline chain. Runs before any
-/// migration, so such a database is left untouched. Resolves
-/// `_sqlx_migrations` through the connection's search_path, like sqlx.
-pub async fn refuse_pre_baseline(pg: &PgPool) -> Result<()> {
-    let has_history: bool =
-        sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
-            .fetch_one(pg)
-            .await
-            .context("look up migration history")?;
-    if !has_history {
-        return Ok(());
-    }
-    let oldest: Option<i64> = sqlx::query_scalar("SELECT min(version) FROM _sqlx_migrations")
-        .fetch_one(pg)
-        .await
-        .context("read migration history")?;
-    match oldest {
-        Some(v) if v < BASELINE_VERSION => {
-            bail!("{PRE_BASELINE_ERROR} (migration history starts at version {v})")
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Pool options of every pool that serves or tests the panel.
 ///
 /// Every connection runs with `jit = off`. PostgreSQL's JIT compiles any
@@ -134,11 +101,10 @@ async fn is_idle(conn: &mut sqlx::PgConnection) -> sqlx::Result<bool> {
     }
 }
 
-/// Version gate + pre-baseline guard + migrations. Every entry point that
-/// migrates goes through here.
+/// Version gate + migrations. Every entry point that migrates goes through
+/// here.
 pub async fn migrate(pg: &PgPool) -> Result<()> {
     require_supported_server(pg).await?;
-    refuse_pre_baseline(pg).await?;
     sqlx::migrate!("./migrations").run(pg).await?;
     Ok(())
 }
@@ -205,16 +171,6 @@ mod tests {
         t.drop().await;
     }
 
-    async fn tables(pool: &PgPool) -> Vec<String> {
-        sqlx::query_scalar(
-            "SELECT table_name::text FROM information_schema.tables \
-             WHERE table_schema = current_schema() ORDER BY 1",
-        )
-        .fetch_all(pool)
-        .await
-        .unwrap()
-    }
-
     #[tokio::test]
     async fn fresh_database_migrates_and_remigrates() {
         let Some((t, pool, schema)) = empty_schema().await else {
@@ -226,51 +182,15 @@ mod tests {
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(versions.first(), Some(&BASELINE_VERSION));
-        assert!(versions.iter().all(|v| *v >= BASELINE_VERSION));
+        assert_eq!(versions, [1]);
         // Seeded singletons are there.
         let n: i64 = sqlx::query_scalar("SELECT count(*) FROM panel_settings WHERE id = 1")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(n, 1);
-        // Restart: already-migrated v0.4 database passes the guard.
+        // Restart: an already-migrated database migrates again as a no-op.
         migrate(&pool).await.unwrap();
-        cleanup(t, pool, schema).await;
-    }
-
-    #[tokio::test]
-    async fn v03_database_is_refused_untouched() {
-        let Some((t, pool, schema)) = empty_schema().await else {
-            return;
-        };
-        // What a v0.3.x panel leaves behind: sqlx's history table with the
-        // old chain's versions (here just two of them) plus its tables.
-        sqlx::raw_sql(
-            "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, \
-             description TEXT NOT NULL, installed_on TIMESTAMPTZ NOT NULL DEFAULT now(), \
-             success BOOLEAN NOT NULL, checksum BYTEA NOT NULL, execution_time BIGINT NOT NULL); \
-             INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
-             VALUES (1, 'init', true, '\\x00', 1), (168, 'mail admin notice', true, '\\x00', 1); \
-             CREATE TABLE users (id uuid PRIMARY KEY);",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let before = tables(&pool).await;
-        let err = migrate(&pool).await.unwrap_err().to_string();
-        assert!(err.contains(PRE_BASELINE_ERROR), "{err}");
-        assert!(err.contains("version 1"), "{err}");
-        assert_eq!(
-            tables(&pool).await,
-            before,
-            "guard must not touch the database"
-        );
-        let max: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(max, 168);
         cleanup(t, pool, schema).await;
     }
 

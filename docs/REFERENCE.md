@@ -396,10 +396,10 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 - **撤权方式（Removal mode）**（系统设置 → 节点通信 → 撤权方式）：gate（默认）就地移除/轮换用户；rebuild 把每次移除/轮换都作为完整快照发送（agent 的 gate 一旦存疑时的兜底）。
   - 无用户的入站（没有 clients 的 dokodemo/socks/http）既不过 gate 也不计费。
   - FakeDNS 嗅探（`sniffing.destOverride` 含 `fakedns` / `fakedns+others`，键名大小写不限）会被拒绝（400），agent 在 xray 自己解析之后也会再次拒绝。
-- **控制协议修订（Control protocol revisions）**：agent 发送 `Hello.protocol_version`（当前：1）。低于面板 `MIN_AGENT_PROTOCOL` 的 agent（例如发送 0 的旧 agent）仍会被接受，但只得到空状态（无入站、无用户），并在节点的 `last_error` / `agent_protocol` 中标记。**上线顺序：先升级 agent，再升级面板。**
+- **控制协议修订（Control protocol revisions）**：agent 发送 `Hello.protocol_version`（当前：8）。低于面板 `MIN_AGENT_PROTOCOL`（8）的 agent 仍会被接受，但只得到空状态（无入站、无用户），并在节点的 `last_error` / `agent_protocol` 中标记。**上线顺序：先升级 agent，再升级面板。**
 - **故障关闭租约（Fail-closed lease）**：每次成功读取节点期望状态（初始同步、每 60 秒的 reconcile）之后，面板会授予 agent 一份租约（24 小时，内置）。
   - 在这么长时间内没有得到授予的 agent（面板不可达，或面板在但数据库挂了）会停止 xray、忘掉其版本，并在重连后上报最终计数器。
-  - agent 以 CLOCK_BOOTTIME 计量租约（挂起不会延长），下限为 >= 1 小时，且只在第一次授予之后才启动租约（旧面板永不会启动它）。节点视图：`lease_remaining_seconds`。
+  - agent 以 CLOCK_BOOTTIME 计量租约（挂起不会延长），下限为 >= 1 小时，且只在第一次授予之后才启动租约。节点视图：`lease_remaining_seconds`。
 - **流量计费（Traffic accounting）**：agent 上报每个用户的*累计*计数器，并为每份上报标记其所属的会话（xray 实例生命周期）。
   - 面板在 `traffic_counters` 中按 `(node, user, session)` 保存高水位线，并按 `max(new - old, 0)` 计费，由 PostgreSQL 在一条语句中算出。因此重启、重试、重复和乱序上报都不会重复计费，flush 失败也不丢数据。
   - 需要 PostgreSQL >= 18（`RETURNING old/new`）。
@@ -419,7 +419,7 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 ## Plans and node groups
 
 - **节点组（Node groups）**汇集节点（一个节点可属于多个组）。**套餐**授予节点组，并设置流量配额（`null` = 不限）和重置周期：`monthly`（在锚点日期的当月同一天，不足则取月末，按站点时区——Q3）、`days-N`（每 N 天，1–3650）或 `none`。
-  - `speed_limit_mbps` 由 agent 按用户**强制执行**（W7，agent protocol 4：每个方向，由用户在节点上的所有连接共享，受限用户禁用 XTLS splice；旧 agent 不限速地运行该用户，节点上显示警告）。
+  - `speed_limit_mbps` 由 agent 按用户**强制执行**（W7，agent protocol 4：每个方向，由用户在节点上的所有连接共享，受限用户禁用 XTLS splice）。
   - `device_seats` 为席位绑定而存储（随客户端做，R25），**不强制执行**。
   - 被禁用的套餐不再提供给新的分配；现有订阅者保留它。价格、库存和销售规则见 docs/PAYMENTS.md。
 - **套餐条款会被快照（中-5）**：订阅保留创建订阅时套餐的配额、重置周期、限速和节点组（`user_plans` + `user_plan_groups`，由每条创建路径上的触发器复制）；续期也保留它们。
@@ -489,7 +489,7 @@ CLI 须以面板的服务用户身份运行，并指向面板所用的同一个 
 
 通过 `scripts/install.sh` 安装的环境：`akari-ctl upgrade`（备份、签名校验、切换、健康检查、自动回滚；docs/DEPLOY.md §5）。
 
-**先升级 agent，再升级面板。** 面板会丢弃缺少 `TrafficReport.session_id` 的流量上报，并依赖 agent 从不声称自己拥有未成功应用的版本；旧 agent 对着新面板不会计费，而且可能在未收敛时看起来已收敛。
+**先升级 agent，再升级面板。** 面板会丢弃缺少 `TrafficReport.session_id` 的流量上报，并依赖 agent 从不声称自己拥有未成功应用的版本。
 迁移在 `akari serve` 时自动运行（需要 PostgreSQL >= 18，启动时检查）。
 
 ## Licence
