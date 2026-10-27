@@ -123,7 +123,7 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       },
     },
     /* 邀请与钱包：邀请返佣 / 收支流水 / 提现记录三个页签（邀请人账户有佣金入账、追回、两笔提现） */
-    { name: 'invite', account: INVITER, run: (page) => ready(page, '/invite', '邀请返佣') },
+    { name: 'invite', account: INVITER, run: (page) => ready(page, '/wallet?tab=invite', '邀请返佣') },
     { name: 'wallet', account: INVITER, run: (page) => ready(page, '/wallet', '邀请返佣') },
     {
       name: 'wallet-ledger', account: INVITER,

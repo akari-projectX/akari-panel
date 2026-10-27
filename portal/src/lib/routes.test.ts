@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { match, PAGES, REDIRECTS } from './pages';
+import { match, PAGES } from './pages';
 import { allowed, PAGE_SCOPES, R, safeRedirect, scopeOf } from './routes';
 import { scanSvelte, scanTs } from '../../scripts/strings.mjs';
 
@@ -46,11 +46,10 @@ describe('page matching', () => {
     expect(match('/terms')?.page.layout).toBe('public');
   });
 
-  it('every top-level route of R has a page or a redirect', () => {
+  it('every top-level route of R has a page', () => {
     const tops = new Set(Object.values(R).filter((v): v is string => typeof v === 'string'));
-    for (const p of tops) expect(!!match(p) || p in REDIRECTS, p).toBe(true);
+    for (const p of tops) expect(!!match(p), p).toBe(true);
     expect(PAGES.length).toBeGreaterThan(0);
-    expect(REDIRECTS[R.invite]).toBe('/wallet?tab=invite');
   });
 });
 

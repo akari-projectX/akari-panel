@@ -4,7 +4,7 @@
 // review queue, components/people-finance.tsx), 余额 (find anyone, last
 // movement, ledger dialog with manual adjustment), 返利 (a day-grouped
 // ledger). Routes /finance/withdrawals (default), /finance/balances,
-// /finance/commissions; the old /finance/settings goes to 系统设置 → 邀请返利.
+// /finance/commissions.
 // The list endpoints take only a `limit` (≤ 500, no cursor): lists grow by
 // "load more" up to the cap and say so when they reach it.
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -46,11 +46,10 @@ export function FinancePage() {
   const { sub, query } = useRoute();
   const search = query.toString();
   const tab = (SUBS as readonly string[]).includes(sub[0] ?? "") ? (sub[0] as Sub) : null;
-  // /finance → /finance/withdrawals (keeping the query); the old settings tab → its new place.
+  // /finance → /finance/withdrawals (keeping the query).
   useEffect(() => {
-    if (sub[0] === "settings") navigate("/settings/commission", true);
-    else if (!tab) navigate(`/finance/withdrawals${search ? `?${search}` : ""}`, true);
-  }, [sub, tab, search]);
+    if (!tab) navigate(`/finance/withdrawals${search ? `?${search}` : ""}`, true);
+  }, [tab, search]);
   const summary = useFinanceSummary();
   const s = summary.data;
   const pending = s?.withdrawals.pending ?? 0;

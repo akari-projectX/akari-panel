@@ -280,10 +280,9 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   }
 });
 
-test('old and unknown addresses', async ({ page }) => {
+test('unknown addresses', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
-  await page.goto('/invite');
-  await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
+  await page.goto('/wallet');
   await ready(page, '邀请');
   /* 面板只对门户的顶层路径返回页面（其余是统一的拒绝），所以 404 页只会在站内跳转时出现 */
   await page.evaluate(() => {
@@ -315,7 +314,7 @@ test('the portal\'s edges: unknown paths are the canonical rejection, the portal
   const calls: string[] = [];
   page.on('request', (r) => calls.push(new URL(r.url()).pathname));
   await signIn(page, 'user@e2e.test');
-  for (const p of ['/', '/shop', '/orders', '/wallet', '/invite', '/nodes', '/traffic', '/tickets', '/help', '/announcements', '/account']) {
+  for (const p of ['/', '/shop', '/orders', '/wallet', '/nodes', '/traffic', '/tickets', '/help', '/announcements', '/account']) {
     await page.goto(p);
     await ready(page);
   }

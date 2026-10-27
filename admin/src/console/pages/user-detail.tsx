@@ -1364,7 +1364,7 @@ function UserOrders({ email }: { email: string | null }) {
               size="sm"
               variant="ghost"
               icon={ChevronRight}
-              onClick={() => navigate(`/orders?email=${encodeURIComponent(email)}`)}
+              onClick={() => navigate(`/orders?q=${encodeURIComponent(`@${email}`)}`)}
             >
               {tr("在订单页查看", "Open in orders")}
             </Button>

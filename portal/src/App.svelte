@@ -8,7 +8,7 @@
   import { auth, refresh, scope, siteName } from '$lib/auth.svelte';
   import { boot, startBoot } from '$lib/boot.svelte';
   import { t } from '$lib/i18n.svelte';
-  import { REDIRECTS, match, type Page } from '$lib/pages';
+  import { match, type Page } from '$lib/pages';
   import { prefetchCurrent, prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
   import { loc, navigate } from '$lib/router.svelte';
   import { allowed, R, safeRedirect } from '$lib/routes';
@@ -30,8 +30,6 @@
     | { kind: 'page' };
 
   const view = $derived.by((): View => {
-    const legacy = REDIRECTS[loc.path];
-    if (legacy) return { kind: 'redirect', to: legacy };
     if (!found) return { kind: 'notfound' };
     const { layout } = found.page;
     if (layout === 'public') return { kind: 'page' };
