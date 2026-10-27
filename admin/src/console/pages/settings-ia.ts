@@ -67,9 +67,7 @@ export type Section = {
   danger?: boolean;
   /** A page of its own instead of a section body (the full-width template editor). */
   href?: string;
-  /** Where it lived before the 2026-10 redesign (the overview's "从哪里搬来"). */
-  from: [string, string];
-  /** Search words: old names and the settings inside. */
+  /** Search words: the settings inside. */
   keywords: string;
   /** The labels of the rows inside (search finds a row and names its section). */
   rows: [string, string][];
@@ -91,7 +89,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["站点时区", "Site time zone"],
         ],
         audit: "settings.site.update",
-        from: ["站点 tab 的站点卡", "the Site tab's site card"],
         zh: "站点信息",
         en: "Site",
         icon: Clock,
@@ -112,7 +109,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["页脚链接", "Footer links"],
         ],
         audit: "settings.branding.update",
-        from: ["品牌 tab 的 Logo、网站图标与页脚", "the Branding tab's logo, favicon and footer"],
         zh: "外观与品牌",
         en: "Appearance and branding",
         icon: Brush,
@@ -136,7 +132,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["鸿蒙客户端", "HarmonyOS client"],
         ],
         audit: "settings.branding.update",
-        from: ["品牌 tab 的条款、隐私与客户端下载链接", "the Branding tab's terms, privacy and client downloads"],
         zh: "条款与下载链接",
         en: "Terms and downloads",
         icon: Link2,
@@ -163,10 +158,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["RP ID", "RP ID"],
         ],
         audit: "settings.update",
-        from: [
-          "站点 tab 的域名、通行密钥中心与证书域名 + 安全 tab 的 Cloudflare 网段",
-          "the Site tab's domains, passkey centre and certificate names + the Security tab's Cloudflare ranges",
-        ],
         zh: "域名与证书",
         en: "Domains and certificates",
         icon: Globe,
@@ -177,7 +168,7 @@ export const SETTINGS_IA: SectionGroup[] = [
         ],
         danger: true,
         keywords:
-          "站点与域名 主域名 订阅域名 节点通信域名 DNS 首选 Cloudflare CF 网段 证书 SAN 通行密钥中心域名 passkey domains certificate",
+          "主域名 订阅域名 节点通信域名 DNS 首选 Cloudflare CF 网段 证书 SAN 通行密钥中心域名 passkey domains certificate",
       },
     ],
   },
@@ -200,7 +191,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["找回密码", "Password reset"],
         ],
         audit: "settings.signup.update",
-        from: ["注册 tab 的注册卡", "the Sign-up tab's registration card"],
         zh: "注册与邀请",
         en: "Sign-up and invites",
         icon: UserPlus,
@@ -210,7 +200,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "Who can sign up, email verification and invite codes, trials, password reset.",
         ],
         keywords:
-          "注册与人机验证 开放注册 邮箱验证 邀请码 通行密钥注册 白名单 试用 找回密码 sign-up register invite trial reset",
+          "开放注册 邮箱验证 邀请码 通行密钥注册 白名单 试用 找回密码 sign-up register invite trial reset",
       },
       {
         id: "login",
@@ -225,10 +215,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["管理员只能用通行密钥登录", "Admins sign in with passkeys only"],
         ],
         audit: "settings.auth.update",
-        from: [
-          "安全 tab 的登录方式 + 注册 tab 的人机验证",
-          "the Security tab's sign-in methods + the Sign-up tab's bot protection",
-        ],
         zh: "登录与人机验证",
         en: "Sign-in and bot protection",
         icon: Fingerprint,
@@ -239,7 +225,7 @@ export const SETTINGS_IA: SectionGroup[] = [
         ],
         danger: true,
         keywords:
-          "后台与登录安全 人机验证 登录方式 通行密钥 仅通行密钥 Turnstile 蜜罐 最短提交时间 passkey captcha honeypot",
+          "人机验证 登录方式 通行密钥 仅通行密钥 Turnstile 蜜罐 最短提交时间 passkey captcha honeypot",
       },
       {
         id: "cleanup",
@@ -251,7 +237,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["上次运行", "Last run"],
         ],
         audit: "settings.cleanup.update",
-        from: ["账号清理 tab", "the Account cleanup tab"],
         zh: "账号清理",
         en: "Account cleanup",
         icon: UserMinus,
@@ -283,10 +268,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["订阅路径", "Subscription path"],
         ],
         audit: "settings.subscription.update",
-        from: [
-          "订阅 tab 的格式、导入按钮与线路名 + 安全 tab 的订阅路径",
-          "the Subscriptions tab's formats, import buttons and line names + the Security tab's subscription path",
-        ],
         zh: "订阅链接与格式",
         en: "Subscription links and formats",
         icon: Cable,
@@ -315,7 +296,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["恢复推荐设置", "Restore the recommended routing"],
         ],
         audit: "settings.subscription.update",
-        from: ["订阅 tab 的分流规则", "the Subscriptions tab's routing rules"],
         zh: "分流规则",
         en: "Routing rules",
         icon: Route,
@@ -343,7 +323,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["撤权方式", "How access is removed"],
         ],
         audit: "settings.nodes.update",
-        from: ["节点 tab 的安装命令与证书", "the Nodes tab's install command and certificates"],
         zh: "安装与证书",
         en: "Install and certificates",
         icon: Download,
@@ -352,7 +331,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "节点安装命令的公钥钉扎与备用下载、节点证书（ACME）与撤权方式。",
           "Install command pinning and fallback download, node certificates (ACME) and how access is removed.",
         ],
-        keywords: "节点通信与测速 安装命令 公钥钉扎 备用下载 ACME 撤权方式 install pin fallback acme remove mode",
+        keywords: "安装命令 公钥钉扎 备用下载 ACME 撤权方式 install pin fallback acme remove mode",
       },
       {
         id: "probe",
@@ -362,7 +341,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["面板 TCP 探测", "Panel TCP probe"],
         ],
         audit: "settings.probe.update",
-        from: ["节点 tab 的延迟测试", "the Nodes tab's latency probes"],
         zh: "测速与健康检查",
         en: "Probes and health checks",
         icon: Radar,
@@ -382,10 +360,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["近 7 天拦截", "Blocks in 7 days"],
         ],
         audit: "block_rule.",
-        from: [
-          "审计规则 tab（改名，避免与审计日志混淆）",
-          "the Audit rules tab (renamed so it is not mistaken for the audit log)",
-        ],
         zh: "出站拦截规则",
         en: "Outbound block rules",
         icon: ShieldBan,
@@ -395,7 +369,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "Outbound targets the nodes block (built-in and custom rule sets). Counts only, never browsing.",
         ],
         danger: true,
-        keywords: "审计规则 拦截 规则集 域名 IP 协议 bittorrent block rules",
+        keywords: "拦截 规则集 域名 IP 协议 bittorrent block rules",
       },
       {
         id: "updates",
@@ -406,7 +380,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["额外信任的发布公钥", "Extra release keys"],
         ],
         audit: "agent_update.settings.update",
-        from: ["更新页的设置 + 安全 tab 的发布公钥", "the Updates page's settings + the Security tab's release keys"],
         zh: "更新源与验签",
         en: "Update source and signing keys",
         icon: PackageCheck,
@@ -434,7 +407,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["允许原路退款", "Refund to the original method"],
         ],
         audit: "payment_method.",
-        from: ["支付 tab", "the Payments tab"],
         zh: "支付方式",
         en: "Payment methods",
         icon: CreditCard,
@@ -459,7 +431,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["参考汇率", "Reference rate"],
         ],
         audit: "commission.settings.update",
-        from: ["资金页的邀请返利设置", "the Finance page's commission settings"],
         zh: "邀请返利",
         en: "Invite commissions",
         icon: Gift,
@@ -486,7 +457,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["测试发信", "Test mail"],
         ],
         audit: "settings.mail.update",
-        from: ["邮件 tab 的发信方式与测试发信", "the Mail tab's transport and test mail"],
         zh: "发信通道",
         en: "Mail transport",
         icon: Mail,
@@ -505,7 +475,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["到期提醒", "Expiry reminder"],
         ],
         audit: "settings.mail_template.",
-        from: ["邮件模板 tab", "the Mail templates tab"],
         zh: "邮件模板",
         en: "Mail templates",
         icon: MailOpen,
@@ -528,7 +497,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["退款通知", "Refund notices"],
         ],
         audit: "settings.mail.update",
-        from: ["邮件 tab 里的通知开关", "the notice switches in the Mail tab"],
         zh: "通知种类",
         en: "Notices",
         icon: Bell,
@@ -554,7 +522,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["告警邮件收件人", "Alert mail recipients"],
         ],
         audit: "alerts.settings.update",
-        from: ["告警页的设置 tab", "the Alerts page's settings tab"],
         zh: "告警通道与阈值",
         en: "Alert channels and thresholds",
         icon: BellRing,
@@ -563,7 +530,7 @@ export const SETTINGS_IA: SectionGroup[] = [
           "服务器告警的阈值，以及 Telegram、签名 Webhook 与邮件通道。",
           "Server alert thresholds, and the Telegram, signed webhook and mail channels.",
         ],
-        keywords: "告警设置 阈值 离线 CPU 内存 磁盘 证书 冷却 Telegram Webhook 邮件 alerts thresholds",
+        keywords: "阈值 离线 CPU 内存 磁盘 证书 冷却 Telegram Webhook 邮件 alerts thresholds",
       },
     ],
   },
@@ -580,7 +547,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["你的地址", "Your address"],
         ],
         audit: "settings.admin_allowlist.update",
-        from: ["安全 tab 的后台地址", "the Security tab's console address"],
         zh: "后台入口",
         en: "Console address",
         icon: DoorClosed,
@@ -591,7 +557,7 @@ export const SETTINGS_IA: SectionGroup[] = [
         ],
         owner: true,
         danger: true,
-        keywords: "后台与登录安全 后台地址 前缀 轮换 白名单 IP console prefix allowlist",
+        keywords: "后台地址 前缀 轮换 白名单 IP console prefix allowlist",
       },
       {
         id: "retention",
@@ -601,7 +567,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["已删除用户的数据", "Deleted users' data"],
         ],
         audit: "settings.security.update",
-        from: ["安全 tab 的「安全与数据保留」", "the Security tab's security and retention card"],
         zh: "数据保留",
         en: "Data retention",
         icon: Database,
@@ -617,7 +582,6 @@ export const SETTINGS_IA: SectionGroup[] = [
           ["通行密钥", "Passkeys"],
           ["仅通行密钥登录", "Passkey-only sign-in"],
         ],
-        from: ["我的账户页（保留独立页面，这里只放入口）", "the My account page (still its own page; linked here)"],
         zh: "我的账户与通行密钥",
         en: "My account and passkeys",
         icon: KeyRound,
@@ -652,7 +616,7 @@ export const groupOf = (id: SectionId): SectionGroup => SETTINGS_IA.find((g) => 
 export type SearchHit = { section: Section; row?: [string, string] };
 
 /**
- * The settings search: a section whose name, description, old place or
+ * The settings search: a section whose name, description or
  * keywords match, then every row label that matches ("行 ↳ 组 › 分区").
  */
 export function searchSettings(q: string): SearchHit[] {
@@ -660,21 +624,10 @@ export function searchSettings(q: string): SearchHit[] {
   if (!t) return [];
   const out: SearchHit[] = [];
   for (const s of SECTIONS) {
-    const hay = `${s.zh} ${s.en} ${s.keywords} ${s.desc.join(" ")} ${s.from.join(" ")}`.toLowerCase();
+    const hay = `${s.zh} ${s.en} ${s.keywords} ${s.desc.join(" ")}`.toLowerCase();
     if (hay.includes(t)) out.push({ section: s });
     for (const r of s.rows)
       if (`${r[0]} ${r[1]}`.toLowerCase().includes(t) && r[0] !== s.zh) out.push({ section: s, row: r });
   }
   return out;
 }
-
-/** Things that moved out of the settings: search finds them and points there. */
-export const MOVED_OUT: { zh: string; en: string; to: string; where: [string, string]; keywords: string }[] = [
-  {
-    zh: "发件箱",
-    en: "Outbox",
-    to: "/status?mail=dead",
-    where: ["已移到 系统状态 → 邮件队列", "Moved to System status → mail queue"],
-    keywords: "发件箱 失败邮件 死信 重试 邮件队列 outbox dead letters mail queue",
-  },
-];

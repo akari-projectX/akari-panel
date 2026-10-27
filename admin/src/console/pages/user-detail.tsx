@@ -197,8 +197,6 @@ function orderStatus(o: UserOrder, tr: Tr): [string, Tone] {
 }
 
 const TABS: Tab[] = ["overview", "traffic", "billing", "security"];
-/** Old links: ?tab=orders / ?tab=account. */
-const ALIAS: Record<string, Tab> = { orders: "billing", account: "security" };
 
 function useOrders(email: string | undefined) {
   return useQuery({
@@ -246,7 +244,7 @@ export function UserDetail({
   const otherAdmin = isAdmin && u?.id !== me.id;
   const ownerOnly = !!otherAdmin && !me.is_owner;
   const live = !!u && !u.erased;
-  const tab: Tab = TABS.includes(tabParam as Tab) ? (tabParam as Tab) : (ALIAS[tabParam] ?? "overview");
+  const tab: Tab = TABS.includes(tabParam as Tab) ? (tabParam as Tab) : "overview";
   const current = u?.subscription ?? null;
   const self = u?.id === me.id;
   const canBan = live && !u.is_owner && !self && !isAdmin;

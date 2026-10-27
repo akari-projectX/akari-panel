@@ -1,14 +1,13 @@
 // 系统设置 (SET-*, 2026-10 redesign v2, proposal-v2 §5): 8 groups / 22
 // sections, one URL each (`/settings` = overview, `/settings/<section>`;
-// `/settings/templates` is the full-width template editor; old tab ids,
-// the v2 aliases and `?section=<id>` redirect). Desktop: the group
+// `/settings/templates` is the full-width template editor). Desktop: the group
 // navigation (search over section names and the rows inside, `?q=`; amber
 // dot = something to fix; lock = owner only) next to the overview or a
 // section; phone: big title + search → needs attention → groups → section
 // with "‹ 系统设置". Every section saves one way: the bottom save bar
 // (N 项未保存的修改 · 放弃 · 保存 ⌘S; "N 处需要修正" blocks saving); leaving
 // with unsaved changes asks "有未保存的修改" (放弃修改，去「X」/ 继续编辑).
-import { ChevronLeft, CornerDownRight, ExternalLink, History, Info, Lock } from "lucide-react";
+import { ChevronLeft, CornerDownRight, History, Info, Lock } from "lucide-react";
 import { Suspense, lazy, type ComponentType } from "react";
 import { Link, Navigate, useSearchParams } from "react-router";
 import { cn } from "../../shared/cn";
@@ -25,7 +24,6 @@ import { AccessSection, AccountSection, RetentionSection } from "./settings-acce
 import { DomainsSection } from "./settings-domains";
 import { BrandSection, LinksSection, SiteSection } from "./settings-general";
 import {
-  MOVED_OUT,
   OVERVIEW_TINT,
   SECTIONS,
   SETTINGS_IA,
@@ -146,9 +144,7 @@ function Mark({ text, q }: { text: string; q: string }) {
 function SearchResults({ q }: { q: string }) {
   const tr = useTr();
   const hits = searchSettings(q);
-  const t = q.trim().toLowerCase();
-  const moved = MOVED_OUT.filter((m) => `${m.zh} ${m.en} ${m.keywords}`.toLowerCase().includes(t));
-  if (hits.length === 0 && moved.length === 0)
+  if (hits.length === 0)
     return (
       <p className="px-2 py-6 text-center text-footnote text-muted-foreground">
         {tr(`没有匹配「${q.trim()}」的设置`, `No settings match “${q.trim()}”`)}
@@ -157,7 +153,7 @@ function SearchResults({ q }: { q: string }) {
   return (
     <div className="grid gap-0.5">
       <div className="px-2 pb-1 text-caption font-semibold text-faint">
-        {tr(`${hits.length + moved.length} 个结果`, `${hits.length + moved.length} results`)}
+        {tr(`${hits.length} 个结果`, `${hits.length} results`)}
       </div>
       {hits.map((h, i) => {
         const g = groupOf(h.section.id);
@@ -187,19 +183,6 @@ function SearchResults({ q }: { q: string }) {
           </Link>
         );
       })}
-      {moved.map((m) => (
-        <Link
-          key={m.to}
-          to={m.to}
-          className="flex min-h-11 items-center gap-2.5 rounded-[9px] px-2 py-1.5 hover:bg-accent"
-        >
-          <ExternalLink className="size-4 text-faint" aria-hidden="true" />
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">{tr(m.zh, m.en)}</span>
-            <span className="block text-caption text-muted-foreground">{tr(...m.where)}</span>
-          </span>
-        </Link>
-      ))}
     </div>
   );
 }

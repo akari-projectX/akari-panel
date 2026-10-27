@@ -430,7 +430,7 @@ export function OrderDialog({ id, onClose }: { id: string; onClose: () => void }
               <div className="ml-auto flex items-center gap-2">
                 {o.user_id && (
                   <Link
-                    to={`/users?open=${o.user_id}&tab=orders`}
+                    to={`/users?open=${o.user_id}&tab=billing`}
                     className="hit-44 inline-flex h-8 items-center gap-1 rounded-md px-3 text-body font-medium hover:bg-accent pointer-coarse:h-10"
                   >
                     {tr("打开用户", "Open user")}
