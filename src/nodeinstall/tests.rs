@@ -191,17 +191,10 @@ async fn install_link_lifecycle() {
         assert!(s.contains("NEEDS_CERT='0'"));
         assert!(s.contains("TLS_DOMAIN=''"));
         assert!(s.contains("SHA_amd64=''"), "no release uploaded");
-        assert!(s.contains("ExecStart=/usr/local/bin/akari-agent"));
-        // W18: the privileged updater units, verbatim, and enabled.
-        assert!(s.contains(super::UNIT_UPDATE_SERVICE.trim_end()));
-        assert!(s.contains(super::UNIT_UPDATE_PATH.trim_end()));
-        assert!(s.contains(
-            "ExecStart=/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent"
-        ));
-        assert!(s.contains("PathExists=/var/lib/private/akari-agent/update/apply-request.json"));
+        // W18: the privileged updater path unit is enabled.
         assert!(s.contains("systemctl enable --now akari-agent-update.path"));
         assert!(s.contains("rm -f \"$UNIT\" \"$UPDATE_SERVICE\" \"$UPDATE_PATH\""));
-        // W23: the release's own units first (fallback: the copies above).
+        // The units are the ones the release's own binary prints.
         assert!(s.contains("\"$TMP/akari-agent\" -print-unit \"$u\" >\"$TMP/$u\""));
         // The uninstall hint fits how the script ran (sudo or plain root).
         assert!(s.contains("say uninstall_later_sudo \"$UNINSTALLER\""));
@@ -548,70 +541,6 @@ async fn configured_public_url_and_pin_win() {
     assert!(s.contains("ORIGIN='https://203.0.113.7'"));
     drop(st);
     db.drop().await;
-}
-
-/// W18: the updater units the installer ships fit the agent unit, and
-/// nothing makes the agent-writable state directory executable (W^X).
-#[test]
-fn updater_units_fit_the_agent_unit() {
-    let lines = |u: &'static str| u.lines().map(str::trim).collect::<Vec<_>>();
-    let agent = lines(UNIT);
-    let svc = lines(UNIT_UPDATE_SERVICE);
-    let path = lines(UNIT_UPDATE_PATH);
-    // DynamicUser + StateDirectory=akari-agent = /var/lib/private/akari-agent.
-    for l in [
-        "DynamicUser=yes",
-        "StateDirectory=akari-agent",
-        "ExecStart=/usr/local/bin/akari-agent -config %d/bootstrap.toml",
-    ] {
-        assert!(agent.contains(&l), "{l}");
-    }
-    for l in [
-        "Type=oneshot",
-        "ExecStart=/usr/local/bin/akari-agent -apply-update /var/lib/private/akari-agent",
-        "StateDirectory=akari-agent-update",
-        "NoNewPrivileges=yes",
-        "ProtectSystem=strict",
-        "ReadWritePaths=/usr/local/bin -/var/lib/private/akari-agent",
-        // W23: replaces the three units on an update.
-        "ReadWritePaths=/etc/systemd/system",
-        // R44: nft for the relay source allowlists, in the host's network
-        // namespace (no IP traffic still).
-        "IPAddressDeny=any",
-        "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
-    ] {
-        assert!(svc.contains(&l), "{l}");
-    }
-    assert!(!svc.iter().any(|l| l.starts_with("PrivateNetwork")));
-    assert!(
-        svc.iter()
-            .any(|l| l.starts_with("CapabilityBoundingSet=") && l.contains("CAP_NET_ADMIN"))
-    );
-    // R44: never the agent itself.
-    assert!(!agent.iter().any(|l| l.contains("CAP_NET_ADMIN")));
-    for l in [
-        "PathExists=/var/lib/private/akari-agent/update/apply-request.json",
-        "PathExists=/var/lib/private/akari-agent/update/source-filter-request.json",
-        "Unit=akari-agent-update.service",
-    ] {
-        assert!(path.contains(&l), "{l}");
-    }
-    for u in [&agent, &svc] {
-        assert!(
-            !u.iter()
-                .any(|l| l.starts_with("ExecPaths") || l.starts_with("NoExecPaths")),
-            "no exec exceptions for the state directory"
-        );
-    }
-    // W23: ProcSubset=pid hid /proc/stat, meminfo, loadavg, net/*: every
-    // machine metric read 0.
-    assert!(agent.contains(&"ProtectProc=invisible"));
-    assert!(!agent.iter().any(|l| l.starts_with("ProcSubset")));
-    // The updater never gets IP networking or the agent's capability to
-    // bind ports (R44: CAP_NET_ADMIN for nft only, asserted above).
-    assert!(!svc.iter().any(|l| l.contains("CAP_NET_BIND_SERVICE")
-        || l.contains("CAP_NET_RAW")
-        || l.starts_with("DynamicUser")));
 }
 
 /// W10: a node with a TLS domain: TLS templates take it, the script knows

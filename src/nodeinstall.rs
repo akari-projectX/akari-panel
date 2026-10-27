@@ -77,10 +77,6 @@ const SCRIPT: &str = include_str!("nodeinstall.sh");
 const UNINSTALL_FN: &str = include_str!("nodeinstall-uninstall.sh");
 /// Language, palette, steps and prompts shared with the uninstaller it writes.
 const UI: &str = include_str!("nodeinstall-ui.sh");
-const UNIT: &str = include_str!("../deploy/systemd/akari-agent.service");
-/// W18: the agent's privileged updater (its state directory is noexec).
-const UNIT_UPDATE_SERVICE: &str = include_str!("../deploy/systemd/akari-agent-update.service");
-const UNIT_UPDATE_PATH: &str = include_str!("../deploy/systemd/akari-agent-update.path");
 
 /// Architectures the installer knows (agent release names).
 pub const ARCHES: [&str; 2] = ["amd64", "arm64"];
@@ -832,15 +828,8 @@ fn render_script(
         token,
         link.expires_at,
     );
-    for (body, delim) in [
-        (bootstrap.as_str(), "AKARI_BOOTSTRAP_EOF"),
-        (UNIT, "AKARI_UNIT_EOF"),
-        (UNIT_UPDATE_SERVICE, "AKARI_UPDATE_SERVICE_EOF"),
-        (UNIT_UPDATE_PATH, "AKARI_UPDATE_PATH_EOF"),
-    ] {
-        if body.lines().any(|l| l.trim() == delim) {
-            anyhow::bail!("heredoc delimiter inside the payload");
-        }
+    if bootstrap.lines().any(|l| l.trim() == "AKARI_BOOTSTRAP_EOF") {
+        anyhow::bail!("heredoc delimiter inside the payload");
     }
     let rel = |arch: &str, f: fn(&ReleaseRef) -> &str| {
         releases.get(arch).map(f).unwrap_or("").to_string()
@@ -860,7 +849,7 @@ fn render_script(
         .as_deref()
         .filter(|_| needs_cert)
         .unwrap_or("");
-    let vars: [(&str, String); 17] = [
+    let vars: [(&str, String); 14] = [
         (
             "@@UNINSTALL_FN@@",
             format!("{}\n\n{}", UI.trim_end(), UNINSTALL_FN.trim_end()),
@@ -887,15 +876,6 @@ fn render_script(
             sq(&rel("arm64", |r| &r.version))?.to_string(),
         ),
         ("@@BOOTSTRAP@@", bootstrap.trim_end().to_string()),
-        ("@@UNIT@@", UNIT.trim_end().to_string()),
-        (
-            "@@UNIT_UPDATE_SERVICE@@",
-            UNIT_UPDATE_SERVICE.trim_end().to_string(),
-        ),
-        (
-            "@@UNIT_UPDATE_PATH@@",
-            UNIT_UPDATE_PATH.trim_end().to_string(),
-        ),
     ];
     let mut out = SCRIPT.to_string();
     for (k, v) in vars {
