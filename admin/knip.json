@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": ["src/login/main.tsx", "scripts/collect-text.mjs"],
   "ignoreIssues": {
-    "e2e/screens/support-content.ts": ["exports"]
+    "e2e/screens/support-content.ts": ["exports"],
+    "src/console/protocols.gen.ts": ["exports", "types"]
   }
 }
