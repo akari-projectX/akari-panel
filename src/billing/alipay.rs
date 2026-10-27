@@ -1021,8 +1021,11 @@ impl super::provider::PaymentProvider for Alipay {
     ) -> super::provider::BoxFut<'a, Result<RefundState, CallError>> {
         Box::pin(Alipay::refund_query(self, otn, out_request_no))
     }
-    fn verify_notify(&self, body: &[u8]) -> super::provider::NotifyCheck {
-        self.check_notify(body)
+    fn verify_notify(
+        &self,
+        req: &super::provider::NotifyRequest<'_>,
+    ) -> super::provider::NotifyCheck {
+        self.check_notify(req.body)
     }
     fn notify_ack(&self) -> &'static str {
         "success"

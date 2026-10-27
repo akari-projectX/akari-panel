@@ -1938,7 +1938,7 @@ async fn commission_exactly_once_under_duplicates() {
                     .await
                     .unwrap()
             } else {
-                super::super::api::handle_notify(&state, &*alipay, method, None, &body)
+                super::super::api::handle_notify(&state, &*alipay, method, None, &bare(&body))
                     .await
                     .unwrap()
             }

@@ -46,8 +46,8 @@ use subtle::ConstantTimeEq as _;
 
 use super::alipay::{format_cents, gateway_ok, parse_amount};
 use super::provider::{
-    BoxFut, CallError, Checkout, Close, CreateReq, NotifyCheck, NotifyEvent, PaymentProvider,
-    ProviderKind, Query, TestOutcome, Validated,
+    BoxFut, CallError, Checkout, Close, CreateReq, NotifyCheck, NotifyEvent, NotifyRequest,
+    PaymentProvider, ProviderKind, Query, TestOutcome, Validated,
 };
 use crate::auth::{ApiError, bad_request, conflict};
 
@@ -537,8 +537,8 @@ impl PaymentProvider for Epay {
     fn close<'a>(&'a self, _otn: &'a str) -> BoxFut<'a, Result<Close, CallError>> {
         Box::pin(async { Ok(Close::NotClosable) })
     }
-    fn verify_notify(&self, body: &[u8]) -> NotifyCheck {
-        self.check_notify(body)
+    fn verify_notify(&self, req: &NotifyRequest<'_>) -> NotifyCheck {
+        self.check_notify(req.body)
     }
     fn notify_ack(&self) -> &'static str {
         "success"

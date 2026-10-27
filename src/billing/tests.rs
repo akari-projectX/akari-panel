@@ -208,6 +208,13 @@ async fn mock_gateway(
 // ---------------------------------------------------------------------------
 
 /// The method form of an Alipay method on the mock gateway.
+/// A notify request without headers (providers that sign the body only).
+fn bare(body: &[u8]) -> super::provider::NotifyRequest<'_> {
+    static NONE: std::sync::LazyLock<axum::http::HeaderMap> =
+        std::sync::LazyLock::new(axum::http::HeaderMap::new);
+    super::provider::NotifyRequest::new(body, &NONE, None)
+}
+
 fn alipay_method_req(gateway: &str, name: &str) -> super::methods::MethodReq {
     super::methods::MethodReq {
         kind: Some(super::alipay::KIND.into()),
@@ -938,7 +945,7 @@ async fn concurrent_duplicates_fulfil_once() {
                     .await
                     .unwrap()
             } else {
-                super::api::handle_notify(&state, &*alipay, method, None, &body)
+                super::api::handle_notify(&state, &*alipay, method, None, &bare(&body))
                     .await
                     .unwrap()
             }
@@ -1007,7 +1014,7 @@ async fn transient_error_in_fulfilment_fails_the_payment() {
     .unwrap();
 
     let (method, alipay) = method_of(&state);
-    let err = super::api::handle_notify(&state, &*alipay, method, None, &body)
+    let err = super::api::handle_notify(&state, &*alipay, method, None, &bare(&body))
         .await
         .expect_err("a transient error must fail the payment transaction");
     assert!(err.is_transient(), "{err:?}");

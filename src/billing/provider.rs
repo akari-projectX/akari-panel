@@ -13,8 +13,8 @@
 //! `api::handle_notify`). A provider only talks to its gateway: create a
 //! trade, query it, close it, verify a notify, test the configuration.
 //!
-//! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`) and EPay / 易支付
-//! (`epay.rs`, `epay`, C1). Adding a kind = implement both traits, add it
+//! Kinds: Alipay Face-to-Face (`alipay.rs`, `alipay_f2f`), EPay / 易支付
+//! (`epay.rs`, `epay`, C1), CoinPayments (hosted crypto gateways: `coinpayments.rs`, `coinbase.rs`). Adding a kind = implement both traits, add it
 //! to `KINDS`, extend the `payment_methods.kind` CHECK (new migration) and
 //! the admin form.
 
@@ -22,6 +22,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use axum::http::HeaderMap;
 use serde_json::Value;
 
 use crate::auth::ApiError;
@@ -138,6 +139,32 @@ pub struct NotifyEvent {
     pub params: Value,
 }
 
+/// What a notify verification may look at: the RAW body (never
+/// re-serialised), and — for gateways that sign in headers
+/// (CoinPayments, Coinbase) — the headers, the notify URL this method
+/// handed out (CoinPayments signs it) and the clock (replay window).
+#[derive(Debug, Clone, Copy)]
+pub struct NotifyRequest<'a> {
+    pub body: &'a [u8],
+    pub headers: &'a HeaderMap,
+    /// `methods::notify_url` of the method (None = no main domain).
+    pub url: Option<&'a str>,
+    /// Unix seconds.
+    pub now_unix: i64,
+}
+
+impl<'a> NotifyRequest<'a> {
+    /// A request on the wire, stamped with the current time.
+    pub fn new(body: &'a [u8], headers: &'a HeaderMap, url: Option<&'a str>) -> Self {
+        Self {
+            body,
+            headers,
+            url,
+            now_unix: chrono::Utc::now().timestamp(),
+        }
+    }
+}
+
 /// The provider's verdict on a notify body.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotifyCheck {
@@ -177,8 +204,8 @@ pub trait PaymentProvider: Send + Sync + std::fmt::Debug {
     fn query<'a>(&'a self, out_trade_no: &'a str) -> BoxFut<'a, Result<Query, CallError>>;
     /// Close an unpaid trade.
     fn close<'a>(&'a self, out_trade_no: &'a str) -> BoxFut<'a, Result<Close, CallError>>;
-    /// Verify an asynchronous notify (raw body).
-    fn verify_notify(&self, body: &[u8]) -> NotifyCheck;
+    /// Verify an asynchronous notify (raw body, headers).
+    fn verify_notify(&self, req: &NotifyRequest<'_>) -> NotifyCheck;
     /// The body the provider expects when a notify was accepted.
     fn notify_ack(&self) -> &'static str;
     /// The provider may notify with a GET (parameters in the query
@@ -310,9 +337,9 @@ pub mod mock {
                 Ok(Close::NotExist)
             })
         }
-        fn verify_notify(&self, body: &[u8]) -> NotifyCheck {
+        fn verify_notify(&self, req: &NotifyRequest<'_>) -> NotifyCheck {
             // "otn:cents" is a valid notify; anything else is not.
-            let s = std::str::from_utf8(body).unwrap_or_default();
+            let s = std::str::from_utf8(req.body).unwrap_or_default();
             match s
                 .split_once(':')
                 .and_then(|(o, c)| Some((o, c.parse::<i64>().ok()?)))
@@ -382,20 +409,23 @@ pub mod mock {
             m.refund_query("AK1", "R1").await,
             Err(CallError::Unsupported)
         ));
+        let none = HeaderMap::new();
+        let req = |b| NotifyRequest::new(b, &none, None);
         assert!(matches!(
-            m.verify_notify(b"AK1:100"),
+            m.verify_notify(&req(b"AK1:100")),
             NotifyCheck::Verified(_)
         ));
         assert!(matches!(
-            m.verify_notify(b"junk"),
+            m.verify_notify(&req(b"junk")),
             NotifyCheck::Rejected { .. }
         ));
         assert!(m.test_connection().await.ok);
         assert_eq!(m.notify_ack(), "ok");
         assert!(!m.notify_get());
-        // The registry knows Alipay F2F and EPay, and nothing unknown.
-        assert_eq!(kind("alipay_f2f").map(|k| k.id()), Some("alipay_f2f"));
-        assert_eq!(kind("epay").map(|k| k.id()), Some("epay"));
+        // The registry knows every kind, and nothing unknown.
+        for id in ["alipay_f2f", "epay"] {
+            assert_eq!(kind(id).map(|k| k.id()), Some(id));
+        }
         assert!(kind("usdt_chain").is_none());
         assert_eq!(
             super::super::alipay::AlipayKind.default_icon(&Value::Null),

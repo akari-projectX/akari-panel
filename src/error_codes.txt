@@ -294,6 +294,7 @@ order_admin.user_has_pending
 payments.app_id_invalid
 payments.config_invalid
 payments.config_unknown_field
+payments.currency_invalid
 payments.environment_invalid
 payments.epay_channel_invalid
 payments.epay_key_invalid
@@ -316,6 +317,7 @@ payments.public_key_invalid
 payments.public_key_is_app_key
 payments.public_key_is_private
 payments.public_key_too_short
+payments.rate_invalid
 payments.refund_original_invalid
 payments.seller_id_invalid
 payments.sort_range

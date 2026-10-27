@@ -507,7 +507,7 @@ async fn epay_concurrent_notifies_fulfil_once() {
                     .await
                     .unwrap()
             } else {
-                super::super::api::handle_notify(&state, &*p, method, None, body.as_bytes())
+                super::super::api::handle_notify(&state, &*p, method, None, &bare(body.as_bytes()))
                     .await
                     .unwrap()
             }
