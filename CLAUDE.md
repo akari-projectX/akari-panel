@@ -52,6 +52,8 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户�
 
 ## Lint（Rust 风格机器检查，`briefs/RUST-STYLE.md`）
 
+工程规则（单一事实源、分层、错误处理、SQL/计费、安全默认、前端数据层、测试、文档同步、无兼容层、PR 规模）见工作区 `akari-workspace/briefs/ENGINEERING.md`；评审清单见 `briefs/DEFECT-CHECKLIST.md`。
+
 `Cargo.toml [lints.clippy]`（根 crate、`bench/`、`fuzz/` 各一份相同的表）+ 根目录 `clippy.toml`（`allow-unwrap-in-tests = true`，clippy 向上级目录查找，bench/fuzz 共用）。级别 `warn`，由 `cargo clippy -D warnings` 变成错误（`make check`、`make lint`、CI rust / bench tooling / fuzz.yml；测试代码只有 `make lint` 与 CI 的 `--all-targets` 覆盖）：`wildcard_imports`（`use super::*` 在测试模块里 clippy 默认放行）、`unwrap_used`（生产代码用 `expect("为什么不会失败")` 或 `?`）、`fn_params_excessive_bools`、`undocumented_unsafe_blocks`（`// SAFETY:` 必须紧贴 `unsafe`）、`mem_forget`、`rc_buffer`、`manual_string_new`、`redundant_clone`、`needless_pass_by_value`；`ptr_arg` 是 clippy 默认。`must_use_candidate` 刻意不开（应用代码噪声太大，`#[must_use]` 是评审项）。
 - 采纳时（2026-10-27）实测命中：根 crate 49（`needless_pass_by_value` 21、`redundant_clone` 19、`manual_string_new` 8、`undocumented_unsafe_blocks` 1；另有 `--cfg fuzzing` 下才编译的 `wildcard_imports` 1）、fuzz 10（`unwrap_used` 6、`wildcard_imports` 2、`redundant_clone` 2）、bench 0；其余 lint 为 0 命中，作为护栏保留，全部已清零，没有因噪声删掉的 lint。
 - `needless_pass_by_value` 的例外只用 `#[expect(clippy::needless_pass_by_value, reason = "…")]`（不用 `allow`，该例外消失时编译器会提醒）：目前三处 `map_err` 回调（`enroll::csr_status`、`signup::valkey_err`、`dns::cloudflare::unreachable`）和泛型按值参数 `csvx::Cell::raw`；其余一律改为借用。
