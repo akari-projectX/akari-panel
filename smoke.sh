@@ -2146,7 +2146,7 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND actor_label='cli'")" = "1" ] \
   || { echo "FAIL: CLI probe unset not audited"; exit 1; }
 # Back to the defaults the rest of the smoke expects.
-[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"tags":[],"sort":0}')" = "200" ] \
+[ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"sort":0}')" = "200" ] \
   && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null,"tags":[]}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
 # next07 (migration 1100): for 30 s after 0.5x -> 1x the settlement bills
