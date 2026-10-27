@@ -113,7 +113,7 @@ impl Message {
     /// A billing event for the admins (Phase A PR ①, 中-2: a paid order
     /// that could not be fulfilled was refunded to the balance). Event
     /// `billing`; `detail` is non-personal (order id/number, code, amount).
-    pub fn billing(title: &str, text: &str, detail: Value) -> Self {
+    pub fn billing(title: &str, text: &str, detail: &Value) -> Self {
         Self {
             payload: json!({
                 "event": "billing",
@@ -178,7 +178,7 @@ impl SendError {
 
 /// A request that got no answer: retried, except when the SSRF guard refused
 /// the address (it will not become public by waiting).
-fn transport_failure(what: &str, e: String) -> SendError {
+fn transport_failure(what: &str, e: &str) -> SendError {
     let msg = format!("{what}: {e}");
     if e == crate::outbound::FetchError::Blocked.to_string() {
         SendError::Permanent(msg)
@@ -285,7 +285,7 @@ pub async fn send(
                 SEND_TIMEOUT,
             )
             .await
-            .map_err(|e| transport_failure("telegram", e))?;
+            .map_err(|e| transport_failure("telegram", &e))?;
             let v: Value = serde_json::from_slice(&resp).unwrap_or(Value::Null);
             if (200..300).contains(&status) && v["ok"] == Value::Bool(true) {
                 Ok(())
@@ -322,7 +322,7 @@ pub async fn send(
             let (status, _) =
                 crate::billing::http::post(url, "application/json", &headers, body, SEND_TIMEOUT)
                     .await
-                    .map_err(|e| transport_failure("webhook", e))?;
+                    .map_err(|e| transport_failure("webhook", &e))?;
             if (200..300).contains(&status) {
                 Ok(())
             } else {

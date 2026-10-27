@@ -894,7 +894,7 @@ async fn confirm_unrecorded(
             r.cents / 100,
             r.cents % 100,
         ),
-        json!({ "order_id": order_id, "out_trade_no": otn, "cents": r.cents }),
+        &json!({ "order_id": order_id, "out_trade_no": otn, "cents": r.cents }),
     );
     super::orders::enqueue_billing_alert(&mut tx, order_id, &msg).await?;
     tx.commit().await?;

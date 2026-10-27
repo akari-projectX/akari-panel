@@ -283,8 +283,8 @@ async fn refund_unfulfillable(
             done["refund_balance_cents"].as_i64().unwrap_or(0) / 100,
             done["refund_balance_cents"].as_i64().unwrap_or(0) % 100,
         ),
-        json!({ "order_id": order_id, "out_trade_no": otn, "code": code,
-                "refund_cents": done["refund_cents"] }),
+        &json!({ "order_id": order_id, "out_trade_no": otn, "code": code,
+                 "refund_cents": done["refund_cents"] }),
     );
     enqueue_billing_alert(conn, order_id, &msg).await
 }

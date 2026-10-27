@@ -23,6 +23,12 @@ impl Cell {
     pub fn text(s: impl Into<String>) -> Cell {
         Cell::Text(s.into())
     }
+    // Generic by value like `text`: call sites pass numbers and Strings, and
+    // `opt_raw` hands this function to `Option::map`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "generic by value, used as a map callback"
+    )]
     pub fn raw(s: impl ToString) -> Cell {
         Cell::Raw(s.to_string())
     }
@@ -174,41 +180,41 @@ pub fn parse(bytes: &[u8]) -> Option<Vec<Vec<String>>> {
 mod tests {
     use super::*;
 
-    fn one(c: Cell) -> String {
+    fn one(c: &Cell) -> String {
         let mut out = Vec::new();
-        write_cell(&mut out, &c);
+        write_cell(&mut out, c);
         String::from_utf8(out).unwrap()
     }
 
     #[test]
     fn quoting_and_doubling() {
-        assert_eq!(one(Cell::text("plain")), "plain");
-        assert_eq!(one(Cell::text("a,b")), "\"a,b\"");
-        assert_eq!(one(Cell::text("say \"hi\"")), "\"say \"\"hi\"\"\"");
-        assert_eq!(one(Cell::text("two\nlines")), "\"two\nlines\"");
-        assert_eq!(one(Cell::text("")), "\"\"");
-        assert_eq!(one(Cell::Empty), "");
-        assert_eq!(one(Cell::text(" pad")), "\" pad\"");
-        assert_eq!(one(Cell::text("中文；全角分号")), "中文；全角分号");
-        assert_eq!(one(Cell::text("a;b")), "\"a;b\"");
+        assert_eq!(one(&Cell::text("plain")), "plain");
+        assert_eq!(one(&Cell::text("a,b")), "\"a,b\"");
+        assert_eq!(one(&Cell::text("say \"hi\"")), "\"say \"\"hi\"\"\"");
+        assert_eq!(one(&Cell::text("two\nlines")), "\"two\nlines\"");
+        assert_eq!(one(&Cell::text("")), "\"\"");
+        assert_eq!(one(&Cell::Empty), "");
+        assert_eq!(one(&Cell::text(" pad")), "\" pad\"");
+        assert_eq!(one(&Cell::text("中文；全角分号")), "中文；全角分号");
+        assert_eq!(one(&Cell::text("a;b")), "\"a;b\"");
     }
 
     #[test]
     fn formula_lead_is_neutralised_for_text_only() {
         for s in ["=1+1", "+1", "-1", "@SUM(A1)", "\tx", "\rx"] {
-            let got = one(Cell::text(s));
+            let got = one(&Cell::text(s));
             assert!(got.starts_with("\"'"), "{s:?} -> {got:?}");
             let back = parse(format!("{got}\r\n").as_bytes()).unwrap();
             assert_eq!(back[0][0], format!("'{s}"));
         }
-        assert_eq!(one(Cell::raw(-5)), "-5");
-        assert_eq!(one(Cell::raw("2026-10-03")), "2026-10-03");
-        assert_eq!(one(Cell::bool(true)), "true");
+        assert_eq!(one(&Cell::raw(-5)), "-5");
+        assert_eq!(one(&Cell::raw("2026-10-03")), "2026-10-03");
+        assert_eq!(one(&Cell::bool(true)), "true");
     }
 
     #[test]
     fn control_characters_are_dropped() {
-        assert_eq!(one(Cell::text("a\u{0}b\u{7}c")), "abc");
+        assert_eq!(one(&Cell::text("a\u{0}b\u{7}c")), "abc");
     }
 
     #[test]
