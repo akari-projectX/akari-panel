@@ -1986,7 +1986,7 @@ async fn acme_settings_change_bumps_the_servers_that_order_a_certificate() {
     };
     // Another node setting: no bump.
     save(NodeOpsValues {
-        install_tls_pin: Some("sha256//pin".into()),
+        install_tls_pin: Some("sha256//BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".into()),
         ..NodeOpsValues::default()
     })
     .await;
