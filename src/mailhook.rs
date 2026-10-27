@@ -19,21 +19,21 @@ use crate::state::AppState;
 /// At most this many admins are mailed about one new ticket.
 const MAX_STAFF_RECIPIENTS: i64 = 5;
 
-/// Links put into mail (the portal `<public origin>`, the console
-/// `<public origin>/<admin prefix>/admin` — staff mail only), when a main
-/// domain is configured (never derived from a request's Host).
+/// Links put into mail: the portal `<public origin>`, when a main domain is
+/// configured (never derived from a request's Host). Mail never carries the
+/// admin prefix or a console link, not even staff mail: the prefix is the
+/// site's one secret and mail travels through third-party relays, the
+/// recipient's mailbox and the outbox (dead letters keep the body).
 #[derive(Debug, Clone, Default)]
 pub struct Links {
     pub portal: Option<String>,
-    pub console: Option<String>,
 }
 
 impl Links {
     pub fn of(state: &AppState) -> Self {
-        let portal = mail::portal_url(state);
-        let prefix = state.settings().access().admin_prefix.clone();
-        let console = portal.as_deref().map(|o| format!("{o}/{prefix}/admin"));
-        Self { portal, console }
+        Self {
+            portal: mail::portal_url(state),
+        }
     }
 }
 
@@ -87,11 +87,7 @@ pub async fn ticket_replied(
 
 /// A customer opened a ticket: tell up to 5 enabled admins with a verified
 /// address (Chinese). Returns how many mails were queued.
-pub async fn ticket_created(
-    conn: &mut PgConnection,
-    ticket: Uuid,
-    links: Option<&Links>,
-) -> sqlx::Result<usize> {
+pub async fn ticket_created(conn: &mut PgConnection, ticket: Uuid) -> sqlx::Result<usize> {
     let Some(s) = smtp(conn).await? else {
         return Ok(0);
     };
@@ -116,9 +112,6 @@ pub async fn ticket_created(
         subject,
         user_email,
         category,
-        console_url: links
-            .and_then(|l| l.console.clone())
-            .map(|c| format!("{c}/tickets/{ticket}")),
     };
     for (id, email) in &staff {
         mail::enqueue(conn, &s, &tpl, Locale::Zh, email, Some(*id), None).await?;
