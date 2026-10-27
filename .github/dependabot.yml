@@ -60,6 +60,15 @@ updates:
     cooldown: { default-days: 3 }
     open-pull-requests-limit: 5
     commit-message: { prefix: "deps(docker)" }
+    # The installer tests run on the operating systems the installer supports
+    # (Debian 13, Ubuntu 24.04 LTS): only their digests move. A new release
+    # (e.g. the interim Ubuntu 25.10, which the installer refuses) is a support
+    # decision, not a dependency bump.
+    ignore:
+      - dependency-name: ubuntu
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: debian
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       docker-minor:
         update-types: [minor, patch]
