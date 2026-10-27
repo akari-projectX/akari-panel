@@ -78,10 +78,9 @@ msg_zh() {
 	agent_does_not_run) m '下载的 agent 无法在本机运行' ;;
 	verified) m '已校验 %s' ;;
 	installing_files) m '安装文件与服务' ;;
-	no_openrc_support) m '该 agent 发布（%s）不支持 OpenRC：请在面板（更新）发布更新的版本' ;;
+	no_service_units) m '该 agent 发布（%s）不含服务单元（-print-unit）：请在面板（更新）发布更新的版本' ;;
 	cannot_create_group) m '无法创建用户组 akari-agent' ;;
 	cannot_create_user) m '无法创建用户 akari-agent' ;;
-	units_from_installer) m '该 agent 发布不含 systemd 单元，改用安装器自带的副本' ;;
 	bbr_fq) m 'TCP BBR + fq' ;;
 	bbr_skipped_no_sysctl) m 'BBR + fq：已跳过（没有 net.core.default_qdisc / tcp_congestion_control：可能是有独立网络命名空间的容器）' ;;
 	bbr_enabled) m 'BBR + fq：已启用（%s）' ;;
@@ -147,10 +146,9 @@ msg_en() {
 	agent_does_not_run) m 'the downloaded agent does not run on this machine' ;;
 	verified) m 'verified %s' ;;
 	installing_files) m 'Installing files and services' ;;
-	no_openrc_support) m 'this agent release (%s) has no OpenRC support: publish a newer release in the panel (Updates)' ;;
+	no_service_units) m 'this agent release (%s) does not carry its service units (-print-unit): publish a newer release in the panel (Updates)' ;;
 	cannot_create_group) m 'cannot create the group akari-agent' ;;
 	cannot_create_user) m 'cannot create the user akari-agent' ;;
-	units_from_installer) m 'this agent release does not carry its systemd units; using the installer copies' ;;
 	bbr_fq) m 'TCP BBR + fq' ;;
 	bbr_skipped_no_sysctl) m 'BBR + fq: skipped (no net.core.default_qdisc / tcp_congestion_control here: a container with its own network namespace?)' ;;
 	bbr_enabled) m 'BBR + fq: enabled (%s)' ;;
@@ -333,11 +331,10 @@ install -m 0600 "$TMP/bootstrap.toml" "$CONF_DIR/bootstrap.toml"
 
 if [ "$SVC_MGR" = openrc ]; then
 	# W32: the scripts of the release being installed; the updater installs
-	# each new release's the same way. A release that predates them cannot
-	# run under OpenRC.
+	# each new release's the same way.
 	for u in akari-agent akari-agent-update; do
 		if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u" 2>/dev/null || [ ! -s "$TMP/rc.$u" ]; then
-			die no_openrc_support "$ver"
+			die no_service_units "$ver"
 		fi
 	done
 	if ! grep -q '^akari-agent:' /etc/group; then
@@ -352,31 +349,13 @@ if [ "$SVC_MGR" = openrc ]; then
 fi
 
 # The units: those of the release being installed (the verified binary
-# prints them; the updater installs each new release's units the same way),
-# else this panel's copies (releases that predate -print-unit).
+# prints them; the updater installs each new release's units the same way).
 if [ "$SVC_MGR" = systemd ]; then
-units_from_binary=1
 for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
 	if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/$u" 2>/dev/null || [ ! -s "$TMP/$u" ]; then
-		units_from_binary=0
-		break
+		die no_service_units "$ver"
 	fi
 done
-if [ "$units_from_binary" = 0 ]; then
-	note units_from_installer
-	cat >"$TMP/akari-agent.service" <<'AKARI_UNIT_EOF'
-@@UNIT@@
-AKARI_UNIT_EOF
-	# The privileged updater: the agent's state directory is noexec, so
-	# signed self-updates are installed by this root unit (it only ever runs
-	# the installed binary).
-	cat >"$TMP/akari-agent-update.service" <<'AKARI_UPDATE_SERVICE_EOF'
-@@UNIT_UPDATE_SERVICE@@
-AKARI_UPDATE_SERVICE_EOF
-	cat >"$TMP/akari-agent-update.path" <<'AKARI_UPDATE_PATH_EOF'
-@@UNIT_UPDATE_PATH@@
-AKARI_UPDATE_PATH_EOF
-fi
 install -m 0644 "$TMP/akari-agent.service" "$UNIT"
 install -m 0644 "$TMP/akari-agent-update.service" "$UPDATE_SERVICE"
 install -m 0644 "$TMP/akari-agent-update.path" "$UPDATE_PATH"

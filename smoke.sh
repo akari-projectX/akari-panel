@@ -318,21 +318,6 @@ smoke_save_state() {
   } >"$SECTION_STATE.new" 2>/dev/null
   mv "$SECTION_STATE.new" "$SECTION_STATE"
 }
-# The end of the run: the loud account of skipped agent-dependent sections.
-smoke_finish() {
-  echo
-  if [ "${#SKIPPED[@]}" -gt 0 ]; then
-    # Loud on purpose: these agent features were NOT exercised by this run.
-    echo "!! ${#SKIPPED[@]} agent-dependent section(s) SKIPPED (agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]):"
-    printf '!!   - %s\n' "${SKIPPED[@]}"
-    echo "!! run ci (workflow_dispatch) with agent_ref=<agent branch> to exercise them"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      { echo "### smoke: ${#SKIPPED[@]} agent-dependent section(s) skipped"
-        echo "agent protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]"
-        printf -- '- %s\n' "${SKIPPED[@]}"; } >>"$GITHUB_STEP_SUMMARY"
-    fi
-  fi
-}
 awk -v titles="$LOG/section-titles" '
   /^# smoke-sections-begin$/ { on = 1; next }
   !on { next }
@@ -368,7 +353,6 @@ while read -r -u 3 _smoke_n _smoke_title; do
     fi
   fi
 done 3<"$LOG/section-titles"
-smoke_finish
 if [ "${#SMOKE_FAILED[@]}" -gt 0 ]; then
   echo "SMOKE TEST FAILED: ${#SMOKE_FAILED[@]} section(s) failed:"
   printf '!!   - %s\n' "${SMOKE_FAILED[@]}"
@@ -1319,15 +1303,10 @@ wait_port open 10
 echo "last_error: ok"
 
 echo "== W12: agent capabilities (gates for agent-dependent sections) =="
-# Sections that exercise an AGENT feature run only when the agent under test
-# has it and otherwise SKIP LOUDLY (a panel PR may land before the agent PR:
-# panel-first merge order, CLAUDE.md). The gate is what the panel recorded
-# from the agent's Hello (admin API: agent_protocol, agent_capabilities).
-# Skips cannot hide a regression: the agent checkout's own source declares
-# its protocol and capabilities, and the panel must have recorded exactly
-# those (an agent that stops advertising, or a panel that stops recording,
-# fails right here instead of silently skipping). SMOKE_REQUIRE_AGENT=1
-# (CI's agent_ref dispatch runs) turns every skip into a failure.
+# The agent under test declares its protocol and capabilities in its own
+# source; the panel must have recorded exactly those from its Hello (admin
+# API: agent_protocol, agent_capabilities): an agent that stops advertising,
+# or a panel that stops recording, fails right here.
 AGENT_SRC_PROTO=$(sed -n 's/^const agentProtocol = \([0-9][0-9]*\)$/\1/p' "$AGENT_DIR/agent.go")
 [ -n "$AGENT_SRC_PROTO" ] || { echo "FAIL: cannot read agentProtocol from $AGENT_DIR/agent.go"; exit 1; }
 AGENT_SRC_CAPS=$(sed -n 's/^var agentCapabilities = \[\]string{\(.*\)}$/\1/p' "$AGENT_DIR/agent.go" \
@@ -1343,28 +1322,6 @@ AGENT_CAPS=$(node_field agent_capabilities | python3 -c "import json,sys; print(
 [ "$AGENT_CAPS" = "$AGENT_SRC_CAPS" ] \
   || { echo "FAIL: agent source declares capabilities [$AGENT_SRC_CAPS], the panel recorded [$AGENT_CAPS]"; exit 1; }
 echo "agent under test: protocol $AGENT_PROTO, capabilities [$AGENT_CAPS] ($(git -C "$AGENT_DIR" describe --tags --always 2>/dev/null || echo '?'))"
-SKIPPED=()
-# agent_has REQ: REQ = "protocol>=N" or "cap:NAME" (from the gate above).
-agent_has() {
-  case "$1" in
-    protocol\>=*) [ "$AGENT_PROTO" -ge "${1#protocol>=}" ] ;;
-    cap:*) [[ ",$AGENT_CAPS," == *",${1#cap:},"* ]] ;;
-    # W32: the agent release carries this service file (-print-unit).
-    unit:*) "$AGENT" -print-unit "${1#unit:}" >/dev/null 2>&1 ;;
-    *) echo "FAIL: bad agent requirement '$1'"; exit 1 ;;
-  esac
-}
-# need_agent REQ SECTION: 0 = run the section; else print the loud skip
-# (and a GitHub warning annotation) and return 1.
-need_agent() {
-  agent_has "$1" && return 0
-  local msg="SKIP: agent lacks $1 (protocol $AGENT_PROTO, capabilities [$AGENT_CAPS]) - '$2' not exercised; run ci with agent_ref=<agent branch>"
-  echo "$msg"
-  [ -n "${GITHUB_ACTIONS:-}" ] && echo "::warning title=smoke skipped an agent-dependent section::$msg"
-  if [ "${SMOKE_REQUIRE_AGENT:-0}" = 1 ]; then echo "FAIL: SMOKE_REQUIRE_AGENT=1 forbids skips"; exit 1; fi
-  SKIPPED+=("$2 (needs $1)")
-  return 1
-}
 
 echo "== disable node: no inbounds, no users; re-enable restores =="
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"enabled": false}')" = "200" ] || { echo "FAIL: disable node"; exit 1; }
@@ -1504,61 +1461,59 @@ echo "subscription reset: ok (old credential cut and refused)"
 
 echo "== W9: Shadowsocks 2022 removal/re-add = UserDelta (agent protocol >= 5), rotation too (>= 8), Snapshot before =="
 # SS2022 is a managed protocol from W8 on (agent protocol >= 4).
-if need_agent "protocol>=4" "W9 Shadowsocks 2022 delta/snapshot"; then
-  # Agents of protocol 5..7 keep a removed SS2022 credential as a gate-refused
-  # tombstone (indices never move), so the panel sends removals and re-adds
-  # on a Shadowsocks node as deltas, rotations as Snapshots; protocol >= 8
-  # agents remove natively, so rotations are deltas too; older agents get a
-  # Snapshot for any removal (W8 rule).
-  SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
-  # One inbound per node (D2): the node switches to Shadowsocks; smoke-user's
-  # vless credential is reissued as a Shadowsocks one (protocol change).
-  SS_IB="{\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}"
-  [ "$(put_inbound "$SS_IB")" = "200" ] || { echo "FAIL: put shadowsocks inbound"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(psql_q "SELECT protocol FROM entrance_users WHERE user_id='$USER_ID'")" = "shadowsocks" ] \
-    || { echo "FAIL: protocol change did not reissue the credential"; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
-      -d '{"email":"smoke-user-ss@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
-  USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
-  grant "$USER_SS"
-  wait_users 2 15 "SS user added"
-  for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
-  SS_PROTO=$(node_field agent_protocol)
-  snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
-  last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
-  SS_SNAPS=$(snaps)
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/ban" -H 'Content-Type: application/json' \
-      -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban SS user"; exit 1; }
-  wait_users 1 15 "SS user banned"
-  if [ "$SS_PROTO" -ge 5 ]; then
+# Agents of protocol 5..7 keep a removed SS2022 credential as a gate-refused
+# tombstone (indices never move), so the panel sends removals and re-adds
+# on a Shadowsocks node as deltas, rotations as Snapshots; protocol >= 8
+# agents remove natively, so rotations are deltas too; older agents get a
+# Snapshot for any removal (W8 rule).
+SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
+# One inbound per node (D2): the node switches to Shadowsocks; smoke-user's
+# vless credential is reissued as a Shadowsocks one (protocol change).
+SS_IB="{\"listen\":\"127.0.0.1\",\"port\":11445,\"protocol\":\"shadowsocks\",\"settings\":{\"method\":\"2022-blake3-aes-128-gcm\",\"password\":\"$SS_PSK\",\"clients\":[],\"network\":\"tcp\"}}"
+[ "$(put_inbound "$SS_IB")" = "200" ] || { echo "FAIL: put shadowsocks inbound"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(psql_q "SELECT protocol FROM entrance_users WHERE user_id='$USER_ID'")" = "shadowsocks" ] \
+  || { echo "FAIL: protocol change did not reissue the credential"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H 'Content-Type: application/json' \
+    -d '{"email":"smoke-user-ss@smoke.test","password":"user-password-123"}')" = "201" ] || { echo "FAIL: create SS user"; exit 1; }
+USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))['id'])")
+grant "$USER_SS"
+wait_users 2 15 "SS user added"
+for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
+SS_PROTO=$(node_field agent_protocol)
+snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
+last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
+SS_SNAPS=$(snaps)
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/ban" -H 'Content-Type: application/json' \
+    -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban SS user"; exit 1; }
+wait_users 1 15 "SS user banned"
+if [ "$SS_PROTO" -ge 5 ]; then
+  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+    || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+  grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+    || { echo "FAIL: unban SS user"; exit 1; }
+  wait_users 2 15 "SS user unbanned"
+  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+    || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+  echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
+  SS_APPLIED=$(grep -c '"msg":"state applied"' "$LOG/agent.log")
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+    || { echo "FAIL: rotate SS user credentials"; exit 1; }
+  for _ in $(seq 1 30); do
+    [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] && break; sleep 0.5
+  done
+  [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] || { echo "FAIL: agent did not apply the rotated SS credential"; exit 1; }
+  if [ "$SS_PROTO" -ge 8 ]; then
     [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-      || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-    grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
-    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
-      || { echo "FAIL: unban SS user"; exit 1; }
-    wait_users 2 15 "SS user unbanned"
-    [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-      || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-    echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
-    SS_APPLIED=$(grep -c '"msg":"state applied"' "$LOG/agent.log")
-    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
-      || { echo "FAIL: rotate SS user credentials"; exit 1; }
-    for _ in $(seq 1 30); do
-      [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] && break; sleep 0.5
-    done
-    [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] || { echo "FAIL: agent did not apply the rotated SS credential"; exit 1; }
-    if [ "$SS_PROTO" -ge 8 ]; then
-      [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-        || { echo "FAIL: SS rotation was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-      echo "shadowsocks: rotation applied as a delta (agent protocol $SS_PROTO, native removal)"
-    else
-      [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS rotation on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
-      echo "shadowsocks: rotation is a Snapshot (agent protocol $SS_PROTO < 8)"
-    fi
+      || { echo "FAIL: SS rotation was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+    echo "shadowsocks: rotation applied as a delta (agent protocol $SS_PROTO, native removal)"
   else
-    [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
-    echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
-fi
+    [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS rotation on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
+    echo "shadowsocks: rotation is a Snapshot (agent protocol $SS_PROTO < 8)"
+  fi
+else
+  [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
+  echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS?confirm=true")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
 [ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound after SS"; exit 1; }
@@ -1812,29 +1767,27 @@ except OSError:
 print("ok" if got.endswith(b"w29-probe") else "blocked")
 PY
 w29_view() { code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID/block-rules" >/dev/null; }
-if need_agent cap:block-rules "W29 block rules on the agent"; then
-  for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
-  [ "$(last_json "d['in_sync'] and d['agent_supported'] and d['error'] is None")" = "True" ] \
-    || { echo "FAIL: agent did not apply the block policy"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "blocked" ] || { echo "FAIL: blocked domain reached its target"; exit 1; }
-  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" ip)" = "ok" ] || { echo "FAIL: unblocked destination failed"; exit 1; }
-  # The hit reaches the daily counters (heartbeat every 15 s).
-  for _ in $(seq 1 45); do
-    w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] && break; sleep 1
-  done
-  [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] \
-    || { echo "FAIL: block counter did not increment"; cat /tmp/akari-smoke/last; exit 1; }
-  # Changing the rule content swaps the routing live: no Snapshot, no rebuild.
-  w29_view; W29_POLICY=$(last_json "d['policy_version']")
-  [ "$(patch_code "$BASE/api/v1/block-rules/$W29_RULE" '{"pattern":"full:blocked.invalid"}')" = "204" ] || { echo "FAIL: edit block rule"; exit 1; }
-  for _ in $(seq 1 40); do
-    w29_view; [ "$(last_json "d['in_sync'] and d['policy_version'] != '$W29_POLICY'")" = "True" ] && break; sleep 1
-  done
-  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "ok" ] || { echo "FAIL: edited rule still blocks"; exit 1; }
-  [ "$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)" = "$W29_SNAPS0" ] \
-    || { echo "FAIL: block rule changes caused a Snapshot"; exit 1; }
-  echo "block rules: ok (blocked by name, counted, edited live without a rebuild)"
-fi
+for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
+[ "$(last_json "d['in_sync'] and d['agent_supported'] and d['error'] is None")" = "True" ] \
+  || { echo "FAIL: agent did not apply the block policy"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "blocked" ] || { echo "FAIL: blocked domain reached its target"; exit 1; }
+[ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" ip)" = "ok" ] || { echo "FAIL: unblocked destination failed"; exit 1; }
+# The hit reaches the daily counters (heartbeat every 15 s).
+for _ in $(seq 1 45); do
+  w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] && break; sleep 1
+done
+[ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29_RULE)")" -ge 1 ] \
+  || { echo "FAIL: block counter did not increment"; cat /tmp/akari-smoke/last; exit 1; }
+# Changing the rule content swaps the routing live: no Snapshot, no rebuild.
+w29_view; W29_POLICY=$(last_json "d['policy_version']")
+[ "$(patch_code "$BASE/api/v1/block-rules/$W29_RULE" '{"pattern":"full:blocked.invalid"}')" = "204" ] || { echo "FAIL: edit block rule"; exit 1; }
+for _ in $(seq 1 40); do
+  w29_view; [ "$(last_json "d['in_sync'] and d['policy_version'] != '$W29_POLICY'")" = "True" ] && break; sleep 1
+done
+[ "$(python3 "$LOG/w29-vless.py" "$VLESS_D" name)" = "ok" ] || { echo "FAIL: edited rule still blocks"; exit 1; }
+[ "$(grep -c '"via":"snapshot"' "$LOG/agent.log" || true)" = "$W29_SNAPS0" ] \
+  || { echo "FAIL: block rule changes caused a Snapshot"; exit 1; }
+echo "block rules: ok (blocked by name, counted, edited live without a rebuild)"
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
     -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29_RULE")" = "204" ] || { echo "FAIL: delete block rule"; exit 1; }
@@ -1932,7 +1885,6 @@ sf_updater() {
   sudo -n "$AGENT" -apply-update "$LOG/state-main" -updater-state "$SF_ROOT/state" >>"$LOG/sf-updater.log" 2>&1 \
     || { echo "FAIL: the root updater run"; tail -5 "$LOG/sf-updater.log"; exit 1; }
 }
-if need_agent cap:source-filter "W28-a relay source filter"; then
   for _ in $(seq 1 20); do [ -s "$SF_REQ" ] && break; sleep 0.5; done
   python3 - "$SF_REQ" <<'PY' || { echo "FAIL: source filter request"; cat "$SF_REQ"; exit 1; }
 import json, sys
@@ -1968,39 +1920,33 @@ PY
     [ -n "${GITHUB_ACTIONS:-}" ] && { echo "FAIL: CI runner without passwordless sudo + nft"; exit 1; }
     echo "NOTE: no passwordless sudo/nft here: the root updater's nft step is akari-agent's systemd/openrc tests"
   fi
-else
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_ID")" = "200" ] && matches -F '来源 IP 过滤' </tmp/akari-smoke/last \
-    || { echo "FAIL: node not flagged for the missing source filter"; exit 1; }
-fi
 # W29 on the relay: the block rules cover the relay's derived inbound like
 # the direct one — also with the direct entrance disabled (regression: the
 # policy listed direct entrances only, so a relay bypassed every rule).
-if need_agent cap:block-rules "W29 block rules on a relay entrance"; then
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/block-rules" -H 'Content-Type: application/json' \
-      -d '{"kind":"domain","name":"smoke-relay","pattern":"full:localhost"}')" = "201" ] \
-    || { echo "FAIL: create the relay block rule"; cat /tmp/akari-smoke/last; exit 1; }
-  W29R_RULE=$(last_json "d['id']")
-  [ "$(entrance_patch '{"enabled":false}')" = "200" ] || { echo "FAIL: disable the direct entrance"; exit 1; }
-  refused "$VLESS_D" 11443 || { echo "FAIL: the disabled direct entrance still serves"; exit 1; }
-  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
-      -d '{"enabled":true}')" = "200" ] || { echo "FAIL: block rules switch on (relay)"; exit 1; }
-  for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
-  [ "$(last_json "d['in_sync'] and d['error'] is None")" = "True" ] \
-    || { echo "FAIL: agent did not apply the relay block policy"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" name 11446)" = "blocked" ] || { echo "FAIL: blocked domain reached through the relay"; exit 1; }
-  [ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" ip 11446)" = "ok" ] || { echo "FAIL: unblocked destination failed through the relay"; exit 1; }
-  for _ in $(seq 1 45); do
-    w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] && break; sleep 1
-  done
-  [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] \
-    || { echo "FAIL: relay block not counted"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
-      -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off (relay)"; exit 1; }
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29R_RULE")" = "204" ] || { echo "FAIL: delete the relay block rule"; exit 1; }
-  [ "$(entrance_patch '{"enabled":true}')" = "200" ] || { echo "FAIL: enable the direct entrance"; exit 1; }
-  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: the direct entrance did not come back"; exit 1; }
-  echo "block rules on the relay: ok (direct disabled, blocked by name through the relay, counted)"
-fi
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/block-rules" -H 'Content-Type: application/json' \
+    -d '{"kind":"domain","name":"smoke-relay","pattern":"full:localhost"}')" = "201" ] \
+  || { echo "FAIL: create the relay block rule"; cat /tmp/akari-smoke/last; exit 1; }
+W29R_RULE=$(last_json "d['id']")
+[ "$(entrance_patch '{"enabled":false}')" = "200" ] || { echo "FAIL: disable the direct entrance"; exit 1; }
+refused "$VLESS_D" 11443 || { echo "FAIL: the disabled direct entrance still serves"; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+    -d '{"enabled":true}')" = "200" ] || { echo "FAIL: block rules switch on (relay)"; exit 1; }
+for _ in $(seq 1 40); do w29_view; [ "$(last_json "d['in_sync']")" = "True" ] && break; sleep 1; done
+[ "$(last_json "d['in_sync'] and d['error'] is None")" = "True" ] \
+  || { echo "FAIL: agent did not apply the relay block policy"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" name 11446)" = "blocked" ] || { echo "FAIL: blocked domain reached through the relay"; exit 1; }
+[ "$(python3 "$LOG/w29-vless.py" "$VLESS_DR" ip 11446)" = "ok" ] || { echo "FAIL: unblocked destination failed through the relay"; exit 1; }
+for _ in $(seq 1 45); do
+  w29_view; [ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] && break; sleep 1
+done
+[ "$(last_json "sum(x['hits'] for x in d['days'] if x['rule_id'] == $W29R_RULE)")" -ge 1 ] \
+  || { echo "FAIL: relay block not counted"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/nodes/$NODE_ID/block-rules" -H 'Content-Type: application/json' \
+    -d '{"enabled":false}')" = "200" ] || { echo "FAIL: block rules switch off (relay)"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/block-rules/$W29R_RULE")" = "204" ] || { echo "FAIL: delete the relay block rule"; exit 1; }
+[ "$(entrance_patch '{"enabled":true}')" = "200" ] || { echo "FAIL: enable the direct entrance"; exit 1; }
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: the direct entrance did not come back"; exit 1; }
+echo "block rules on the relay: ok (direct disabled, blocked by name through the relay, counted)"
 # Health: the panel TCP-tests the relay's address; an unreachable relay is
 # hidden from the subscription after 3 failures and the node's
 # entrance_down alert fires; once it answers again both come back.
@@ -2058,44 +2004,42 @@ echo "relay entrance: ok (relay raw $RELAY_RAW billed at 2x, removal isolated)"
 echo "== Q1: a second node on the same server (one agent, two inbounds) =="
 # Agents before protocol 7 key a second node's users like relays (limits
 # per entrance): the panel serves them, the section needs protocol 7.
-if need_agent "protocol>=7" "Q1 two nodes on one server"; then
-  Q1_IB='{"listen":"127.0.0.1","port":11447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
-      -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$GOOD_IB}")" = "400" ] \
-    && [ "$(last_json "d['code']")" = "entrance.port_clash" ] || { echo "FAIL: a second node on the first node's port"; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
-      -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$Q1_IB}")" = "201" ] \
-    || { echo "FAIL: second node on the server"; cat /tmp/akari-smoke/last; exit 1; }
-  NODE_B=$(last_json "d['id']")
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_B")" = "200" ] || { echo "FAIL: GET node B"; exit 1; }
-  DIRECT_B=$(last_json "[e['id'] for e in d['entrances'] if e['kind'] == 'direct'][0]")
-  [ "$(last_json "[e['wire_no'] for e in d['entrances']]")" != "[0]" ] || { echo "FAIL: node B reuses entrance number 0"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
-    && [ "$(last_json "sorted(n['name'] for n in d['nodes'])")" = "['test-node', 'test-node-b']" ] \
-    || { echo "FAIL: the server does not list both nodes"; cat /tmp/akari-smoke/last; exit 1; }
-  # Admin redesign: each node carries its inbound's transport and security (null = xray defaults).
-  [ "$(last_json "all('transport' in n and 'security' in n for n in d['nodes'])")" = "True" ] \
-    || { echo "FAIL: server nodes lack transport/security"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/entrances/$DIRECT_B" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] \
-    || { echo "FAIL: node B joins the access group"; exit 1; }
-  VLESS_DB=$(psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$USER_D' AND entrance_id='$DIRECT_B'")
-  [ -n "$VLESS_DB" ] && [ "$VLESS_DB" != "$VLESS_D" ] || { echo "FAIL: no own credential for D on node B"; exit 1; }
-  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && break; sleep 0.5; done
-  python3 "$LOG/w28-vless.py" "$VLESS_DB" 11447 || { echo "FAIL: vless round trip on node B"; tail -5 "$LOG/agent.log"; exit 1; }
-  python3 "$LOG/w28-vless.py" "$VLESS_D" 11447 3 >/dev/null 2>&1 && { echo "FAIL: node A's credential works on node B"; exit 1; }
-  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped working"; exit 1; }
-  for _ in $(seq 1 30); do [ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] && break; sleep 1; done
-  [ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] \
-    && [ "$(psql_q "SELECT string_agg(DISTINCT server_id::text, ',') FROM traffic_counters WHERE entrance_id='$DIRECT_B'")" = "$SERVER_ID" ] \
-    || { echo "FAIL: node B's traffic not billed to node B under its server"; exit 1; }
-  # Deleting the node keeps the server (and node A) running.
-  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_B")" = "204" ] || { echo "FAIL: delete node B"; exit 1; }
-  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null || break; sleep 0.5; done
-  (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && { echo "FAIL: node B's inbound still listening"; exit 1; }
-  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped after node B's deletion"; exit 1; }
-  [ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SERVER_ID' AND deleting_at IS NULL")" = "1" ] || { echo "FAIL: the server went with its node"; exit 1; }
-  echo "q1 two nodes on one server: ok"
-fi
+Q1_IB='{"listen":"127.0.0.1","port":11447,"protocol":"vless","settings":{"clients":[],"decryption":"none"},"streamSettings":{"network":"tcp"}}'
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$GOOD_IB}")" = "400" ] \
+  && [ "$(last_json "d['code']")" = "entrance.port_clash" ] || { echo "FAIL: a second node on the first node's port"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/nodes" -H 'Content-Type: application/json' \
+    -d "{\"server_id\":\"$SERVER_ID\",\"name\":\"test-node-b\",\"inbound\":$Q1_IB}")" = "201" ] \
+  || { echo "FAIL: second node on the server"; cat /tmp/akari-smoke/last; exit 1; }
+NODE_B=$(last_json "d['id']")
+[ "$(code -b "$JAR" "$BASE/api/v1/nodes/$NODE_B")" = "200" ] || { echo "FAIL: GET node B"; exit 1; }
+DIRECT_B=$(last_json "[e['id'] for e in d['entrances'] if e['kind'] == 'direct'][0]")
+[ "$(last_json "[e['wire_no'] for e in d['entrances']]")" != "[0]" ] || { echo "FAIL: node B reuses entrance number 0"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] \
+  && [ "$(last_json "sorted(n['name'] for n in d['nodes'])")" = "['test-node', 'test-node-b']" ] \
+  || { echo "FAIL: the server does not list both nodes"; cat /tmp/akari-smoke/last; exit 1; }
+# Admin redesign: each node carries its inbound's transport and security (null = xray defaults).
+[ "$(last_json "all('transport' in n and 'security' in n for n in d['nodes'])")" = "True" ] \
+  || { echo "FAIL: server nodes lack transport/security"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(patch_code "$BASE/api/v1/entrances/$DIRECT_B" "{\"group_ids\":[\"$ACCESS_GROUP\"]}")" = "200" ] \
+  || { echo "FAIL: node B joins the access group"; exit 1; }
+VLESS_DB=$(psql_q "SELECT account->>'id' FROM entrance_users WHERE user_id='$USER_D' AND entrance_id='$DIRECT_B'")
+[ -n "$VLESS_DB" ] && [ "$VLESS_DB" != "$VLESS_D" ] || { echo "FAIL: no own credential for D on node B"; exit 1; }
+for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && break; sleep 0.5; done
+python3 "$LOG/w28-vless.py" "$VLESS_DB" 11447 || { echo "FAIL: vless round trip on node B"; tail -5 "$LOG/agent.log"; exit 1; }
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11447 3 >/dev/null 2>&1 && { echo "FAIL: node A's credential works on node B"; exit 1; }
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped working"; exit 1; }
+for _ in $(seq 1 30); do [ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] && break; sleep 1; done
+[ "$(psql_q "SELECT traffic_raw_bytes FROM nodes WHERE id='$NODE_B'")" -ge 200000 ] \
+  && [ "$(psql_q "SELECT string_agg(DISTINCT server_id::text, ',') FROM traffic_counters WHERE entrance_id='$DIRECT_B'")" = "$SERVER_ID" ] \
+  || { echo "FAIL: node B's traffic not billed to node B under its server"; exit 1; }
+# Deleting the node keeps the server (and node A) running.
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/nodes/$NODE_B")" = "204" ] || { echo "FAIL: delete node B"; exit 1; }
+for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null || break; sleep 0.5; done
+(exec 3<>/dev/tcp/127.0.0.1/11447) 2>/dev/null && { echo "FAIL: node B's inbound still listening"; exit 1; }
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: node A stopped after node B's deletion"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM servers WHERE id='$SERVER_ID' AND deleting_at IS NULL")" = "1" ] || { echo "FAIL: the server went with its node"; exit 1; }
+echo "q1 two nodes on one server: ok"
 
 echo "== D9: time-window multipliers =="
 RULES='{"rules":[{"weekdays":[1,2,3,4,5,6,7],"start":"00:00","end":"24:00","rate":3},{"weekdays":[1],"start":"08:00","end":"09:00","rate":1.5}]}'
@@ -2114,97 +2058,89 @@ curl -s --noproxy '*' -A 'clash.meta' "$SUBBASE/$SUB_D" | matches '3\.0x' && { e
 echo "d9 time-window multipliers: ok"
 
 echo "== D5: server traffic quota from the network interface =="
-if need_agent cap:metrics "D5 server traffic quota"; then
-  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":0}')" = "400" ] \
-    && [ "$(last_json "d['code']")" = "server.quota_invalid" ] || { echo "FAIL: zero quota accepted"; exit 1; }
-  # 1 byte, both directions, monthly on the 1st: the next heartbeats use it up.
-  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":1,"traffic_quota_mode":"both","traffic_quota_reset_day":1}')" = "200" ] \
-    && [ "$(last_json "d['traffic_quota']['bytes'], d['traffic_quota']['reset_day']")" = "1 1" ] \
-    || { echo "FAIL: set the quota"; cat /tmp/akari-smoke/last; exit 1; }
-  # Some bytes on the default-route interface (an idle runner may move none).
-  for _ in $(seq 1 90); do
-    [ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL FROM servers WHERE id='$SERVER_ID'")" = "t" ] && break
-    curl -s -m 3 -o /dev/null https://github.com/ 2>/dev/null || true
-    sleep 1
-  done
-  [ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL AND traffic_quota_rx_bytes + traffic_quota_tx_bytes > 0 FROM servers WHERE id='$SERVER_ID'")" = "t" ] \
-    || { echo "FAIL: quota never ran out: $(psql_q "SELECT nic_name, nic_rx_last, traffic_quota_rx_bytes FROM servers WHERE id='$SERVER_ID'")"; exit 1; }
-  # Every node of the server stops (the empty state); enabled stays as it was.
-  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null || break; sleep 0.5; done
-  (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && { echo "FAIL: the inbound still listens over the quota"; exit 1; }
-  [ "$(psql_q "SELECT enabled FROM nodes WHERE id='$NODE_ID'")" = "t" ] || { echo "FAIL: the quota touched nodes.enabled"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] && matches -F '流量额度已用完' </tmp/akari-smoke/last \
-    || { echo "FAIL: no quota warning on the server"; exit 1; }
-  for _ in $(seq 1 45); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] && break; sleep 1; done
-  [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] \
-    || { echo "FAIL: no traffic_quota alert"; exit 1; }
-  # Removing the quota restores at once.
-  [ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":null,"traffic_quota_reset_day":null}')" = "200" ] || { echo "FAIL: remove the quota"; exit 1; }
-  for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && break; sleep 0.5; done
-  python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: not restored after the quota was removed"; exit 1; }
-  [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='server.update' AND target_id='$SERVER_ID'")" -ge 2 ] || { echo "FAIL: quota changes not audited"; exit 1; }
-  echo "d5 server traffic quota: ok"
-fi
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":0}')" = "400" ] \
+  && [ "$(last_json "d['code']")" = "server.quota_invalid" ] || { echo "FAIL: zero quota accepted"; exit 1; }
+# 1 byte, both directions, monthly on the 1st: the next heartbeats use it up.
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":1,"traffic_quota_mode":"both","traffic_quota_reset_day":1}')" = "200" ] \
+  && [ "$(last_json "d['traffic_quota']['bytes'], d['traffic_quota']['reset_day']")" = "1 1" ] \
+  || { echo "FAIL: set the quota"; cat /tmp/akari-smoke/last; exit 1; }
+# Some bytes on the default-route interface (an idle runner may move none).
+for _ in $(seq 1 90); do
+  [ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL FROM servers WHERE id='$SERVER_ID'")" = "t" ] && break
+  curl -s -m 3 -o /dev/null https://github.com/ 2>/dev/null || true
+  sleep 1
+done
+[ "$(psql_q "SELECT traffic_quota_exceeded_at IS NOT NULL AND traffic_quota_rx_bytes + traffic_quota_tx_bytes > 0 FROM servers WHERE id='$SERVER_ID'")" = "t" ] \
+  || { echo "FAIL: quota never ran out: $(psql_q "SELECT nic_name, nic_rx_last, traffic_quota_rx_bytes FROM servers WHERE id='$SERVER_ID'")"; exit 1; }
+# Every node of the server stops (the empty state); enabled stays as it was.
+for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null || break; sleep 0.5; done
+(exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && { echo "FAIL: the inbound still listens over the quota"; exit 1; }
+[ "$(psql_q "SELECT enabled FROM nodes WHERE id='$NODE_ID'")" = "t" ] || { echo "FAIL: the quota touched nodes.enabled"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID")" = "200" ] && matches -F '流量额度已用完' </tmp/akari-smoke/last \
+  || { echo "FAIL: no quota warning on the server"; exit 1; }
+for _ in $(seq 1 45); do [ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] && break; sleep 1; done
+[ "$(psql_q "SELECT count(*) FROM server_alerts WHERE server_id='$SERVER_ID' AND kind='traffic_quota' AND status='firing'")" = "1" ] \
+  || { echo "FAIL: no traffic_quota alert"; exit 1; }
+# Removing the quota restores at once.
+[ "$(patch_code "$BASE/api/v1/servers/$SERVER_ID" '{"traffic_quota_bytes":null,"traffic_quota_reset_day":null}')" = "200" ] || { echo "FAIL: remove the quota"; exit 1; }
+for _ in $(seq 1 20); do (exec 3<>/dev/tcp/127.0.0.1/11443) 2>/dev/null && break; sleep 0.5; done
+python3 "$LOG/w28-vless.py" "$VLESS_D" 11443 || { echo "FAIL: not restored after the quota was removed"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='server.update' AND target_id='$SERVER_ID'")" -ge 2 ] || { echo "FAIL: quota changes not audited"; exit 1; }
+echo "d5 server traffic quota: ok"
 
-if need_agent cap:metrics "W11 machine status"; then
-  # Machine status: the heartbeat blob carries metrics; history and
-  # Prometheus fleet gauges follow.
-  for _ in $(seq 1 30); do
-    vk get "akari:server:hb:$SERVER_ID" | matches '"online_users"' && break; sleep 1
-  done
-  vk get "akari:server:hb:$SERVER_ID" | matches '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:server:hb:$SERVER_ID"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
-  python3 -c "
+# Machine status: the heartbeat blob carries metrics; history and
+# Prometheus fleet gauges follow.
+for _ in $(seq 1 30); do
+  vk get "akari:server:hb:$SERVER_ID" | matches '"online_users"' && break; sleep 1
+done
+vk get "akari:server:hb:$SERVER_ID" | matches '"xray_version"' || { echo "FAIL: heartbeat lacks machine status"; vk get "akari:server:hb:$SERVER_ID"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status")" = "200" ] || { echo "FAIL: node status API"; exit 1; }
+python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); m = v['heartbeat']['metrics']
 assert v['online'] is True and v['heartbeat']['mem_total_bytes'] > 0, v
 assert m['cpu_count'] >= 1 and m['disk_total_bytes'] > 0 and m['xray_version'], m
 " || { echo "FAIL: node status content"; cat /tmp/akari-smoke/last; exit 1; }
-  for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM server_metrics_1m WHERE server_id='$SERVER_ID'")" -ge 1 ] && break; sleep 1; done
-  [ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
-  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
-    || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
-  # (to a file: `curl | matches` fails under pipefail when grep exits first)
-  curl -s --noproxy '*' http://127.0.0.1:9109/metrics >"$LOG/w11-metrics.txt"
-  grep -q '^akari_fleet{kind="nodes_reporting"} 1$' "$LOG/w11-metrics.txt" \
-    || { echo "FAIL: fleet gauge"; grep akari_fleet "$LOG/w11-metrics.txt"; exit 1; }
-  echo "machine status: ok"
-fi
-if need_agent cap:metrics-presence "W23 metrics presence (every value read, none unknown)"; then
-  # An unsandboxed agent reads everything: no value is null (unknown), and
-  # the first heartbeat's rates are the only ones that may be missing.
-  for _ in $(seq 1 30); do
-    code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status" >/dev/null
-    python3 -c "import json,sys; m=json.load(open('/tmp/akari-smoke/last'))['heartbeat']['metrics']; sys.exit(m['net_rx_bytes_per_sec'] is None)" 2>/dev/null && break
-    sleep 1
-  done
-  python3 -c "
+for _ in $(seq 1 15); do [ "$(psql_q "SELECT count(*) FROM server_metrics_1m WHERE server_id='$SERVER_ID'")" -ge 1 ] && break; sleep 1; done
+[ "$(code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/metrics?range=1h")" = "200" ] || { echo "FAIL: metrics API"; exit 1; }
+python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v['points'] and v['points'][0]['mem_total'] > 0, v" \
+  || { echo "FAIL: no metrics history"; cat /tmp/akari-smoke/last; exit 1; }
+# (to a file: `curl | matches` fails under pipefail when grep exits first)
+curl -s --noproxy '*' http://127.0.0.1:9109/metrics >"$LOG/w11-metrics.txt"
+grep -q '^akari_fleet{kind="nodes_reporting"} 1$' "$LOG/w11-metrics.txt" \
+  || { echo "FAIL: fleet gauge"; grep akari_fleet "$LOG/w11-metrics.txt"; exit 1; }
+echo "machine status: ok"
+# An unsandboxed agent reads everything: no value is null (unknown), and
+# the first heartbeat's rates are the only ones that may be missing.
+for _ in $(seq 1 30); do
+  code -b "$JAR" "$BASE/api/v1/servers/$SERVER_ID/status" >/dev/null
+  python3 -c "import json,sys; m=json.load(open('/tmp/akari-smoke/last'))['heartbeat']['metrics']; sys.exit(m['net_rx_bytes_per_sec'] is None)" 2>/dev/null && break
+  sleep 1
+done
+python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); hb = v['heartbeat']; m = hb['metrics']
 nulls = [k for k in ('cpu_percent', 'mem_used_bytes', 'mem_total_bytes') if hb[k] is None]
 nulls += [k for k, x in m.items() if x is None]
 assert not nulls, nulls
 " || { echo "FAIL: W23 unknown machine metrics from an unsandboxed agent"; cat /tmp/akari-smoke/last; exit 1; }
-  echo "metrics presence: ok"
-fi
-if need_agent cap:latency "W11 latency test"; then
-  # Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
-  # panel TCP-tests the inbound's connect address; a second request inside
-  # the cooldown is refused.
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] || { echo "FAIL: probe request"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
-  for _ in $(seq 1 40); do
-    [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
-      && [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND target='test-node / 直连' AND delay_ms IS NOT NULL")" = "1" ] && break
-    sleep 1
-  done
-  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
-    || { echo "FAIL: no agent latency result"; psql_q "SELECT * FROM server_latency"; grep latency "$LOG/agent.log" | tail -3; exit 1; }
-  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
-    || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM server_latency"; exit 1; }
-  code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
-  python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1 and v[0]['probe_ms'] is not None, v" \
-    || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
-  echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM server_latency WHERE server_id='$SERVER_ID' ORDER BY source" | tr '\n' ';'))"
-fi
+echo "metrics presence: ok"
+# Latency: "立即测速" -> the agent tests the (local) URL from [probe], the
+# panel TCP-tests the inbound's connect address; a second request inside
+# the cooldown is refused.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] || { echo "FAIL: probe request"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "429" ] || { echo "FAIL: probe cooldown"; exit 1; }
+for _ in $(seq 1 40); do
+  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204' AND measured_at > now() - interval '1 minute'")" = "1" ] \
+    && [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND target='test-node / 直连' AND delay_ms IS NOT NULL")" = "1" ] && break
+  sleep 1
+done
+[ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL")" -ge 1 ] \
+  || { echo "FAIL: no agent latency result"; psql_q "SELECT * FROM server_latency"; grep latency "$LOG/agent.log" | tail -3; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='panel' AND delay_ms IS NOT NULL")" -ge 1 ] \
+  || { echo "FAIL: no panel TCP latency"; psql_q "SELECT * FROM server_latency"; exit 1; }
+code -b "$DJAR" "$BASE/api/v1/me/nodes" >/dev/null
+python3 -c "import json; v = json.load(open('/tmp/akari-smoke/last')); assert v[0]['latency_status'] == 'ok' and v[0]['latency_ms'] >= 1 and v[0]['probe_ms'] is not None, v" \
+  || { echo "FAIL: portal latency"; cat /tmp/akari-smoke/last; exit 1; }
+echo "latency: ok ($(psql_q "SELECT source || ' ' || target || ' ' || delay_ms || 'ms' FROM server_latency WHERE server_id='$SERVER_ID' ORDER BY source" | tr '\n' ';'))"
 echo "-- W12: latency-test settings in 系统设置 (versioned, audited, reloaded on every instance) --"
 put_probe() { code -b "$JAR" -X PUT "$BASE/api/v1/settings/probe" -H 'Content-Type: application/json' -d "$1"; }
 [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
@@ -2228,24 +2164,22 @@ assert p['panel_tcp']['source'] == 'settings', p
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.probe.update' AND after->>'probe_interval_secs' = '1200'")" = "1" ] \
   || { echo "FAIL: probe settings not audited"; exit 1; }
 echo "probe settings: ok (version $SV -> $((SV + 1)))"
-if need_agent cap:latency "W12 probe settings reach the agent"; then
-  # W12: the URL saved in 系统设置 reached the connected agent (notify ->
-  # reload -> session re-sends LatencyProbeConfig): the next "立即测速"
-  # tests it. Wait out the agent's 10 s gap after its last run first: a
-  # request inside it is coalesced, and agents before the W12 fix lose a
-  # coalesced request when the interval changes at the same time.
-  sleep 11
-  for _ in $(seq 1 20); do
-    [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] && break; sleep 1
-  done
-  for _ in $(seq 1 30); do
-    [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] && break
-    sleep 1
-  done
-  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] \
-    || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM server_latency WHERE source='agent'"; exit 1; }
-  echo "probe settings reached the agent: ok"
-fi
+# W12: the URL saved in 系统设置 reached the connected agent (notify ->
+# reload -> session re-sends LatencyProbeConfig): the next "立即测速"
+# tests it. Wait out the agent's 10 s gap after its last run first: a
+# request inside it is coalesced, and agents before the W12 fix lose a
+# coalesced request when the interval changes at the same time.
+sleep 11
+for _ in $(seq 1 20); do
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/servers/$SERVER_ID/probe")" = "202" ] && break; sleep 1
+done
+for _ in $(seq 1 30); do
+  [ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND delay_ms IS NOT NULL AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] && break
+  sleep 1
+done
+[ "$(psql_q "SELECT count(*) FROM server_latency WHERE server_id='$SERVER_ID' AND source='agent' AND target='http://127.0.0.1:18204/generate_204?via=settings'")" = "1" ] \
+  || { echo "FAIL: the agent did not test the URL from 系统设置"; psql_q "SELECT * FROM server_latency WHERE source='agent'"; exit 1; }
+echo "probe settings reached the agent: ok"
 # Back to the built-in defaults through the CLI (audited as cli; the
 # running panel reloads through the notification).
 "$PANEL" settings unset probe >"$LOG/unset-probe.out" || { echo "FAIL: settings unset probe"; cat "$LOG/unset-probe.out"; exit 1; }
@@ -3359,26 +3293,16 @@ wait_uv() { # wait until the agent applied the node's current user_version; $1 =
   grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | matches "\"via\":\"$1\".*\"user_version\":${uv}[,}]" \
     || { echo "FAIL: agent did not apply user_version $uv via $1"; grep 'state applied' "$LOG/agent.log" | tail -3; exit 1; }
 }
-if need_agent "protocol>=4" "W7 speed limit throughput"; then
-  FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
-  wait_uv delta
-  SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
-  wait_uv delta
-  AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
-  echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
-  python3 -c "f,s,a=$FAST,$SLOW,$AGAIN; assert f < 1.5 and 2.0 <= s <= 15 and a < 1.5, (f,s,a)" \
-    || { echo "FAIL: speed limit not enforced as expected"; exit 1; }
-else
-  # An agent older than protocol 4 (the panel CI runs agent main until the
-  # agent PR lands) ignores the field: the node must say so.
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
-  [ "$(code -b "$JAR" "$BASE/api/v1/nodes")" = "200" ] && grep -q "不支持限速" /tmp/akari-smoke/last \
-    || { echo "FAIL: no warning for an agent that cannot enforce speed limits"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
-  echo "speed limit: NodeView warning for the protocol $AGENT_PROTO agent present (throughput check skipped above)"
-fi
+FAST=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: unlimited transfer"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": 1, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: set speed limit"; exit 1; }
+wait_uv delta
+SLOW=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: limited transfer"; exit 1; }
+[ "$(patch_code "$BASE/api/v1/plans/$PAID_PLAN" '{"speed_limit_mbps": null, "apply_to_existing": true}')" = "200" ] || { echo "FAIL: clear speed limit"; exit 1; }
+wait_uv delta
+AGAIN=$(python3 "$LOG/vless_rate.py" "$BUYER_VLESS" 400000) || { echo "FAIL: transfer after clearing the limit"; exit 1; }
+echo "speed limit: unlimited ${FAST}s, 1 Mbps ${SLOW}s (>= ~2.7s expected), cleared ${AGAIN}s for 400 kB each way"
+python3 -c "f,s,a=$FAST,$SLOW,$AGAIN; assert f < 1.5 and 2.0 <= s <= 15 and a < 1.5, (f,s,a)" \
+  || { echo "FAIL: speed limit not enforced as expected"; exit 1; }
 # Admin views and audit.
 [ "$(code -b "$JAR" "$BASE/api/v1/orders?email=$BUYER_MAIL")" = "200" ] || { echo "FAIL: admin orders"; exit 1; }
 [ "$(last_json "len(d)")" = "3" ] || { echo "FAIL: admin order list"; exit 1; }
@@ -3534,16 +3458,14 @@ echo "r18-3 payments: ok"
 echo "== W8 protocol matrix: every template -> agent -> three subscription formats -> real clients =="
 # The agent's W8 matrix (SS2022, Hysteria 2, XHTTP, HTTPUpgrade, gRPC) came
 # before protocol 4 bumped; protocol >= 4 implies it.
-if need_agent "protocol>=4" "W8 protocol matrix"; then
-  # shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
-  BASE="$BASE" SUB_PATH="$SUBP" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
-    python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
-fi
+# shellcheck disable=SC2097,SC2098 # $LOG is the same value on both sides
+BASE="$BASE" SUB_PATH="$SUBP" JAR="$JAR" NODE_ID="$NODE_ID" ACCESS_PLAN="$ACCESS_PLAN" VALKEY_DB="$SMOKE_VALKEY_DB" LOG="$LOG" AGENT_LOG="$LOG/agent.log" \
+  python3 scripts/smoke-protocols.py || { echo "FAIL: W8 protocol matrix"; tail -20 "$LOG/agent.log"; exit 1; }
 
 echo "== W10: automatic node certificate (pebble ACME CA in docker) -> agent -> verified clients =="
 if [ "${SMOKE_ACME:-1}" != 1 ]; then
   echo "W10 ACME test skipped (SMOKE_ACME=0)"
-elif need_agent "protocol>=6" "W10 automatic node certificate"; then
+else
   # pebble validates HTTP-01 on 5002 / TLS-ALPN-01 on 5001 of whatever its
   # DNS (challtestsrv: every name -> 127.0.0.1) says; its own challenge
   # servers and DoH (:8443 = the panel's gRPC port) are off.
@@ -4263,8 +4185,7 @@ upd_rel_store() {
   [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/agent-releases/$REL0/binary" --data-binary @"$UPD/agent-v900.0.0")" = "409" ] \
     || { echo "FAIL: second upload not 409"; exit 1; }
 }
-if need_agent "cap:updater" "M6 self-update through the updater unit (systemd container)" \
-   && { [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "M6 container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; }; then
+if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "M6 container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; then
   # Only v900.0.0 is published while the node is installed (the installer
   # serves the newest complete release).
   upd_rel_store
@@ -4339,32 +4260,28 @@ assert n['update_status']['status']=='healthy' and n['agent_version']=='v900.0.1
 assert 'updater' in n['agent_capabilities'] and not any('重装命令' in w for w in n['warnings']), n" \
     || { echo "FAIL: node view update status"; exit 1; }
   echo "update to v900.0.1 (updater unit): ok"
-  if need_agent cap:metrics-presence "W23 units from the release + machine metrics under the shipped unit"; then
-    # The installer took the units from the release (-print-unit), the
-    # update kept them in step, and under them every machine metric is
-    # read (the pre-W23 ProcSubset=pid hid /proc: all 0).
-    for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
-      udx "/usr/local/bin/akari-agent -print-unit $u | cmp -s - /etc/systemd/system/$u" \
-        || { echo "FAIL: $u on the node is not the release's"; exit 1; }
-    done
-    grep -q "this agent release does not carry its systemd units" "$LOG/upd-install.out" \
-      && { echo "FAIL: installer fell back to its own unit copies"; exit 1; }
-    upd_hb() {
-      code -b "$JAR" "$BASE/api/v1/servers/$UPD_SRV/status" >/dev/null
-      python3 -c "
+  # The installer took the units from the release (-print-unit), the
+  # update kept them in step, and under them every machine metric is
+  # read (the pre-W23 ProcSubset=pid hid /proc: all 0).
+  for u in akari-agent.service akari-agent-update.service akari-agent-update.path; do
+    udx "/usr/local/bin/akari-agent -print-unit $u | cmp -s - /etc/systemd/system/$u" \
+      || { echo "FAIL: $u on the node is not the release's"; exit 1; }
+  done
+  upd_hb() {
+    code -b "$JAR" "$BASE/api/v1/servers/$UPD_SRV/status" >/dev/null
+    python3 -c "
 import json; v = json.load(open('/tmp/akari-smoke/last')); hb = v['heartbeat'] or {}; m = hb.get('metrics') or {}
 nulls = [k for k in ('cpu_percent', 'mem_total_bytes') if hb.get(k) is None]
 nulls += [k for k in ('load1', 'cpu_count', 'swap_total_bytes', 'disk_total_bytes', 'net_rx_bytes_total',
-                      'net_rx_bytes_per_sec', 'tcp_sockets', 'process_rss_bytes') if m.get(k) is None]
+                    'net_rx_bytes_per_sec', 'tcp_sockets', 'process_rss_bytes') if m.get(k) is None]
 assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, hb)
 "
-    }
-    for _ in $(seq 1 60); do upd_hb 2>/dev/null && break; sleep 1; done
-    upd_hb || { echo "FAIL: machine metrics unknown under the shipped unit"; cat /tmp/akari-smoke/last; exit 1; }
-    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
-      || { echo "FAIL: fresh install reports stale units"; exit 1; }
-    echo "w23 units + machine metrics on a systemd node: ok"
-  fi
+  }
+  for _ in $(seq 1 60); do upd_hb 2>/dev/null && break; sleep 1; done
+  upd_hb || { echo "FAIL: machine metrics unknown under the shipped unit"; cat /tmp/akari-smoke/last; exit 1; }
+  [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
+    || { echo "FAIL: fresh install reports stale units"; exit 1; }
+  echo "w23 units + machine metrics on a systemd node: ok"
 
   # Broken vN+2: the binary dies on start; the updater sees the restarts,
   # puts v900.0.1 back; the agent reports ROLLED_BACK; the rollout halts.
@@ -4395,17 +4312,6 @@ assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, h
   for a in agent_release.create agent_release.upload rollout.create rollout.complete rollout.abort; do
     [ "$(psql_q "SELECT count(*) > 0 FROM audit_log WHERE action='$a'")" = "t" ] || { echo "FAIL: $a not audited"; exit 1; }
   done
-  # W23: a hand-edited unit is reported (capability "stale-units" -> the
-  # node view asks for the install command).
-  if agent_has cap:metrics-presence; then
-    udx "printf '# local edit\n' >>/etc/systemd/system/akari-agent.service && systemctl daemon-reload && systemctl restart akari-agent"
-    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "t" ] && break; sleep 1; done
-    code -b "$JAR" "$BASE/api/v1/nodes" >/dev/null
-    python3 -c "
-import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
-assert 'stale-units' in n['agent_capabilities'] and any('systemd 单元' in w and '重装命令' in w for w in n['warnings']), n['warnings']" \
-      || { echo "FAIL: stale units not reported"; exit 1; }
-  fi
   # W23: the reinstall (重装命令) supersedes the aborted rollout's failure:
   # the node view shows it as history. The installer serves the newest
   # release: drop the broken one first.
@@ -4430,11 +4336,6 @@ assert n['update_status']['rollout_status']=='aborted' and n['update_status']['s
 import json; n=[x for x in json.load(open('/tmp/akari-smoke/last')) if x['id']=='$UPD_ID'][0]
 assert n['update_status']['superseded'] is True, n['update_status']" \
     || { echo "FAIL: aborted rollout not superseded by the reinstall"; exit 1; }
-  if agent_has cap:metrics-presence; then
-    for _ in $(seq 1 30); do [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] && break; sleep 1; done
-    [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
-      || { echo "FAIL: reinstall did not replace the edited unit"; exit 1; }
-  fi
   echo "w23 reinstall: update status superseded, units current, uninstall hint: ok"
   # Uninstall removes the updater as well.
   udx 'akari-agent-uninstall --yes' >>"$LOG/upd-install.out" 2>&1 || { echo "FAIL: uninstall (update node)"; exit 1; }
@@ -4629,8 +4530,7 @@ echo "== W32 Alpine node: one-line installer under OpenRC, BBR + fq, reinstall w
 # The same installer on Alpine: OpenRC scripts from the release
 # (-print-unit), a system user, the state directory noexec, the updater
 # service; the self-update path under OpenRC is akari-agent's openrc-test.
-if need_agent "unit:akari-agent" "W32 Alpine install (OpenRC)" \
-   && { [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "Alpine container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; }; then
+if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "Alpine container test skipped (SMOKE_INSTALL_CONTAINER=0)"; false; }; then
   ALP_PORT=26443
   # The sections above used up most of this address's install-link budget
   # (20 requests / 10 min per source, Valkey): start this node afresh.
