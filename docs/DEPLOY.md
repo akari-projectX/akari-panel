@@ -124,6 +124,8 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 **Supply chain（供应链）。** 安装器下载该发布版本的 `SHA256SUMS` 及其 Sigstore bundle，用 **cosign** 对照本仓库在该 tag 下的发布工作流验证
 （`…/.github/workflows/release.yml@refs/tags/vX.Y.Z`，issuer 为 GitHub Actions；cosign 本身按脚本中固定的 SHA-256 下载），
 再用这些校验和检查它用到的每个文件：二进制、镜像引用（`akari-panel-image.txt`，Docker 据此按 digest 拉取）、部署包（`akari-deploy.tar.gz`）。
+安装器下载的每个文件都落在这三类校验之一：cosign 验证过的 `SHA256SUMS`、脚本内固定的 SHA-256（cosign、Valkey、Caddy）、固定指纹的 apt 密钥；没有任何「备用下载」。管道方式的安装器在非 root 时不会为了 `sudo` 再下载自己，而是要求 `curl … | sudo sh`。
+部署包里的 compose 文件和仓库里的 Dockerfile、compose、CI 用到的镜像都按 digest 固定（`name:tag@sha256:…`，`scripts/check-image-pins.sh` 在 CI 里检查，Dependabot 每月更新）。
 PGDG 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu 自带版本 < 9（Debian 13：8.1；Ubuntu 24.04：7.2），
 而 Valkey 没有 apt 仓库，所以安装器使用上游发布构建（`download.valkey.io`；Debian 12/Ubuntu 22.04 用 `jammy` 构建，Debian 13/Ubuntu 24.04 用 `noble` 构建），
 版本与 SHA-256 在脚本中固定，安装到 `/opt/akari-valkey`，以 `DynamicUser` 运行，配置作为 systemd credential 传入。
