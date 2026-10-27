@@ -232,9 +232,10 @@ ft=$(docker exec "$ca" sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' /tm
 guard=""
 [ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
 sleep 3
-[ "$(http "$ca" "http://$ipa:8080/$P/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
+[ "$(http "$ca" "http://$ipa:8080/$P/auth/login" -D /tmp/hdr -X POST -H 'Content-Type: application/json' \
 	-d "{\"email\":\"admin@akari.invalid\",\"password\":\"$pw\"$guard}")" = 200 ] || fail "login on A"
-cookie=$(docker exec "$ca" awk '!/^$/ { sub(/^#HttpOnly_/, ""); if ($0 !~ /^#/) printf "%s=%s; ", $6, $7 }' /tmp/jar)
+# curl refuses a Secure cookie over plain HTTP: take it from the header.
+cookie=$(docker exec "$ca" sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p' /tmp/hdr | tr '\n' ';')
 [ -n "$cookie" ] || fail "no session cookie"
 [ "$(http "$ca" "http://$ipa:8080/$P/api/v1/users" -H "Cookie: $cookie")" = 200 ] || fail "the session does not work on A"
 [ "$(http "$ca" "http://$ipb:8080/$P/api/v1/users" -H "Cookie: $cookie")" = 200 ] || fail "the session of A does not work on B"
