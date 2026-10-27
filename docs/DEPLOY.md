@@ -839,15 +839,17 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 
 **重新生成订阅令牌** 会立即使旧链接失效（用户也可以在门户里这样做）。
 
-### 订阅格式、客户端与分流规则（W30，中文）
+### 订阅格式、客户端与订阅模板（W30，中文）
 
-**按客户端自动选择格式**（User-Agent；链接加 `?format=clash|sing-box|links` 可强制指定）：
+**按客户端自动选择格式**（User-Agent；链接加 `?format=clash|sing-box|surge|surfboard|links` 可强制指定）：
 
 | 客户端 | 收到的格式 | 门户「一键导入」 |
 |---|---|---|
-| Clash Verge (Rev)、Clash Meta for Android、FlClash、Mihomo Party | Clash（mihomo）YAML + DNS + 分流分组与规则 | `clash://install-config?url=…&name=…` |
-| Stash | Clash YAML + DNS + 分流分组与规则 | `stash://install-config?url=…&name=…` |
-| sing-box 官方 App（SFA/SFI/SFM/SFT） | sing-box 1.12+ 完整配置（TUN、本地 mixed 127.0.0.1:2080、DNS、分流分组、规则集） | `sing-box://import-remote-profile?url=…#名称` |
+| Clash Verge (Rev)、Clash Meta for Android、FlClash、Mihomo Party | Clash（mihomo）YAML（订阅模板） | `clash://install-config?url=…&name=…` |
+| Stash | Clash YAML（订阅模板） | `stash://install-config?url=…&name=…` |
+| sing-box 官方 App（SFA/SFI/SFM/SFT） | sing-box 1.12+ 完整配置（订阅模板） | `sing-box://import-remote-profile?url=…#名称` |
+| Surge | Surge 配置（订阅模板，`#!MANAGED-CONFIG`） | `surge:///install-config?url=…` |
+| Surfboard | Surfboard 配置（订阅模板） | `surfboard:///install-config?url=…` |
 | Shadowrocket | base64 分享链接 | `shadowrocket://add/sub://<URL 安全 base64，无填充>?remark=…` |
 | Hiddify | base64 分享链接（Hiddify 内核较旧，且对导入的链接套用自己的分流设置：在 Hiddify 里把「区域」设为中国） | `hiddify://import/<订阅链接>#名称` |
 | v2rayN / v2rayNG / 其他 | base64 分享链接 | — |
@@ -862,112 +864,42 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 {"name_rate": true}`，默认关）。开启后只显示入口的**基础倍率**（1x 不显示），**不显示时段倍率**；代价是每次改基础倍率
 都会改名，客户端刷新后可能切换线路（开启时后台会确认，入口抽屉的倍率框也会提示）。倍率请在门户的线路列表里看。
 
-**分流（服务分流 + 指定线路 + 容灾，2026-10-13，取代 W30 的单一 PROXY 模板）**（系统设置 → 订阅 → 分流规则，
-`PUT /api/v1/settings/subscription` 的 `routing`；编辑器所需目录 `GET /api/v1/settings/subscription/catalog`）。
-Clash 与 sing-box 订阅按下面的顺序分流，纯链接格式不受影响（客户端用自己的规则）：
+**订阅模板（2026-10-27，迁移 1123，取代分流页）**（系统设置 → 订阅模板；接口 `GET /api/v1/sub-templates`、
+`PUT|DELETE /api/v1/sub-templates/{sing-box|clash|surge|surfboard}`、`POST …/{format}/preview`）：
+每种客户端一份完整的配置模板，运营者直接改。没有保存过的格式用内置默认（拦截 → 直连 → 服务分组 → 🚀 默认代理，
+地区自动选择组，推荐 DNS）；「恢复默认」删除自定义内容。模板最大 256 KiB，保存要带当前 `version`（别人先改过
+= 409，重新载入再改）；写审计 `settings.sub_template.update/reset`（只记长度与哈希，不记正文）。任何管理员可改，
+只有管理员能读。旧版本的分流设置与远程规则集**不会**转换：升级后四种客户端都从内置默认模板开始。
 
-1. **拦截**（`block`，默认：广告与跟踪）→ 拒绝；
-2. **直连**（`direct`，默认：局域网 / 路由器、中国大陆网站、中国大陆 IP）→ 不走代理；
-3. **服务**（`services`，按顺序；默认：Netflix、Google、YouTube、Telegram、AI 服务）→ 各自的服务分组；
-4. 其余全部 → **「🚀 默认代理」**。
+占位符沿用 xboard 的名字，可直接粘贴 xboard 的模板：
 
-每一段的条目可以是：内置分类（如「中国大陆网站」= `geosite:cn`，「AI 服务」= `geosite:category-ai-!cn`，完整清单
-见目录接口）、GeoSite / GeoIP 列表名、域名（精确 / 后缀 / 关键词）、IP 段、https 远程规则集链接（Clash 的
-`.yaml`（payload）/`.list`/`.txt`；见下「远程规则集」）。每段最多 64 条，服务最多 32 个，远程规则集合计最多 32 个。
-「全局代理」模式（`mode: global`）：只有局域网直连，其余全部走默认代理（分流设置保留但不生效）。
-
-**订阅里的分组**（按用户生成，只含该用户套餐可用的入口；组名固定，客户端按组名记住用户的选择）：
-
-| 组 | 类型 | 内容 |
+| 格式 | 占位符 | 含义 |
 |---|---|---|
-| 🚀 默认代理 | 手动选择 | 默认选中 `rest`（地区组 / 标签组 / 某条线路；未设 = 全部节点），然后各地区组、标签组、全部节点、每条线路 |
-| 服务（如「🎬 Netflix」） | 手动选择 | 默认「♻️ Netflix 推荐（自动容灾）」，然后首选与备用、其余地区组、全部节点、直连 |
-| ♻️ <服务> 推荐 | 故障转移（`fallback`，隐藏） | 首选线路 → 备用（按顺序，线路或地区组 / 标签组）；首选恢复后切回 |
-| 🌐 <地区> | 自动选最快（`url-test`） | 节点「地区」相同的线路，按节点地区自动生成 |
-| 🏷 <标签> | 自动选最快 | 带该入口标签的线路（`tag_groups` 勾选，或被首选/备用引用） |
-| ♻️ 全部节点 | 自动选最快 | 全部线路 |
+| Clash（YAML） | `proxies:` 列表 | 自动追加该用户的全部线路（每个入口一条） |
+| Clash | 分组 `proxies` 里的 `$proxies` | 展开为全部线路名；mihomo 原生的 `include-all-proxies` / `filter` 分组不需要展开；展开为空时放 `DIRECT` |
+| sing-box（JSON） | `outbounds` | 自动追加该用户的全部线路 |
+| sing-box | selector / urltest 的 `outbounds` 里的 `"{all}"`、`"{all:<正则>}"` | 全部线路 tag / 名字匹配正则的线路 tag；展开为空时放 `direct` |
+| Clash、sing-box | 字符串值里的 `$subs_link` / `$subs_domain` / `$site_name` | 该用户的订阅链接 / 订阅域名 / 站点名 |
+| Surge、Surfboard（文本） | `$proxies` | 每个入口一行代理 |
+| Surge、Surfboard | `$proxy_group` | 全部线路名，逗号分隔 |
+| Surge、Surfboard | `$subs_link` | `#!MANAGED-CONFIG` 行的订阅链接 |
+| Surge、Surfboard | `$subscribe_info` | `upload=…, download=…, total=…, expire=…`（给 `[Panel]` 行） |
 
-- **首选 / 备用按入口 id 记录**：入口改名自动跟随；入口删除、停用、被健康检查隐藏或不在该用户套餐里时**跳过**；
-  一个服务的首选和备用对某个用户全都不可用时，这个服务对该用户**指向默认代理**（选择组第一项是「🚀 默认代理」，
-  不生成推荐组）。空的地区组 / 标签组不出现。未选线路的服务同样走默认代理——所以默认设置下五个服务都走默认代理，
-  直到运营者选好线路。
-- 健康检查地址固定为 `https://www.gstatic.com/generate_204`，间隔 300 秒。
-- **sing-box 没有 `fallback` 类型**：服务的「推荐」组在 sing-box 里是对同一组线路的 `urltest`（选最快的可用线路，
-  不保证「首选优先」）；其余分组一致。
-- 组名与线路名冲突时组名后加 ` #2`（入口名请不要用 emoji 开头）。服务名称里不能有逗号或引号。
+Clash 与 sing-box 是**结构化**处理（解析模板、注入、再输出），用户的凭据不经文本替换；Surge/Surfboard 是文本
+模板，替换进去的值先去掉换行并转义 `,` `=`。保存前面板解析模板并用示例数据渲染一遍：Clash 分组名唯一、引用的线路/分组
+与规则目标都存在；sing-box tag 唯一、引用的出站存在；Surge/Surfboard 必须有必需的段、`[Proxy Group]` 成员都存在。
+出错时 400 `sub_template.*`，参数带 `field`、`line`、`column`。「预览」`POST …/preview {body, user_id?}` 用示例数据或所选
+用户的入口渲染，不含该用户的真实订阅链接（用占位链接）。
 
-**DNS**（`routing.dns.mode`）：
-
-- **推荐（默认）**：国内 DNS `https://223.5.5.5/dns-query`、`https://doh.pub/dns-query`，国外 DNS
-  `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`，开启 Fake-IP；不可编辑（要改请切到自定义）。
-- **不下发**（`client`）：Clash 订阅不带 `dns:`，用客户端自己的 DNS 设置（如 Clash Verge 的「DNS 覆写」），
-  分流照常但国外网站可能被 DNS 污染；sing-box 只用系统解析（`local`）。
-- **自定义**（`custom`）：自己填国内 / 国外两个列表（各 1–8 个：IP 或 `udp://`、`tls://`、`https://` 地址）与
-  Fake-IP 开关。
-
-Clash 的 `dns:`：`enhanced-mode` fake-ip（`fake-ip-range 198.18.0.1/16` + `fake-ip-filter` 局域网、
-`rule-set:geosite-private`（有该规则集时）、连通性检测与 NTP 域名）或 redir-host；`default-nameserver` = 国内
-列表里的 IP 字面量（没有时用 223.5.5.5、119.29.29.29，用来解析 DoH 的主机名）；**`proxy-server-nameserver` =
-国内列表**（解析线路自身的域名，不经代理，否则连不上节点）；`nameserver-policy` 把直连段里的 GeoSite 列表
-（如 `geosite-private,geosite-cn`，只引用订阅里实际存在的 rule-provider）交给国内列表；**`nameserver` = 国外列表** +
-`respect-rules: true`（按分流规则经代理查询，防污染）。sing-box：`local` = 国内列表第一个（主机名地址另加
-`bootstrap` 解析）、`remote` = 国外列表第一个且 `detour` 到默认代理、`route.default_domain_resolver = local`（相当于
-proxy-server-nameserver）、`dns.rules` 直连段的 GeoSite 列表 → `local`、开启 Fake-IP 时加 `fakeip` 服务器
-（`store_fakeip`）。sing-box 每个角色只用列表的第一个服务器。
-
-**规则列表下载**：分类与 GeoSite / GeoIP 列表在 Clash 里是 `rule-providers`（文本列表，Stash 也支持），在
-sing-box 里是远程规则集（.srs），**由客户端自己下载**，只带订阅里实际用到的列表；默认来自 jsDelivr 上的 MetaCubeX
-meta-rules-dat，国内访问 jsDelivr 不稳定时可改成镜像（`rule_set_clash_url` / `rule_set_singbox_url`，必须是 https
-且包含 `{name}`，可含 `{kind}` = geosite|geoip）。规则下载在客户端首次启动时经默认代理进行（规则未加载前全部流量走
-默认代理）。修改写审计 `settings.subscription.update`，用户下次刷新订阅生效。
-
-**远程规则集（路由 PR 2，迁移 1108）**：分流里任一段都可以放 https 规则集链接，如
-`https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Claude/Claude.yaml`。
-
-- **格式**：Clash 的 `.yaml`（`payload:` 列表）、`.list`、`.txt`；每行是 classical 规则 `类型,值[,选项]`
-  （`DOMAIN`、`DOMAIN-SUFFIX`、`DOMAIN-KEYWORD`、`IP-CIDR`、`IP-CIDR6`），或 domain / ipcidr 列表的裸写法
-  （`example.com`、`+.example.com`（含子域）、`.example.com`（只含子域）、`1.2.3.0/24`、`2001:db8::/32`）；
-  `#`、`//`、`;` 开头的行是注释。
-- **Clash 订阅**：原样引用这个链接（`behavior: classical` 的 rule-provider，扩展名 `.yaml`/`.yml` 为 yaml、其余 text），
-  由客户端自己下载。classical 行为按「类型,值」逐行解析，裸写法的列表（如 MetaCubeX 的 domain 列表）在 Clash 里
-  可能识别不了，这类列表请改用内置分类或 GeoSite 名。
-- **sing-box 订阅**：sing-box 不能直接读 Clash 列表，所以**面板下载、转换并托管**一份：
-  `https://<订阅域名>/<订阅路径>/rules/<id>.json`（sing-box `source` 规则集，`id` = 链接 SHA-256 前 32 位；
-  每个用户用自己的订阅域名），订阅里以 `type: remote`、`format: source`、`update_interval: 1d` 引用。sing-box
-  表达不了的规则（PROCESS-NAME、USER-AGENT、DOMAIN-REGEX、通配符、GEOIP/GEOSITE、AND/OR/NOT 等）**跳过**，
-  后台显示跳过的条数与类型；一条都用不了的列表、以及面板还没有可用副本的链接，sing-box 订阅里不出现（记 info 日志）。
-  **需要配置订阅域名或主域名**（托管地址是绝对 URL），否则 sing-box 订阅不带远程规则集。托管地址公开、无秘密，
-  未知 id 返回统一的 404；响应 `Cache-Control: public, max-age=3600` + ETag。
-- **保存时校验**：保存分流时面板下载每个**新加的**链接（已有可用副本的不重复下载）并解析，失败则整次保存被拒（422，
-  后台显示链接与原因），什么都不改。编辑器里可先用「测试」（`POST …/rule-set/check`）看条数与前 20 条样例，不保存。
-- **安全（防 SSRF）**：只接受 https；面板自己解析域名，**任何一个**解析结果是回环、内网（10/8、172.16/12、192.168/16）、
-  链路本地 / 云元数据（169.254.0.0/16、`fd00:ec2::254`）、CGNAT、ULA、组播、文档 / 基准测试 / 保留地址（含内嵌这些
-  IPv4 的 IPv6 形式）就拒绝，然后直接连接已检查的地址（不会被 DNS 重绑定绕过）、按域名校验证书；重定向最多 3 次、
-  每一跳重新检查；整个下载 15 秒超时、正文上限 5 MiB、不接受压缩响应、不信任 Content-Type；只有管理员能触发。
-- **每日刷新**：每个实例每 5 分钟尝试一轮（advisory 锁，同一时刻只有一个实例在刷新），超过一天没检查的链接带
-  `If-None-Match` / `If-Modified-Since` 重新下载（304 = 没变）；**失败时保留上一份副本**并记录错误（失败的链接每小时
-  重试）；某个链接连续失败 2 天，系统状态页的「远程规则集刷新」任务变红。分流里不再引用的链接，其副本随保存或下一轮
-  刷新删除。升级前就保存在分流里的链接由第一轮刷新补上副本。
-
-**从 W30 规则升级（迁移 1107）**：已自定义的旧规则逐条保留（类型与值不变）：拒绝 → 拦截、直连 → 直连、代理 → 一个
-名为「代理」、未选线路（= 默认代理）的服务。新模型按段匹配（拦截 → 直连 → 服务），所以旧列表本来就是
-「拒绝 → 直连 → 代理」的顺序（内置默认与在它基础上增删的都是）时结果完全一致；交错排列的列表里，排在前面的
-「代理」或「直连」规则不再压过后面与之重叠的「拒绝」/「直连」规则，升级后请在后台检查。一直用内置默认的站点
-升级后直接得到新的推荐设置（含五个服务分组与推荐 DNS）。
-
-**后台的分流编辑器**（系统设置 → 订阅 → 分流规则）：先选模式（规则分流 / 全局代理），下面按去向分区：拦截、直连、
-各个服务、其余全部（默认代理）。每个分区只有一个输入框，直接输入网址（`example.com` → 及子域名或仅此域名）、
-IP 段（`1.2.3.0/24`）、分类名（`奈飞`、`广告`）、`geosite:名称` / `geoip:名称`，或粘贴 https 规则集链接（添加时
-面板就下载检查，显示条数、sing-box 不支持的条数或错误；保存时再按上面的规则校验），回车添加；域名条目点类型标签
-可在 后缀 / 精确 / 关键词 之间切换。同一条目出现在两个分区时，后面那份不生效并标出。每个服务「选择线路」= 首选
-入口 + 有序备用（入口、地区组、标签组），可上下排序；服务本身也可排序、删除、从常用目录或自定义添加。右侧的
-「这个网站会走哪？」按正在编辑的设置即时算出结果（内置分类的完整列表由客户端下载，这里只按分类名推测并注明；
-域名、IP、关键词与已检查规则集的样例按实际内容匹配），「效果一句话」与「用户在 Clash 里看到的」分组预览同样
-跟随草稿（实际分组按每个用户的套餐生成）。DNS 三档与 Fake-IP 在 DNS 卡片里；标签组与规则库地址在「高级」里；
-「恢复推荐设置」在危险操作区。所有修改经底部保存栏一次保存，用户下次刷新订阅时生效。
+**Surge 与 Surfboard**（新格式，User-Agent 含 `Surge` / `Surfboard`，或 `?format=surge|surfboard`）：只输出客户端
+文档里有的代理：Surge 支持 `ss`（含 2022）、`vmess`（tcp/ws，TLS）、`trojan`、`hysteria2`、`tuic`
+（https://manual.nssurge.com/policies/shadowsocks.html 及同目录各页）；Surfboard 支持 `ss`、`vmess`、`trojan`、`hysteria2`
+（https://getsurfboard.com/docs/profile-format/proxy/）。文档没有的组合（VLESS、REALITY、xhttp、httpupgrade、gRPC 等）
+从该格式省略并记 info 日志，不输出坏行。门户一键导入：`surge:///install-config?url=…`、`surfboard:///install-config?url=…`。
+Stash 使用 Clash 输出。
 
 **订阅格式开关与一键导入开关**（PR ② §5，同一接口的 `formats` / `import_clients`，写审计）：可以分别关闭
-Clash、sing-box、base64 链接三种输出格式，以及门户里每个客户端的一键导入按钮（默认全部开启）。关闭的格式
+Clash、sing-box、Surge、Surfboard、base64 链接五种输出格式，以及门户里每个客户端的一键导入按钮（默认全部开启）。关闭的格式
 对订阅链接的回答与无效令牌**完全相同**（统一的 404，不会透露「已关闭」）：显式 `?format=` 指向关闭的格式、或
 识别出的客户端所用格式已关闭 → 拒绝；无法识别的客户端按 链接 → Clash → sing-box 的顺序落到第一个开启的格式。
 格式关闭时它的导入按钮也自动隐藏。保存的是「开启的列表」：以后新增的格式对已自定义列表的站点默认是关闭的。
@@ -991,20 +923,13 @@ Akari 客户端（User-Agent 以 `akari-client/` 开头，内核 mihomo）不受
 （不留未使用的认证入口）。计划中的契约：
 
 1. 客户端里用账户登录（邮箱 + 密码，或通行密钥），面板签发**客户端会话**（独立于门户 cookie，可在门户与后台查看、吊销）；
-2. 客户端用该会话取自己的 mihomo 配置（与订阅同一渲染：Clash 格式、同一分流、按用户套餐生成），不再需要订阅链接；
+2. 客户端用该会话取自己的 mihomo 配置（与订阅同一渲染：Clash 格式、同一模板、按用户套餐生成），不再需要订阅链接；
    仅自研客户端模式下这就是用户唯一的接入方式，订阅地址届时只作兼容；
 3. 之后加入**设备席位绑定**（战略决策 3）：每个客户端会话占一个席位，席位数由套餐决定，超出需在客户端或门户里移除旧设备。
 
 在那之前，仅自研客户端模式下的客户端只能经订阅地址（`akari-client/` User-Agent）取配置。
 
-**验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：mihomo v1.19（`mihomo -t` 校验配置，并实际运行加载
-rule-providers）与 sing-box 1.14（`sing-box check`，并实际运行加载远程规则集）对生成的配置验证通过；2026-10-13 的
-服务分流 / 容灾 / DNS 输出（含自定义 DNS、主机名 DoH、不下发 DNS、全局模式、远程规则集）用 mihomo v1.19.13
-（`-t` 与实际运行）与 sing-box 1.12.9（`check` 与去掉 TUN 后实际运行）验证通过；路由 PR 2 的托管规则集：带面板托管
-规则集的 sing-box 配置（`routing_services_hosted.sing-box.golden`）`sing-box check` 通过，转换出的 source 规则集
-`sing-box rule-set compile` 通过、`rule-set match` 的后缀语义（`claude.ai` 含本域与子域、`.sub.example` 只含子域）
-符合预期（sing-box 1.12.9）；黄金文件
-（`testdata/w26/sub_*.golden`、`routing_*.golden`、`w30_client_formats.golden`）锁定每种格式与每个客户端 UA 的输出。**未用真实 GUI 客户端验证**：
+**验证情况**（云端/CI 没有图形客户端，以下是实际做过的）：内置的四份默认模板在 CI 里用示例用户渲染，Clash 输出过 `mihomo -t`，sing-box 输出过 `sing-box check`；Surge 与 Surfboard 的默认模板由面板自己的解析器检查语法，并对照官方文档（manual.nssurge.com、getsurfboard.com）；黄金文件（`testdata/w26/sub_*.golden`、`w30_client_formats.golden`）锁定每种格式与每个客户端 UA 的输出。
 Clash Verge Rev、Clash Meta for Android、FlClash、Mihomo Party、Stash、Shadowrocket、SFA/SFI/SFM、Hiddify、
 v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前请在真机上各导入一次。
 

@@ -34,7 +34,7 @@ AddressSanitizer 同样开启。
 | `signup` | W15：邮箱地址、注册白名单、验证码 / 重置令牌 / 邀请码的形状、9 个注册/重置/邮件/设置请求体、邮件模板 | 解析后的地址为小写、≤ 254 字节、恰有一个 `@`、不含会破坏邮件头/HTML 的字符，重新解析得到自身，且被其自身域名放行；形状精确匹配；请求体拒绝未知成员，经校验的 SMTP 值不含控制字符（明文 SMTP 绝不携带凭据）；输入不会向 HTML 引入标记，主题保持单行 |
 | `payment_methods` | W24/R40：系统设置 → 支付 的请求体（`MethodReq`）、支付宝当面付配置校验（创建与编辑两种情形）、注册工作量证明、旧版 notify 的 out_trade_no 预读 | 不 panic；请求体拒绝未知成员；任何密钥（私钥）都不会出现在存储的明文配置或管理员视图中；随机的工作量证明不会通过验证 |
 | `content` | Ops：安全的 Markdown 渲染器/清洗器（`markdown::render`：公告、帮助文章、公告邮件）、其 URL 规则（`safe_link`/`safe_image`）、可编辑邮件模板（`templates::validate` + 带示例值的 `render_custom`）、品牌 PNG 的头部与正文、公告 / 帮助请求体 | 不 panic；输出只含标签 `p br h3-h6 strong em code pre ul ol li blockquote hr a img`，且属性只有 `href target rel src alt loading`；每个 `href` 都通过 `safe_link`（无 `javascript:`），每个 `src` 都通过 `safe_image`（https 或同源，绝不用 http）；绝对链接带 `rel="noopener noreferrer"`；输出规模与输入呈线性；被接受的模板渲染出无控制字符的主题，且只含布局/渲染器标签；请求体拒绝未知成员 |
-| `rule_sets` | 路由 PR 2：从运营者给的链接下载的远程规则集正文（远端主机返回的任意字节）、防 SSRF 的地址分类与链接策略 | 不 panic；计数自洽（可用 = 规则条数，总数 = 可用 + 不支持，不支持的类型名 ≤ 16 种）；没有重复规则；每条值是非空 ASCII、无空白/逗号/引号，域名小写、网段已规整（重新解析得到自身）；sing-box source 规则集为 version 3 且恰好带全部可用规则；被接受的列表至少有一条规则、读不懂的行不多于规则；IPv4 地址与其 IPv4-mapped IPv6 形式分类相同；策略接受的链接一定是 https |
+| `sub_templates` | 订阅模板（2026-10-27）：运营者保存的四种客户端模板（sing-box JSON、Clash YAML、Surge/Surfboard 文本）的解析与渲染，以及线路名称/凭据注入内置模板 | 不 panic（嵌套文档、锚点/合并键、超大正则）；被接受的模板渲染结果仍是同类文档（YAML/JSON）或保有 Surge 的各节；线路的名称与密码只是数据——不会给任何格式的订阅多出一行、一节或一个键 |
 
 精选种子（包括发现过的每个崩溃，命名为 `regress-*`）提交在 `fuzz/seeds/<target>/` 下；
 增长后的语料库放在 `fuzz/corpus/`（已 gitignore；CI 把它保存在 Actions 缓存中）。
