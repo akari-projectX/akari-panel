@@ -489,7 +489,7 @@ async fn prefix_gate(req: Request, next: Next) -> Response {
 }
 
 /// The Content-Security-Policy of every accepted response: same-origin
-/// only (inline styles for React's `style` props). The three directives
+/// only (inline styles for the front ends' `style` attributes). The three directives
 /// after it do not fall back to `default-src`: nobody may frame the panel
 /// (`frame-ancestors`, as `X-Frame-Options: DENY` does for old browsers), an
 /// injected `<base>` cannot redirect relative URLs (`base-uri`), and a

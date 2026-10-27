@@ -10,7 +10,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 修改密码 / 设置第一个密码（用通行密钥注册、还没有密码的账户：先用通行密钥确认是本人）。与 React 门户 settings/password-dialog.tsx 相同：
+   * 修改密码 / 设置第一个密码（用通行密钥注册、还没有密码的账户：先用通行密钥确认是本人）：
    * 「至少 8 位」是常驻的帮助文字，确认框离开时就比对；错误画在字段下面并聚焦，不弹浏览器气泡。改密码后面板结束其它会话，当前这个保留。
    */
   let { open = $bindable(false), first, ondone }: { open?: boolean; first: boolean; ondone: () => void } = $props();

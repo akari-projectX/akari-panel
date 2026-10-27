@@ -3,7 +3,7 @@ import { isFresh, load, readCache, writeCache } from '@/lib/cache';
 import { holdBoot } from './boot.svelte';
 
 /**
- * 页面取数（与 React 门户 hooks/use-api.ts 的带缓存用法相同）：先用 sessionStorage 缓存（同一个键）把区块画出来，
+ * 页面取数：先用 sessionStorage 缓存（同一个键）把区块画出来，
  * 同时在后台取最新的，回来后原地替换；请求不随页面卸载而取消，结果照样写进缓存。没有缓存时拖住启动画面（soft），
  * 页面一次画全。键变了（7 天 / 30 天）改读新键的缓存，不把上一个键的数据当成这一个的。
  *
@@ -16,7 +16,7 @@ export type Spec<T> = {
   key: string;
   fetch: () => Promise<T>;
   enabled?: boolean;
-  /** 键变了而新键没有缓存时先留着上一个键的数据（= React useApi 的 keepPrevious：商店换优惠码 / 余额抵扣重新报价时不闪空） */
+  /** 键变了而新键没有缓存时先留着上一个键的数据 */
   keep?: boolean;
 };
 

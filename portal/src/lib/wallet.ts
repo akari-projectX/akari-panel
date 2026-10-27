@@ -2,8 +2,8 @@ import { portalUrl, type Commission, type CommissionStatus, type InviteCodes, ty
 import { R } from './routes';
 
 /*
- * 钱包与邀请页（pages/Wallet.svelte、components/wallet/）的文案表与纯函数，与 React 门户 pages/dash/wallet.tsx、
- * wallet-invite.tsx 相同。文案是简体原文，显示时再 t()。
+ * 钱包与邀请页（pages/Wallet.svelte、components/wallet/）的文案表与纯函数。
+ * 文案是简体原文，显示时再 t()。
  */
 
 export const LEDGER_TEXT: Record<LedgerKind, string> = {

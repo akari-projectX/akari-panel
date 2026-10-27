@@ -19,7 +19,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 我的订单（行为同 React 门户 pages/dash/orders.tsx；没有样稿，按 dashboard / shop 的语言：页头 → 四个关键数字 →
+   * 我的订单（没有样稿，按 dashboard / shop 的语言：页头 → 四个关键数字 →
    * 文字筛选 → 宽屏细线表格、窄屏一行一笔（点整行进详情））。面板给最近 50 笔，筛选只在前端做。
    */
   const TABS: { key: string; label: string; test: (o: MyOrder) => boolean }[] = [

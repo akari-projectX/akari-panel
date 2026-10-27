@@ -9,7 +9,7 @@
    * 对话框（bits-ui Dialog：焦点困在框里、Esc、点遮罩、锁滚动、关闭后焦点还给触发它的元素、aria-modal / 标题 / 说明）。
    * 版式是 v1.4.0 的弹窗（居中的卡片，手机上也居中、四边留 12px）：流程弹窗 = 图标 + 标题 + 一行说明、可滚动的正文、底部一条不动的按钮栏；
    * alert（确认）= 窄的一版（420px），按钮等宽并排。tone 决定图标底色（brand / warn / danger）。
-   * alert：确认 / 破坏性操作用 role="alertdialog"（bits-ui AlertDialog，同 React 门户），aria-labelledby / aria-describedby 指向标题和说明。
+   * alert：确认 / 破坏性操作用 role="alertdialog"，aria-labelledby / aria-describedby 指向标题和说明。
    * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。wide：520px（确认订单，样稿同宽）。
    */
   let {

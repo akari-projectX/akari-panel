@@ -7,7 +7,7 @@
   import { t, tp } from '$lib/i18n.svelte';
   import { R } from '$lib/routes';
 
-  /* 封禁账户的仪表盘：管理员写的原因 + 工单入口，别的都看不了（与 React 门户 dashboard.tsx 的 BannedNotice 相同） */
+  /* 封禁账户的仪表盘：管理员写的原因 + 工单入口，别的都看不了 */
   const me = $derived(auth.me);
 </script>
 

@@ -1,7 +1,7 @@
 import type { TicketCategory, TicketPriority, TicketStatus } from '@/api';
 
 /**
- * 工单的文字（与 React 门户 pages/dash/tickets.tsx 相同；值是词典的键，用时 t()）。
+ * 工单的文字（值是词典的键，用时 t()）。
  * 面板的三种状态：open（等客服）/ answered（客服回了，等你）/ closed。
  */
 export const CATEGORY: Record<TicketCategory, string> = {

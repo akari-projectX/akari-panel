@@ -5,7 +5,7 @@
   import { R } from '$lib/routes';
 
   /*
-   * 注销之后的结果页（公开：会话已被面板清掉；与 React 门户 pages/auth.tsx 的 AccountDeleted 相同）。
+   * 注销之后的结果页（公开：会话已被面板清掉）。
    * 注销那一步把「是否匿名化保留」放在 history.state 里（navigate(R.deleted, { state: { anonymized } })）；刷新后没了，就只说账户已注销。
    */
   const anonymized = (history.state as { anonymized?: boolean } | null)?.anonymized;

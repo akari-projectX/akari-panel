@@ -17,7 +17,7 @@ import { R, scopeOf, type Scope } from './routes';
  *
  * 会话是面板发的 httpOnly cookie，前端不存令牌；登录状态以 GET /me 为准（401 = 没登录；
  * 404 = 统一的拒绝，同一浏览器里的管理员会话在门户上就是它——都按没登录处理）。
- * sessionStorage 缓存（akari.cache:*，与 React 门户同键）里有 /me 时先用它把页面画出来，后台再取最新的；
+ * sessionStorage 缓存里有 /me 时先用它把页面画出来，后台再取最新的；
  * 存进去的那份去掉订阅令牌。
  */
 

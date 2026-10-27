@@ -132,8 +132,7 @@ fi
 # 2026-10-07: real metrics instead of a bundle-size gate). Set
 # E2E_PERF_OUT=<dir> to measure cold load / LCP / TTI / route switches on
 # desktop and a throttled mid-range phone (portal/e2e/perf/) plus the bundle
-# sizes; the Markdown summary (next to the React portal's last numbers,
-# portal/e2e/perf/baseline/) lands in <dir>/summary.md (CI: the e2e perf job
+# sizes; the Markdown summary lands in <dir>/summary.md (CI: the e2e perf job
 # summary + artifact portal-perf).
 if [ -n "${E2E_PERF_OUT:-}" ]; then
   mkdir -p "$E2E_PERF_OUT"

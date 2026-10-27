@@ -2,7 +2,7 @@ import { t } from './i18n.svelte';
 import { toast } from './toast.svelte';
 
 /**
- * 复制到剪贴板，按钮短暂变成对勾（同 React 门户 hooks/use-copy）：`which` = 刚复制的是哪一个（金额 / 地址 / 订单号），
+ * 复制到剪贴板，按钮短暂变成对勾：`which` = 刚复制的是哪一个（金额 / 地址 / 订单号），
  * ms 毫秒后清掉。失败（没权限、非安全上下文）弹一句「复制失败，请手动选中复制」。
  */
 export class Copied<K extends string = string> {

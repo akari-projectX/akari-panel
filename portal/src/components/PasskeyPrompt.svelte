@@ -12,7 +12,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 密码登录后的通行密钥引导（面板登录答复里的 passkey_prompt：站点开了引导、这个账户还没有通行密钥；与 React 门户 passkey-prompt.tsx 相同）。
+   * 密码登录后的通行密钥引导（面板登录答复里的 passkey_prompt：站点开了引导、这个账户还没有通行密钥）。
    * 一次登录只问一次；可以打开「以后只用通行密钥登录」（面板 disable_password），丢失后由管理员 reset-login 恢复。
    * DashLayout 只在 auth.passkeyPrompt 且浏览器支持通行密钥时挂它（按需加载，含 bits-ui）。
    */

@@ -9,7 +9,7 @@
    * 全站的文本输入字段（样稿 login.html 的 .field）：标签行（右侧可放「忘记密码」「选填」）+ 输入框 + 常驻帮助文字 / 内联错误（二选一，同一个位置）。
    *
    * 校验不用浏览器原生气泡：表单写 novalidate，提交时用 lib/forms 算出每个字段的错误，这里把它画在输入框下方，
-   * 输入框红边 + aria-invalid + aria-describedby 指向这行字，读屏能读到；第一个出错的字段被聚焦（与 React 门户 text-field.tsx 相同）。
+   * 输入框红边 + aria-invalid + aria-describedby 指向这行字，读屏能读到；第一个出错的字段被聚焦。
    * 密码框自带「显示 / 隐藏」按钮。after = 输入框右边的按钮（「发送验证码」）。
    */
   let {
