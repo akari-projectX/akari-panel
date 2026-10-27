@@ -167,7 +167,7 @@ async fn node_form_entrance_patch_access_and_subscription() {
                 "name": "w28-a",
                 "inbound": {"tag": "ignored", "protocol": "vless", "port": 443,
                             "settings": {"clients": [], "decryption": "none"}},
-                "display_name": "香港 01", "sort": 5, "visible": true, "tags": ["节点级"],
+                "display_name": "香港 01", "sort": 5, "visible": true,
                 "direct": {"connect_host": "1.2.3.4", "rate": 0.5, "group_ids": [g],
                            "tags": ["IPLC"]}
             }),
@@ -262,10 +262,6 @@ async fn node_form_entrance_patch_access_and_subscription() {
     let body =
         String::from_utf8(sub.get(&format!("/sub/{token}?format=clash")).await.body).unwrap();
     assert!(body.contains("直连 | IPLC"), "{body}");
-    assert!(
-        !body.contains("节点级"),
-        "1104: node-level tags name nothing"
-    );
     assert!(
         body.contains("server: \"1.2.3.4\"\n    port: 443\n"),
         "{body}"

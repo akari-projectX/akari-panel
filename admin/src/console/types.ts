@@ -39,7 +39,6 @@ export type ServerNode = {
   visible: boolean;
   sort: number;
   region: string | null;
-  tags: string[];
   protocol: string | null;
   port: number | null;
   /** The inbound's `streamSettings.network` / `.security` (null = xray's defaults: tcp, none). */

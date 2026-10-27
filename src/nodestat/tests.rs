@@ -588,13 +588,11 @@ async fn api_status_metrics_probe_and_portal_visibility() {
         .execute(&db.pool)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE nodes SET display_name = '香港 01', tags = '{节点级}', sort = 2 WHERE id = $1",
-    )
-    .bind(shown)
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE nodes SET display_name = '香港 01', sort = 2 WHERE id = $1")
+        .bind(shown)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE servers SET status = 'online', last_seen_at = now() WHERE id = $1")
         .bind(shown)
         .execute(&db.pool)
