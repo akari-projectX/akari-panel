@@ -32,7 +32,6 @@ async function flip(page: Page, name: string) {
 export const shots: Shot[] = [
   { name: "settings-overview", open: go("/settings"), full: true },
   { name: "settings-overview-search", open: go("/settings?q=%E9%82%AE%E7%AE%B1") },
-  { name: "settings-legacy-redirect", open: go("/settings?section=payments") },
   ...(
     [
       ["settings-site", "site"],

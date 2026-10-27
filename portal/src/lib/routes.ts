@@ -15,8 +15,6 @@ export const R = {
   /** 邀请与钱包（合并页）；section = 页内分页 */
   wallet: '/wallet',
   walletTab: (section: 'invite' | 'ledger' | 'withdrawals') => `/wallet?tab=${section}`,
-  /** 旧地址：跳到合并页的「邀请返佣」分页（邮件、收藏夹里的链接照样能用） */
-  invite: '/invite',
   tickets: '/tickets',
   ticket: (id: string) => `/tickets?id=${encodeURIComponent(id)}`,
   help: '/help',

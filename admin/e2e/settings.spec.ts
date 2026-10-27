@@ -59,7 +59,7 @@ function sections(page: Page): Locator {
   return page.getByRole("navigation", { name: "设置分类" });
 }
 
-test("SET-25: overview, search by old names, old addresses redirect, unsaved changes guard, ⌘S", async ({
+test("SET-25: overview, search by old names, unsaved changes guard, ⌘S", async ({
   page,
 }, info: TestInfo) => {
   await openConsole(page, "/settings");
@@ -70,21 +70,6 @@ test("SET-25: overview, search by old names, old addresses redirect, unsaved cha
     .click();
   await expect(page).toHaveURL(/\/settings\/block$/);
   await expect(page.getByRole("heading", { name: "出站拦截规则" })).toBeVisible();
-  // Old tab addresses land on the new sections; the outbox moved to the status page.
-  for (const [from, to] of [
-    ["security", "access"],
-    ["nodes", "install"],
-    ["branding", "brand"],
-    ["notify", "notices"],
-    ["passkeys", "account"],
-  ]) {
-    await page.goto(`${CONSOLE}/settings/${from}`);
-    await expect(page).toHaveURL(new RegExp(`/settings/${to}$`));
-  }
-  await page.goto(`${CONSOLE}/settings?section=payments`);
-  await expect(page).toHaveURL(/\/settings\/payments$/);
-  await page.goto(`${CONSOLE}/settings/mail?outbox=dead`);
-  await expect(page).toHaveURL(/\/status\?mail=dead$/);
   // Unsaved changes: the save bar counts them; leaving asks first. The site name is put back
   // through the API whatever happens (other specs read it in the page title).
   const site = await apiJson<{ site_name: string | null }>("GET", "/settings");

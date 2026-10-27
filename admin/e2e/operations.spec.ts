@@ -115,9 +115,6 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
     min_withdrawal_cents: 100,
     usdt_rate_cents: 720,
   });
-  // The old settings tab sends the operator to the new place.
-  await openConsole(page, "/finance/settings");
-  await expect(page).toHaveURL(/\/admin\/settings\/commission/);
   // An inviter earns a commission from the invitee's paid (manual) order.
   const inviter = `${tag}-inviter@e2e.test`;
   const a = await apiJson<{ id: string }>("POST", "/users", { email: inviter, password: "inviter-pass-1" });

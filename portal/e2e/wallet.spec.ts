@@ -1,5 +1,5 @@
 /*
- * 门户 v2 · PR 5：钱包与邀请（/wallet，旧地址 /invite）。覆盖切换前 React 门户 e2e 的 wallet.spec.ts（#51–#56：USDT 提现的网络、
+ * 门户 v2 · PR 5：钱包与邀请（/wallet）。覆盖切换前 React 门户 e2e 的 wallet.spec.ts（#51–#56：USDT 提现的网络、
  * 地址提示、TON Memo、参考汇率、撤回、通过后的实付与交易哈希、邀请统计与唯一的邀请码、佣金追回）、polish.spec.ts #52
  * （提现表单的内联错误）、account.spec.ts #19 / #18 的钱包部分（续费范围只有流水、封禁看不到），外加：「允许用户邀请」关闭、
  * 单次使用的邀请码、流水翻页、分页的键盘操作与地址，以及设计评审截图（邀请 / 流水 / 提现记录 / 提现对话框 / 续费范围 × 桌面 / 手机 × 浅 / 深）。
@@ -96,11 +96,10 @@ test('#52 an approved withdrawal shows the USDT sent and the transaction hash; t
   await shot(page, info, 'wallet-withdrawals-dark');
 });
 
-test('#54 #55 invite: /invite opens the invite tab of the merged page; terms, stats, commissions without the invitee\'s address; one invite code that cannot be deleted or regenerated', async ({ page, context }, info) => {
+test('#54 #55 invite: the invite tab of the merged page; terms, stats, commissions without the invitee\'s address; one invite code that cannot be deleted or regenerated', async ({ page, context }, info) => {
   const email = inviter(info);
   await signIn(page, email);
-  await page.goto('/invite');
-  await expect(page).toHaveURL(/\/wallet\?tab=invite$/);
+  await page.goto('/wallet?tab=invite');
   await ready(page, '邀请');
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByRole('tab', { name: '邀请返佣' })).toHaveAttribute('aria-selected', 'true');
@@ -291,7 +290,7 @@ test('#19 renewal scope (expired): the page is the wallet with the ledger only; 
 
 test('#18 banned: no wallet', async ({ page }) => {
   await signIn(page, 'banned@e2e.test');
-  for (const path of ['/wallet', '/invite', '/nodes', '/traffic']) {
+  for (const path of ['/wallet', '/nodes', '/traffic']) {
     await page.goto(path);
     await ready(page, '账户已被封禁');
   }

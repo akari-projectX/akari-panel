@@ -52,14 +52,12 @@
   let deleting = $state(false);
   let deleteLoaded = $state(false);
 
-  /* ── 锚点：旧链接 ?tab=security → #security；带 # 打开时滚到那个分区 ── */
+  /* ── 锚点：带 # 打开时滚到那个分区 ── */
   const still = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
   function scrollTo(id: string, smooth = true) {
     document.getElementById(id)?.scrollIntoView({ behavior: smooth && !still() ? 'smooth' : 'auto', block: 'start' });
   }
   $effect(() => {
-    const legacy = new URLSearchParams(loc.search).get('tab');
-    if (legacy === 'security') { navigate(`${loc.path}#security`, { replace: true }); return; }
     const id = decodeURIComponent(loc.hash.slice(1));
     if (!id) return;
     const timer = setTimeout(() => scrollTo(id), 80);

@@ -25,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { Link, Navigate, useLocation } from "react-router";
+import { Link } from "react-router";
 import { get, post, qs } from "../../shared/api";
 import { cn } from "../../shared/cn";
 import { dateOnly, dateTime } from "../../shared/format";
@@ -113,10 +113,6 @@ function deliveryReason(raw: string, tr: Tr): string {
 export function AlertsPage() {
   const tr = useTr();
   const { sub } = useRoute();
-  const loc = useLocation();
-  // Older links: the settings tab and the old log path.
-  if (sub[0] === "settings") return <Navigate to="/settings/alerts" replace />;
-  if (sub[0] === "notifications") return <Navigate to={`/alerts/outbox${loc.search}`} replace />;
   const out = sub[0] === "outbox";
   return (
     <>
