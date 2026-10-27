@@ -97,7 +97,7 @@ pub struct SignupSettings {
     /// The registration page offers "register with a passkey" (the address
     /// is bound after, `passkey_register.rs`; default off).
     pub passkey_register: bool,
-    /// 允许用户邀请 (migration 1113, default on): users get an invite code
+    /// 允许用户邀请 (default on): users get an invite code
     /// and codes admit registrations. Off: no codes, every code is unknown.
     pub user_invites: bool,
 }

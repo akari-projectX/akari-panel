@@ -231,7 +231,7 @@ pub fn host_of(headers: &HeaderMap, uri: &axum::http::Uri) -> Option<String> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct Stored {
     pub version: i64,
-    /// D8 (`site_domains`, migration 1015): each kind's names, the
+    /// D8 (`site_domains`): each kind's names, the
     /// preferred one first (normalized authorities, `Domain::authority`).
     #[sqlx(skip)]
     pub main_domains: Vec<String>,
@@ -272,7 +272,7 @@ pub struct Stored {
     /// buttons that are on (NULL = all).
     pub sub_formats: Option<Vec<String>>,
     pub sub_import_clients: Option<Vec<String>>,
-    /// Own-client-only mode (migration 1109; NULL = off): every
+    /// Own-client-only mode (NULL = off): every
     /// third-party format and import button off (the lists above are kept
     /// for when the mode is turned off), the subscription answers only the
     /// Akari client, the portal never shows the link.
@@ -421,7 +421,7 @@ pub const BOOT_NAMES: &[&str] = &["127.0.0.1", "localhost"];
 
 /// W25: built-in defaults of the database settings.
 pub const DEFAULT_AUDIT_RETENTION_DAYS: u32 = 365;
-/// The shortest audit retention (0 = forever); migration 1115 enforces it.
+/// The shortest audit retention (0 = forever); a CHECK enforces it.
 pub const MIN_AUDIT_RETENTION_DAYS: u32 = 90;
 
 #[derive(Debug, Clone)]

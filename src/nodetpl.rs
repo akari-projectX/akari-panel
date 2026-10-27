@@ -210,7 +210,7 @@ fn wants_tls(tls_domain: &Option<String>, tls: Option<bool>) -> bool {
 
 /// The node's TLS domain ("节点域名", W10) as stored: lowercase DNS name with
 /// at least two labels, no trailing dot, no wildcard, no IP literal (the
-/// CHECK of migration 0080 is the same rule).
+/// CHECK on `servers.tls_domain` is the same rule).
 pub fn node_tls_domain(d: &str) -> Result<String, ApiError> {
     let d = d.trim().trim_end_matches('.').to_ascii_lowercase();
     if !hostname::is_dns_name(&d, NameRules::RFC1123.at_least_labels(2)) {

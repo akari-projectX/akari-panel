@@ -123,7 +123,6 @@ akari-ctl upgrade                  # 最新发布版；--version vX.Y.Z 指定�
 要点：
 
 - **先升级 agent，再升级面板。** 面板会丢弃缺少 `session_id` 的流量上报；协议过旧的 agent 会被下发空状态并在后台标出。agent 通过后台「更新」页做签名自更新与分批灰度，也可在节点上重跑安装命令。
-- **v0.3.x → v0.4 只能全新安装**（迁移已压缩为基线 `1000_baseline.sql`）；`akari-ctl upgrade` 会在改动任何东西之前拒绝。
 - 备份在 `/var/backups/akari/`；设置 `AGE_RECIPIENT` 后用 age 加密，否则是 0600 明文并给出警告。
 - 升级后想撤销：没有运行迁移时直接换回旧二进制 / 镜像；运行过迁移则需恢复升级前的备份。详见 [`docs/DEPLOY.md`](docs/DEPLOY.md) §5「升级」与 §6「回滚」。
 
@@ -161,7 +160,7 @@ akari-ctl uninstall --purge         # 同时删除数据库、数据目录、配
 akari-panel/
 ├── src/                   Rust 后端（crate akari_panel，全部模块在 lib.rs；main.rs = CLI 与启动）
 ├── proto/                 控制协议正本 agent.proto + 协议能力清单 protocols.toml
-├── migrations/            sqlx 迁移（启动时自动执行；v0.4 基线 1000_baseline.sql）
+├── migrations/            sqlx 迁移（启动时自动执行；基线 0001_baseline.sql）
 ├── portal/                用户门户（Svelte 5 + Vite + Tailwind 4 + bits-ui，Playwright e2e）
 ├── admin/                 管理后台（独立应用：登录页包 + 控制台包，中英双语）
 ├── deploy/                docker-compose、systemd 单元、Caddy / nginx、Prometheus 告警、Grafana 面板

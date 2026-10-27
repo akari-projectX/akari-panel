@@ -4,7 +4,7 @@
 //! creation: all enrolled servers not being deleted, or an explicit list, cut
 //! to `percentage` and split into cumulative `waves`, both in a
 //! deterministic order (SHA-256 of the rollout's seed and the server id, see
-//! `assign_waves`). Rows live in `rollout_servers` (migration 0021).
+//! `assign_waves`). Rows live in `rollout_servers`.
 //!
 //! Server states: pending -> offered (an UpdateOffer went out on its stream)
 //! -> updating (Hello with the target version) -> healthy (an ok Ack on that

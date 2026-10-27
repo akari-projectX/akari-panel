@@ -1,4 +1,4 @@
-//! Cloudflare API tokens (`dns_accounts`, migration 1119).
+//! Cloudflare API tokens (`dns_accounts`).
 //!
 //! A token is sealed with the master key (`masterkey::Keys::seal`, AAD = the
 //! row id), shown only as "set" plus a fingerprint, and recorded in the audit

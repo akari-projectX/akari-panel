@@ -1167,7 +1167,7 @@ pub async fn create_user(
     }
 }
 
-/// The unique constraint on `users.email` (D1, migration 1010): the one
+/// The unique constraint on `users.email`: the one
 /// constraint name the code branches on.
 pub const USERS_EMAIL_KEY: &str = "users_email_key";
 
@@ -1188,7 +1188,7 @@ pub struct CreatedUser {
 // Every mutation that changes what a node must run is an `apply_*` function
 // taking the open transaction: it writes the change AND bumps the affected
 // nodes' versions in that transaction (REVIEW P0-3). The version bump itself
-// raises the per-node NOTIFY (trigger, migration 0007), delivered to every
+// raises the per-node NOTIFY, delivered to every
 // panel instance on commit — handlers do nothing after committing. Global
 // lock order, to stay
 // deadlock-free: nodes (ORDER BY id, FOR UPDATE) -> users -> entrance_users.

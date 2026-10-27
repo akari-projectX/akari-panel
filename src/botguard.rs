@@ -120,7 +120,7 @@ pub struct Settings {
     pub turnstile_reset: bool,
     pub honeypot: bool,
     pub min_submit_secs: i32,
-    /// W27 passkeys (migration 1012): password login refused for admins /
+    /// W27 passkeys: password login refused for admins /
     /// users that have a current passkey (`passkey::password_refused`).
     pub passkey_only_admins: bool,
     pub passkey_only_users: bool,

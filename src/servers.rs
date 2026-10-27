@@ -1,6 +1,6 @@
 //! Q1 (PLAN-v0.4 D2, research/db-schema-review.md §D2 方案 A): servers.
 //!
-//! A server is one machine = one agent identity (migration 1036): its
+//! A server is one machine = one agent identity: its
 //! enrolment and certificates, the agent's Hello/heartbeat state, the
 //! desired-state versions and lease, apply failures, two-phase deletion,
 //! the billing GCRA, the latency probe, the TLS domain (one ACME

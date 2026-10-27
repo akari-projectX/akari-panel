@@ -20,7 +20,7 @@
 //!   `MAX_OPEN_PER_USER` not-closed tickets (checked under a per-user
 //!   advisory lock), replies at most `REPLY_PER_HOUR` per hour; a ticket
 //!   holds at most `MAX_MESSAGES` messages; text only with length caps
-//!   (also CHECKs in migration 0115).
+//!   (also CHECKs on the tables).
 //! - Every mutation is an `apply_*` in the caller's transaction with its
 //!   audit row (`ticket.create/reply/close/reopen/assign`; bodies are not
 //!   copied into the audit log). Email notifications go through

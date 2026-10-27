@@ -10,7 +10,7 @@
 //!
 //! Codes: 10 characters of `[a-z2-9]` (no 0/1, ~50 bits). Only role=user
 //! accounts have codes. **Exactly one code per account** (PLAN-next
-//! "门户下一批"; unique index `invite_codes_user` since migration 1113):
+//! "门户下一批"; unique index `invite_codes_user`):
 //! created automatically by `GET /me/invite-codes` while registration is
 //! open and user invites are allowed (or explicitly by `POST`, which refuses
 //! a second one with `invite.exists`); the user can neither delete nor

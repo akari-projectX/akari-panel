@@ -8,11 +8,11 @@
 //!   `scripts/update-block-lists.py`) plus custom domain / IP / protocol
 //!   rules (one entry per line, validated and normalized by
 //!   [`parse_entries`]). Mutations are `apply_*` in the caller's
-//!   transaction with audit rows (`block_rule.*`); the 1060 trigger wakes
+//!   transaction with audit rows (`block_rule.*`); the trigger wakes
 //!   every agent session (`notify.rs`, payload `block-rules`).
 //! - **Per-node switch** (`nodes.block_rules_enabled`, default off,
 //!   `apply_set_node`, audit `node.block_rules.set`): never bumps the node's
-//!   versions — no Snapshot, no xray rebuild. The 1060 trigger wakes the
+//!   versions — no Snapshot, no xray rebuild. The trigger wakes the
 //!   node's sessions instead.
 //! - **Compiling** ([`server_policy`] → `pb::BlockPolicy`): done here, once
 //!   per send; the agent only installs the result into xray routing.

@@ -134,7 +134,7 @@ pub(crate) async fn server_for_serial(
 
 /// The server a certificate serial belongs to. The revocation tombstones are
 /// consulted FIRST: a revoked serial stays revoked even if some server row
-/// carried it again (the DB also refuses that, migrations 0007/0011). A
+/// carried it again. A
 /// 'deleted' tombstone is accepted as `Revoked` (empty state, then closed);
 /// a 'rotated' one (superseded by a renewal, M1-8) is refused like an
 /// unknown serial — the server lives on and its agent must use its newer
@@ -2203,7 +2203,7 @@ async fn desired_state(pg: &sqlx::PgPool, server_id: Uuid) -> anyhow::Result<Opt
     }
     if !inbounds.is_empty() {
         // The credentials come from the covering primary key of
-        // entrance_users (migration 1090: an index-only scan per entrance,
+        // entrance_users (an index-only scan per entrance,
         // however its rows are spread over the heap). No ORDER BY: the rows
         // of one entrance already arrive in user order and the sort below
         // finds such runs in linear time, where the database sorts (and
@@ -2650,7 +2650,7 @@ mod tests {
         db.drop().await;
     }
 
-    /// Migration 1090: the primary key carries the credential (index-only
+    /// The primary key carries the credential (index-only
     /// snapshot reads) and an oversized credential is a constraint error.
     #[tokio::test]
     async fn entrance_users_key_covers_the_credential() {
@@ -3753,7 +3753,7 @@ mod tests {
         assert!(!hostile.to_string().contains("\\u0000"));
     }
 
-    /// B7 (0050): the database refuses nonsense the app never writes.
+    /// B7: the database refuses nonsense the app never writes.
     #[tokio::test]
     async fn check_constraints_reject_nonsense() {
         let Some(db) = TestDb::new().await else {
