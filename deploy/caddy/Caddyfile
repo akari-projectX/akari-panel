@@ -64,6 +64,8 @@
 	# Caddy appends the client to X-Forwarded-For (and, because upstream
 	# proxies are not trusted, discards a client-supplied one). The Host
 	# header is passed through: the panel refuses names it does not know.
+	# reverse_proxy also sets X-Forwarded-Proto (from its own connection):
+	# the panel sends HSTS only when a trusted proxy says "https".
 	reverse_proxy {$AKARI_UPSTREAM:panel:8080} {
 		header_up X-Request-Id {http.request.uuid}
 	}

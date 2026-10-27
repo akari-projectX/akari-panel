@@ -581,6 +581,7 @@ export const EN: Record<string, string> = {
   "所选订单不存在": "The selected order does not exist",
   "尝试次数过多，请稍后再试": "Too many attempts. Please try again later.",
   "服务器繁忙，请稍后再试": "The server is busy. Please try again shortly.",
+  "请求来自其他网站，已被拒绝。请回到本站页面再操作": "The request came from another site and was refused. Go back to this site and try again.",
   "查询参数无效：{detail}": "Invalid query: {detail}",
   "登录已失效，请重新登录": "Your session has ended. Please sign in again.",
   "提现金额须在 0.01–{max_price_yuan} 元之间": "The amount must be ¥0.01–¥{max_price_yuan}",

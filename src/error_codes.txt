@@ -363,6 +363,7 @@ release.signature_invalid
 release.upload_interrupted
 request.body_too_large
 request.busy
+request.cross_site
 request.field_not_null
 request.field_required
 request.field_too_long

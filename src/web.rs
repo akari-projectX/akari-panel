@@ -82,11 +82,35 @@ async fn front(state: AppState, inner: Router, mut req: Request) -> Response {
     };
     *req.uri_mut() = uri;
     req.extensions_mut().insert(via);
+    if state.cfg().web.cookie_secure {
+        let peer = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|c| c.0.ip());
+        if peer.is_some_and(|p| crate::client_ip::forwarded_https(p, req.headers(), &eff.trust)) {
+            req.extensions_mut().insert(Https);
+        }
+    }
     match inner.oneshot(req).await {
         Ok(r) => r,
         Err(e) => match e {},
     }
 }
+
+/// Request extension set by `front` when the request reached the panel
+/// over https: a trusted proxy (`web.trusted_proxies`, or Cloudflare when
+/// trusted) forwarded it with `X-Forwarded-Proto: https`, and
+/// `web.cookie_secure` says the deployment is https-only. The panel itself
+/// speaks plain HTTP behind the proxy, so this is the only way it can know.
+/// `security_headers` turns it into HSTS.
+#[derive(Debug, Clone, Copy)]
+struct Https;
+
+/// How long browsers remember that the site is https-only (one year; no
+/// `includeSubDomains`, no `preload`: the subscription domain and the
+/// operator's other sites under the same registrable domain are not ours
+/// to pin).
+const HSTS: &str = "max-age=31536000";
 
 /// The only thing the passkey centre answers: `GET /.well-known/webauthn`
 /// → `{"origins": [every https main-domain origin]}` (WebAuthn related
@@ -459,6 +483,7 @@ fn inner_router(state: AppState) -> Router {
         // answers 405 + Allow: a prefix oracle.
         .method_not_allowed_fallback(rejected)
         // Inside the gate: request IDs exist for accepted requests only.
+        .layer(middleware::from_fn(cross_site_guard))
         .layer(middleware::from_fn(crate::request_id::layer))
         .layer(middleware::from_fn(prefix_gate))
         // Outside the gate, observation only (separate metrics listener).
@@ -513,6 +538,7 @@ pub const CSP_TURNSTILE: &str = "default-src 'self'; style-src 'self' 'unsafe-in
 async fn security_headers(req: Request, next: Next) -> Response {
     // Captured before the request is consumed; logged only redacted.
     let path = redacted_path(req.uri().path());
+    let https = req.extensions().get::<Https>().is_some();
     let mut res = next.run(req).await;
     if res.status().is_server_error() {
         tracing::warn!(path = %path, status = res.status().as_u16(), "request failed");
@@ -532,7 +558,59 @@ async fn security_headers(req: Request, next: Next) -> Response {
     ] {
         h.entry(name).or_insert(HeaderValue::from_static(value));
     }
+    if https {
+        h.entry(header::STRICT_TRANSPORT_SECURITY)
+            .or_insert(HeaderValue::from_static(HSTS));
+    }
     res
+}
+
+/// Browsers label every request with `Sec-Fetch-Site`. A state-changing
+/// request that carries the session cookie and comes from another site
+/// (`cross-site`) is refused before any handler runs: SameSite=Strict
+/// already keeps the cookie off such requests, this is the second layer
+/// (and covers browsers that treat the cookie differently). An absent
+/// header (old browsers, curl, the CLI) is allowed. Only the portal and
+/// admin entries are guarded: payment notifications, install links and
+/// subscriptions are called by other systems and carry no session.
+async fn cross_site_guard(req: Request, next: Next) -> Response {
+    let guarded = matches!(
+        req.extensions().get::<Via>(),
+        Some(Via::Admin | Via::Portal)
+    );
+    let changes_state = !matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+    );
+    if guarded && changes_state && has_session_cookie(req.headers()) && is_cross_site(req.headers())
+    {
+        return crate::auth::api_error!(
+            FORBIDDEN,
+            "request.cross_site",
+            "cross-site request refused"
+        )
+        .into_response();
+    }
+    next.run(req).await
+}
+
+fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("cross-site"))
+}
+
+fn has_session_cookie(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .any(|pair| {
+            pair.split_once('=')
+                .is_some_and(|(name, _)| name.trim() == crate::auth::COOKIE_NAME)
+        })
 }
 
 /// A request path safe to log: the secret route prefix and subscription
@@ -642,5 +720,161 @@ mod tests {
             assert_eq!(got, want, "{raw}");
             assert!(!got.contains("SECRET") && !got.contains("0123abcd"));
         }
+    }
+
+    fn proxied(state: &AppState, proxy: std::net::IpAddr, proto: Option<&str>) -> Client {
+        let mut c = Client::new(state, proxy);
+        if let Some(p) = proto {
+            c.headers.push(("x-forwarded-proto".into(), p.into()));
+        }
+        c
+    }
+
+    /// HSTS appears only on accepted responses that reached a trusted proxy
+    /// over https with `web.cookie_secure` on; the canonical rejection never
+    /// carries it and stays byte-identical to the one without the header.
+    #[tokio::test]
+    async fn hsts_only_on_https_responses_never_on_rejections() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let proxy = crate::testdb::http::rand_ip();
+        let cidr = crate::client_ip::Cidr::parse(&proxy.to_string()).unwrap();
+        let state = AppState::for_test_with(db.pool.clone(), |c| {
+            c.web.trusted_proxies = vec![cidr];
+        })
+        .await;
+        let hsts = |r: &crate::testdb::http::Resp| {
+            r.headers
+                .get(header::STRICT_TRANSPORT_SECURITY)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from)
+        };
+        let https = proxied(&state, proxy, Some("https"));
+        assert_eq!(
+            hsts(&https.get("/test/healthz").await).as_deref(),
+            Some("max-age=31536000"),
+            "an https request through a trusted proxy"
+        );
+        assert_eq!(
+            hsts(&https.get("/healthz").await).as_deref(),
+            Some("max-age=31536000"),
+            "the portal entry too"
+        );
+        // Several elements / lines: the nearest proxy (rightmost) decides.
+        let chained = proxied(&state, proxy, Some("http, https"));
+        assert!(hsts(&chained.get("/test/healthz").await).is_some());
+        let downgraded = proxied(&state, proxy, Some("https, http"));
+        assert!(hsts(&downgraded.get("/test/healthz").await).is_none());
+        assert!(
+            hsts(
+                &proxied(&state, proxy, Some("http"))
+                    .get("/test/healthz")
+                    .await
+            )
+            .is_none(),
+            "plain http"
+        );
+        assert!(
+            hsts(&proxied(&state, proxy, None).get("/test/healthz").await).is_none(),
+            "no X-Forwarded-Proto"
+        );
+        // An untrusted peer cannot claim https.
+        let stranger = proxied(&state, crate::testdb::http::rand_ip(), Some("https"));
+        assert!(hsts(&stranger.get("/test/healthz").await).is_none());
+        // The rejection is the canonical bytes, https header or not.
+        let plain = proxied(&state, proxy, None);
+        let want = plain.get("/definitely/not/here").await.fingerprint();
+        let got = https.get("/definitely/not/here").await.fingerprint();
+        assert_eq!(got, want, "rejection must not change with the header");
+        assert!(got.1.is_empty() && got.2.is_empty(), "{got:?}");
+        assert_eq!(
+            https.get("/test").await.fingerprint(),
+            want,
+            "bare prefix is the canonical rejection"
+        );
+        // cookie_secure off (plain-http deployment): never HSTS.
+        let insecure = AppState::for_test_with(db.pool.clone(), |c| {
+            c.web.trusted_proxies = vec![cidr];
+            c.web.cookie_secure = false;
+        })
+        .await;
+        let c = proxied(&insecure, proxy, Some("https"));
+        assert!(hsts(&c.get("/test/healthz").await).is_none());
+        db.drop().await;
+    }
+
+    /// State-changing requests carrying the session cookie with
+    /// `Sec-Fetch-Site: cross-site` are refused on the portal and admin
+    /// entries; everything else (no header, same-origin, no cookie, reads,
+    /// the exempt public paths) is untouched.
+    #[tokio::test]
+    async fn cross_site_state_changes_with_a_session_are_refused() {
+        let Some(db) = TestDb::new().await else {
+            return;
+        };
+        let state = AppState::for_test(db.pool.clone()).await;
+        let call =
+            |method: Method, path: &'static str, site: Option<&'static str>, cookie: bool| {
+                let state = state.clone();
+                async move {
+                    let mut c = Client::new(&state, rand_ip());
+                    if let Some(site) = site {
+                        c.headers.push(("sec-fetch-site".into(), site.into()));
+                    }
+                    if cookie {
+                        c.cookie = Some("whatever".into());
+                    }
+                    c.req(method, path, None).await
+                }
+            };
+        for path in ["/auth/logout", "/test/auth/logout"] {
+            let r = call(Method::POST, path, Some("cross-site"), true).await;
+            assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+            assert_eq!(r.json()["code"], "request.cross_site", "{path}");
+            for (site, cookie) in [
+                (None, true),
+                (Some("same-origin"), true),
+                (Some("same-site"), true),
+                (Some("none"), true),
+                (Some("cross-site"), false),
+            ] {
+                let r = call(Method::POST, path, site, cookie).await;
+                assert_ne!(
+                    r.json()["code"],
+                    "request.cross_site",
+                    "{path} {site:?} {cookie}"
+                );
+            }
+            // Reads are not state changes.
+            let r = call(Method::GET, path, Some("cross-site"), true).await;
+            assert_ne!(r.json()["code"], "request.cross_site", "GET {path}");
+        }
+        // A cross-site DELETE and PUT on an API path too (route need not exist).
+        for m in [Method::DELETE, Method::PUT, Method::PATCH] {
+            let r = call(m.clone(), "/api/v1/anything", Some("cross-site"), true).await;
+            assert_eq!(r.json()["code"], "request.cross_site", "{m}");
+        }
+        // Exempt: payment notifications, install links and subscriptions are
+        // called by other systems; they answer as before (canonical 404).
+        let canonical = call(Method::GET, "/definitely/not/here", None, false)
+            .await
+            .fingerprint();
+        for path in [
+            "/pay/00000000-0000-0000-0000-000000000000/notify",
+            "/install/nope",
+        ] {
+            let r = call(Method::POST, path, Some("cross-site"), true).await;
+            assert_eq!(r.fingerprint(), canonical, "{path}");
+        }
+        let sub = format!("/{}/token", state.settings().access().sub_path);
+        let sub: &'static str = Box::leak(sub.into_boxed_str());
+        let r = call(Method::POST, sub, Some("cross-site"), true).await;
+        assert_eq!(r.fingerprint(), canonical, "subscription route");
+        // An unknown path stays the canonical rejection for everyone without
+        // the cookie, cross-site header or not.
+        let r = call(Method::POST, "/nope/x", Some("cross-site"), true).await;
+        assert_eq!(r.fingerprint(), canonical, "unknown path is not 403");
+        db.drop().await;
     }
 }

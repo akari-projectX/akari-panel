@@ -299,6 +299,9 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 （只对管理员会话提供；没有会话时与任何未知路径一样是空 404，所以请收藏 `/app` 而不是 `/admin`）。
 用户使用 `https://panel.example.com/` 的门户；管理员不能在那里登录。
 忘记密码：`akari admin passwd <email>`（会结束该账号的所有会话）。
+**管理员没有邮件找回密码**，也不会收到含后台前缀或控制台链接的邮件（后台前缀是全站唯一的秘密，邮件会经过第三方中继和收件箱）：
+普通管理员忘记密码或丢失通行密钥，请所有者在「用户」里重置其登录方式，或在服务器上执行 `akari admin passwd` /
+`akari admin reset-login <email>`；所有者自己只能在服务器上用这两条命令恢复。
 
 ### 后台前缀、IP 白名单与订阅路径（D4/D11，中文）
 
@@ -1699,3 +1702,13 @@ sudo -u akari akari -c /etc/akari/panel.toml info      # admin prefix, sub path
 然后是代理：**Caddy**（`deploy/caddy/Caddyfile`，在其环境中设置 `AKARI_DOMAIN`，上游 `127.0.0.1:8080`）或
 **nginx**（`deploy/nginx/akari.conf`，替换域名和证书路径）。两者都转发所有路径（面板自行判断，其余一律以空 404 应答），追加 `X-Forwarded-For`，
 并且不把 URI（后台前缀、订阅令牌）写入访问日志。`trusted_proxies = ["127.0.0.1/32"]` 适用于同机代理。
+
+**HSTS**：面板自己只讲 HTTP，所以靠代理告诉它请求是不是 https：当 `web.cookie_secure = true`（默认），且 TCP 对端属于
+`trusted_proxies`（或已信任的 Cloudflare 网段），并且该代理转发的 `X-Forwarded-Proto` 的最右一项是 `https` 时，主域名与订阅域名上
+面板接受的响应带 `Strict-Transport-Security: max-age=31536000`（不带 `includeSubDomains`/`preload`）。Caddy 的 `reverse_proxy`
+自动设置该头（不信任客户端自带的），`deploy/nginx/akari.conf` 与安装器生成的 nginx 配置有 `proxy_set_header X-Forwarded-Proto $scheme`，生成的 HAProxy 配置固定写 `https`；
+自建代理必须同样设置它。没有受信代理（面板直接对公网）时不发 HSTS。空 404 拒绝响应永远不带 HSTS（与其他安全头一样）。
+
+**跨站请求**：带会话 cookie 的写请求（POST/PUT/PATCH/DELETE，门户 `/api`、`/auth` 与后台全部接口），若浏览器给的
+`Sec-Fetch-Site` 是 `cross-site`，面板返回 403 `request.cross_site`；没有该头（旧浏览器、curl、CLI）照常处理。
+支付通知、安装链接和订阅不受影响。
