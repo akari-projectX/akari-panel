@@ -441,7 +441,7 @@ test("SET-23: account cleanup (estimate for the edited days, turning it on wants
   await save(page);
   await toast(page, "清理设置已保存");
   await page.getByRole("link", { name: "在用户列表中查看" }).click();
-  await expect(page).toHaveURL(/\/users\?never_used=1/);
+  await expect(page).toHaveURL(/\/users\?never=1/);
 });
 
 test("SET-10 SET-12 SET-26: subscription path (danger zone, with the mail job), formats and import buttons (turning one off confirmed), multipliers in line names", async ({

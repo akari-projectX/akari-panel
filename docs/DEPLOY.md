@@ -246,7 +246,6 @@ agent 以双向 TLS 直连 8443 端口的 gRPC，而橙色云记录会让 Cloudf
 **节点域名与已有节点。** 已注册的 agent 永远沿用其 bootstrap 文件中的 server name。因此面板记录写进 bootstrap 的每一个 server name
 （`grpc_server_names`），其 gRPC 证书覆盖所有这些名称加上 `localhost`/`127.0.0.1`：更改节点域名只影响新安装，已有节点继续连接。
 名称只能通过“节点通信证书域名”表中的 **移除** 从证书里去掉，该表会列出仍在使用它的节点（之后需要重新安装这些节点）。
-在本版本之前注册的节点没有记录名称，单独列出（它们使用旧 panel.toml 的 `grpc.server_name`，已作为来源 `config` 导入列表；只要还有这类节点，就不能移除）。
 
 **反向代理证书。** `deploy/caddy/Caddyfile` 照旧为 `AKARI_DOMAIN` 提供服务，对其他任何名称则**按需**签发：
 首次为新名称握手时，Caddy 询问面板的 `ask` 端点（`[tls_ask] bind`，独立监听器：compose 为内网上的 `0.0.0.0:8082`，需 `allow_non_loopback = true`；
@@ -494,8 +493,7 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
 **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**，选择环境（正式/沙箱），填 APPID、可选的 商户 PID，
 粘贴应用私钥（用 `data/master.key` 加密，之后不再显示）和支付宝公钥，把显示的 **应用公钥** 上传到支付宝开放平台，启用，然后 **测试连接**。
 回调 URL 按支付方式由主域名（§2b）生成：支付宝侧无需配置。可以配置多种支付方式（付款人在结账时选择）。
-详情、密钥轮换和旧版升级见 docs/PAYMENTS.md。旧 panel.toml 中的 `[payments.alipay]` 会在数据库配置为空时导入一次，
-之后被忽略并给出警告：请删除该段及其密钥文件。
+详情和密钥轮换见 docs/PAYMENTS.md。
 
 ## 2e. DNS 管理（Cloudflare，中文）
 
@@ -705,8 +703,7 @@ agent 首次启动时，在其状态目录中生成密钥（ECDSA P-256）
 
 该 unit 只授予 `CAP_NET_BIND_SERVICE`（在 443 上建立入站），并把 bootstrap 文件作为 systemd credential 读取（systemd >= 250）。
 它隐藏其他用户的进程（`ProtectProc=invisible`），但不隐藏节点状态所读取的机器级 `/proc` 文件（`/proc/stat`、`meminfo`、`loadavg`、`net/*`）：
-W23 之前的 unit 带有 `ProcSubset=pid`，导致所有机器指标读出来都是 0；现在 agent 把读不到的内容上报为 **未知**（unknown），绝不是 0，
-节点页会说明原因（§3e）。
+agent 把读不到的内容上报为 **未知**（unknown），绝不是 0，节点页会说明原因（§3e）。
 
 **Token expired / agent state lost / certificate expired（令牌过期 / agent 状态丢失 / 证书过期）**
 （agent 离线时间超过其有效期）：使用 **重装命令**（或为 bootstrap 文件使用 `akari server enroll-token <server id>`）。
@@ -839,7 +836,6 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 （行号、语法高亮；JSON / YAML / 配置文本），右边「占位符」速查（点一下插到光标处）和「预览」。预览默认用内置示例线路渲染
 （不含真实凭据）；也可以选一个真实用户，用他的真实线路与凭据渲染——这会记入审计日志（`sub_template.preview`），
 订阅链接仍是占位。保存时服务端指出的错误会在编辑器里标出行与列。手机上编辑器占满宽度，速查表折叠在按钮后。
-旧版本的分流设置与远程规则集**不会**转换：升级后四种客户端都从内置默认模板开始。
 
 占位符沿用 xboard 的名字，可直接粘贴 xboard 的模板：
 
@@ -1013,9 +1009,6 @@ End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed
 每个用户有自己的密钥，客户端用 `server_psk:user_key` 连接。更改方法会重新签发所有用户密钥（订阅必须刷新）。
 协议 8 及以后的 agent（xray v26.10.21 起，多用户 Shadowsocks 2022 服务端按哈希/邮箱查用户，移除用户不再移动其他用户）
 原生移除用户：**移除、重新加回同一密钥（例如续期的套餐）以及轮换某个用户的密钥都是实时增量**，不影响其他用户的连接，没有墓碑。
-协议 5–7 的旧 agent（滚动升级期间的混合机群）仍沿用旧规则：被移除的用户在 agent 的 gate 中被吊销，其密钥作为墓碑留在 xray 的表里，
-移除与重新加回是实时增量，**轮换某个用户的密钥会重建节点**（Snapshot：该节点上的所有连接断开一次），
-墓碑数量超过上限（每个入站 max(1024, 在线用户数)；重建时会压实）的移除也一样；协议低于 5 的 agent 从 Shadowsocks 入站移除任何用户都会重建节点。新增则始终是实时增量。
 
 **Hysteria 2** 像 TLS 模板一样使用节点证书（设置 节点域名 时自动获得，§3f）；不得设置 `hysteriaSettings.auth`
 （共享密码会绕过每用户认证）；带宽/拥塞设置保持 xray 的默认值。
@@ -1211,8 +1204,8 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
   主机 CPU/内存/负载/数据目录磁盘、进程内存、版本、持有的 agent 连接数、数据库连接池、后台任务统计）。
   30 秒没有心跳 = 已退出。每次重启 / 升级都是新的实例 id：同一主机（按主机名）上有更晚启动的在线实例时，
   已退出的旧实例立即移除；否则 10 分钟后移除。后台任务统计只计在线实例。多实例部署时任一实例都能给出全部实例的状态。
-  主机 CPU / 内存 / 负载读自 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`：v0.4.1 之前的面板单元带
-  `ProcSubset=pid`，这些文件被隐藏，页面显示「未知」并提示原因；运行 `akari-ctl upgrade`（安装新单元）即可。
+  主机 CPU / 内存 / 负载读自 `/proc/stat`、`/proc/meminfo`、`/proc/loadavg`：服务沙箱把它们藏起来时（systemd `ProcSubset=pid`），
+  页面显示「未知」并提示原因。
 - **PostgreSQL**：版本、是否只读副本、连接数 / `max_connections`、库大小、往返延迟。
 - **Valkey**：版本、内存、客户端数、运行时长、往返延迟。
 - **Caddy（反向代理）**：经系统设置的主域名探测（TCP → TLS（证书到期时间）→ `HEAD /`，任何 HTTP
@@ -1242,7 +1235,7 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
 **Telegram**：用 @BotFather 创建 bot，把它加入群组/频道，输入 bot token 和 chat id（数字；群组和频道为负数，或 `@channelname`），保存，然后 发送测试。
 面板只调用 `sendMessage`（向 api.telegram.org 的出站 HTTPS；无需开放入站）。token 用由 `data/master.key` 派生的密钥加密存放，之后不再显示
 （丢失 `master.key` 意味着需要重新输入）。对于屏蔽 Telegram 的网络，请把 **Telegram API 地址**（系统设置 → 告警）设为自托管的 Bot API 服务器
-（https；仅 origin；空 = `https://api.telegram.org`）。W25：旧的 `[alerts] telegram_api_url` 会被导入到这里一次。
+（https；仅 origin；空 = `https://api.telegram.org`）。
 
 **Webhook**：`POST <url>`（https；明文 http 仅限 localhost），JSON body：
 

@@ -167,7 +167,7 @@ export function CommandPalette({
       keys: "never used cleanup 清理",
       hint: tr("用户", "Users"),
       icon: <Ban />,
-      run: () => go("/users?never_used=1"),
+      run: () => go("/users?never=1"),
     },
     {
       id: "test-mail",

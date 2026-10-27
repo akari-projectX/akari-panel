@@ -6,8 +6,7 @@
 // results grouped by kind, one click to the object). /nodes/<server id> is
 // the server's workbench (node-server.tsx). Every dialog is URL-driven
 // (node-dialogs.tsx `NodesDialogs`): `?new=server|node|relay`, `?node=`,
-// `?entrance=`, `?action=install|enroll`; the old `?open=kind:id` links
-// (dashboard, alerts, audit, tickets) are redirected.
+// `?entrance=`, `?action=install|enroll`.
 import type { QueryClient } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router";
@@ -51,7 +50,7 @@ import {
 } from "../components/nodes-bits";
 import { ServerStatus, serverStateOf } from "../components/status";
 import { useDebounced } from "../kit";
-import { navigate, useQS, useRoute } from "../router";
+import { useQS, useRoute } from "../router";
 import { groupsQuery, serversQuery, useServers } from "../servers";
 import type { ServerView } from "../types";
 import { NodesDialogs } from "./node-dialogs";
@@ -65,23 +64,7 @@ export function prefetchData(qc: QueryClient): void {
 }
 
 export function NodesPage() {
-  const { sub, query } = useRoute();
-  const servers = useServers();
-  const list = servers.data;
-  // Old deep links (`?open=server:…|node:…|entrance:…`) → the server page.
-  const open = query.get("open") ?? "";
-  useEffect(() => {
-    const [kind, id] = open.split(":");
-    if (!id) return;
-    if (kind === "server") return navigate(`/nodes/${id}`, true);
-    if (!list) return;
-    for (const s of list)
-      for (const n of s.nodes) {
-        if (kind === "node" && n.id === id) return navigate(`/nodes/${s.id}?node=${id}`, true);
-        if (kind === "entrance" && n.entrances.some((e) => e.id === id))
-          return navigate(`/nodes/${s.id}?entrance=${id}`, true);
-      }
-  }, [open, list]);
+  const { sub } = useRoute();
   return (
     <>
       {sub[0] ? <ServerPage id={sub[0]} /> : <Fleet />}

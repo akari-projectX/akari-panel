@@ -6,8 +6,7 @@
 // header has 批量任务 (jobs popover), 导出 CSV (same filters) and 新建用户.
 // The detail dialog is user-detail.tsx; batch UI is user-batch.tsx.
 // URL: ?view= &q= &plan= &role= &never=1 &reg= &login= &sort= &cols= &size=
-// &page= &open= &tab= &new=1 &jobs=1 &job=<id>; old links (?filter=never,
-// ?never_used=1, ?registered_before=, ?last_login_before=, ?status=) work.
+// &page= &open= &tab= &new=1 &jobs=1 &job=<id> &status=.
 import { keepPreviousData, useQuery, type QueryClient } from "@tanstack/react-query";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -423,7 +422,7 @@ export function UsersPage() {
   const [query, patch] = useQS();
   const g = (k: string) => query.get(k) ?? "";
 
-  const viewParam = g("view") || (query.get("filter") === "never" ? "never" : "");
+  const viewParam = g("view");
   const planView = viewParam.startsWith("plan:") ? viewParam.slice(5) : "";
   const view: ViewId | "plan" = planView
     ? "plan"
@@ -434,9 +433,9 @@ export function UsersPage() {
     q: g("q"),
     plan: g("plan"),
     role: g("role"),
-    never: g("never") === "1" || g("never_used") === "1",
-    reg: g("reg") || g("registered_before"),
-    login: g("login") || g("last_login_before"),
+    never: g("never") === "1",
+    reg: g("reg"),
+    login: g("login"),
     status: g("status"),
     sort: SORTS.includes(g("sort")) ? g("sort") : "-created",
     size: SIZES.includes(Number(g("size"))) ? Number(g("size")) : DEFAULT_SIZE,
@@ -511,21 +510,21 @@ export function UsersPage() {
       k: "never",
       label: tr("从未使用", "Never used"),
       value: "",
-      clear: { never: null, never_used: null },
+      clear: { never: null },
     });
   if (f.reg)
     chips.push({
       k: "reg",
       label: tr("注册早于", "Signed up before"),
       value: f.reg,
-      clear: { reg: null, registered_before: null },
+      clear: { reg: null },
     });
   if (f.login)
     chips.push({
       k: "login",
       label: tr("最后登录早于", "Last sign-in before"),
       value: f.login,
-      clear: { login: null, last_login_before: null },
+      clear: { login: null },
     });
   if (f.status)
     chips.push({ k: "status", label: tr("状态", "Status"), value: statusName(f.status, tr), clear: { status: null } });
@@ -534,16 +533,12 @@ export function UsersPage() {
     setSearch("");
     patch({
       view: null,
-      filter: null,
       q: null,
       plan: null,
       role: null,
       never: null,
-      never_used: null,
       reg: null,
-      registered_before: null,
       login: null,
-      last_login_before: null,
       status: null,
       page: null,
     });
@@ -677,7 +672,7 @@ export function UsersPage() {
               value={{ plan: f.plan, role: f.role, never: f.never, reg: f.reg, login: f.login }}
               plans={plans.data ?? []}
               count={[f.plan, f.role, f.never ? "1" : "", f.reg, f.login].filter(Boolean).length}
-              onApply={(o) => set({ ...o, never_used: null, registered_before: null, last_login_before: null })}
+              onApply={set}
             />
             <Menu
               label={tr("排序", "Sort")}
