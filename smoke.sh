@@ -3018,6 +3018,268 @@ done
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='user.traffic.reset' AND target_id='$BUYER' AND after->>'source'='reset_pack'")" = "1" ] \
   || { echo "FAIL: reset pack not audited"; exit 1; }
 
+echo "== crypto gateways: CoinPayments + Coinbase (sealed secrets, signed create, webhooks, query; refusals canonical; paid once) =="
+# A mock of both gateways (stdlib only). It verifies the panel's request
+# authentication independently: the CoinPayments HMAC headers (python hmac)
+# and the Coinbase bearer JWT (EdDSA, verified by openssl).
+CX_CP_SECRET="smokeCoinPaymentsSecret0123456789"
+CX_HOOK_SECRET="smokeCoinbaseHookSecret0123456789"
+openssl genpkey -algorithm ed25519 -out "$PAY/cb-key.pem" 2>/dev/null
+openssl pkey -in "$PAY/cb-key.pem" -pubout -out "$PAY/cb-pub.pem" 2>/dev/null
+CX_CB_SECRET=$( (openssl pkey -in "$PAY/cb-key.pem" -outform DER | tail -c 32; openssl pkey -in "$PAY/cb-key.pem" -pubout -outform DER | tail -c 32) | base64 -w0 )
+cat >"$PAY/crypto-mock.py" <<'PY'
+import base64, hashlib, hmac, json, subprocess, sys, threading, time, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+D = sys.argv[1]
+BASE = "http://127.0.0.1:18093"
+CP_CLIENT, CP_SECRET = "smoke-cp-client-0001", "smokeCoinPaymentsSecret0123456789"
+CB_KEY = "organizations/smoke/apiKeys/k1"
+lock = threading.Lock()
+cp, cb = {}, {}
+def pad(s): return s + "=" * (-len(s) % 4)
+def cp_ok(h, method, path, body):
+    msg = "﻿" + method + BASE + path + CP_CLIENT + h.get("X-CoinPayments-Timestamp", "") + body
+    want = base64.b64encode(hmac.new(CP_SECRET.encode(), msg.encode(), hashlib.sha256).digest()).decode()
+    return h.get("X-CoinPayments-Client") == CP_CLIENT and hmac.compare_digest(want, h.get("X-CoinPayments-Signature", ""))
+def cb_ok(h, method, path):
+    try:
+        a, b, c = h.get("Authorization", "")[7:].split(".")
+        head = json.loads(base64.urlsafe_b64decode(pad(a))); claims = json.loads(base64.urlsafe_b64decode(pad(b)))
+        with lock:
+            open(D + "/jwt.msg", "wb").write((a + "." + b).encode()); open(D + "/jwt.sig", "wb").write(base64.urlsafe_b64decode(pad(c)))
+            ok = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", D + "/cb-pub.pem", "-rawin",
+                                 "-in", D + "/jwt.msg", "-sigfile", D + "/jwt.sig"], capture_output=True).returncode == 0
+        return ok and head["alg"] == "EdDSA" and head["kid"] == CB_KEY and claims["uri"] == "%s 127.0.0.1:18093%s" % (method, path) \
+            and claims["exp"] > time.time() and claims["iss"] == "cdp"
+    except Exception:
+        return False
+def cp_view(i):
+    return {"id": i["id"], "invoiceId": i["otn"], "status": i["status"], "currency": {"id": i["cur"], "symbol": "USD"},
+            "amount": {"total": i["total"]}, "customData": i["custom"], "payments": []}
+def cb_view(c):
+    return {"id": c["id"], "status": c["status"], "amount": "1.91", "currency": "USDC", "fiatAmount": c["amount"],
+            "fiatCurrency": c["currency"], "description": c["description"], "metadata": c["metadata"]}
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def send(self, code, obj):
+        b = json.dumps(obj).encode(); self.send_response(code)
+        self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def handle_any(self, method):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        h = {k: v for k, v in self.headers.items()}
+        if u.path == "/control/cp":
+            cp[next(i for i in cp.values() if i["otn"] == q["otn"][0])["id"]]["status"] = q["status"][0]; return self.send(200, {})
+        if u.path == "/control/cb":
+            cb[next(c for c in cb.values() if c["metadata"]["akari_order"] == q["otn"][0])["id"]]["status"] = q["status"][0]; return self.send(200, {})
+        if u.path.startswith("/api/v2/currencies/"):
+            return self.send(200, {"id": "5057", "type": "fiat", "symbol": "USD"})
+        if u.path.startswith("/api/v2/merchant") or u.path.startswith("/api/v1/merchant"):
+            if not cp_ok(h, method, self.path, body): return self.send(401, {"error": "bad signature"})
+            if method == "POST" and u.path == "/api/v2/merchant/invoices":
+                v = json.loads(body); n = "inv-%d" % (len(cp) + 1)
+                cp[n] = {"id": n, "otn": v["invoiceId"], "status": "unpaid", "total": v["amount"]["total"], "cur": v["currency"],
+                         "custom": v["customData"], "webhook": v["webhooks"][0]["notificationsUrl"]}
+                return self.send(200, {"invoices": [{"id": n, "link": BASE + "/i/" + n, "checkoutLink": BASE + "/checkout/" + n}]})
+            if method == "GET" and u.path == "/api/v2/merchant/invoices":
+                return self.send(200, {"items": [cp_view(i) for i in cp.values() if q.get("q", [""])[0] in i["otn"]]})
+            if method == "GET" and u.path.startswith("/api/v2/merchant/invoices/"):
+                return self.send(200, cp_view(cp[u.path.rsplit("/", 1)[1]]))
+            return self.send(404, {})
+        if u.path.startswith("/api/v1/checkouts"):
+            if not cb_ok(h, method, u.path): return self.send(401, {"errorType": "unauthorized", "errorMessage": "x"})
+            if method == "POST" and u.path == "/api/v1/checkouts":
+                v = json.loads(body); n = "%024x" % (len(cb) + 1)
+                cb[n] = {"id": n, "status": "ACTIVE", "amount": v["amount"], "currency": v["currency"],
+                         "description": v["description"], "metadata": v["metadata"]}
+                return self.send(201, {"id": n, "url": "https://payments.coinbase.com/payment-links/pl_" + n, "status": "ACTIVE"})
+            if method == "GET" and u.path == "/api/v1/checkouts":
+                return self.send(200, {"checkouts": [cb_view(c) for c in cb.values() if q.get("descriptionQuery", [""])[0] in c["description"]]})
+            if method == "GET":
+                return self.send(200, cb_view(cb[u.path.rsplit("/", 1)[1]]))
+            return self.send(404, {})
+        self.send(404, {})
+    def do_GET(self): self.handle_any("GET")
+    def do_POST(self): self.handle_any("POST")
+ThreadingHTTPServer(("127.0.0.1", 18093), H).serve_forever()
+PY
+python3 -c "$TIE_PY"'
+import runpy, sys
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+' "$PAY/crypto-mock.py" "$PAY" >"$LOG/mock-crypto.log" 2>&1 &
+for _ in $(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/18093) 2>/dev/null && break; sleep 0.1; done
+# A signed webhook of either gateway into $PAY/hook.{hdr,body}. Arguments:
+# kind notify-url secret otn event state total cents clock-skew forge(0|1).
+cat >"$PAY/crypto-hook.py" <<'PY'
+import base64, datetime, hashlib, hmac, json, sys, time
+kind, url, secret, otn, event, state, total, cents, skew, forge = sys.argv[1:11]
+t = int(time.time()) + int(skew); key = (secret + ("x" if forge == "1" else "")).encode(); out = sys.argv[11]
+if kind == "cp":
+    body = json.dumps({"type": event, "invoice": {"invoiceId": otn, "id": "inv-smoke", "amount": {"currencyId": 5057, "total": total},
+                        "customData": {"akari_cents": cents}, "state": state, "payments": [{"state": "Completed"}]}})
+    stamp = datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    msg = "﻿POST" + url + "smoke-cp-client-0001" + stamp + body
+    hdr = ["Content-Type: application/json", "X-CoinPayments-Client: smoke-cp-client-0001", "X-CoinPayments-Timestamp: " + stamp,
+           "X-CoinPayments-Signature: " + base64.b64encode(hmac.new(key, msg.encode(), hashlib.sha256).digest()).decode()]
+else:
+    body = json.dumps({"id": "69163c762331ed43dc64a6ef", "url": "https://payments.coinbase.com/payment-links/pl_1", "amount": "1.91",
+                       "currency": "USDC", "fiatAmount": total, "fiatCurrency": "USD", "eventType": event, "status": state,
+                       "metadata": {"akari_order": otn, "akari_cents": cents}})
+    sig = hmac.new(key, ("%d.content-type.application/json.%s" % (t, body)).encode(), hashlib.sha256).hexdigest()
+    hdr = ["Content-Type: application/json", "X-Webhook-Signature: t=%d,h=content-type,v1=%s" % (t, sig)]
+open(out + ".body", "w").write(body); open(out + ".hdr", "w").write("\n".join(hdr) + "\n")
+PY
+cx_hook() { python3 "$PAY/crypto-hook.py" "$@" "$PAY/hook"; }
+cx_post() { # url -> body printed (acknowledged), via the prepared hook files
+  curl -s --noproxy '*' -X POST -H "@$PAY/hook.hdr" --data-binary "@$PAY/hook.body" "$1"
+}
+cx_fp() { fp -X POST -H "@$PAY/hook.hdr" --data-binary "@$PAY/hook.body" "$1"; }
+cx_user() { # name -> a logged-in buyer (jar $LOG/cx-<name>)
+  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users" -H "$J" \
+      -d "{\"email\":\"cx-$1@smoke.test\",\"password\":\"crypto-password-123\"}")" = "201" ] || { echo "FAIL: create crypto buyer $1"; exit 1; }
+  [ "$(code -c "$LOG/cx-$1" -X POST "$BASE/auth/login" -H "$J" \
+      -d "{\"email\":\"cx-$1@smoke.test\",\"password\":\"crypto-password-123\"}")" = "200" ] || { echo "FAIL: crypto buyer $1 login"; exit 1; }
+}
+cx_order() { # name method -> sets CX_ORDER, CX_OTN
+  [ "$(code -b "$LOG/cx-$1" -X POST "$BASE/api/v1/me/orders" -H "$J" \
+      -d "{\"plan_id\":\"$CX_PLAN\",\"period\":\"days\",\"method_id\":\"$2\"}")" = "201" ] || { echo "FAIL: crypto order ($1)"; cat /tmp/akari-smoke/last; exit 1; }
+  CX_ORDER=$(last_json "d['id']"); CX_OTN=$(last_json "d['out_trade_no']")
+}
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/node-groups" -H "$J" -d '{"name":"crypto-group","entrance_ids":[]}')" = "201" ] \
+  || { echo "FAIL: create crypto group"; cat /tmp/akari-smoke/last; exit 1; }
+CX_GROUP=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/plans" -H "$J" \
+    -d "{\"name\":\"crypto-plan\",\"period\":\"monthly\",\"group_ids\":[\"$CX_GROUP\"]}")" = "201" ] || { echo "FAIL: create crypto plan"; exit 1; }
+CX_PLAN=$(last_json "d['id']")
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/plans/$CX_PLAN/prices" -H "$J" \
+    -d '{"on_sale":true,"prices":[{"period":"days","days":30,"price_cents":990}]}')" = "204" ] || { echo "FAIL: crypto plan price"; exit 1; }
+for u in cpa cpb cba cbb; do cx_user "$u"; done
+
+# -- CoinPayments -----------------------------------------------------------
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
+    -d "{\"kind\":\"coinpayments\",\"display_name\":\"CoinPayments\",\"enabled\":true,\"config\":{\"instance\":\"a\",\"api_base\":\"http://127.0.0.1:18093\",\"client_id\":\"smoke-cp-client-0001\",\"client_secret\":\"$CX_CP_SECRET\",\"currency\":\"USD\",\"currency_id\":\"5057\",\"rate_cents\":720}}")" = "201" ] \
+  || { echo "FAIL: add CoinPayments method"; cat /tmp/akari-smoke/last; exit 1; }
+CPM=$(last_json "d['id']"); CPURL=$(last_json "d['notify_url']")
+matches -F "$CX_CP_SECRET" /tmp/akari-smoke/last && { echo "FAIL: CoinPayments secret in the method view"; exit 1; }
+[ "$(psql_q "SELECT position(convert_to('$CX_CP_SECRET', 'UTF8') IN secrets_enc) FROM payment_methods WHERE id = '$CPM'")" = "0" ] \
+  || { echo "FAIL: CoinPayments secret not sealed"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='payment_method.create' AND target_id='$CPM' AND after::text LIKE '%$CX_CP_SECRET%'")" = "0" ] \
+  || { echo "FAIL: CoinPayments secret in the audit log"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments/$CPM/test" -H "$J" -d '{}')" = "200" ] && [ "$(last_json "d['result']")" = "keys_ok" ] \
+  || { echo "FAIL: CoinPayments test connection (the mock checks the HMAC headers)"; cat /tmp/akari-smoke/last; exit 1; }
+cx_order cpa "$CPM"
+CPO=$CX_ORDER; CPOTN=$CX_OTN
+last_json "d['pay_url']" | matches '^http://127.0.0.1:18093/checkout/inv-' || { echo "FAIL: CoinPayments checkout link"; cat /tmp/akari-smoke/last; exit 1; }
+CPNOTIFY="$ROOT/pay/$CPM/notify"
+# Refusals are the canonical rejection: wrong secret, stale clock, wrong
+# amount, unknown order, no headers, a GET.
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" InvoiceCompleted Completed 1.38 990 0 1
+[ "$(cx_fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: forged CoinPayments webhook not the canonical rejection"; exit 1; }
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" InvoiceCompleted Completed 1.38 990 -3600 0
+[ "$(cx_fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: stale CoinPayments webhook not the canonical rejection"; exit 1; }
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" InvoiceCompleted Completed 0.01 990 0 0
+[ "$(cx_fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: wrong-amount CoinPayments webhook not the canonical rejection"; exit 1; }
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "AKnope$CPOTN" InvoiceCompleted Completed 1.38 990 0 0
+[ "$(cx_fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: unknown-order CoinPayments webhook not the canonical rejection"; exit 1; }
+[ "$(fp -X POST --data-binary @"$PAY/hook.body" "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: unsigned CoinPayments webhook not the canonical rejection"; exit 1; }
+[ "$(fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: GET on the CoinPayments route not the canonical rejection"; exit 1; }
+[ "$(psql_q "SELECT status FROM orders WHERE id='$CPO'")" = "pending" ] || { echo "FAIL: a rejected CoinPayments webhook changed the order"; exit 1; }
+[ "$(psql_q "SELECT string_agg(outcome, ',' ORDER BY id) FROM payment_events WHERE out_trade_no='$CPOTN' AND source='notify'")" = "amount_mismatch" ] \
+  && [ "$(psql_q "SELECT outcome FROM payment_events WHERE out_trade_no='AKnope$CPOTN'")" = "unknown_order" ] \
+  && [ "$(psql_q "SELECT count(*) FROM payment_events WHERE source='notify' AND outcome='stale_timestamp'")" = "1" ] \
+  || { echo "FAIL: CoinPayments refusal events"; psql_q "SELECT outcome, out_trade_no FROM payment_events"; exit 1; }
+# Not terminal: acknowledged, nothing paid (paid = funds on chain, not yet credited).
+for st in "InvoicePending Pending" "InvoicePaid Paid"; do
+  # shellcheck disable=SC2086
+  cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" $st 1.38 990 0 0
+  [ "$(cx_post "$CPNOTIFY")" = "ok" ] || { echo "FAIL: CoinPayments $st not acknowledged"; exit 1; }
+  [ "$(psql_q "SELECT status FROM orders WHERE id='$CPO'")" = "pending" ] || { echo "FAIL: CoinPayments $st paid the order"; exit 1; }
+done
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" InvoiceCompleted Completed 1.38 990 0 0
+[ "$(cx_post "$CPNOTIFY")" = "ok" ] || { echo "FAIL: CoinPayments completed webhook not acknowledged"; tail -5 "$LOG/panel.log"; exit 1; }
+[ "$(cx_post "$CPNOTIFY")" = "ok" ] || { echo "FAIL: CoinPayments replay"; exit 1; }
+[ "$(psql_q "SELECT status || '/' || paid_via || '/' || (fulfilled_at IS NOT NULL) FROM orders WHERE id='$CPO'")" = "paid/notify/true" ] \
+  || { echo "FAIL: CoinPayments order not paid + fulfilled"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$CPO'")" = "1" ] || { echo "FAIL: CoinPayments order paid twice"; exit 1; }
+# Webhook lost: the reconciliation query reads the invoice back (completed,
+# exact amount) and pays; a changed amount does not.
+cx_order cpb "$CPM"
+CPO2=$CX_ORDER; CPOTN2=$CX_OTN
+curl -s --noproxy '*' -X POST "http://127.0.0.1:18093/control/cp?otn=$CPOTN2&status=completed" >/dev/null
+for _ in $(seq 1 15); do
+  code -b "$LOG/cx-cpb" "$BASE/api/v1/me/orders/$CPO2" >/dev/null
+  [ "$(last_json "d['status']")" = "paid" ] && break; sleep 1
+done
+[ "$(last_json "d['status']")" = "paid" ] && [ "$(psql_q "SELECT paid_via FROM orders WHERE id='$CPO2'")" = "query" ] \
+  || { echo "FAIL: CoinPayments query did not settle the completed invoice"; cat /tmp/akari-smoke/last; exit 1; }
+
+# -- Coinbase ---------------------------------------------------------------
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments" -H "$J" \
+    -d "{\"kind\":\"coinbase\",\"display_name\":\"Coinbase\",\"enabled\":true,\"config\":{\"api_base\":\"http://127.0.0.1:18093\",\"key_id\":\"organizations/smoke/apiKeys/k1\",\"api_secret\":\"$CX_CB_SECRET\",\"webhook_secret\":\"$CX_HOOK_SECRET\",\"currency\":\"USD\",\"rate_cents\":720}}")" = "201" ] \
+  || { echo "FAIL: add Coinbase method"; cat /tmp/akari-smoke/last; exit 1; }
+CBM=$(last_json "d['id']"); CBURL=$(last_json "d['notify_url']")
+matches -F "$CX_CB_SECRET" /tmp/akari-smoke/last && { echo "FAIL: Coinbase API key in the method view"; exit 1; }
+matches -F "$CX_HOOK_SECRET" /tmp/akari-smoke/last && { echo "FAIL: Coinbase webhook secret in the method view"; exit 1; }
+[ "$(psql_q "SELECT position(convert_to('$CX_HOOK_SECRET', 'UTF8') IN secrets_enc) FROM payment_methods WHERE id = '$CBM'")" = "0" ] \
+  || { echo "FAIL: Coinbase webhook secret not sealed"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='payment_method.create' AND target_id='$CBM' AND (after::text LIKE '%$CX_HOOK_SECRET%' OR after::text LIKE '%$CX_CB_SECRET%')")" = "0" ] \
+  || { echo "FAIL: a Coinbase secret in the audit log"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/payments/$CBM/test" -H "$J" -d '{}')" = "200" ] && [ "$(last_json "d['result']")" = "keys_ok" ] \
+  || { echo "FAIL: Coinbase test connection (the mock verifies the EdDSA bearer token)"; cat /tmp/akari-smoke/last; exit 1; }
+cx_order cba "$CBM"
+CBO=$CX_ORDER; CBOTN=$CX_OTN
+last_json "d['pay_url']" | matches '^https://payments.coinbase.com/payment-links/pl_' || { echo "FAIL: Coinbase checkout link"; cat /tmp/akari-smoke/last; exit 1; }
+CBNOTIFY="$ROOT/pay/$CBM/notify"
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "$CBOTN" checkout.payment.success COMPLETED 1.38 990 0 1
+[ "$(cx_fp "$CBNOTIFY")" = "$REJ" ] || { echo "FAIL: forged Coinbase webhook not the canonical rejection"; exit 1; }
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "$CBOTN" checkout.payment.success COMPLETED 1.38 990 -3600 0
+[ "$(cx_fp "$CBNOTIFY")" = "$REJ" ] || { echo "FAIL: stale Coinbase webhook not the canonical rejection"; exit 1; }
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "$CBOTN" checkout.payment.success COMPLETED 0.01 990 0 0
+[ "$(cx_fp "$CBNOTIFY")" = "$REJ" ] || { echo "FAIL: wrong-amount Coinbase webhook not the canonical rejection"; exit 1; }
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "AKnope$CBOTN" checkout.payment.success COMPLETED 1.38 990 0 0
+[ "$(cx_fp "$CBNOTIFY")" = "$REJ" ] || { echo "FAIL: unknown-order Coinbase webhook not the canonical rejection"; exit 1; }
+# CoinPayments' secret never verifies a Coinbase webhook and vice versa.
+cx_hook cb "$CBURL" "$CX_CP_SECRET" "$CBOTN" checkout.payment.success COMPLETED 1.38 990 0 0
+[ "$(cx_fp "$CBNOTIFY")" = "$REJ" ] || { echo "FAIL: another gateway's secret verified a Coinbase webhook"; exit 1; }
+[ "$(psql_q "SELECT status FROM orders WHERE id='$CBO'")" = "pending" ] || { echo "FAIL: a rejected Coinbase webhook changed the order"; exit 1; }
+[ "$(psql_q "SELECT string_agg(outcome, ',' ORDER BY id) FROM payment_events WHERE out_trade_no='$CBOTN' AND source='notify'")" = "amount_mismatch" ] \
+  && [ "$(psql_q "SELECT outcome FROM payment_events WHERE out_trade_no='AKnope$CBOTN'")" = "unknown_order" ] \
+  && [ "$(psql_q "SELECT count(*) FROM payment_events WHERE source='notify' AND outcome='stale_timestamp'")" = "2" ] \
+  || { echo "FAIL: Coinbase refusal events"; psql_q "SELECT outcome, out_trade_no FROM payment_events"; exit 1; }
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "$CBOTN" checkout.payment.success PROCESSING 1.38 990 0 0
+[ "$(cx_post "$CBNOTIFY")" = "ok" ] || { echo "FAIL: Coinbase processing webhook not acknowledged"; exit 1; }
+[ "$(psql_q "SELECT status FROM orders WHERE id='$CBO'")" = "pending" ] || { echo "FAIL: a processing Coinbase checkout paid the order"; exit 1; }
+cx_hook cb "$CBURL" "$CX_HOOK_SECRET" "$CBOTN" checkout.payment.success COMPLETED 1.38 990 0 0
+[ "$(cx_post "$CBNOTIFY")" = "ok" ] || { echo "FAIL: Coinbase completed webhook not acknowledged"; tail -5 "$LOG/panel.log"; exit 1; }
+[ "$(cx_post "$CBNOTIFY")" = "ok" ] || { echo "FAIL: Coinbase replay"; exit 1; }
+[ "$(psql_q "SELECT status || '/' || paid_via || '/' || (fulfilled_at IS NOT NULL) FROM orders WHERE id='$CBO'")" = "paid/notify/true" ] \
+  || { echo "FAIL: Coinbase order not paid + fulfilled"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='order.paid' AND target_id='$CBO'")" = "1" ] || { echo "FAIL: Coinbase order paid twice"; exit 1; }
+cx_order cbb "$CBM"
+CBO2=$CX_ORDER; CBOTN2=$CX_OTN
+curl -s --noproxy '*' -X POST "http://127.0.0.1:18093/control/cb?otn=$CBOTN2&status=COMPLETED" >/dev/null
+for _ in $(seq 1 15); do
+  code -b "$LOG/cx-cbb" "$BASE/api/v1/me/orders/$CBO2" >/dev/null
+  [ "$(last_json "d['status']")" = "paid" ] && break; sleep 1
+done
+[ "$(last_json "d['status']")" = "paid" ] && [ "$(psql_q "SELECT paid_via FROM orders WHERE id='$CBO2'")" = "query" ] \
+  || { echo "FAIL: Coinbase query did not settle the completed checkout"; cat /tmp/akari-smoke/last; exit 1; }
+# Both disabled again: later sections order without method_id, which needs
+# exactly one enabled method; a disabled method's route is the canonical rejection.
+for m in "$CPM" "$CBM"; do
+  [ "$(code -b "$JAR" "$BASE/api/v1/settings/payments")" = "200" ] || { echo "FAIL: payment methods"; exit 1; }
+  V=$(last_json "[m['version'] for m in d['methods'] if m['id']=='$m'][0]")
+  CFG=$(last_json "json.dumps({k: v for k, v in [x for x in d['methods'] if x['id']=='$m'][0]['config'].items() if v is not None and not k.endswith(('_set', '_readable', '_fingerprint'))})")
+  NAME=$(last_json "[x for x in d['methods'] if x['id']=='$m'][0]['display_name']")
+  [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/payments/$m" -H "$J" \
+      -d "{\"version\":$V,\"display_name\":\"$NAME\",\"enabled\":false,\"config\":$CFG}")" = "200" ] \
+    || { echo "FAIL: disable crypto method"; cat /tmp/akari-smoke/last; exit 1; }
+done
+cx_hook cp "$CPURL" "$CX_CP_SECRET" "$CPOTN" InvoiceCompleted Completed 1.38 990 0 0
+[ "$(cx_fp "$CPNOTIFY")" = "$REJ" ] || { echo "FAIL: disabled CoinPayments method's route not the canonical rejection"; exit 1; }
+
 echo "== W16 coupons, balance, invite commission, withdrawals (money: one ledger row + audit per movement) =="
 api_json() { # method url body -> http status; body in /tmp/akari-smoke/last
   code -b "$1" -X "$2" "$3" -H 'Content-Type: application/json' -d "$4"
