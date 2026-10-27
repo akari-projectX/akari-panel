@@ -239,7 +239,7 @@ cookie=$(docker exec "$ca" sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p' /tmp/
 [ -n "$cookie" ] || fail "no session cookie"
 [ "$(http "$ca" "http://$ipa:8080/$P/api/v1/users" -H "Cookie: $cookie")" = 200 ] || fail "the session does not work on A"
 [ "$(http "$ca" "http://$ipb:8080/$P/api/v1/users" -H "Cookie: $cookie")" = 200 ] || fail "the session of A does not work on B"
-[ "$(http "$ca" "http://$ipb:8080/$P/api/v1/users" -H "Cookie: ${cookie}x")" != 200 ] || fail "a damaged session works on B"
+[ "$(http "$ca" "http://$ipb:8080/$P/api/v1/users" -H "Cookie: ${cookie/=/=X}")" != 200 ] || fail "a damaged session works on B"
 echo "ok: the same session answers on A and B"
 
 log "an agent enrolled on A converges through B's gRPC"
