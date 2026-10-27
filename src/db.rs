@@ -61,6 +61,22 @@ pub async fn refuse_pre_baseline(pg: &PgPool) -> Result<()> {
     }
 }
 
+/// Pool options of the serving process: every connection runs with
+/// `jit = off`. PostgreSQL's JIT compiles any statement whose estimated cost
+/// exceeds 100000, and the admin list queries (node list with its
+/// correlated subqueries, filtered user lists) do, although they run in
+/// milliseconds: compiling cost 80-100 ms per request and CPU on the
+/// database host (docs/PERF.md, panel load test 2026-10). Nothing here
+/// runs long enough to profit from compiled expressions.
+pub fn pool_options() -> sqlx::postgres::PgPoolOptions {
+    sqlx::postgres::PgPoolOptions::new().after_connect(|conn, _| {
+        Box::pin(async move {
+            sqlx::query("SET jit = off").execute(conn).await?;
+            Ok(())
+        })
+    })
+}
+
 /// Version gate + pre-baseline guard + migrations. Every entry point that
 /// migrates goes through here.
 pub async fn migrate(pg: &PgPool) -> Result<()> {
@@ -73,6 +89,24 @@ pub async fn migrate(pg: &PgPool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn serving_pool_connections_have_jit_off() {
+        use std::str::FromStr;
+        let url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://akari:akari-dev@localhost:5432/akari".into());
+        let Ok(opts) = sqlx::postgres::PgConnectOptions::from_str(&url) else {
+            return;
+        };
+        let Ok(pool) = pool_options().max_connections(2).connect_with(opts).await else {
+            return;
+        };
+        let jit: String = sqlx::query_scalar("SHOW jit")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(jit, "off");
+    }
 
     #[test]
     fn version_gate() {
