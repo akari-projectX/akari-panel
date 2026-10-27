@@ -388,6 +388,12 @@ impl Argon2Gate {
         }
     }
 
+    /// No permit free and the line full: the next request is answered busy.
+    fn is_full(&self) -> bool {
+        self.permits.available_permits() == 0
+            && self.waiting.load(std::sync::atomic::Ordering::SeqCst) >= self.queue_max
+    }
+
     /// A permit now, or after a bounded wait in a bounded line.
     async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, Argon2Busy> {
         use std::sync::atomic::Ordering;
@@ -467,6 +473,17 @@ pub(crate) fn saturate_argon2_for_test() -> impl Drop {
     let gate: &'static Argon2Gate = Box::leak(Box::new(Argon2Gate::new(0, 0, ARGON2_WAIT)));
     TEST_GATE.with(|g| g.set(Some(gate)));
     Restore
+}
+
+/// The password-hash line is full, so a request that needs a hash would be
+/// answered 503 `request.busy` at the gate. Callers that would spend
+/// database connections and Valkey round trips before reaching the hash
+/// (the login) ask first and answer busy at once: under a flood the
+/// refused requests then cost no pool connection, so the admin API
+/// sharing the pool keeps its latency. Load-dependent only, never
+/// account-dependent.
+pub fn argon2_line_full() -> bool {
+    argon2_gate().is_full()
 }
 
 async fn argon2_blocking<T: Send + 'static>(
@@ -1113,6 +1130,30 @@ mod argon2_tests {
         assert_eq!(running.await.unwrap(), Ok(()));
         assert_eq!(gate.waiting.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(gate.run(|| 7).await, Ok(7), "served again");
+    }
+
+    /// `is_full` is true exactly when a request would be refused at the
+    /// gate without waiting: no free permit and a full line.
+    #[tokio::test]
+    async fn is_full_matches_the_gate_refusing_at_once() {
+        let gate = Arc::new(Argon2Gate::new(1, 1, Duration::from_millis(500)));
+        assert!(!gate.is_full());
+        let slow = |gate: Arc<Argon2Gate>| {
+            tokio::spawn(async move {
+                gate.run(|| std::thread::sleep(Duration::from_millis(200)))
+                    .await
+            })
+        };
+        let running = slow(gate.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!gate.is_full(), "a place in line is still free");
+        let waiter = slow(gate.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(gate.is_full());
+        assert_eq!(gate.run(|| ()).await, Err(Argon2Busy));
+        assert_eq!(running.await.unwrap(), Ok(()));
+        assert_eq!(waiter.await.unwrap(), Ok(()));
+        assert!(!gate.is_full());
     }
 
     #[test]
