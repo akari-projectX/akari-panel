@@ -228,6 +228,10 @@ fn group_line(t: &str, known: &HashSet<String>, strict: bool) -> Result<String, 
         ));
     }
     members.retain(|m| known.contains(*m));
+    // `$proxy_group` is `DIRECT` for a user without lines, next to a
+    // literal `DIRECT` in the template: list each member once.
+    let mut seen = HashSet::new();
+    members.retain(|m| seen.insert(*m));
     if members.is_empty() && !self_filling {
         members.push("DIRECT");
     } else if members.len() == before {
@@ -237,4 +241,38 @@ fn group_line(t: &str, known: &HashSet<String>, strict: bool) -> Result<String, 
     v.extend(members);
     v.extend(params);
     Ok(format!("{name} = {}", v.join(", ")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn known(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    /// A user without lines: `$proxy_group` became `DIRECT` beside the
+    /// template's own `DIRECT`; the group lists it once, other members and
+    /// parameters keep their order.
+    #[test]
+    fn a_group_lists_each_member_once() {
+        let k = known(&["DIRECT", "Auto"]);
+        assert_eq!(
+            group_line("Proxy = select, DIRECT, DIRECT", &k, true).unwrap(),
+            "Proxy = select, DIRECT"
+        );
+        assert_eq!(
+            group_line(
+                "Proxy = select, Auto, DIRECT, Auto, DIRECT, interval=300",
+                &k,
+                true
+            )
+            .unwrap(),
+            "Proxy = select, Auto, DIRECT, interval=300"
+        );
+        assert_eq!(
+            group_line("Proxy = select, Auto, DIRECT", &k, true).unwrap(),
+            "Proxy = select, Auto, DIRECT"
+        );
+    }
 }
