@@ -4,7 +4,7 @@
 # query is one the panel exports). Needs docker. `make monitoring-check`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PROM_IMAGE=${PROM_IMAGE:-prom/prometheus:v3.15.0}
+PROM_IMAGE=${PROM_IMAGE:-quay.io/prometheus/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e}
 docker run --rm -v "$PWD/deploy/prometheus:/p:ro" -w /p --entrypoint promtool "$PROM_IMAGE" check rules alerts.yml
 docker run --rm -v "$PWD/deploy/prometheus:/p:ro" -w /p --entrypoint promtool "$PROM_IMAGE" test rules alerts_test.yml
 python3 - <<'PY'

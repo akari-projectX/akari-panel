@@ -62,7 +62,7 @@ trap cleanup EXIT
 
 log "image $img ($base), network $net"
 if [ "${REBUILD:-1}" = 1 ] || ! docker image inspect "$img" >/dev/null 2>&1; then
-	docker build -q -t "$img" --build-arg "BASE=$base" "$root/scripts/installer-test" >/dev/null
+	docker build -q -t "$img" --build-arg "BASE_KEY=${base//[:.]/-}" "$root/scripts/installer-test" >/dev/null
 fi
 docker network create "$net" >/dev/null
 subnet=$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}' "$net")

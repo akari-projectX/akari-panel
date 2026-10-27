@@ -32,11 +32,13 @@
 # thin LTO, one codegen unit, stripped) or `ci` (Cargo.toml [profile.ci]:
 # same code, faster to compile; CI's installer/docker checks only).
 
-ARG NODE_IMAGE=node:24-alpine
-ARG RUST_IMAGE=rust:1.99-alpine
-ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian13:nonroot
+# Base images are pinned by digest (the tag stays in the reference so
+# Dependabot's docker ecosystem can propose both together).
+FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS node-base
+FROM rust:1.99-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS rust-base
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:18f4cc26c9ffa7f20a359298be7deadac5c607c8e03a02b8119f1a5fc2f82c99 AS runtime-base
 
-FROM ${NODE_IMAGE} AS portal
+FROM node-base AS portal
 WORKDIR /src/portal
 COPY portal/package.json portal/package-lock.json ./
 RUN npm ci
@@ -44,7 +46,7 @@ COPY portal/ ./
 RUN npm run build
 
 # W33-b: the admin app (sign-in page + console), built on its own.
-FROM ${NODE_IMAGE} AS admin
+FROM node-base AS admin
 WORKDIR /src/admin
 COPY admin/package.json admin/package-lock.json ./
 RUN npm ci
@@ -53,7 +55,7 @@ COPY admin/ ./
 COPY Cargo.toml /src/Cargo.toml
 RUN npm run build
 
-FROM ${RUST_IMAGE} AS chef
+FROM rust-base AS chef
 RUN apk add --no-cache musl-dev gcc make cmake perl linux-headers mimalloc2
 # rustc on Alpine is a musl program and musl's allocator makes it several
 # times slower on this crate; mimalloc for the build tools only (the output
@@ -96,13 +98,13 @@ RUN cargo build --profile "$CARGO_PROFILE" --locked \
 
 # Empty data dir owned by the runtime user (distroless has no shell to mkdir
 # with); a named volume mounted on /data inherits this ownership.
-FROM --platform=$BUILDPLATFORM alpine:3.22 AS datadir
+FROM --platform=$BUILDPLATFORM alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS datadir
 RUN mkdir -m 0750 /data
 
 FROM scratch AS artifact
 COPY --from=builder /akari /akari
 
-FROM ${RUNTIME_IMAGE} AS prebuilt
+FROM runtime-base AS prebuilt
 ARG TARGETARCH
 COPY --chown=65532:65532 --chmod=0555 dist/akari-linux-${TARGETARCH} /akari
 COPY --from=datadir --chown=65532:65532 /data /data
@@ -112,7 +114,7 @@ EXPOSE 8080 8443
 ENTRYPOINT ["/akari"]
 CMD ["serve"]
 
-FROM ${RUNTIME_IMAGE} AS runtime
+FROM runtime-base AS runtime
 COPY --from=builder --chown=65532:65532 --chmod=0555 /akari /akari
 COPY --from=datadir --chown=65532:65532 /data /data
 VOLUME /data

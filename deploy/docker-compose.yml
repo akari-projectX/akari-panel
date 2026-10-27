@@ -48,7 +48,7 @@ services:
       valkey: { condition: service_healthy }
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
     restart: unless-stopped
     env_file:
       - ./env/postgres.env            # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
@@ -62,7 +62,7 @@ services:
       retries: 20
 
   valkey:
-    image: valkey/valkey:9-alpine
+    image: valkey/valkey:9-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     restart: unless-stopped
     env_file:
       - ./env/valkey.env              # VALKEY_PASSWORD
@@ -76,7 +76,7 @@ services:
       retries: 20
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     restart: unless-stopped
     environment:
       AKARI_DOMAIN: ${AKARI_DOMAIN:?set AKARI_DOMAIN in .env}

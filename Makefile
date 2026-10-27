@@ -42,6 +42,7 @@ shellcheck:
 	shellcheck -S warning smoke.sh
 	sh scripts/installer-test/validators.sh
 	bash scripts/installer-test/backup-auth.sh
+	sh scripts/check-image-pins.sh
 
 # W26: artifacts generated from proto/protocols.toml (docs/DEPLOY.md §3d
 # matrix, the admin form schema). `gen-protocols` rewrites them after a

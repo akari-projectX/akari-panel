@@ -48,3 +48,32 @@ updates:
     groups:
       actions:
         update-types: [minor, patch, major]
+
+  # Container base images are pinned by digest with the tag kept in the
+  # reference (`name:tag@sha256:...`): Dependabot moves both together. Not
+  # covered by Dependabot: `services:` images in workflows and `docker run`
+  # arguments in scripts; scripts/check-image-pins.sh (make shellcheck) fails
+  # on any unpinned reference, a digest bump there is by hand.
+  - package-ecosystem: docker
+    directories: [/, /scripts/install-test, /scripts/install-test-alpine, /scripts/installer-test]
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "deps(docker)" }
+    groups:
+      docker-minor:
+        update-types: [minor, patch]
+      docker-major:
+        update-types: [major]
+
+  - package-ecosystem: docker-compose
+    directories: [/, /deploy, /bench]
+    schedule: { interval: monthly, time: "03:00", timezone: Asia/Shanghai }
+    cooldown: { default-days: 3 }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: "deps(docker)" }
+    groups:
+      compose-minor:
+        update-types: [minor, patch]
+      compose-major:
+        update-types: [major]

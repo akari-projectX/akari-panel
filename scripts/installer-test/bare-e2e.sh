@@ -4,7 +4,7 @@
 #
 #   bare-e2e.sh BASE_IMAGE RELEASES_DIR NEW_TAG BROKEN_TAG
 #
-#   BASE_IMAGE    debian:13 | ubuntu:24.04 (| debian:12 | ubuntu:22.04)
+#   BASE_IMAGE    debian:13 | ubuntu:24.04 (the digest-pinned stages of installer-test/Dockerfile)
 #   RELEASES_DIR  local releases (make-release.sh): NEW_TAG = the build
 #                 under test, BROKEN_TAG = a deliberately broken release
 #
@@ -44,7 +44,7 @@ trap cleanup EXIT
 
 log "image $img ($base)"
 if [ "${REBUILD:-1}" = 1 ] || ! docker image inspect "$img" >/dev/null 2>&1; then
-	docker build -q -t "$img" --build-arg "BASE=$base" "$root/scripts/installer-test" >/dev/null
+	docker build -q -t "$img" --build-arg "BASE_KEY=${base//[:.]/-}" "$root/scripts/installer-test" >/dev/null
 fi
 
 cg=(--cgroupns=private)

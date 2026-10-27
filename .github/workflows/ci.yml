@@ -89,7 +89,7 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
         env:
           POSTGRES_USER: akari
           POSTGRES_PASSWORD: akari-dev
@@ -99,7 +99,7 @@ jobs:
           --health-cmd "pg_isready -U akari" --health-interval 3s
           --health-timeout 3s --health-retries 20
       valkey:
-        image: valkey/valkey:9-alpine
+        image: valkey/valkey:9-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
         ports: ["6379:6379"]
         options: >-
           --health-cmd "valkey-cli ping" --health-interval 3s
@@ -517,7 +517,7 @@ jobs:
     timeout-minutes: 40
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
         env:
           POSTGRES_USER: akari
           POSTGRES_PASSWORD: akari-dev
@@ -527,7 +527,7 @@ jobs:
           --health-cmd "pg_isready -U akari" --health-interval 3s
           --health-timeout 3s --health-retries 20
       valkey:
-        image: valkey/valkey:9-alpine
+        image: valkey/valkey:9-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
         ports: ["6379:6379"]
         options: >-
           --health-cmd "valkey-cli ping" --health-interval 3s
@@ -567,7 +567,7 @@ jobs:
       - run: shellcheck --version && make shellcheck
       # The installer's validators again under busybox sh + busybox grep
       # (regex dialects differ: a `\]` in a bracket works with ugrep only).
-      - run: docker run --rm -v "$PWD:/src:ro" alpine:3.22 sh /src/scripts/installer-test/validators.sh
+      - run: docker run --rm -v "$PWD:/src:ro" alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f sh /src/scripts/installer-test/validators.sh
 
   image-cache:
     # Main runs only (push, nightly): refresh the BuildKit layer cache of
@@ -764,7 +764,7 @@ jobs:
         env:
           NEW: ${{ needs.build.outputs.tag }}
         run: |
-          docker run -d --restart always --name registry -p 127.0.0.1:5000:5000 ghcr.io/distribution/distribution:3.0.0
+          docker run -d --restart always --name registry -p 127.0.0.1:5000:5000 ghcr.io/distribution/distribution:3.0.0@sha256:4ba3adf47f5c866e9a29288c758c5328ef03396cb8f5f6454463655fa8bc83e2
           gunzip -c dist/image.tar.gz | docker load
           ref="localhost:5000/akari-panel:${NEW#v}"
           docker tag "akari-panel:${NEW#v}" "$ref"

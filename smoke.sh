@@ -264,7 +264,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE revoke
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE plans, node_groups, coupons, payment_methods CASCADE;" >/dev/null 2>&1 || true
 # R22 settings left behind by an aborted run (e.g. a node domain the agents
 # here cannot reach): back to "use panel.toml" (the trigger reloads them).
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM site_domains; UPDATE panel_settings SET version = 0, sub_domain_per_user = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, install_fallback_url = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM site_domains; UPDATE panel_settings SET version = 0, sub_domain_per_user = NULL, trust_cloudflare = NULL, probe_interval_secs = NULL, probe_urls = NULL, probe_panel_tcp = NULL, site_name = NULL, cloudflare_ranges = NULL, install_tls_pin = NULL, acme_directory_url = NULL, acme_email = NULL, audit_retention_days = NULL, traffic_daily_retention_days = NULL, remove_mode = NULL, extra_release_keys = NULL; TRUNCATE grpc_server_names;" >/dev/null 2>&1 || true
 # W15 settings back to the defaults (off; version 0) and an empty outbox.
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM signup_settings; INSERT INTO signup_settings (id) VALUES (1); DELETE FROM mail_settings; INSERT INTO mail_settings (id) VALUES (1); TRUNCATE mail_outbox;" >/dev/null 2>&1 || true
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM auth_settings; INSERT INTO auth_settings (id) VALUES (1);" >/dev/null 2>&1 || true
@@ -2369,7 +2369,7 @@ echo "== W15 registration, password reset, SMTP outbox (Mailpit as the SMTP sink
 MP_API="http://127.0.0.1:18025/api/v1"
 docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true
 docker run -d --name akari-smoke-mailpit --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11025 \
-  -e MP_UI_BIND_ADDR=127.0.0.1:18025 axllent/mailpit:v1.27 >/dev/null
+  -e MP_UI_BIND_ADDR=127.0.0.1:18025 ghcr.io/axllent/mailpit:v1.27@sha256:e22dce5b36f93c77082e204a3942fb6b283b7896e057458400a4c88344c3df68 >/dev/null
 EXIT_EXTRA='docker rm -f akari-smoke-mailpit >/dev/null 2>&1 || true'
 for _ in $(seq 1 40); do curl -sf --noproxy '*' "$MP_API/info" >/dev/null && break; sleep 0.5; done
 curl -sf --noproxy '*' "$MP_API/info" >/dev/null || { echo "FAIL: mailpit did not start"; docker logs akari-smoke-mailpit 2>&1 | tail -5; exit 1; }
@@ -3687,10 +3687,10 @@ else
   # DNS (challtestsrv: every name -> 127.0.0.1) says; its own challenge
   # servers and DoH (:8443 = the panel's gRPC port) are off.
   docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true
-  docker run -d --name akari-smoke-dns --network host ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1 \
+  docker run -d --name akari-smoke-dns --network host ghcr.io/letsencrypt/pebble-challtestsrv:2.10.1@sha256:12ce21884def456bcf9786542113949e1f19dc7738d2c70e156c2d0c38a1405b \
     -defaultIPv4 127.0.0.1 -defaultIPv6 "" -dnsserver 127.0.0.1:8053 -doh "" -http01 "" -https01 "" \
     -tlsalpn01 "" -management 127.0.0.1:18055 >/dev/null
-  docker run -d --name akari-smoke-pebble --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:2.10.1 \
+  docker run -d --name akari-smoke-pebble --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199 \
     -config test/config/pebble-config.json -dnsserver 127.0.0.1:8053 >/dev/null
   PREV_EXIT_EXTRA=$EXIT_EXTRA
   EXIT_EXTRA='docker rm -f akari-smoke-pebble akari-smoke-dns >/dev/null 2>&1 || true'
@@ -4631,7 +4631,7 @@ grep -qF "$PREFIX" "$LOG/install.sh" && { echo "FAIL: the install script carries
 grep -q '@@' "$LOG/install.sh" && { echo "FAIL: placeholder left in the script"; exit 1; }
 sh -n "$LOG/install.sh" || { echo "FAIL: script does not parse"; exit 1; }
 if [ "${SMOKE_SHELLCHECK:-1}" = 1 ]; then
-  docker run --rm -v "$LOG:/mnt:ro" koalaman/shellcheck:stable -s sh /mnt/install.sh \
+  docker run --rm -v "$LOG:/mnt:ro" koalaman/shellcheck:stable@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d -s sh /mnt/install.sh \
     || { echo "FAIL: shellcheck"; exit 1; }
 fi
 # Unknown arch / bad token: the canonical rejection.
@@ -5003,7 +5003,7 @@ sed '0,/^{$/s//{\n\tadmin off\n\tlocal_certs\n\tskip_install_trust\n\thttp_port 
 grep -q '^	https_port 8446$' "$LOG/Caddyfile" || { echo "FAIL: Caddyfile global block not found"; exit 1; }
 docker run -d --name akari-smoke-caddy --network host -e AKARI_DOMAIN=myapp.test \
   -e AKARI_UPSTREAM=127.0.0.1:8080 -e AKARI_ASK=http://127.0.0.1:8092/ask \
-  -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine >/dev/null
+  -v "$LOG/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f >/dev/null
 PREV_EXIT_EXTRA=$EXIT_EXTRA
 EXIT_EXTRA='docker rm -f akari-smoke-caddy akari-smoke-r22 >/dev/null 2>&1 || true'
 for _ in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/8446) 2>/dev/null && break; sleep 0.5; done
@@ -5140,7 +5140,7 @@ grep -q '^enrollment_token = ' "$LOG/r22-new.toml" || { echo "FAIL: bootstrap no
 mkdir -p "$LOG/state-r22-new"
 docker rm -f akari-smoke-r22 >/dev/null 2>&1 || true
 docker run -d --name akari-smoke-r22 --network host --add-host grpc.akari.test:127.0.0.1 --user "$(id -u):$(id -g)" \
-  -v "$(realpath "$AGENT"):/agent:ro" -v "$LOG:/smoke" alpine:3 \
+  -v "$(realpath "$AGENT"):/agent:ro" -v "$LOG:/smoke" alpine:3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a \
   /agent -config /smoke/r22-new.toml -state-dir /smoke/state-r22-new >/dev/null
 R22_ID=$(python3 -c "import json;print(json.load(open('$LOG/r22-create.json'))['server_id'])")
 for _ in $(seq 1 40); do [ "$(psql_q "SELECT status FROM servers WHERE id='$R22_ID'")" = "online" ] && break; sleep 0.5; done
