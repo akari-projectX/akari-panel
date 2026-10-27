@@ -59,6 +59,11 @@ enum Scenario {
     AuditActionPrefix,
     SubClash,
     SubLinks,
+    SubSingBox,
+    Orders,
+    OrdersDeep,
+    OrdersSearch,
+    OrdersQuery,
     Login,
     // W22 traffic history (30 days by default).
     TrafficUser,
@@ -69,7 +74,7 @@ enum Scenario {
 }
 
 impl Scenario {
-    const ALL: [Scenario; 22] = [
+    const ALL: [Scenario; 27] = [
         Scenario::Healthz,
         Scenario::Me,
         Scenario::UsersFirstPage,
@@ -86,6 +91,11 @@ impl Scenario {
         Scenario::AuditActionPrefix,
         Scenario::SubClash,
         Scenario::SubLinks,
+        Scenario::SubSingBox,
+        Scenario::Orders,
+        Scenario::OrdersDeep,
+        Scenario::OrdersSearch,
+        Scenario::OrdersQuery,
         Scenario::Login,
         Scenario::TrafficUser,
         Scenario::TrafficUserEntrances,
@@ -116,6 +126,11 @@ impl Scenario {
             Scenario::AuditActionPrefix => "audit_prefix",
             Scenario::SubClash => "sub_clash",
             Scenario::SubLinks => "sub_links",
+            Scenario::SubSingBox => "sub_singbox",
+            Scenario::Orders => "orders",
+            Scenario::OrdersDeep => "orders_deep",
+            Scenario::OrdersSearch => "orders_search",
+            Scenario::OrdersQuery => "orders_q",
             Scenario::Login => "login",
             Scenario::TrafficUser => "traffic_user",
             Scenario::TrafficUserEntrances => "traffic_user_entrances",
@@ -141,6 +156,8 @@ struct Ctx {
     /// W22: node ids and user session cookies (traffic_node / traffic_me).
     node_ids: Vec<Uuid>,
     user_cookies: Vec<String>,
+    /// Order ids to page from (`orders_deep`).
+    order_ids: Vec<Uuid>,
 }
 
 impl Ctx {
@@ -217,6 +234,10 @@ pub async fn run(args: HttpArgs) -> Result<()> {
     let node_ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM nodes")
         .fetch_all(&pg)
         .await?;
+    let order_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM orders ORDER BY random() LIMIT 2000")
+            .fetch_all(&pg)
+            .await?;
     let secret = std::fs::read_to_string(args.data_dir.join("jwt.key"))
         .with_context(|| format!("read {}/jwt.key", args.data_dir.display()))?;
     let sessions: Vec<(Uuid, i64)> = sqlx::query_as(
@@ -244,6 +265,7 @@ pub async fn run(args: HttpArgs) -> Result<()> {
         etag: std::sync::Mutex::new(String::new()),
         node_ids,
         user_cookies,
+        order_ids,
     });
     pg.close().await;
     let selected: Vec<Scenario> = if args.only.is_empty() {
@@ -383,12 +405,33 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                 rng.random_range(1..ctx.max_audit_id.max(2))
             )),
             Scenario::AuditActionPrefix => admin("audit?limit=50&action=node.".into()),
-            Scenario::SubClash | Scenario::SubLinks => {
-                let ua = if matches!(s, Scenario::SubClash) {
-                    "clash-verge/v2"
-                } else {
-                    "v2rayN/7"
+            Scenario::Orders => admin("orders?limit=50".into()),
+            Scenario::OrdersDeep => match ctx
+                .order_ids
+                .get(rng.random_range(0..ctx.order_ids.len().max(1)))
+            {
+                Some(id) => admin(format!("orders?limit=50&before={id}")),
+                None => return false,
+            },
+            Scenario::OrdersSearch => admin(format!(
+                "orders?limit=50&email={}",
+                common::user_email(rng.random_range(0..ctx.users.max(1)))
+            )),
+            // The console's one search box: an order-number fragment.
+            Scenario::OrdersQuery => admin(format!(
+                "orders?limit=50&q=BENCH{}",
+                rng.random_range(100..9999)
+            )),
+            Scenario::SubClash | Scenario::SubLinks | Scenario::SubSingBox => {
+                let ua = match s {
+                    Scenario::SubClash => "clash-verge/v2",
+                    Scenario::SubSingBox => "sing-box/1.12.0",
+                    _ => "v2rayN/7",
                 };
+                // A distinct client address per request (the panel trusts the
+                // loopback peer, panel-bench-1.toml): the per-address
+                // limit (120 per 10 minutes, built in) would otherwise
+                // answer 404 after the first 120 fetches.
                 ctx.client
                     .get(format!(
                         "{}/{}",
@@ -396,6 +439,7 @@ async fn request(ctx: &Ctx, s: Scenario, i: usize) -> bool {
                         common::sub_token(rng.random_range(0..ctx.users.max(1)))
                     ))
                     .header(reqwest::header::USER_AGENT, ua)
+                    .header("x-forwarded-for", common::random_ip(&mut rng))
             }
             Scenario::TrafficUser | Scenario::TrafficUserEntrances => {
                 let Some(id) = ctx

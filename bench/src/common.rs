@@ -71,3 +71,35 @@ pub fn summary(h: &Histogram<u64>) -> String {
         ms(h.max()),
     )
 }
+
+/// Delete every Valkey key matching `pattern` (one `EVAL` over a raw RESP
+/// connection: the bench crate carries no Redis client). Bench stack only:
+/// the panel's enrollment limit (10 per source per 10 minutes, built in
+/// since W25) would otherwise stop 200 loopback agents enrolling.
+pub async fn valkey_clear(addr: &str, pattern: &str) -> anyhow::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let script =
+        "for _, k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1";
+    let cmd = format!(
+        "*4\r\n$4\r\nEVAL\r\n${}\r\n{script}\r\n$1\r\n0\r\n${}\r\n{pattern}\r\n",
+        script.len(),
+        pattern.len()
+    );
+    let mut c = tokio::net::TcpStream::connect(addr).await?;
+    c.write_all(cmd.as_bytes()).await?;
+    let mut buf = [0u8; 64];
+    let n = c.read(&mut buf).await?;
+    anyhow::ensure!(buf.starts_with(b":1"), "valkey EVAL: {:?}", &buf[..n]);
+    Ok(())
+}
+
+/// A random public-looking IPv4 address (for `X-Forwarded-For`).
+pub fn random_ip(rng: &mut impl rand::RngExt) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        rng.random_range(11..223),
+        rng.random_range(0..256),
+        rng.random_range(0..256),
+        rng.random_range(1..255)
+    )
+}

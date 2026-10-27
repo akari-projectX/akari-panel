@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 mod common;
 mod explain;
+mod flood;
 mod lb;
 mod load;
 mod multi;
@@ -27,6 +28,8 @@ enum Cmd {
     Explain(explain::ExplainArgs),
     /// HTTP latency of the admin API, subscription and login
     Http(load::HttpArgs),
+    /// Login flood (argon2 queue, 503 request.busy) with responsiveness probes
+    Flood(flood::FloodArgs),
     /// Fake-agent swarm: convergence, change-to-agent latency, billing
     Swarm(swarm::SwarmArgs),
     /// TCP round-robin balancer (multi-instance test)
@@ -72,6 +75,7 @@ async fn main() -> Result<()> {
         Cmd::Seed(a) => seed::run(a).await,
         Cmd::Explain(a) => explain::run(a).await,
         Cmd::Http(a) => load::run(a).await,
+        Cmd::Flood(a) => flood::run(a).await,
         Cmd::Swarm(a) => swarm::run(a).await,
         Cmd::Lb(a) => lb::run(a).await,
         Cmd::Retention(a) => retention(a).await,

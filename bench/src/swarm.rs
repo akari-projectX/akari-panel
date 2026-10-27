@@ -50,6 +50,10 @@ pub struct SwarmArgs {
     /// The panel's data dir (CA, jwt.key).
     #[arg(long, default_value = "bench/data")]
     pub data_dir: PathBuf,
+    /// Bench Valkey (host:port): enrollment rate-limit keys are cleared
+    /// before each first-time enrollment.
+    #[arg(long, default_value = "127.0.0.1:6380")]
+    pub valkey: String,
     /// Where enrolled agent credentials are kept between runs.
     #[arg(long, default_value = "bench/data/swarm")]
     pub state_dir: PathBuf,
@@ -78,6 +82,16 @@ pub struct SwarmArgs {
     /// nonzero counters; a long session approaches all of them).
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub report_all: bool,
+    /// Reconnect storms to run after the first convergence: every agent's
+    /// stream is dropped at the same instant and all reconnect at once; the
+    /// time until the last one holds a lease again is reported.
+    #[arg(long, default_value_t = 0)]
+    pub storm_rounds: usize,
+    /// Storm agents forget their state first (held versions 0/0), so every
+    /// reconnect needs a full Snapshot (a panel restart after agents lost
+    /// their state; the worst case for snapshot building).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub storm_cold: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -107,6 +121,10 @@ struct Shared {
     converged: AtomicUsize,
     stats: Stats,
     stop: tokio::sync::watch::Receiver<bool>,
+    /// Bumped to drop every agent's stream at once (reconnect storm).
+    storm: tokio::sync::watch::Receiver<u64>,
+    /// Sessions that have been granted a lease since the counter was reset.
+    leased: AtomicUsize,
     args: SwarmArgs,
     ca_pem: String,
 }
@@ -154,6 +172,7 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
         .await?;
     let node_of = node_ids(&pg, args.agents).await?;
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let (storm_tx, storm_rx) = tokio::sync::watch::channel(0u64);
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
     let shared = Arc::new(Shared {
         watched: Mutex::new(None),
@@ -161,6 +180,8 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
         converged: AtomicUsize::new(0),
         stats: Stats::default(),
         stop: stop_rx,
+        storm: storm_rx,
+        leased: AtomicUsize::new(0),
         args: args.clone(),
         ca_pem,
     });
@@ -217,6 +238,48 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
         shared.stats.snapshot_bytes_max.load(Ordering::Relaxed)
     );
 
+    for round in 1..=args.storm_rounds {
+        // Let the panel settle (flush backlog, rebuilds) between rounds.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if args.storm_cold {
+            for st in &states {
+                let mut a = st.lock().await;
+                a.held = (0, 0);
+                a.users = UserSet::new();
+                a.inbounds = String::new();
+            }
+        }
+        let snaps = shared.stats.snapshots.load(Ordering::Relaxed);
+        shared.leased.store(0, Ordering::SeqCst);
+        let t = Instant::now();
+        storm_tx.send_modify(|g| *g += 1);
+        let mut at_90 = None;
+        loop {
+            let n = shared.leased.load(Ordering::SeqCst);
+            if at_90.is_none() && n * 10 >= args.agents * 9 {
+                at_90 = Some(t.elapsed());
+            }
+            if n >= args.agents {
+                break;
+            }
+            if t.elapsed() > Duration::from_secs(300) {
+                bail!(
+                    "storm {round}: only {n}/{} agents reconnected in 300 s",
+                    args.agents
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        println!(
+            "storm {round}{}: {} agents back with a lease: p90 {:.2?}, all {:.2?}; snapshots sent {}",
+            if args.storm_cold { " (cold)" } else { "" },
+            args.agents,
+            at_90.unwrap_or_default(),
+            t.elapsed(),
+            shared.stats.snapshots.load(Ordering::Relaxed) - snaps
+        );
+    }
+
     // Change-to-agent latency.
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -243,14 +306,20 @@ pub async fn run(args: SwarmArgs) -> Result<()> {
             }
             let base = &args.url[c % args.url.len()];
             let t0 = Instant::now();
+            // D12: access changes only through ban / unban.
+            let (action, body) = if enable {
+                ("unban", serde_json::json!({}))
+            } else {
+                ("ban", serde_json::json!({ "reason": "bench" }))
+            };
             let r = http
-                .patch(format!("{base}/{prefix}/api/v1/users/{user}"))
+                .post(format!("{base}/{prefix}/api/v1/users/{user}/{action}"))
                 .header(reqwest::header::COOKIE, &cookie)
-                .json(&serde_json::json!({ "enabled": enable }))
+                .json(&body)
                 .send()
                 .await?;
             if !r.status().is_success() {
-                bail!("PATCH user: {}", r.status());
+                bail!("{action} user: {}", r.status());
             }
             let committed = Instant::now();
             common::record(&mut api, committed - t0);
@@ -406,6 +475,7 @@ async fn ensure_creds(shared: &Shared, i: usize) -> Result<Creds> {
     if let Ok(s) = std::fs::read_to_string(&path) {
         return Ok(serde_json::from_str(&s)?);
     }
+    common::valkey_clear(&shared.args.valkey, "akari:rl:enroll:*").await?;
     let key = rcgen::KeyPair::generate()?;
     let csr = rcgen::CertificateParams::default().serialize_request(&key)?;
     let addr = &shared.args.grpc[i % shared.args.grpc.len()];
@@ -449,6 +519,10 @@ async fn agent_loop(
                 return;
             }
             shared.stats.reconnects.fetch_add(1, Ordering::Relaxed);
+            if e.to_string().starts_with("storm") {
+                // Reconnect at once, like every agent after a panel restart.
+                continue;
+            }
             eprintln!("agent {i}: {e:#}; reconnecting");
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
@@ -519,8 +593,12 @@ async fn session(
     );
     let mut hb = tokio::time::interval(Duration::from_secs(args.heartbeat_secs.max(1)));
     let mut stop = shared.stop.clone();
+    let mut storm = shared.storm.clone();
+    storm.mark_unchanged();
+    let mut leased = false;
     loop {
         tokio::select! {
+            _ = storm.changed() => bail!("storm: connection dropped"),
             m = down.message() => {
                 let Some(m) = m? else { bail!("panel closed the stream") };
                 match m.msg {
@@ -531,6 +609,10 @@ async fn session(
                     Some(DownMsg::Delta(d)) => {
                         let ack = on_delta(shared, i, st, d).await;
                         send(UpMsg::Ack(ack)).await?;
+                    }
+                    Some(DownMsg::Lease(_)) if !leased => {
+                        leased = true;
+                        shared.leased.fetch_add(1, Ordering::SeqCst);
                     }
                     _ => {}
                 }
