@@ -435,7 +435,7 @@ for probe in \
     "$SUBBASE/" \
     "$BASE/sub/x" \
     "$BASE/install/x" \
-    "-X POST $BASE/pay/alipay/notify" \
+    "-X POST $BASE/pay/00000000-0000-0000-0000-000000000000/notify" \
     "http://127.0.0.1:8080/deadbeef/api/v1/users" \
     "http://127.0.0.1:8080/assets/missing.js" \
     "$BASE" \
@@ -3207,8 +3207,7 @@ CORDER=$(last_json "d['id']"); COTN=$(last_json "d['out_trade_no']")
 # The last use is reserved: nobody else gets it.
 [ "$(api_json "$IJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\",\"coupon\":\"SMOKE20\"}")" = "409" ] \
   && last_json "d['error']" | matches 'coupon has been used up' || { echo "FAIL: coupon's last use given twice"; cat /tmp/akari-smoke/last; exit 1; }
-# (The pre-R40 notify path still settles an order through its own method.)
-[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/$METHOD/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$COTN" 8.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: coupon order notify"; exit 1; }
 [ "$(psql_q "SELECT status, fulfilled_at IS NOT NULL FROM orders WHERE id='$CORDER'")" = "paid|t" ] || { echo "FAIL: coupon order not fulfilled"; exit 1; }
 [ "$(psql_q "SELECT status || '/' || (SELECT used FROM coupons WHERE code='SMOKE20') FROM coupon_redemptions WHERE order_id='$CORDER'")" = "redeemed/1" ] \
@@ -3303,7 +3302,7 @@ PORDER=$(last_json "d['id']")
 [ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\"}")" = "201" ] \
   || { echo "FAIL: order to refund out of band"; cat /tmp/akari-smoke/last; exit 1; }
 XORDER=$(last_json "d['id']"); XOTN=$(last_json "d['out_trade_no']")
-[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$XOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/$METHOD/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$XOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: out-of-band refund order notify"; exit 1; }
 [ "$(api_json "$JAR" POST "$BASE/api/v1/orders/$XORDER/refund" '{"reason":"支付宝后台已退"}')" = "400" ] \
   && last_json "d['code']" | matches '^order_admin.refund_external_required$' \
@@ -3324,7 +3323,7 @@ mp_find smoke-w16@smoke.test 订单已退款 "原路退回（支付渠道）：�
 [ "$(api_json "$WJAR" POST "$BASE/api/v1/me/orders" "{\"plan_id\":\"$W16_PLAN\",\"period\":\"month\"}")" = "201" ] \
   || { echo "FAIL: order to refund through Alipay"; cat /tmp/akari-smoke/last; exit 1; }
 OORDER=$(last_json "d['id']"); OOTN=$(last_json "d['out_trade_no']")
-[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/alipay/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
+[ "$(curl -s --noproxy '*' -X POST "$ROOT/pay/$METHOD/notify" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OOTN" 10.00 TRADE_SUCCESS)")" = "success" ] \
   || { echo "FAIL: original-route refund order notify"; exit 1; }
 [ "$(code -b "$JAR" "$BASE/api/v1/orders/$OORDER/refund-preview")" = "200" ] && last_json "d['original_available']" | matches '^True$' \
   || { echo "FAIL: original-route refund not offered"; cat /tmp/akari-smoke/last; exit 1; }

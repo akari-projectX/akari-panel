@@ -279,14 +279,6 @@ pub fn pow_check(challenge: &str, nonce: &str) -> bool {
     .is_ok()
 }
 
-/// The Alipay F2F notify verdict of a method with fixed test keys (no
-/// panic on any body).
-pub fn alipay_check_notify(body: &[u8]) -> bool {
-    use crate::billing::provider::ProviderKind;
-    let _ = crate::billing::alipay::AlipayKind.peek_out_trade_no(body);
-    true
-}
-
 // --- Ops: content (announcements, knowledge base, branding, templates) ---
 
 /// `markdown::render` (announcement / help bodies, the announcement mail).

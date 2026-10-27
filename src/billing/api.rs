@@ -1,5 +1,5 @@
 //! Billing HTTP: the user's shop and orders, admin prices and orders, and
-//! the Alipay async notify (POST /{prefix}/pay/alipay/notify).
+//! the async notify of each payment method (POST /{prefix}/pay/{method}/notify).
 //!
 //! The notify endpoint is a public entry behind the same prefix gate as
 //! everything else; every refusal (rate limit, payments off, oversized or
@@ -78,7 +78,6 @@ async fn coupon_attempt(state: &AppState, user: Uuid, client: Option<std::net::I
 pub fn routes() -> Router<AppState> {
     Router::new()
         .merge(super::coupon_batches::routes())
-        .route("/{prefix}/pay/alipay/notify", post(legacy_notify))
         .route(
             "/{prefix}/pay/{method}/notify",
             post(method_notify).get(method_notify_get),
@@ -1580,63 +1579,6 @@ pub async fn method_notify_get(
     let body = query.unwrap_or_default();
     let url = super::methods::notify_url(&state, id);
     let req = NotifyRequest::new(body.as_bytes(), &headers, url.as_deref());
-    match handle_notify(&state, &*p, id, ip, &req).await {
-        Ok(true) => ack(p.notify_ack()),
-        Ok(false) => crate::reject::not_found(),
-        Err(e) => {
-            tracing::warn!(error = e.message(), "payment notify failed");
-            crate::reject::not_found()
-        }
-    }
-}
-
-/// POST /{prefix}/pay/alipay/notify — the pre-R40 Alipay notify URL, still
-/// handed out by orders created before 0140 (their notify_url was fixed at
-/// precreate). The claimed out_trade_no selects the order and thus its
-/// method (an Alipay method, usable); then the same verification as the
-/// per-method route. Everything else is the canonical rejection.
-pub async fn legacy_notify(
-    State(state): State<AppState>,
-    MaybeClientIp(ip): MaybeClientIp,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    if !notify_rate_ok(&state, ip).await {
-        return crate::reject::not_found();
-    }
-    if body.len() > MAX_NOTIFY_BODY {
-        return crate::reject::not_found();
-    }
-    let Some(kind) = provider::kind(super::alipay::KIND) else {
-        return crate::reject::not_found();
-    };
-    let Some(otn) = kind.peek_out_trade_no(&body) else {
-        return crate::reject::not_found();
-    };
-    let method: Option<Option<Uuid>> =
-        match sqlx::query_scalar("SELECT payment_method_id FROM orders WHERE out_trade_no = $1")
-            .bind(&otn)
-            .fetch_optional(state.pg())
-            .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "payment notify failed");
-                return crate::reject::not_found();
-            }
-        };
-    let Some(id) = method.flatten() else {
-        return crate::reject::not_found();
-    };
-    let Some(p) = state
-        .payments()
-        .provider(id)
-        .filter(|p| p.kind() == super::alipay::KIND)
-    else {
-        return crate::reject::not_found();
-    };
-    let url = super::methods::notify_url(&state, id);
-    let req = NotifyRequest::new(&body, &headers, url.as_deref());
     match handle_notify(&state, &*p, id, ip, &req).await {
         Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),

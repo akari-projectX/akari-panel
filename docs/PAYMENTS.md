@@ -30,7 +30,7 @@ R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式
    SPA 在本地渲染二维码（不使用 CDN）。每个用户同时只有一个未结订单：新订单会结束上一个待付款订单
    （先去支付宝查询并关闭）。
 3. 付款结果通过以下任一途径得知：
-   - **异步通知**（`POST /pay/{method_id}/notify`；R40 之前的 `/pay/alipay/notify` 为旧订单保留），
+   - **异步通知**（`POST /pay/{method_id}/notify`），
    - **状态轮询**（`GET /api/v1/me/orders/{id}` 对待付款订单向其支付方式查询（`alipay.trade.query`），
      所有实例合计每个订单最多每 3 s 一次），
    - **对账**（每个实例每 10 s 一次：最近 20 s 内未查询过的待付款订单会按各自的支付方式查询；
@@ -453,19 +453,10 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
   若做不到（开发环境、防火墙），付款仍会通过轮询和对账被发现——notify 只是让它更快。
 - 面板直接连接网关（不支持 HTTP 代理），使用 webpki 根证书库。
 
-**从 panel.toml 升级（已废弃的 `[payments.alipay]`）。**该段已不再属于配置。旧文件仍可启动：
-当数据库中**没有任何支付方式**的首次启动时，该段（及其两个密钥文件）会被一次性导入为名为「支付宝」的支付宝支付方式
-（审计 `payment_method.import`，操作者 `system`，密钥按上述方式加密存放），并且所有 0140 之前的订单
-（`payment_method_id` 为 NULL、金额 > 0）都会归属于它；日志会提示删除该段。此后它会被忽略并给出启动警告，
-`config check` 报告它已废弃，系统设置 → 支付 在其存在期间显示警告。若密钥文件无法读取，则跳过导入
-（警告）并继续启动：请在界面中配置支付方式。旧的显式 `notify_url` 已取消；升级前创建的订单保留旧 URL
-`/pay/alipay/notify`，该路径仍被接受（见下）。
-
 ### Adding a provider kind (developers)（新增渠道类型，面向开发者）
 
 实现 `provider::PaymentProvider`（创建 → 二维码或跳转 URL、查询、关闭、verify_notify、notify_ack、可选的退款、test_connection）
-和 `provider::ProviderKind`（id、中文名称、表单 schema、缺省时保留密钥字段的 validate、build、不含密钥的视图、
-peek_out_trade_no），把它加入 `provider::KINDS`，在新的迁移中放宽 `payment_methods.kind` 的 CHECK，
+和 `provider::ProviderKind`（id、中文名称、表单 schema、缺省时保留密钥字段的 validate、build、不含密钥的视图），把它加入 `provider::KINDS`，在新的迁移中放宽 `payment_methods.kind` 的 CHECK，
 并在该类型新增错误码时扩展 SPA 的错误映射。金额规则留在 `orders.rs`/`api.rs` 中，不随类型而变。
 
 ## EPay（易支付）（C1）
@@ -667,8 +658,7 @@ Ed25519 用 `EdDSA` 并带 `aud: ["cdp_service"]`，ECDSA 用 `ES256`），`Auth
 
 ## Notify endpoint rules（通知端点规则）
 
-`POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）以及旧的
-`POST /pay/alipay/notify`（R40 之前的订单：由声明的 `out_trade_no` 选出订单，进而确定其支付方式，该方式必须是可用的支付宝方式）。
+`POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）。
 表单编码，≤16 KiB，≤64 个参数，无重复键，按来源地址（/64）在 Valkey 中限流 120/min（故障时放行）。
 依次检查：RSA2 签名（除 `sign`/`sign_type` 外的所有参数，URL 解码后排序；保留空值，或像某些支付宝 SDK 那样丢弃空值——
 两种都在支付宝的签名之下；使用当前的支付宝公钥，或宽限期内的上一把）、该支付方式的 `app_id`、
@@ -786,5 +776,5 @@ cargo test --lib live_sandbox -- --ignored --nocapture
 - `smoke.sh` "R18-3"：用 openssl 生成的一次性密钥、Python mock 网关，定价 → 下单 → 被篡改 / 金额错误的通知 = 规范拒绝 →
   签名通知 → 套餐生效 → 经节点的 VLESS 往返 → 重放为空操作 → 通过轮询续费（+30 天）。
   W24：mock 网关通过管理 API 添加为支付方式（应用公钥当支付宝公钥被拒绝，密钥加密存放且绝不出现在视图/审计中，
-  测试连接 `keys_ok`），通知走按方式的路由，W16 订单经旧路径结算，`config check` 列出各支付方式且密钥已脱敏。
-  e2e "W24"：从已废弃的 panel.toml 段导入的支付方式、对不可达网关的测试连接、在表单中添加第二个支付方式、结账时的选择器。
+  测试连接 `keys_ok`），通知走按方式的路由，W16 订单经各自方式的路由结算，`config check` 列出各支付方式且密钥已脱敏。
+  e2e "W24"：对不可达网关的测试连接、在表单中添加第二个支付方式、结账时的选择器。

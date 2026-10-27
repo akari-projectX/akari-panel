@@ -57,7 +57,6 @@ import {
   ReadValue,
   SRow,
   SwitchRow,
-  Warnings,
   intError,
   intOf,
   useDraft,
@@ -102,7 +101,7 @@ type Method = {
   /** Any order ever used it (then it cannot be deleted). */
   used?: boolean;
 };
-type Payments = { kinds: Kind[]; methods: Method[]; warnings: string[] };
+type Payments = { kinds: Kind[]; methods: Method[] };
 
 /** English names of the server's (Chinese) schema labels and kinds. */
 const FIELD_EN: Record<string, string> = {
@@ -295,7 +294,6 @@ function PaymentList({ p }: { p: Payments }) {
           what={tr("新建、删除渠道和修改密钥与账号", "creating and deleting channels and changing keys and accounts")}
         />
       )}
-      <Warnings items={p.warnings} />
       <Panel
         title={tr("收款渠道 · 按门户里的显示顺序", "Payment channels · in the portal's order")}
         action={

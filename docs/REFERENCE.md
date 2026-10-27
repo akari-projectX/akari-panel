@@ -339,7 +339,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | GET/PUT | /api/v1/alerts/settings | admin | W17：阈值和渠道（Telegram 机器人、签名 webhook、邮件）；密钥只写（`*_set` 标记），`version` 用于乐观并发（409） |
 | POST | /api/v1/alerts/test | admin | W17：`{channel}` 通过已保存的配置发送测试消息，`{ok, error?}` |
 | GET | /api/v1/alerts/notifications | admin | W17：最近 100 条投递记录；`POST …/{id}/retry` 把死信重新入队 |
-| POST | /pay/alipay/notify | Alipay signature | 支付宝异步通知（RSA2）；所有拒绝 = 标准拒绝；见 docs/PAYMENTS.md |
+| POST | /pay/{method_id}/notify | provider signature | 支付方式的异步通知（支付宝 RSA2 等；易支付也接受 GET）；所有拒绝 = 标准拒绝；见 docs/PAYMENTS.md |
 | POST/GET | /pay/{method_id}/notify | provider signature | 按支付方式的异步通知（R40）：POST 表单（支付宝 RSA2、易支付 MD5）；GET（查询串）只对声明 GET 通知的类型（C1 易支付）开放，支付宝方式的 GET = 标准拒绝；未知/停用/格式错的 id 与一切拒绝 = 标准拒绝；只有已验证的本方式订单回 `success`；见 docs/PAYMENTS.md |
 | GET | /sub/{token} | token | 订阅（按 UA 选格式；W20：`?format=clash\|sing-box\|links` 可显式指定）。W30：Clash（Clash Verge、Clash Meta for Android、FlClash、Mihomo Party、Stash、NekoBox）= 带 PROXY 组和路由模板（rule-providers）的 YAML；sing-box（`SFA/`、`SFI/`、`SFM/`、`SFT/`、内核）= 完整的 1.12+ 客户端配置（TUN + 本地 mixed inbound、DNS、PROXY selector、规则集）；其他（v2rayN/v2rayNG、Shadowrocket、Hiddify、未知）= base64 分享链接。每个入口是各自独立的代理，倍率 ≠ 1x 时名称中带当前倍率 |
 | GET | /{sub_path}/rules/{id}.json | 公开 | 路由 PR 2：面板托管的远程规则集（sing-box `source` 格式 version 3：一条域名规则 `domain`/`domain_suffix`/`domain_keyword` + 一条 `ip_cidr`），`id` = 链接 SHA-256 的前 32 位十六进制；只在订阅路径下（主域名与订阅域名都可，后台前缀下没有）；`Content-Type: application/json`、`Cache-Control: public, max-age=3600`、强 ETag（`If-None-Match` → 304）；按客户端地址限速（同订阅的 /64 桶上限，另一组键）；未知/格式错的 id、超限 = 规范拒绝（字节同构）。不含任何秘密（链接与规则都来自运营者配置的公开列表） |

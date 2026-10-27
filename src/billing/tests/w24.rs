@@ -2,10 +2,9 @@
 //! API validation with coded errors, secrets sealed at rest (AAD = method
 //! id) and never returned or audited, optimistic concurrency, 测试连接,
 //! orders and notifies through DB-configured methods, method selection,
-//! cross-method notify isolation, the legacy notify path, Alipay public
-//! key rotation with a grace window, disabling and deleting, reload on
-//! another instance, and the one-time import of the obsolete panel.toml
-//! section. Plus the opt-in REAL sandbox check (ignored).
+//! cross-method notify isolation, Alipay public key rotation with a grace
+//! window, disabling and deleting, reload on another instance. Plus the
+//! opt-in REAL sandbox check (ignored).
 
 use std::time::Duration;
 
@@ -522,8 +521,8 @@ async fn two_methods_are_isolated() {
             "{p}"
         );
     }
-    // The legacy path finds B through the order.
-    let r = post_notify_to(&state, "/pay/alipay/notify", body).await;
+    // B's own route settles it.
+    let r = post_notify_to(&state, &format!("/pay/{b}/notify"), body).await;
     assert_eq!(
         (r.status, r.body.as_slice()),
         (StatusCode::OK, &b"success"[..])
@@ -537,20 +536,6 @@ async fn two_methods_are_isolated() {
     .await
     .unwrap();
     assert_eq!(m, Some(b));
-    // A legacy notify for an order without a method: rejected.
-    let (o2, otn2) = order_row(&db, db.user().await, plan, 500, 30).await;
-    sqlx::query("UPDATE orders SET payment_method_id = NULL WHERE id = $1")
-        .bind(o2)
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let r = post_notify_to(
-        &state,
-        "/pay/alipay/notify",
-        form(&notify_params(&otn2, "5.00", "TRADE_SUCCESS")),
-    )
-    .await;
-    assert_eq!(r.fingerprint(), canonical);
     // Reconcile queries each order at ITS method only.
     let (o3, otn3) = order_row(&db, db.user().await, plan, 500, 30).await;
     sqlx::query("UPDATE orders SET payment_method_id = $2 WHERE id = $1")
@@ -738,89 +723,6 @@ async fn payments_reload_on_another_instance() {
     db.drop().await;
 }
 
-/// The obsolete panel.toml section is imported once into an Alipay method
-/// (actor system, secrets sealed) which takes over the pre-0140 orders;
-/// ignored afterwards; unreadable key files import nothing.
-#[tokio::test]
-async fn legacy_section_is_imported_once() {
-    let Some(db) = TestDb::new().await else {
-        return;
-    };
-    let dir = std::env::temp_dir().join(format!("akari-w24-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let key = dir.join("app.pem");
-    let public = dir.join("alipay.pem");
-    std::fs::write(&key, APP_KEY).unwrap();
-    std::fs::write(&public, ALIPAY_PUB).unwrap();
-    let text = format!(
-        "[payments.alipay]\nenabled = true\napp_id = \"{APP_ID}\"\nseller_id = \"{SELLER_ID}\"\n\
-         app_private_key_file = \"{}\"\nalipay_public_key_file = \"{}\"\n\
-         gateway_url = \"https://openapi-sandbox.dl.alipaydev.com/gateway.do\"\n\
-         notify_url = \"https://x/abc/pay/alipay/notify\"\norder_timeout_minutes = 30\n",
-        key.display(),
-        public.display()
-    );
-    let parsed = crate::config::PanelConfig::parse(&text).unwrap();
-    // A pre-0140 order (no method).
-    let (_, plan) = priced_plan(&db, "legacy", 500, 30).await;
-    let (old, _) = order_row(&db, db.user().await, plan, 500, 30).await;
-    let st = AppState::for_test_with(db.pool.clone(), |c| c.legacy = parsed.legacy.clone()).await;
-    pm::import_legacy(&st).await;
-    let host = ORIGIN.trim_start_matches("https://");
-    db.domains(&st, "main", &[host]).await;
-    let mut c = db.pool.acquire().await.unwrap();
-    let rows = pm::load_all(&mut c).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        (rows[0].kind.as_str(), rows[0].enabled),
-        ("alipay_f2f", true)
-    );
-    assert_eq!(rows[0].config["environment"], "sandbox");
-    assert_eq!(rows[0].config["app_id"], APP_ID);
-    assert_eq!(rows[0].config["order_timeout_minutes"], 30);
-    assert!(st.payments().provider(rows[0].id).is_some());
-    let m: Option<Uuid> = sqlx::query_scalar("SELECT payment_method_id FROM orders WHERE id = $1")
-        .bind(old)
-        .fetch_one(&mut *c)
-        .await
-        .unwrap();
-    assert_eq!(
-        m,
-        Some(rows[0].id),
-        "pre-0140 orders belong to the imported method"
-    );
-    let audit: Vec<(String, String)> = sqlx::query_as(
-        "SELECT action, actor_label FROM audit_log WHERE action LIKE 'payment_method.%'",
-    )
-    .fetch_all(&mut *c)
-    .await
-    .unwrap();
-    assert_eq!(
-        audit,
-        [("payment_method.import".to_string(), "system".to_string())]
-    );
-    // Second start: nothing imported again.
-    pm::import_legacy(&st).await;
-    assert_eq!(pm::load_all(&mut c).await.unwrap().len(), 1);
-    // Unreadable key files: warned, nothing written.
-    let db2 = TestDb::new().await.unwrap();
-    std::fs::remove_file(&key).unwrap();
-    let st2 = AppState::for_test_with(db2.pool.clone(), |c| c.legacy = parsed.legacy.clone()).await;
-    pm::import_legacy(&st2).await;
-    let mut c2 = db2.pool.acquire().await.unwrap();
-    assert!(pm::load_all(&mut c2).await.unwrap().is_empty());
-    let l = pm::LegacyAlipay {
-        app_id: APP_ID.into(),
-        gateway_url: "ftp://x".into(),
-        ..Default::default()
-    };
-    assert!(pm::legacy_request(&l).unwrap_err().contains("gateway"));
-    drop((c, c2, st, st2));
-    std::fs::remove_dir_all(&dir).unwrap();
-    db.drop().await;
-    db2.drop().await;
-}
-
 #[test]
 fn gateways_and_kind_validation() {
     assert!(ali::gateway_ok("https://openapi.alipay.com/gateway.do"));
@@ -868,11 +770,6 @@ fn gateways_and_kind_validation() {
         !view.contains("PRIVATE") && view.contains("app_public_key"),
         "{view}"
     );
-    assert_eq!(
-        k.peek_out_trade_no(b"a=1&out_trade_no=AK9"),
-        Some("AK9".into())
-    );
-    assert_eq!(k.peek_out_trade_no(b"a=1&a=2"), None);
 }
 
 /// Opt-in: the REAL Alipay sandbox configured THROUGH THE API as a payment

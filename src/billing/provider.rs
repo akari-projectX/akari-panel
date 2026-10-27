@@ -270,9 +270,6 @@ pub trait ProviderKind: Sync {
     /// derived public facts (fingerprints, `<secret>_set` flags). Never a
     /// secret.
     fn view(&self, config: &Value, secrets: Option<&Value>) -> Value;
-    /// The out_trade_no a notify body claims (legacy route: find the
-    /// order before verifying with its method). Unverified.
-    fn peek_out_trade_no(&self, body: &[u8]) -> Option<String>;
     /// The portal icon of a method without one set (EPay: its channel).
     fn default_icon(&self, _config: &Value) -> Option<&'static str> {
         None

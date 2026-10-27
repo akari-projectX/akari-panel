@@ -18,10 +18,6 @@
 //!   (`AppState::payments`). A call in flight keeps the client it took.
 //!   Orders never store keys: pending orders keep working across a key
 //!   change.
-//! - **Obsolete panel.toml `[payments.alipay]`**: imported ONCE into an
-//!   Alipay method while no method exists (`import_legacy`, actor
-//!   `system`), which also becomes the method of the pre-0140 orders;
-//!   otherwise ignored with a startup warning.
 
 use std::sync::Arc;
 
@@ -560,13 +556,6 @@ pub async fn list(State(state): State<AppState>, user: AuthUser) -> Result<Json<
     user.require_admin()?;
     let mut c = state.pg().acquire().await?;
     let rows = load_all(&mut c).await?;
-    let mut warnings = Vec::new();
-    if state.cfg().legacy.keys.contains_key("payments.*") {
-        warnings.push(
-            "panel.toml 中仍有已废弃的 [payments] 段：支付配置只以本页为准，请删除该段与密钥文件"
-                .to_string(),
-        );
-    }
     let usage: Vec<(Uuid, i64, i64, bool)> = sqlx::query_as(USAGE_SQL)
         .bind(rows.iter().map(|r| r.id).collect::<Vec<_>>())
         .fetch_all(&mut *c)
@@ -593,7 +582,6 @@ pub async fn list(State(state): State<AppState>, user: AuthUser) -> Result<Json<
             "id": k.id(), "label": k.label(), "schema": k.schema(),
         })).collect::<Vec<_>>(),
         "methods": methods,
-        "warnings": warnings,
     })))
 }
 
@@ -715,129 +703,6 @@ pub fn routes() -> axum::Router<AppState> {
             put(update).delete(delete),
         )
         .route("/{prefix}/api/v1/settings/payments/{id}/test", post(test))
-}
-
-// ---------------------------------------------------------------------------
-// Obsolete panel.toml [payments.alipay]: one-time import
-// ---------------------------------------------------------------------------
-
-/// The obsolete section, parsed leniently (unknown keys ignored) — used
-/// only by the import.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct LegacyPayments {
-    pub alipay: LegacyAlipay,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct LegacyAlipay {
-    pub enabled: bool,
-    pub app_id: String,
-    pub seller_id: String,
-    pub app_private_key_file: std::path::PathBuf,
-    pub alipay_public_key_file: std::path::PathBuf,
-    pub gateway_url: String,
-    pub order_timeout_minutes: Option<i64>,
-}
-
-/// The method form of the legacy section (reads the two key files).
-pub fn legacy_request(l: &LegacyAlipay) -> Result<MethodReq, String> {
-    use super::alipay::{GATEWAY_PRODUCTION, GATEWAY_SANDBOX, gateway_ok};
-    let (environment, gateway_url) = match l.gateway_url.trim() {
-        "" | GATEWAY_PRODUCTION => ("production", None),
-        GATEWAY_SANDBOX => ("sandbox", None),
-        other if gateway_ok(other) => ("custom", Some(other.to_string())),
-        _ => return Err("gateway_url is not usable".into()),
-    };
-    let read = |p: &std::path::Path, what: &str| {
-        std::fs::read_to_string(p).map_err(|e| format!("{what} {}: {e}", p.display()))
-    };
-    let private = read(&l.app_private_key_file, "app_private_key_file")?;
-    let public = read(&l.alipay_public_key_file, "alipay_public_key_file")?;
-    Ok(MethodReq {
-        kind: Some(super::alipay::KIND.into()),
-        version: None,
-        display_name: "支付宝".into(),
-        icon: Some("alipay".into()),
-        sort: 0,
-        enabled: l.enabled,
-        config: json!({
-            "environment": environment,
-            "gateway_url": gateway_url,
-            "app_id": l.app_id,
-            "seller_id": l.seller_id,
-            "app_private_key": private,
-            "alipay_public_key": public,
-            "order_timeout_minutes": l.order_timeout_minutes.unwrap_or(15).clamp(5, 120),
-        }),
-    })
-}
-
-/// Startup: an obsolete `[payments]` section is imported once while no
-/// method exists (one transaction, table lock: concurrent instances import
-/// once), audited `payment_method.import` as actor `system`; the imported
-/// method becomes the method of every pre-0140 order. Afterwards (or when
-/// it cannot be imported) the section is ignored with a warning. Never
-/// fails the start.
-pub async fn import_legacy(state: &AppState) {
-    let Some(raw) = state.cfg().legacy.keys.get("payments.*").cloned() else {
-        return;
-    };
-    let legacy: LegacyPayments = match raw.try_into() {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!(error = %e, "panel.toml [payments] is obsolete and unreadable: ignored; delete it");
-            return;
-        }
-    };
-    let r = async {
-        let mut tx = state.pg().begin().await?;
-        sqlx::query("LOCK TABLE payment_methods IN SHARE ROW EXCLUSIVE MODE")
-            .execute(&mut *tx)
-            .await?;
-        let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM payment_methods)")
-            .fetch_one(&mut *tx)
-            .await?;
-        if any || legacy.alipay.app_id.is_empty() {
-            return anyhow::Ok(false);
-        }
-        let req = legacy_request(&legacy.alipay).map_err(anyhow::Error::msg)?;
-        let row = apply_create(
-            &mut tx,
-            state.master_key(),
-            &Actor::system(),
-            "payment_method.import",
-            &req,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
-        // Orders created before 0140 were Alipay orders of this merchant.
-        sqlx::query(
-            "UPDATE orders SET payment_method_id = $1 \
-             WHERE payment_method_id IS NULL AND amount_cents > 0",
-        )
-        .bind(row.id)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        anyhow::Ok(true)
-    };
-    match r.await {
-        Ok(true) => tracing::warn!(
-            "panel.toml [payments.alipay] imported into 系统设置 → 支付 as a payment method; the \
-             section is obsolete and now ignored: delete it and the key files"
-        ),
-        Ok(false) => tracing::warn!(
-            "panel.toml [payments] is obsolete and ignored (系统设置 → 支付 is the only \
-             configuration): delete it"
-        ),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "panel.toml [payments.alipay] could not be imported and is ignored: configure \
-             系统设置 → 支付, then delete the section"
-        ),
-    }
 }
 
 /// `config check`: the database side of payments (TOML comments).

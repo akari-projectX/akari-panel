@@ -450,11 +450,10 @@ async fn post_notify(
 ) -> crate::testdb::http::Resp {
     use axum::body::Body;
     use tower::ServiceExt;
-    // R40: the per-method route of the panel's first method (the legacy
-    // `/pay/alipay/notify` has its own tests in tests/w24.rs).
+    // The per-method route of the panel's first method.
     let uri = match state.payments().methods.first() {
         Some(m) => format!("/pay/{}/notify", m.id),
-        None => "/pay/alipay/notify".to_string(),
+        None => format!("/pay/{}/notify", Uuid::nil()),
     };
     let mut req = axum::http::Request::builder()
         .method(Method::POST)
@@ -795,7 +794,7 @@ async fn notify_rejections_are_canonical() {
         .fingerprint();
     let (method, _) = method_of(&state);
     for path in [
-        "/pay/alipay/notify".to_string(),
+        format!("/pay/{}/notify", Uuid::nil()),
         format!("/pay/{method}/notify"),
     ] {
         let canonical2 = Client::new(&state, rand_ip())
@@ -1551,31 +1550,6 @@ async fn one_open_order_per_user() {
     assert_eq!(n, 1);
     drop(state);
     db.drop().await;
-}
-
-/// W24: `[payments]` in panel.toml is obsolete: never an error (old files
-/// keep starting), always a warning, and never printed by `config check`.
-#[test]
-fn obsolete_payments_section_is_a_warning() {
-    let c = crate::config::PanelConfig::default();
-    assert!(c.validate().errors.is_empty() && c.validate().warnings.is_empty());
-    let text = r#"
-[payments.alipay]
-enabled = true
-app_id = "2021000000000001"
-notify_url = "https://panel.example/abc/pay/alipay/notify"
-whatever_unknown = 1
-"#;
-    let c = crate::config::PanelConfig::parse(text).unwrap();
-    let r = c.validate();
-    assert!(r.errors.is_empty(), "{r:?}");
-    let w = c.obsolete_warnings();
-    assert!(
-        w.iter().any(|w| w.contains("[payments] is obsolete")),
-        "{w:?}"
-    );
-    let t = c.effective_toml().unwrap();
-    assert!(!t.contains("payments") && !t.contains("/abc/"), "{t}");
 }
 
 /// R22/W24: the notify URL handed to Alipay follows the main domain of the

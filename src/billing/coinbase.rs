@@ -917,10 +917,6 @@ impl ProviderKind for CoinbaseKind {
         v
     }
 
-    fn peek_out_trade_no(&self, _body: &[u8]) -> Option<String> {
-        None
-    }
-
     fn default_icon(&self, _config: &Value) -> Option<&'static str> {
         Some("crypto")
     }
@@ -1526,6 +1522,5 @@ pub(crate) mod tests {
         assert_eq!(k.view(&v.config, None)["webhook_secret_set"], false);
         assert!(k.schema().as_array().is_some_and(|a| a.len() == 6));
         assert_eq!(k.label(), "Coinbase");
-        assert_eq!(k.peek_out_trade_no(b"x"), None);
     }
 }

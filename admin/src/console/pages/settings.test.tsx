@@ -226,7 +226,6 @@ const FIX: Record<string, unknown> = {
         warnings: [],
       },
     ],
-    warnings: [],
   },
   "/commission-settings": {
     enabled: false,
