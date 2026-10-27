@@ -1584,107 +1584,36 @@ async fn node_ops_and_security_api() {
     db.drop().await;
 }
 
-/// W30: the subscription settings: defaults in the view, a versioned and
-/// audited write, validation codes, null = back to the default, and the
-/// effective routing the subscriptions render after the reload.
+/// The subscription settings: defaults in the view (every format on,
+/// Surge and Surfboard included), validation codes, a versioned and audited
+/// write, null = back to the default; the old routing fields are gone
+/// (templates replaced them).
 #[tokio::test]
-async fn subscription_routing_settings() {
+async fn subscription_switch_settings() {
     let Some(db) = TestDb::new().await else {
         return;
     };
     let state = AppState::for_test(db.pool.clone()).await;
     let c = admin_client(&state, &db).await;
     let v = c.get("/test/api/v1/settings").await.json();
-    assert_eq!(v["subscription"]["routing"]["source"], "default");
-    assert_eq!(
-        v["subscription"]["routing"]["effective"],
-        serde_json::to_value(crate::sub::routing::recommended()).unwrap()
-    );
     let version = v["version"].as_i64().unwrap();
-
-    for (body, code) in [
-        (
-            json!({"version": version, "routing": {"direct": [{"type": "geosite", "value": "c n"}]}}),
-            "settings.sub_rule_invalid",
-        ),
-        (
-            json!({"version": version, "routing": {"services": [{"key": "x", "name": "X",
-                "primary": Uuid::new_v4()}]}}),
-            "settings.sub_entrance_unknown",
-        ),
-        (
-            json!({"version": version, "routing": {"dns": {"mode": "custom", "cn": ["1.1.1.1"], "intl": ["nope"]}}}),
-            "settings.sub_dns_server_invalid",
-        ),
-        (
-            json!({"version": version, "rule_set_clash_url": "https://m.example/x.list"}),
-            "settings.sub_rule_set_url_invalid",
-        ),
-    ] {
-        let r = c.put("/test/api/v1/settings/subscription", body).await;
-        assert_eq!(r.status, StatusCode::BAD_REQUEST);
-        assert_eq!(r.json()["code"], code);
-    }
-    let r = c
-        .put(
-            "/test/api/v1/settings/subscription",
-            json!({"version": version,
-                   "routing": {"direct": [{"type": "domain_suffix", "value": "Corp.Example"}]},
-                   "rule_set_singbox_url": "https://m.example/{kind}/{name}.srs"}),
-        )
-        .await;
+    assert!(v["subscription"].get("routing").is_none());
     assert_eq!(
-        r.status,
-        StatusCode::OK,
-        "{}",
-        String::from_utf8_lossy(&r.body)
-    );
-    let v = r.json();
-    assert_eq!(v["subscription"]["routing"]["source"], "settings");
-    assert_eq!(
-        v["subscription"]["routing"]["value"]["direct"][0]["value"],
-        "corp.example"
-    );
-    assert_eq!(v["version"], version + 1);
-    let eff = state.settings().get();
-    assert_eq!(eff.sub_routing.config.direct.len(), 1);
-    assert!(eff.sub_routing.config.services.is_empty());
-    assert_eq!(
-        eff.sub_routing.singbox_url,
-        "https://m.example/{kind}/{name}.srs"
+        v["subscription"]["formats"]["effective"],
+        json!(["clash", "sing-box", "links", "surge", "surfboard"])
     );
     assert_eq!(
-        eff.sub_routing.clash_url,
-        crate::sub::routing::DEFAULT_CLASH_URL
-    );
-    // Stale version.
-    let r = c
-        .put(
-            "/test/api/v1/settings/subscription",
-            json!({"version": version, "routing": {}}),
-        )
-        .await;
-    assert_eq!(r.status, StatusCode::CONFLICT);
-    // null = the default again; one audit row per change.
-    let r = c
-        .put(
-            "/test/api/v1/settings/subscription",
-            json!({"version": version + 1, "routing": null, "rule_set_singbox_url": ""}),
-        )
-        .await;
-    assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(
-        state.settings().get().sub_routing,
-        crate::sub::routing::Routing::default()
+        v["subscription"]["import_clients_shown"],
+        json!(["clash", "stash", "shadowrocket", "sing-box", "hiddify", "surge", "surfboard"])
     );
     // Section 5 switches: ids checked, normalized to the canonical order.
     for (body, code) in [
         (
-            json!({"version": version + 2, "formats": ["clash", "surge"]}),
+            json!({"version": version, "formats": ["clash", "quantumult"]}),
             "settings.sub_format_invalid",
         ),
         (
-            json!({"version": version + 2, "import_clients": ["quantumult"]}),
+            json!({"version": version, "import_clients": ["quantumult"]}),
             "settings.sub_import_client_invalid",
         ),
     ] {
@@ -1695,27 +1624,53 @@ async fn subscription_routing_settings() {
     let r = c
         .put(
             "/test/api/v1/settings/subscription",
-            json!({"version": version + 2, "formats": ["links", "clash", "clash"],
-                   "import_clients": ["sing-box", "clash"]}),
+            json!({"version": version, "formats": ["surge", "links", "clash", "clash"],
+                   "import_clients": ["sing-box", "clash", "surge"]}),
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);
     let v = r.json();
     assert_eq!(
         v["subscription"]["formats"]["value"],
-        json!(["clash", "links"])
+        json!(["clash", "links", "surge"])
     );
-    assert_eq!(v["subscription"]["import_clients_shown"], json!(["clash"]));
-    assert_eq!(state.settings().get().sub_formats, ["clash", "links"]);
+    assert_eq!(
+        v["subscription"]["import_clients_shown"],
+        json!(["clash", "surge"])
+    );
+    assert_eq!(
+        state.settings().get().sub_formats,
+        ["clash", "links", "surge"]
+    );
+    // The old routing fields are unknown now.
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version + 1, "routing": null}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    // Stale version.
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version, "formats": null}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let r = c
+        .put(
+            "/test/api/v1/settings/subscription",
+            json!({"version": version + 1, "formats": null}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(state.settings().get().sub_formats, crate::sub::all_formats());
     let audits = audit_rows(&db, "settings.subscription.update").await;
-    assert_eq!(audits.len(), 3);
+    assert_eq!(audits.len(), 2);
     assert_eq!(
-        audits[2].1.as_ref().unwrap()["formats"],
-        json!(["clash", "links"])
-    );
-    assert_eq!(
-        audits[0].1.as_ref().unwrap()["routing"]["direct"][0]["value"],
-        "corp.example"
+        audits[0].1.as_ref().unwrap()["formats"],
+        json!(["clash", "links", "surge"])
     );
     db.drop().await;
 }

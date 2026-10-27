@@ -155,7 +155,6 @@ fn inner_router(state: AppState) -> Router {
         )
         .route("/{prefix}/admin/{*rest}", get(console::console_index))
         .route("/{prefix}/sub/{token}", get(sub::subscription))
-        .route("/{prefix}/sub-rules/{file}", get(sub::rulesets::serve))
         .route("/{prefix}/install/{token}", get(nodeinstall::script))
         .route(
             "/{prefix}/install/{token}/agent/{sha256}",
@@ -385,13 +384,14 @@ fn inner_router(state: AppState) -> Router {
             "/{prefix}/api/v1/settings/subscription",
             put(settings::put_subscription),
         )
+        .route("/{prefix}/api/v1/sub-templates", get(sub::templates::list))
         .route(
-            "/{prefix}/api/v1/settings/subscription/catalog",
-            get(settings::subscription_catalog),
+            "/{prefix}/api/v1/sub-templates/{format}",
+            put(sub::templates::put).delete(sub::templates::reset),
         )
         .route(
-            "/{prefix}/api/v1/settings/subscription/rule-set/check",
-            post(sub::rulesets::check),
+            "/{prefix}/api/v1/sub-templates/{format}/preview",
+            post(sub::templates::preview),
         )
         .route(
             "/{prefix}/api/v1/settings/nodes",

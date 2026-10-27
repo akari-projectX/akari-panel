@@ -38,6 +38,8 @@ rust-embed = "8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+regex = "1"
+serde-saphyr = { version = "2", default-features = false, features = ["serialize", "deserialize"] }
 sha2 = "0.11"
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "uuid", "chrono", "json"] }
 subtle = "2"

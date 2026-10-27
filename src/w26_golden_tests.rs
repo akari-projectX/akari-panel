@@ -981,9 +981,11 @@ fn w26_golden_subscriptions() {
             ("links", Some("format=links"), "x"),
             ("clash", Some("format=clash"), "x"),
             ("sing-box", Some("format=sing-box"), "x"),
+            ("surge", Some("format=surge"), "x"),
+            ("surfboard", Some("format=surfboard"), "x"),
             ("ua-clash", None, "clash.meta/1"),
         ] {
-            let (ct, body) = render_for(query, ua, &rows, &crate::sub::routing::Routing::default());
+            let (ct, body) = render_for(query, ua, &rows);
             check_golden(
                 &format!("sub_{name}.{fmt}.golden"),
                 &format!("content-type: {ct}\n{body}"),
@@ -1004,7 +1006,7 @@ fn w26_golden_subscriptions() {
 }
 
 /// W30: which format each client's User-Agent gets (real UA strings of
-/// the clients' current releases), and a profile without any routing.
+/// the clients' current releases).
 #[test]
 fn w30_golden_client_formats() {
     let rows = &sub_fixtures()[0].1;
@@ -1023,305 +1025,14 @@ fn w30_golden_client_formats() {
         "v2rayN/7.4.2",
         "v2rayNG/1.9.30",
         "NekoBox/Android/1.3.4 (Prefer ClashMeta Format)",
+        "Surge iOS/3000",
+        "Surge Mac/2895",
+        "Surfboard/2.30.0 (Android 14)",
         "curl/8.5.0",
         "",
     ] {
-        let (ct, _) = render_for(None, ua, rows, &crate::sub::routing::Routing::default());
+        let (ct, _) = render_for(None, ua, rows);
         out.push_str(&format!("{ua:?} -> {ct}\n"));
     }
     check_golden("w30_client_formats.golden", &out);
-
-    // No routing at all: only the final rule, no providers / rule sets.
-    use crate::sub::routing::{Config, Routing};
-    let none = Routing {
-        config: serde_json::from_value::<Config>(json!({})).unwrap(),
-        ..Routing::default()
-    };
-    let (_, clash) = render_for(Some("format=clash"), "x", rows, &none);
-    assert!(
-        clash.trim_end().ends_with("rules:\n  - MATCH,🚀 默认代理"),
-        "{clash}"
-    );
-    assert!(!clash.contains("rule-providers") && !clash.contains("nameserver-policy"));
-    let (_, sb) = render_for(Some("format=sing-box"), "x", rows, &none);
-    let sb: Value = serde_json::from_str(sb.trim_end()).unwrap();
-    assert!(sb["route"].get("rule_set").is_none());
-    assert_eq!(
-        sb["dns"]["rules"],
-        json!([{"query_type": ["A", "AAAA"], "server": "fakeip"}])
-    );
-}
-
-/// 2026-10-13 `sub-service-groups`: service groups with pinned lines and
-/// failover (lines the user lacks skipped, a service with nothing left on
-/// the default proxy), region and tag groups, every item type (a remote
-/// rule-set: Clash loads the link; sing-box the panel-hosted copy when there
-/// is one), custom DNS without fake-ip and a named domestic
-/// resolver; then global mode with the client's own DNS. The fixture's
-/// lines: `sub_fixtures` "named" (region 日本, tag IPLC, ids 100..).
-#[test]
-fn routing_golden_services_failover_dns() {
-    use crate::sub::routing::Routing;
-    let rows = &sub_fixtures()[1].1;
-    let line = |n: u128| uuid::Uuid::from_u128(n).to_string();
-    let config = json!({
-        "mode": "rules",
-        "block": [{"type": "category", "value": "ads"}, {"type": "domain_keyword", "value": "tracker"}],
-        "direct": [
-            {"type": "category", "value": "private"},
-            {"type": "domain", "value": "intra.example.com"},
-            {"type": "ip_cidr", "value": "10.8.0.0/16"},
-            {"type": "ip_cidr", "value": "fd00::/8"},
-            {"type": "geosite", "value": "cn"},
-            {"type": "geoip", "value": "cn"}
-        ],
-        "services": [
-            {"key": "netflix", "name": "Netflix", "emoji": "🎬",
-             "items": [{"type": "category", "value": "netflix"}],
-             "primary": line(101),
-             "backups": [{"entrance": line(4242)}, {"entrance": line(102)}, {"region": "日本"}, {"region": "美国"}]},
-            {"key": "ai", "name": "AI 服务", "emoji": "🤖",
-             "items": [{"type": "category", "value": "ai"},
-                       {"type": "rule_set", "value": "https://rules.example.org/Claude.yaml"},
-                       {"type": "domain_suffix", "value": "anthropic.com"}],
-             "primary": null, "backups": [{"tag": "IPLC"}]},
-            {"key": "games", "name": "游戏: #1", "emoji": "",
-             "items": [{"type": "category", "value": "steam"},
-                       {"type": "rule_set", "value": "https://rules.example.org/Game.list?x=1"}],
-             "primary": line(4243), "backups": [{"tag": "没有"}]}
-        ],
-        "rest": {"region": "日本"},
-        "tag_groups": ["IPLC", "0.5x"],
-        "dns": {"mode": "custom", "fakeip": false,
-                "cn": ["https://doh.pub/dns-query", "tls://1.12.12.12"],
-                "intl": ["https://dns.google/dns-query", "8.8.8.8"]}
-    });
-    let routing = Routing {
-        config: serde_json::from_value::<crate::sub::routing::Config>(config)
-            .unwrap()
-            .parse()
-            .unwrap(),
-        clash_url: "https://mirror.example.net/{kind}/{name}.list".into(),
-        singbox_url: "https://mirror.example.net/{kind}/{name}.srs".into(),
-    };
-    for (fmt, query) in [("clash", "format=clash"), ("sing-box", "format=sing-box")] {
-        let (ct, body) = render_for(Some(query), "x", rows, &routing);
-        check_golden(
-            &format!("routing_services.{fmt}.golden"),
-            &format!("content-type: {ct}\n{body}"),
-        );
-    }
-    // Routing PR 2: the panel hosts a converted copy of a remote rule-set
-    // (here only Claude.yaml has a usable one): the sing-box profile
-    // references it as a remote `source` rule set on the subscription
-    // origin; Game.list (no copy) stays out.
-    let claude = "https://rules.example.org/Claude.yaml";
-    let hosted = crate::sub::rulesets::Hosted::new(
-        "https://sub.example.com/feed",
-        [(claude.to_string(), crate::sub::rulesets::id_of(claude))],
-    );
-    let (ct, body) =
-        crate::sub::render_hosted(crate::sub::Format::SingBox, rows, &routing, &hosted);
-    check_golden(
-        "routing_services_hosted.sing-box.golden",
-        &format!("content-type: {ct}\n{body}"),
-    );
-    let mut global = routing.clone();
-    global.config.mode = crate::sub::routing::Mode::Global;
-    global.config.dns.mode = crate::sub::routing::DnsMode::Client;
-    for (fmt, query) in [("clash", "format=clash"), ("sing-box", "format=sing-box")] {
-        let (ct, body) = render_for(Some(query), "x", rows, &global);
-        check_golden(
-            &format!("routing_global.{fmt}.golden"),
-            &format!("content-type: {ct}\n{body}"),
-        );
-    }
-}
-
-/// Inbounds for the validation goldens: protocols.rs's matrix cases and
-/// more (each mostly one fault).
-fn validation_corpus() -> Vec<Value> {
-    use base64::Engine;
-    let b64 = |n: usize| base64::engine::general_purpose::STANDARD.encode(vec![1u8; n]);
-    let (k16, k32) = (b64(16), b64(32));
-    let ss = |method: &str, psk: &str| {
-        json!({"tag": "s", "port": 8388, "protocol": "shadowsocks",
-               "settings": {"method": method, "password": psk, "clients": [], "network": "tcp,udp"}})
-    };
-    let hy = |extra: Value| {
-        let mut v = json!({"tag": "h", "port": 443, "protocol": "hysteria", "settings": {"version": 2, "clients": []},
-            "streamSettings": {"network": "hysteria", "security": "tls", "hysteriaSettings": {"version": 2}}});
-        for (k, val) in extra.as_object().unwrap() {
-            v["streamSettings"]["hysteriaSettings"][k] = val.clone();
-        }
-        v
-    };
-    let mut v = vec![
-        json!({"protocol": "vless"}),
-        json!({"protocol": "vless", "port": 443, "settings": {"decryption": "none", "flow": "xtls-rprx-vision"},
-               "streamSettings": {"network": "raw", "security": "reality"}}),
-        json!({"protocol": "vless", "settings": {"flow": "xtls-rprx-vision"}, "streamSettings": {"network": "tcp", "security": "tls"}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "xhttp", "security": "reality",
-               "xhttpSettings": {"path": "/x", "mode": "stream-one"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "grpc", "security": "reality",
-               "grpcSettings": {"serviceName": "svc"}}}),
-        json!({"protocol": "vmess", "streamSettings": {"network": "httpupgrade",
-               "httpupgradeSettings": {"path": "/u?ed=2048", "host": "cdn.example.com"}}}),
-        json!({"protocol": "trojan", "streamSettings": {"network": "ws", "security": "tls",
-               "wsSettings": {"path": "/t", "headers": {"Host": "a.example.com"}}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "splithttp", "splithttpSettings": {"path": "/s"}}}),
-        ss("2022-blake3-aes-128-gcm", &k16),
-        ss("2022-blake3-aes-256-gcm", &k32),
-        hy(json!({})),
-        hy(json!({"auth": ""})),
-        json!({"protocol": "dokodemo-door", "streamSettings": {"network": "kcp"}}),
-        json!({"protocol": "vless", "port": 0}),
-        json!({"protocol": "vless", "port": "443"}),
-        json!({"protocol": "vless", "port": 70000}),
-        json!({"protocol": "vless", "port": -1}),
-        json!({"protocol": "vless", "port": 1.5}),
-        json!({"protocol": "vless", "settings": {"flow": "xtls-rprx-vision"}, "streamSettings": {"network": "ws", "security": "tls"}}),
-        json!({"protocol": "vless", "settings": {"flow": "xtls-rprx-vision"}}),
-        json!({"protocol": "vless", "settings": {"flow": "xtls-rprx-direct"}}),
-        json!({"protocol": "vless", "settings": {"decryption": "mlkem768x25519plus.native.0rtt.x"}}),
-        json!({"protocol": "vless", "settings": {"decryption": null}}),
-        json!({"protocol": "vmess", "streamSettings": {"security": "reality"}}),
-        json!({"protocol": "trojan", "streamSettings": {"security": "reality"}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "security": "reality"}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "httpupgrade", "security": "reality"}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "kcp"}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "quic"}}),
-        json!({"protocol": "vless", "streamSettings": {"security": "xtls"}}),
-        json!({"protocol": "vless", "streamSettings": {"security": " TLS "}}),
-        json!({"protocol": "vless", "streamSettings": {"security": ""}}),
-        json!({"protocol": "vless", "streamSettings": {"network": " WebSocket "}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"path": "ws"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"path": "/a b"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"path": 5}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"path": format!("/{}", "a".repeat(256))}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"headers": {"Host": "a b"}}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "ws", "wsSettings": {"host": ""}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "xhttp", "xhttpSettings": {"mode": "fast"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "xhttp", "xhttpSettings": {"mode": ""}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "xhttp", "xhttpSettings": {"mode": 1}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "splithttp", "splithttpSettings": {"mode": "x"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "a b"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "grpc", "grpcSettings": {"serviceName": "a/b.c-d_e"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "httpupgrade", "httpupgradeSettings": {"host": "a b"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "hysteria"}}),
-        json!({"protocol": "vmess", "streamSettings": {"network": "hysteria"}}),
-        ss("2022-blake3-chacha20-poly1305", &k32),
-        ss("aes-128-gcm", "pw"),
-        ss("2022-blake3-aes-128-gcm", &k32),
-        ss("2022-blake3-aes-256-gcm", "%%%"),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": [{"password": k16}]}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": [], "network": "quic"}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": [], "network": " "}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": [], "network": "UDP"}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": []}, "streamSettings": {"network": "ws"}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": []}, "streamSettings": {"security": "tls"}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm", "password": k16,
-               "clients": []}, "streamSettings": {"security": "reality"}}),
-        hy(json!({"auth": "shared-secret"})),
-        hy(json!({"version": 1})),
-        json!({"protocol": "hysteria", "settings": {"version": 2}, "streamSettings": {"network": "hysteria",
-               "hysteriaSettings": {"version": 2}}}),
-        json!({"protocol": "hysteria", "settings": {"version": 2}, "streamSettings": {"network": "tcp", "security": "tls"}}),
-        json!({"protocol": "hysteria", "settings": {"version": 1}, "streamSettings": {"network": "hysteria", "security": "tls"}}),
-        json!({"protocol": "hysteria", "settings": {"version": 2}, "streamSettings": {"network": "hysteria", "security": "reality"}}),
-        json!({"protocol": "hysteria", "settings": {"version": 2}, "streamSettings": {"network": "hysteria", "security": "tls"}}),
-        json!({"tag": "a", "TAG": "b", "protocol": "vless"}),
-        json!({"tag": "a", "protocol": "vless", "\u{17f}ettings": {}, "settings": {}}),
-        json!({"protocol": "VLESS", "streamSettings": {"network": "kcp"}}),
-        // Two faults: which one is reported is part of the behaviour.
-        json!({"protocol": "vless", "port": 0, "streamSettings": {"network": "kcp"}}),
-        json!({"protocol": "vless", "settings": {"flow": "x"}, "streamSettings": {"network": "ws", "wsSettings": {"path": "bad"}}}),
-        json!({"protocol": "vless", "settings": {"decryption": "x", "flow": "y"}}),
-        json!({"protocol": "vmess", "streamSettings": {"network": "kcp", "security": "reality"}}),
-        json!({"protocol": "shadowsocks", "settings": {"method": "x", "clients": [1]}, "streamSettings": {"security": "tls"}}),
-        json!({"protocol": "hysteria", "settings": {"version": 1}, "streamSettings": {"network": "hysteria", "security": "none",
-               "hysteriaSettings": {"auth": "x"}}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "grpc", "security": "reality", "grpcSettings": {"serviceName": "a b"}}}),
-    ];
-    // The templates' own output is valid by construction; include it.
-    v.extend(all_templates_inbounds());
-    v.extend(hand_inbounds());
-    v
-}
-
-#[test]
-fn w26_golden_validation() {
-    let mut out = String::new();
-    out.push_str("== check_inbound / issuable / l4\n");
-    for ib in validation_corpus() {
-        let (t, u) = crate::protocols::l4(&ib);
-        out.push_str(&format!(
-            "{}\n  -> {} | issuable={} l4=({t},{u})\n",
-            ib,
-            match crate::protocols::check_inbound(&ib) {
-                Ok(()) => "ok".to_string(),
-                Err(e) => format!("ERR {e}"),
-            },
-            crate::protocols::issuable(&ib),
-        ));
-    }
-    out.push_str("== normalize_inbound\n");
-    let cases = vec![
-        json!({"not": "an inbound"}),
-        json!([]),
-        json!([{"protocol": "vless"}]),
-        json!("vless"),
-        json!({"protocol": "vless"}),
-        json!({"tag": "", "protocol": "vless"}),
-        json!({"tag": "api", "TAG": "akari-x", "protocol": "vless"}),
-        json!({"tag": "a"}),
-        json!({"tag": "a", "protocol": ""}),
-        json!({"protocol": "fakedns"}),
-        json!({"protocol": "vless", "sniffing": {"destOverride": ["http", "FakeDNS"]}}),
-        json!({"protocol": "vless", "Sniffing": {"DESTOVERRIDE": "tls, fakedns+others"}}),
-        json!({"tag": "fakedns-tag", "protocol": "vless", "sniffing": {"destOverride": ["http"]}}),
-        json!({"protocol": "vless", "streamSettings": {"network": "kcp"}}),
-    ];
-    for l in cases.into_iter().chain(all_templates_inbounds()) {
-        out.push_str(&format!(
-            "{}\n  -> {}\n",
-            l,
-            match crate::api::normalize_inbound(&l) {
-                Ok(v) => format!("ok {v}"),
-                Err(e) => err_line(&e),
-            }
-        ));
-    }
-    out.push_str("== inbound_warning\n");
-    let mut stored = hand_inbounds();
-    stored.extend(validation_corpus().into_iter().take(30));
-    for ib in &stored {
-        if let Some(w) = crate::api::inbound_warning(ib) {
-            out.push_str(&w);
-            out.push('\n');
-        }
-    }
-    out.push_str("== port_clash\n");
-    for l in [
-        json!([{"port": 443, "protocol": "vless"}, {"port": 443, "protocol": "hysteria"}]),
-        json!([{"port": 443, "protocol": "shadowsocks"}, {"port": 443, "protocol": "hysteria"}]),
-        json!([{"port": 443, "protocol": "shadowsocks", "settings": {"network": "tcp"}}, {"port": 443, "protocol": "hysteria"}]),
-        json!([{"port": 443, "protocol": "tunnel", "settings": {"network": "udp"}}, {"port": 443, "protocol": "vless"}]),
-        json!([{"port": 443, "protocol": "vless", "listen": "::"}, {"port": 443, "protocol": "vless", "listen": "1.1.1.1"}]),
-        json!([{"port": "443", "protocol": "vless"}, {"port": "443", "protocol": "vless"}]),
-    ] {
-        out.push_str(&format!(
-            "{} -> {:?}\n",
-            l,
-            crate::protocols::port_clash(l.as_array().unwrap())
-        ));
-    }
-    check_golden("validation.golden", &out);
 }

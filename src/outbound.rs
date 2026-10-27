@@ -1,5 +1,5 @@
 //! The SSRF guard of every panel request to an operator-supplied URL
-//! (remote rule-sets, `sub::rulesets::fetch`):
+//! (alert webhooks, update checks, payment gateways, Cloudflare DNS):
 //!
 //! * https only (plain http only to a loopback host — 127.0.0.0/8, ::1,
 //!   `localhost` — when the caller's `Policy::loopback_http` allows it: the
@@ -14,7 +14,7 @@
 //!   no DNS rebinding), TLS is verified for the host name (webpki roots);
 //! * compressed bodies are refused (none is asked for) and bodies are
 //!   capped by the caller (`read_capped`); deadlines and redirects are the
-//!   caller's (the rule-set GET follows a few, re-checked one by one).
+//!   caller's (the update check follows a few, re-checked one by one).
 //!
 //! Errors are short English details for the admin; they never carry the
 //! URL (it may hold a token) nor the response body.
