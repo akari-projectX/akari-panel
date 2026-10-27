@@ -14,13 +14,13 @@ ipv6 = false
 [Proxy]
 
 [Proxy Group]
-🚀 默认代理 = select, ♻️ 自动选择, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, DIRECT, DIRECT
+🚀 默认代理 = select, ♻️ 自动选择, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, DIRECT
 ♻️ 自动选择 = url-test, DIRECT, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50
-🎬 Netflix = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT, DIRECT
-🔍 Google = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT, DIRECT
-📺 YouTube = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT, DIRECT
-✈️ Telegram = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT, DIRECT
-🤖 AI 服务 = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT, DIRECT
+🎬 Netflix = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT
+🔍 Google = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT
+📺 YouTube = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT
+✈️ Telegram = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT
+🤖 AI 服务 = select, 🚀 默认代理, 🇭🇰 香港, 🇯🇵 日本, 🇺🇸 美国, 🇸🇬 新加坡, 🇹🇼 台湾, ♻️ 自动选择, DIRECT
 🇭🇰 香港 = url-test, include-all-proxies=true, policy-regex-filter=(?i)港|hk|hong, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50
 🇯🇵 日本 = url-test, include-all-proxies=true, policy-regex-filter=(?i)日本|jp|japan, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50
 🇺🇸 美国 = url-test, include-all-proxies=true, policy-regex-filter=(?i)美国|美國|us|united, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50
@@ -45,6 +45,54 @@ RULE-SET,https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/r
 RULE-SET,https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/Telegram/Telegram.list,✈️ Telegram
 RULE-SET,https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Surge/OpenAI/OpenAI.list,🤖 AI 服务
 FINAL,🚀 默认代理
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
