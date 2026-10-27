@@ -34,21 +34,13 @@ psql_admin "CREATE DATABASE \"$E2E_DB\""
 docker compose exec -T valkey valkey-cli -n "$E2E_VALKEY_DB" flushdb >/dev/null
 
 rm -rf "$DIR" && mkdir -p "$DIR"
-# W25 (R39): web.advertised_names, grpc.advertise and [audit] are OBSOLETE —
-# kept here on purpose (like [payments.alipay] below): the first start
-# imports them once into 系统设置 (node domain, certificate names, audit
-# retention), which the W25 test then sees in the console.
 cat >"$DIR/panel.toml" <<TOML
 data_dir = "$DIR/data"
 [web]
 bind = "127.0.0.1:$PORT"
-advertised_names = ["localhost", "127.0.0.1", "myapp.test"]
 cookie_secure = false
 [grpc]
 bind = "127.0.0.1:$GRPC_PORT"
-advertise = "127.0.0.1:$GRPC_PORT"
-[audit]
-retention_days = 180
 TOML
 
 # W15: Mailpit as the SMTP sink (loopback; SMTP 11026, API 18026 — not
@@ -139,8 +131,10 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
-# The throwaway release key as an extra trusted key (W25: in the database,
-# not panel.toml; the settings trigger reloads the running panel).
+# The node domain agents dial (系统设置 → 节点通信) and the throwaway release
+# key as an extra trusted key (both in the database; the settings trigger
+# reloads the running panel).
+"$PANEL" -c "$DIR/panel.toml" settings set node "127.0.0.1:$GRPC_PORT" >/dev/null
 docker compose exec -T postgres psql -U akari -d "$E2E_DB" -qc \
   "UPDATE panel_settings SET extra_release_keys = ARRAY['$(base64 -w0 "$REL/pub.raw") e2e'], version = version + 1" >/dev/null
 

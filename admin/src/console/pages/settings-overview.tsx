@@ -15,7 +15,6 @@ import { Badge } from "../../shared/ui/badge";
 import { Button } from "../../shared/ui/button";
 import { Card, Tile } from "../../shared/ui/card";
 import { ErrorState, Skeleton } from "../../shared/ui/states";
-import { CopyText } from "../components/kit";
 import { SECONDARY } from "../data";
 import { useAccess, useAuthSettings, useSettings } from "./settings-data";
 import { SECTIONS, SETTINGS_IA, type Section, type SectionId } from "./settings-ia";
@@ -143,7 +142,6 @@ export type Attn = {
   body?: string;
   to: string;
   cta?: string;
-  copy?: string[];
 };
 
 /**
@@ -247,22 +245,6 @@ export function useOverview() {
         : []),
       { k: tr("公钥", "Keys"), v: String(d.security.release_keys.length) },
     ];
-    if (d.obsolete_config_keys.length)
-      attn.push({
-        key: "obsolete",
-        tone: "warning",
-        section: "site",
-        title: tr(
-          `panel.toml 里有 ${d.obsolete_config_keys.length} 个已废弃的键`,
-          `panel.toml has ${d.obsolete_config_keys.length} obsolete keys`,
-        ),
-        body: tr(
-          "这些设置已经搬到系统设置里，面板不再读取；从文件中删除它们即可消除此提示。",
-          "These settings live here now and the panel no longer reads them; delete them from the file to clear this.",
-        ),
-        to: "/settings",
-        copy: d.obsolete_config_keys,
-      });
     for (const w of d.warnings)
       attn.push({
         key: `w:${w}`,
@@ -492,13 +474,6 @@ export function Attention({ items }: { items: Attn[]; compact?: boolean }) {
             <div className="min-w-0 flex-1">
               <div className="text-body font-semibold break-words">{a.title}</div>
               {a.body && <div className="mt-0.5 text-footnote break-words text-muted-foreground">{a.body}</div>}
-              {a.copy && (
-                <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1.5">
-                  {a.copy.map((c) => (
-                    <CopyText key={c} value={c} label={c} />
-                  ))}
-                </div>
-              )}
             </div>
             {a.cta && (
               <Button asChild size="sm" variant={a.tone === "danger" ? "primary" : "outline"} className="shrink-0">
