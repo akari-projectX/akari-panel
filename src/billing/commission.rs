@@ -242,11 +242,15 @@ pub async fn on_paid(
 /// to their inviters' balances. A commission whose inviter was deleted is
 /// reversed. Returns how many were settled.
 pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
-    let due: Vec<(Uuid, Option<Uuid>, i64, Uuid)> = sqlx::query_as(
-        "SELECT id, inviter_id, amount_cents, order_id FROM commissions \
-         WHERE status = 'pending' AND available_at <= now() \
-         ORDER BY available_at, id LIMIT $1 FOR UPDATE SKIP LOCKED",
-    )
+    // 低-6: a banned inviter's commissions stay pending until unbanned.
+    let due: Vec<(Uuid, Option<Uuid>, i64, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT c.id, c.inviter_id, c.amount_cents - COALESCE(c.clawback_cents, 0), c.order_id \
+         FROM commissions c \
+         WHERE c.status = 'pending' AND c.available_at <= now() \
+         AND NOT EXISTS (SELECT 1 FROM users u WHERE u.id = c.inviter_id AND {}) \
+         ORDER BY c.available_at, c.id LIMIT $1 FOR UPDATE OF c SKIP LOCKED",
+        crate::api::STATUS_BANNED
+    )))
     .bind(CREDIT_BATCH)
     .fetch_all(&mut *conn)
     .await?;
@@ -256,12 +260,14 @@ pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
             reverse(conn, &actor, *id, "the inviter no longer exists").await?;
             continue;
         };
-        // 中-4: the inviter's outstanding clawbacks, locked before the
-        // balance row (lock order commissions → user_balances); paid first
-        // out of what this commission brings.
+        // 中-4: the inviter's outstanding clawbacks (of credited commissions:
+        // a pending one's reduction is taken from its own credit), locked
+        // before the balance row (lock order commissions → user_balances);
+        // paid first out of what this commission brings.
         let debts: Vec<(Uuid, i64)> = sqlx::query_as(
             "SELECT id, clawback_cents - clawback_recovered_cents FROM commissions \
-             WHERE inviter_id = $1 AND clawback_cents > clawback_recovered_cents \
+             WHERE inviter_id = $1 AND status = 'credited' \
+             AND clawback_cents > clawback_recovered_cents \
              ORDER BY id FOR UPDATE",
         )
         .bind(inviter)
@@ -272,7 +278,8 @@ pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
         e.order_id = Some(*order);
         let (ledger_id, _) = ledger::apply_entry(conn, &actor, &e).await?;
         sqlx::query(
-            "UPDATE commissions SET status = 'credited', credited_at = now(), ledger_id = $2 \
+            "UPDATE commissions SET status = 'credited', credited_at = now(), ledger_id = $2, \
+                 clawback_recovered_cents = COALESCE(clawback_cents, 0) \
              WHERE id = $1 AND status = 'pending'",
         )
         .bind(id)
@@ -318,10 +325,11 @@ async fn recover(
     Ok(take)
 }
 
-/// 中-4: claw a credited commission back (its order was refunded): the
-/// whole amount is owed; what the inviter's balance holds is taken now,
-/// the rest later (`credit_due`). Audited `commission.clawback`. Returns
-/// {amount_cents, recovered_cents, outstanding_cents}.
+/// 中-4: claw a credited commission back (its order was refunded): `amount`
+/// (all of it, or P3-9 the refunded share) is owed; what the inviter's
+/// balance holds is taken now, the rest later (`credit_due`). Audited
+/// `commission.clawback`. Returns {amount_cents, recovered_cents,
+/// outstanding_cents}.
 async fn claw_back(
     conn: &mut PgConnection,
     actor: &Actor,
@@ -331,10 +339,11 @@ async fn claw_back(
     reason: &str,
 ) -> Result<Value, ApiError> {
     sqlx::query(
-        "UPDATE commissions SET clawback_cents = amount_cents, clawed_back_at = now() \
+        "UPDATE commissions SET clawback_cents = $2, clawed_back_at = now() \
          WHERE id = $1 AND status = 'credited' AND clawback_cents IS NULL",
     )
     .bind(id)
+    .bind(amount)
     .execute(&mut *conn)
     .await?;
     // A deleted inviter has no balance left to take from.
@@ -394,22 +403,55 @@ async fn reverse(
 /// What a refund did to its order's commission.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Undone {
-    /// `reversed` (was pending), `clawed_back` (was credited, 中-4), or
-    /// the state it was left in.
+    /// `reversed` (was pending), `reduced` (pending, partial refund: the
+    /// share comes off when it is credited), `clawed_back` (was credited,
+    /// 中-4), or the state it was left in.
     pub status: String,
     /// The clawback: {amount_cents, recovered_cents, outstanding_cents}.
     pub clawback: Option<Value>,
 }
 
+/// How much of the order's gateway payment a refund returns (P3-9): the
+/// commission is undone in the same proportion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Share {
+    pub refunded_cents: i64,
+    pub paid_cents: i64,
+}
+
+impl Share {
+    /// Not a partial refund: all of the gateway payment goes back — or none
+    /// of it is part of this refund (an admin recording that the money moves
+    /// outside the gateway, `external_cents` 0), which undoes the order
+    /// completely like before. Only 0 < refunded < paid is partial.
+    pub fn is_full(self) -> bool {
+        self.refunded_cents <= 0 || self.refunded_cents >= self.paid_cents
+    }
+
+    /// `floor(commission x refunded / paid)`, the whole commission for a
+    /// full refund.
+    pub fn of(self, commission_cents: i64) -> i64 {
+        if self.is_full() {
+            return commission_cents;
+        }
+        let part = i128::from(commission_cents) * i128::from(self.refunded_cents.max(0))
+            / i128::from(self.paid_cents);
+        i64::try_from(part).unwrap_or(commission_cents)
+    }
+}
+
 /// The order was refunded: a pending commission is reversed, a credited
 /// one clawed back (中-4: regardless of the hold; what the inviter's
 /// balance cannot cover now is netted against later commissions and kept
-/// out of withdrawals). None without a commission.
+/// out of withdrawals). A partial refund (P3-9) undoes the same share of
+/// it: a credited commission is clawed back by that part, a pending one
+/// is credited later minus it. None without a commission.
 pub async fn reverse_for_order(
     conn: &mut PgConnection,
     actor: &Actor,
     order_id: Uuid,
     reason: &str,
+    share: Share,
 ) -> Result<Option<Undone>, ApiError> {
     type Row = (Uuid, String, Option<Uuid>, i64, Option<i64>);
     let c: Option<Row> = sqlx::query_as(
@@ -422,30 +464,59 @@ pub async fn reverse_for_order(
     let Some((id, status, inviter, amount, clawback)) = c else {
         return Ok(None);
     };
+    let part = share.of(amount);
+    let unchanged = |status: String| Undone {
+        status,
+        clawback: None,
+    };
     Ok(Some(match (status.as_str(), clawback) {
-        ("pending", _) => {
+        ("pending", None) if share.is_full() => {
             reverse(conn, actor, id, reason).await?;
+            unchanged("reversed".into())
+        }
+        ("pending", None) if part > 0 => {
+            sqlx::query(
+                "UPDATE commissions SET clawback_cents = $2, clawed_back_at = now() \
+                 WHERE id = $1 AND status = 'pending' AND clawback_cents IS NULL",
+            )
+            .bind(id)
+            .bind(part)
+            .execute(&mut *conn)
+            .await?;
+            let detail = json!({ "amount_cents": part, "recovered_cents": 0,
+                                 "outstanding_cents": part });
+            let mut after = detail.clone();
+            after["reason"] = json!(reason);
+            crate::audit::record(
+                conn,
+                actor,
+                "commission.clawback",
+                "commission",
+                Some(id.to_string()),
+                Some(json!({ "status": "pending" })),
+                Some(after),
+            )
+            .await?;
             Undone {
-                status: "reversed".into(),
-                clawback: None,
+                status: "reduced".into(),
+                clawback: Some(detail),
             }
         }
-        ("credited", None) => Undone {
+        ("credited", None) if part > 0 => Undone {
             status: "clawed_back".into(),
-            clawback: Some(claw_back(conn, actor, id, inviter, amount, reason).await?),
+            clawback: Some(claw_back(conn, actor, id, inviter, part, reason).await?),
         },
-        _ => Undone {
-            status,
-            clawback: None,
-        },
+        _ => unchanged(status),
     }))
 }
 
-/// For the refund preview: the order's commission, what a refund would do
-/// to it and what the inviter's balance would cover now. None without one.
+/// For the refund preview: the order's commission, what a refund returning
+/// `share` of the payment would do to it and what the inviter's balance
+/// would cover now. None without one.
 pub async fn refund_preview(
     conn: &mut PgConnection,
     order_id: Uuid,
+    share: Share,
 ) -> sqlx::Result<Option<Value>> {
     let row: Option<(String, i64, Option<i64>, i64)> = sqlx::query_as(
         "SELECT c.status, c.amount_cents, c.clawback_cents, \
@@ -456,18 +527,20 @@ pub async fn refund_preview(
     .fetch_optional(conn)
     .await?;
     Ok(row.map(|(status, amount, clawback, balance)| {
-        let action = match (status.as_str(), clawback) {
-            ("pending", _) => "reverse",
-            ("credited", None) => "claw_back",
-            _ => "none",
+        let part = share.of(amount);
+        let (action, cents) = match (status.as_str(), clawback) {
+            ("pending", None) if share.is_full() => ("reverse", amount),
+            ("pending", None) if part > 0 => ("reduce", part),
+            ("credited", None) if part > 0 => ("claw_back", part),
+            _ => ("none", 0),
         };
         let recoverable = if action == "claw_back" {
-            balance.min(amount)
+            balance.min(cents)
         } else {
             0
         };
         json!({ "status": status, "amount_cents": amount, "action": action,
-                "recoverable_now_cents": recoverable })
+                "undo_cents": cents, "recoverable_now_cents": recoverable })
     }))
 }
 

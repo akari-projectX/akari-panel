@@ -262,7 +262,7 @@ async fn refund_unfulfillable(
             reason,
             to_balance: true,
             external_cents: None,
-            keep_plan: false,
+            keep_plan: Some(false),
             portal: None,
         },
     )
@@ -464,7 +464,8 @@ pub async fn release_holds(
 ///
 /// The detail (`orders.fulfil_result`) records what a refund must undo
 /// (`billing::refund`): the subscription (`user_plan_id`), a renewal's
-/// `base` (the term was added to it), a switch's replaced subscription and
+/// `base` (the term was added to it) and `fresh_cleared_bytes` (the used
+/// traffic its fresh quota cleared, P3-1), a switch's replaced subscription and
 /// the traffic used on it (`prior`).
 async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Value, ApiError> {
     let user = b
@@ -502,7 +503,7 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
                 .bind(old)
                 .fetch_one(&mut *conn)
                 .await?;
-            crate::plans::apply_renew_user_plan(
+            let renewed = crate::plans::apply_renew_user_plan(
                 conn,
                 actor,
                 user,
@@ -517,7 +518,8 @@ async fn grant(conn: &mut PgConnection, actor: &Actor, b: &Bought) -> Result<Val
             .await?;
             Ok(
                 json!({ "kind": "renew", "user_plan_id": up, "from": old, "base": base,
-                       "expires_at": new }),
+                       "expires_at": new,
+                       "fresh_cleared_bytes": renewed.cleared_used_bytes }),
             )
         }
         other => {

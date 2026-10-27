@@ -2852,6 +2852,7 @@ mod tests {
                             crate::plans::Revoke::Rollback {
                                 user_plan_id: up,
                                 to,
+                                restore_used_bytes: 0,
                             },
                         )
                         .await

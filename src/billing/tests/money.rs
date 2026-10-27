@@ -176,7 +176,7 @@ async fn commission_clawback_after_the_hold() {
     assert_eq!(
         p["commission"],
         json!({"status": "credited", "amount_cents": 100, "action": "claw_back",
-               "recoverable_now_cents": 0})
+               "undo_cents": 100, "recoverable_now_cents": 0})
     );
     let r = admin
         .post(

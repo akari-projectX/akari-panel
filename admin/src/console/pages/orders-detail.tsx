@@ -157,14 +157,34 @@ function fulfilFix(e: string, o: Order, tr: Tr): { text: string; fix?: { to: str
   };
 }
 
+function commissionText(c: { action: string; undo_cents: number; amount_cents: number }, tr: Tr): string {
+  const of = tr(`（共 ${yuan(c.amount_cents)}）`, ` (of ${yuan(c.amount_cents)})`);
+  switch (c.action) {
+    case "reverse":
+      return tr(`撤销 ${yuan(c.undo_cents)}`, `Reverse ${yuan(c.undo_cents)}`) + of;
+    case "reduce":
+      return tr(`入账时扣减 ${yuan(c.undo_cents)}`, `Reduce by ${yuan(c.undo_cents)} when credited`) + of;
+    default:
+      return tr(`追回 ${yuan(c.undo_cents)}`, `Claw back ${yuan(c.undo_cents)}`) + of;
+  }
+}
+
 export function effectText(e: RefundEffect, tr: Tr): string {
   switch (e.kind) {
     case "cancel":
       return tr(`取消订阅「${e.plan_name}」并踢线`, `Cancels the "${e.plan_name}" subscription (user disconnected)`);
     case "rollback":
-      return tr(
-        `「${e.plan_name}」到期日 ${dateTime(e.from)} → ${dateTime(e.to)}`,
-        `"${e.plan_name}" expiry ${dateTime(e.from)} → ${dateTime(e.to)}`,
+      return (
+        tr(
+          `「${e.plan_name}」到期日 ${dateTime(e.from)} → ${dateTime(e.to)}`,
+          `"${e.plan_name}" expiry ${dateTime(e.from)} → ${dateTime(e.to)}`,
+        ) +
+        (e.restore_used_bytes > 0
+          ? tr(
+              `，已用流量加回 ${bytes(e.restore_used_bytes)}（不超过额度）`,
+              `, ${bytes(e.restore_used_bytes)} of used traffic added back (up to the quota)`,
+            )
+          : "")
       );
     case "restore":
       return tr(
@@ -845,6 +865,10 @@ function FulfilDialog({ order: o, onClose }: { order: Order; onClose: () => void
 type Preview = {
   balance_part_cents: number;
   amount_cents: number;
+  partial: boolean;
+  keep_plan_default: boolean;
+  coupon_released: string | null;
+  commission: { status: string; amount_cents: number; action: string; undo_cents: number } | null;
   effect: RefundEffect;
   original_available: boolean;
   original_request: { state: string } | null;
@@ -869,7 +893,7 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
   const r: Route = confirmed !== null ? "record" : (route ?? (p.data?.original_available ? "original" : "balance"));
   const [amount, setAmount] = useState<string | null>(null);
   const amountText = amount ?? centsToYuanText(confirmed ?? max);
-  const [keepPlan, setKeepPlan] = useState(false);
+  const [keepChoice, setKeepChoice] = useState<boolean | null>(null);
   const [reason, setReason] = useState("");
   const [typed, setTyped] = useState("");
   const [tried, setTried] = useState(false);
@@ -894,6 +918,18 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
   const reasonErr = reason.trim() ? null : tr("请写明退款原因", "Give the reason");
   const typedErr = typed.trim() === tail ? null : tr("请输入订单号后 6 位", "Type the last 6 characters");
   const errs = [amountErr, reasonErr, typedErr].filter(Boolean).length;
+  // P3-9: returning less than the gateway payment is a partial refund: the
+  // plan stays by default, the coupon use stays used, the commission is
+  // undone in proportion.
+  const partial = gateway && r !== "balance" && !amountErr && cents !== null && cents > 0 && cents < max;
+  const keepPlan = keepChoice ?? partial;
+  const part = useQuery({
+    queryKey: ["refund-preview", o.id, cents],
+    queryFn: () => get<Preview>(`/orders/${o.id}/refund-preview?gateway_cents=${cents}`),
+    enabled: partial,
+    gcTime: 0,
+  });
+  const view = partial ? part.data : p.data;
   const refundCents =
     (p.data?.balance_part_cents ?? 0) + (gateway ? (r === "balance" ? max : amountErr ? 0 : (cents ?? 0)) : 0);
   const submit = async () => {
@@ -925,7 +961,17 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
           ? [
               {
                 k: tr("优惠券", "Coupon"),
-                v: tr(`${o.coupon_code} 的使用次数退回 1 次`, `${o.coupon_code}: one use back`),
+                v: partial
+                  ? tr(`${o.coupon_code} 保持已使用（部分退款）`, `${o.coupon_code} stays used (partial refund)`)
+                  : tr(`${o.coupon_code} 的使用次数退回 1 次`, `${o.coupon_code}: one use back`),
+              },
+            ]
+          : []),
+        ...(view?.commission && view.commission.action !== "none"
+          ? [
+              {
+                k: tr("佣金", "Commission"),
+                v: commissionText(view.commission, tr),
               },
             ]
           : []),
@@ -1049,12 +1095,17 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
             <label className="mt-2 flex min-h-8 items-center gap-2 text-body">
               <Checkbox
                 checked={keepPlan}
-                onChange={setKeepPlan}
+                onChange={setKeepChoice}
                 label={tr("仅退款，保留套餐", "Money only, keep the plan")}
               />
               {tr("仅退款，保留套餐", "Money only, keep the plan")}
               <span className="text-footnote text-faint max-sm:hidden">
-                {tr("（补偿、折价时用）", "(compensation)")}
+                {partial
+                  ? tr(
+                      "（部分退款默认保留套餐，取消勾选则仍撤销）",
+                      "(a partial refund keeps the plan; untick to revoke it)",
+                    )
+                  : tr("（补偿、折价时用）", "(compensation)")}
               </span>
             </label>
           </section>

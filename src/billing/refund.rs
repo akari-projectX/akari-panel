@@ -63,6 +63,8 @@ use crate::audit::Actor;
 use crate::auth::{ApiError, bad_request, conflict};
 use crate::plans::Revoke;
 
+use super::commission::Share;
+
 /// Why a refund leaves the subscription alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -94,12 +96,14 @@ pub enum Effect {
         plan_name: String,
         expires_at: Option<DateTime<Utc>>,
     },
-    /// The renewal's term is taken back.
+    /// The renewal's term is taken back, and the used traffic its fresh
+    /// quota cleared comes back (P3-1; capped at the quota when applied).
     Rollback {
         user_plan_id: Uuid,
         plan_name: String,
         from: DateTime<Utc>,
         to: DateTime<Utc>,
+        restore_used_bytes: i64,
     },
     /// The plan before the switch comes back.
     Restore {
@@ -123,8 +127,15 @@ impl Effect {
             Effect::None { .. } => None,
             Effect::Cancel { user_plan_id, .. } => Some(Revoke::End { user_plan_id }),
             Effect::Rollback {
-                user_plan_id, to, ..
-            } => Some(Revoke::Rollback { user_plan_id, to }),
+                user_plan_id,
+                to,
+                restore_used_bytes,
+                ..
+            } => Some(Revoke::Rollback {
+                user_plan_id,
+                to,
+                restore_used_bytes,
+            }),
             Effect::Restore {
                 user_plan_id,
                 prior_user_plan_id,
@@ -225,6 +236,11 @@ pub async fn effect(conn: &mut PgConnection, order_id: Uuid) -> Result<Effect, A
                     plan_name,
                     from: cur,
                     to,
+                    restore_used_bytes: r
+                        .pointer("/fresh_cleared_bytes")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                        .max(0),
                 }
             })
         }
@@ -315,26 +331,59 @@ async fn refundable(
     Ok(row)
 }
 
+/// The share of the gateway payment a refund of `gateway_cents` returns
+/// (400 when that is more than was paid).
+fn share(amount: i64, gateway_cents: i64) -> Result<Share, ApiError> {
+    if !(0..=amount).contains(&gateway_cents) {
+        return Err(bad_request!(
+            "order_admin.refund_external_range",
+            "external_cents must be 0..={amount_cents}",
+            amount_cents = amount
+        ));
+    }
+    Ok(Share {
+        refunded_cents: gateway_cents,
+        paid_cents: amount,
+    })
+}
+
 /// `GET /orders/{id}/refund-preview`: the money and the subscription
 /// effect a refund would have now (409 like the refund when the order is
-/// not refundable).
-pub async fn preview(conn: &mut PgConnection, order_id: Uuid) -> Result<Value, ApiError> {
+/// not refundable). `gateway_cents` is the part of the gateway payment the
+/// refund returns (default all of it, P3-9): a smaller one is a partial
+/// refund — `keep_plan_default` says the subscription then stays unless the
+/// admin chooses otherwise, the coupon use is not given back, and the
+/// commission is undone in proportion. `effect` is what revoking would do.
+pub async fn preview(
+    conn: &mut PgConnection,
+    order_id: Uuid,
+    gateway_cents: Option<i64>,
+) -> Result<Value, ApiError> {
     let (_, _, _, amount, balance, balance_state, _) = refundable(conn, order_id, false).await?;
+    let sh = share(amount, gateway_cents.unwrap_or(amount))?;
+    let partial = !sh.is_full();
     let effect = effect(conn, order_id).await?;
-    let commission = super::commission::refund_preview(conn, order_id).await?;
-    let coupon: Option<String> = sqlx::query_scalar(
-        "SELECT c.code FROM coupon_redemptions r JOIN coupons c ON c.id = r.coupon_id \
-         WHERE r.order_id = $1 AND r.status = 'redeemed'",
-    )
-    .bind(order_id)
-    .fetch_optional(&mut *conn)
-    .await?;
+    let commission = super::commission::refund_preview(conn, order_id, sh).await?;
+    let coupon: Option<String> = if partial {
+        None
+    } else {
+        sqlx::query_scalar(
+            "SELECT c.code FROM coupon_redemptions r JOIN coupons c ON c.id = r.coupon_id \
+             WHERE r.order_id = $1 AND r.status = 'redeemed'",
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *conn)
+        .await?
+    };
     Ok(json!({
         "balance_part_cents": if balance_state == "held" { balance } else { 0 },
         "amount_cents": amount,
+        "gateway_refund_cents": sh.refunded_cents,
+        "partial": partial,
+        "keep_plan_default": partial,
         "effect": effect.to_json(),
         "commission": commission,
-        // 低-2: the coupon whose use the refund gives back.
+        // 低-2: the coupon whose use the refund gives back (a full refund only).
         "coupon_released": coupon,
     }))
 }
@@ -364,8 +413,10 @@ pub struct Refund<'a> {
     /// Without `to_balance` (and with a gateway amount): what was refunded
     /// in the provider's console, 0..=the order's gateway amount (中-3).
     pub external_cents: Option<i64>,
-    /// Refund the money only; the subscription stays as it is.
-    pub keep_plan: bool,
+    /// Refund the money only (true) or undo what the order did to the
+    /// subscription (false); None = decided by the amount (P3-9): a refund
+    /// of all the gateway payment undoes it, a partial one keeps the plan.
+    pub keep_plan: Option<bool>,
     /// The portal link of the customer's refund notice (None: no link).
     pub portal: Option<&'a str>,
 }
@@ -420,7 +471,13 @@ pub async fn apply_refund(
         ));
     }
     let external = req.external(amount)?;
-    let effect = if req.keep_plan {
+    // P3-9: how much of the gateway payment goes back decides what else the
+    // refund undoes (the plan unless the admin says otherwise, the coupon
+    // use, the commission in proportion).
+    let sh = share(amount, (if req.to_balance { amount } else { 0 }) + external)?;
+    let partial = !sh.is_full();
+    let keep_plan = req.keep_plan.unwrap_or(partial);
+    let effect = if keep_plan {
         Effect::none(Unchanged::KeepPlan)
     } else {
         effect(conn, order_id).await?
@@ -442,12 +499,12 @@ pub async fn apply_refund(
         ));
     }
     // 低-2: the coupon use comes back (lock order: orders → coupons).
-    let coupon_released = super::coupons::release_refunded(conn, order_id).await?;
+    let coupon_released = !partial && super::coupons::release_refunded(conn, order_id).await?;
     if let (Some(user), Some(revoke)) = (user, effect.revoke()) {
         crate::plans::apply_refund_revoke(conn, actor, user, order_id, revoke).await?;
     }
     let commission =
-        super::commission::reverse_for_order(conn, actor, order_id, "order refunded").await?;
+        super::commission::reverse_for_order(conn, actor, order_id, "order refunded", sh).await?;
     let (commission, clawback) = match commission {
         Some(u) => (Some(u.status), u.clawback),
         None => (None, None),
@@ -486,6 +543,8 @@ pub async fn apply_refund(
         "refund_external_cents": external,
         "refund_gateway_cents": cash_part + external,
         "to_balance": req.to_balance,
+        "partial": partial,
+        "keep_plan": keep_plan,
         "balance_part_cents": balance_part,
         "cash_part_cents": cash_part,
         "effect": effect_json,
@@ -548,7 +607,8 @@ pub struct Original<'a> {
     pub reason: &'a str,
     /// Of the gateway amount (None = all of it); partial refunds allowed.
     pub cents: Option<i64>,
-    pub keep_plan: bool,
+    /// None = decided by the amount (a partial refund keeps the plan, P3-9).
+    pub keep_plan: Option<bool>,
 }
 
 /// Start a refund through the order's provider (in the caller's short
@@ -616,7 +676,7 @@ pub async fn begin_original(
         attempts: 0,
         last_error: None,
         reason: req.reason.to_string(),
-        keep_plan: req.keep_plan,
+        keep_plan: req.keep_plan.unwrap_or(cents < amount),
         actor_id: actor.id,
         actor_label: actor.label.clone(),
         requested_at: now,
@@ -768,7 +828,7 @@ pub async fn settle_original(state: &AppState, order_id: Uuid) -> Result<Settled
                     reason: &r.reason,
                     to_balance: false,
                     external_cents: Some(r.cents),
-                    keep_plan: r.keep_plan,
+                    keep_plan: Some(r.keep_plan),
                     portal: portal.as_deref(),
                 },
             )

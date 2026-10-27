@@ -130,7 +130,7 @@ async fn aggregates_every_source() {
                 reason: "r",
                 to_balance,
                 external_cents,
-                keep_plan: true,
+                keep_plan: Some(true),
                 portal: None,
             },
         )
@@ -542,7 +542,7 @@ async fn daily_series_and_prev_today() {
             reason: "r",
             to_balance: false,
             external_cents: Some(600),
-            keep_plan: true,
+            keep_plan: Some(true),
             portal: None,
         },
     )

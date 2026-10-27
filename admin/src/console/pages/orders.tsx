@@ -34,7 +34,7 @@ import { ExportDialog, ManualOrderDialog } from "./orders-dialogs";
 export type RefundEffect =
   | { kind: "none"; why: string }
   | { kind: "cancel"; plan_name: string; expires_at: string | null }
-  | { kind: "rollback"; plan_name: string; from: string; to: string }
+  | { kind: "rollback"; plan_name: string; from: string; to: string; restore_used_bytes: number }
   | { kind: "restore"; plan_name: string; expires_at: string | null; prior_used_bytes: number };
 
 export type Order = {
