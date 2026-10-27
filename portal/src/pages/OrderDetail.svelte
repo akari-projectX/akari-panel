@@ -31,7 +31,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 订单详情与付款（行为同 React 门户 pages/dash/order-detail.tsx；也是易支付 return_url 回来的页面）。
+   * 订单详情与付款（也是易支付 return_url 回来的页面）。
    * 待支付：支付宝二维码（手机上是「打开支付宝付款」+ 给另一台设备扫的码）或跳转类支付的收银台按钮；
    * 每 3 秒查一次状态（面板查订单时会主动去渠道问），变了就弹付款结果（components/shop/PayResult）。
    * 想换支付方式：取消这一单，回商店重新下单。

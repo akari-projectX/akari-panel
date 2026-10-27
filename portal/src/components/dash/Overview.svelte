@@ -31,7 +31,7 @@
   import { R } from '$lib/routes';
 
   /*
-   * 仪表盘（full / renewal 范围；banned 是 Banned.svelte）。数据、缓存键、分支与 React 门户 pages/dash/dashboard.tsx 相同，
+   * 仪表盘（full / renewal 范围；banned 是 Banned.svelte）。数据、缓存键、分支见下。
    * 结构按样稿 design/portal-v2-2026-10/dashboard.html：页头（套餐 · 重置周期）→ 最新未读公告横幅 → 提醒细行 →
    * 四个关键数字 → 流量走势（7 / 30 天）→ 接入配置 | 公告与动态 → 订阅内的线路 | 使用文档。
    * 续费范围（已过期 / 流量用完）：面板不给订阅、线路、流量记录，这几块写明「续费后恢复」，其余照常。

@@ -1,5 +1,5 @@
 /**
- * 本机的已读记录：只有文档（知识库文章）读过哪些（与 React 门户 lib/read-state.ts 同一个键 `akari.read.kb`，同一个源上互通）。
+ * 本机的已读记录：只有文档（知识库文章）读过哪些。
  * 公告、工单的已读由面板记（/me/announcements 的 read、/me/tickets 的 unread），换设备也一致，不在这里。
  * localStorage 在隐私模式下可能读写都抛错：全部吞掉，退化成「什么都没读过」。
  */

@@ -1,5 +1,5 @@
 /*
- * 门户的样式：Tailwind 4 + 外壳样式。2026-10-23 起外观 = v1.4.0 React 门户（spa/src/index.css 的版式、字体、动效令牌与顶栏 / 账号卡片 / 弹窗 / 提示条 / 骨架）。
+ * 门户的样式：Tailwind 4 + 外壳样式。版式、字体、动效令牌与顶栏 / 账号卡片 / 弹窗 / 提示条 / 骨架。
  * 颜色全部来自 src/styles/tokens.css（main.ts 先引它）；这里只引用 var(--…)，不写颜色字面量。
  */
 @import 'tailwindcss';

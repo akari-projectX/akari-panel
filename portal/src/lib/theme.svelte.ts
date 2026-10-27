@@ -3,7 +3,7 @@
  *
  * 首帧之前由 src/boot/boot.js 按同一个存储键给 <html> 加好 .dark / .light（模块脚本都是延后执行的）。
  * 这里负责之后的一切：读写选择、跟随系统切换、多个标签页之间同步、theme-color。
- * 键名与 React 门户相同（同一个源，偏好互通）。
+ * 键名与 src/boot/boot.js 相同。
  */
 
 import { crossfade } from './motion';

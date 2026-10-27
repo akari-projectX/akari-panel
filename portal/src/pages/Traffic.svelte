@@ -23,8 +23,8 @@
   import { resource } from '$lib/resource.svelte';
 
   /*
-   * 使用明细（只有 full 范围）。v1.4.0 pages/dash/traffic.tsx 的 Svelte 版：指标行 → 流量走势（面积图，本月 / 近 7 天 / 近 30 天）→
-   * 线路分布（环形图）| 每日计费流量（柱状图）→ 按线路 → 明细记录。数据同 React 门户：GET /me/traffic，日界按全站时区，换范围时先留着上一段。
+   * 使用明细（只有 full 范围）。指标行 → 流量走势（面积图，本月 / 近 7 天 / 近 30 天）→
+   * 线路分布（环形图）| 每日计费流量（柱状图）→ 按线路 → 明细记录。数据：GET /me/traffic，日界按全站时区，换范围时先留着上一段。
    */
   type Range = 'month' | '7' | '30';
   const RANGES: { id: Range; label: string }[] = [

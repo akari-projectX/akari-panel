@@ -13,7 +13,7 @@
   import { R } from '$lib/routes';
 
   /*
-   * 接入配置（#subscribe：付款结果的「查看订阅」直达这里），分支与 React 门户 dashboard.tsx 相同：
+   * 接入配置（#subscribe：付款结果的「查看订阅」直达这里），分支：
    *   · 仅自研客户端（me.sub_own_client，有套餐）：不给链接、复制、二维码与一键导入，只给 Akari 客户端的下载
    *     （后台「外观与品牌」的客户端下载链接；站长没配就一句中性的说明）——components/own-client.tsx；
    *   · 有订阅链接：Subscribe；

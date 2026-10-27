@@ -1,7 +1,7 @@
 import { mount } from 'svelte';
 
 /**
- * 提示条（components/Toaster.svelte 画出来）。React 门户用 sonner；这里手写几十行：全站只用 success / error，
+ * 提示条（components/Toaster.svelte 画出来）。手写几十行：全站只用 success / error，
  * 一个标题加一行可选的说明，3.2 秒后自动消失（指针悬停、焦点在上面时暂停），桌面在右下角、窄屏在顶部居中。
  * 首屏从来没有提示要弹：Toaster 在第一次弹提示时才下载、挂到 <body> 上（提示先进列表，挂上后照常显示）。
  */

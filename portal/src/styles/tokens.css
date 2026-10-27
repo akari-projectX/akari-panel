@@ -1,5 +1,5 @@
 /*
- * 门户的全部颜色。2026-10-23 起数值 = v1.4.0 React 门户（spa/src/index.css）的令牌：用户决定恢复上个版本的门户外观。
+ * 门户的全部颜色。
  * 名字仍是 v2 的（--bg / --surface / --fg …），对应关系：--bg=background、--surface=card、--popover=popover、--hover=muted（底色）、--faint=faint-foreground。
  *
  * **颜色只在这个文件里**：组件、app.css、boot.css、Tailwind 类、SVG 一律用 var(--…) 或 @theme 映射出来的名字，

@@ -9,7 +9,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 待支付订单的提醒细行（React 门户 components/pending-order.tsx）：「取消订单 / 去支付」。商店页头下面一条，
+   * 待支付订单的提醒细行：「取消订单 / 去支付」。商店页头下面一条，
    * 确认订单对话框里也有一条（有这样一笔订单时面板拒绝再下新单，order.in_progress）。截止时间 = 订单的 expires_at。
    */
   let { order, onchange, compact = false, className }: { order: MyOrder; onchange: () => void; compact?: boolean; className?: string } = $props();

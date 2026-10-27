@@ -14,7 +14,7 @@
   import { anyClawback, bdgTone, commissionStatus, inviteLink } from '$lib/wallet';
 
   /*
-   * 「邀请返佣」分页（同 React 门户 wallet-invite.tsx 的 InviteDetails）：收益四个数（不放大）、我的邀请码（每个账户一个，
+   * 「邀请返佣」分页：收益四个数（不放大）、我的邀请码（每个账户一个，
    * 不能删除或重新生成；单次使用的站点上写明「只能使用一次」）、返佣明细（只显示被邀请人的非个人标签，不显示对方邮箱）。
    * 宽屏表格、窄屏一行一笔。
    */

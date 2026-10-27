@@ -11,7 +11,7 @@
   import { inviteLink, spent, terms } from '$lib/wallet';
 
   /*
-   * 钱包页概览的右栏（只有 full）：邀请链接 + 复制、返佣条款一行（同 React 门户 wallet-invite.tsx 的 InviteLinkPane）。
+   * 钱包页概览的右栏（只有 full）：邀请链接 + 复制、返佣条款一行。
    * 后台关了「允许用户邀请」/ 站点关了注册时说明原因；单次使用的站点上码用过了给一行琥珀色提示。
    */
   let { codes, invite }: { codes: Resource<InviteCodes>; invite: Resource<MyInvite> } = $props();

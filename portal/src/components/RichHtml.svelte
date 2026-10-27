@@ -1,6 +1,6 @@
 <script lang="ts">
   /*
-   * 显示面板下发的 HTML：公告正文、知识库文章、条款与隐私。**全站唯一一处 {@html} 的地方**（与 React 门户 components/server-html.tsx 相同的约定）。
+   * 显示面板下发的 HTML：公告正文、知识库文章、条款与隐私。**全站唯一一处 {@html} 的地方**。
    *
    * 为什么可以直接插：这些 HTML 由面板在服务端从一个安全的 Markdown 子集渲染出来，渲染器本身就是清洗器
    * （akari-panel src/markdown.rs）——输入里的任何 HTML 都被转义成文字；输出只有固定的标签

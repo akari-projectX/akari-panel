@@ -21,7 +21,7 @@
   import { loc, setParams } from '$lib/router.svelte';
 
   /*
-   * 文档列表（行为同 React 门户 pages/dash/help.tsx 的 ListView）：搜索（面板 GET /me/help?q= 在服务端搜）、分类筛选（换行排开，
+   * 文档列表：搜索（面板 GET /me/help?q= 在服务端搜）、分类筛选（换行排开，
    * 不截断）、当前设备的捷径（有同名分类才出现；分类名已以「教程」结尾时不再重复）、「全部文档 · N 篇」小标题、文章列表。
    * 状态全在地址里：?cat= 分类、?q= 搜索词、?id= 打开文章（pages/Help.svelte 切到 Article）。
    * 版式按样稿的克制排版：筛选是文字 + 下划线，文章是细线分隔的行（标题、分类、更新日期，没读过的标蓝点），不用卡片。

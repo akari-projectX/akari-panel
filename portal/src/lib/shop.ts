@@ -3,7 +3,7 @@ import { PERIOD_MONTHS, type StatusTone } from '@/lib/format';
 
 /**
  * 商店、订单页的小工具（价格一律由面板算好，这里只换说法）。挑选默认周期、卡片大字价格、拒绝原因的文案在
- * React 门户共用的 `@/lib/shop`（框架无关、有单测）。
+ * `@/lib/shop`（框架无关、有单测）。
  */
 
 /**
@@ -29,7 +29,7 @@ export const METHOD_HINT: Record<string, string> = {
 export const methodHint = (m: PayMethod): string | undefined => METHOD_HINT[m.kind];
 
 /**
- * 一个地址能不能交给浏览器打开（同 React 门户 lib/utils 的 safeUrl）：只挡会执行代码的协议。
+ * 一个地址能不能交给浏览器打开：只挡会执行代码的协议。
  * 浏览器解析协议时忽略空白和控制字符，「java\tscript:」也是 javascript:，先去掉再判断。
  */
 export function safeUrl(value: string): boolean {

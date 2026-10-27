@@ -11,8 +11,7 @@ import tailwindcss from '@tailwindcss/vite';
  *
  *   · 面板的 CSP 是 default-src 'self'; style-src 'self' 'unsafe-inline'：index.html 里不能有内联脚本、
  *     内联事件，图片 / 字体只能来自本站（data: 也不行）。scripts/check-dist.mjs 检查产物。
- *   · `@/…` 是与框架无关的模块（src/shared：接口层、词典、错误码文案、格式化、缓存、字体；
- *     从 React 门户搬来，React 门户已删除）。`$lib/…` 是界面这一层的代码。
+ *   · `@/…` 是与框架无关的模块（src/shared：接口层、词典、错误码文案、格式化、缓存、字体）。`$lib/…` 是界面这一层的代码。
  *
  * npm run dev：页面由 Vite 提供，接口转发到 PANEL_URL（一个本地运行的面板）。
  */

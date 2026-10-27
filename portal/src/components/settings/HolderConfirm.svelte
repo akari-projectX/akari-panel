@@ -5,7 +5,7 @@
   import type { Holder } from '$lib/holder.svelte';
 
   /*
-   * 确认是本人的输入（与 React 门户 components/holder-confirm.tsx 相同）：密码框，或「提交时用通行密钥验证」（lib/holder）。
+   * 确认是本人的输入：密码框，或「提交时用通行密钥验证」（lib/holder）。
    * 登录方式还没取到时显示占位；取不到时说明并给「重试」——不能默认给一个密码框：只用通行密钥的账户会看到一个永远通不过的密码框。
    * error：服务端说密码不对时由调用方给，画在密码框下面并聚焦它（id 由调用方给）。
    */

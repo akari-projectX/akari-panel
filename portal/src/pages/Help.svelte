@@ -4,7 +4,7 @@
   import { loc } from '$lib/router.svelte';
 
   /*
-   * 文档（使用手册）：?id= 时是一篇文章（换文章 = 新实例：滚回页首、重新取数、记已读），否则是列表（同 React 门户 pages/dash/help.tsx）。
+   * 文档（使用手册）：?id= 时是一篇文章（换文章 = 新实例：滚回页首、重新取数、记已读），否则是列表。
    */
   const id = $derived(new URLSearchParams(loc.search).get('id'));
 </script>

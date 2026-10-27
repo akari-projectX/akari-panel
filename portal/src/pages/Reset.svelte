@@ -12,7 +12,7 @@
   import { toast } from '$lib/toast.svelte';
 
   /*
-   * 按邮件链接设新密码（与 React 门户 pages/auth.tsx 的 Reset 相同）。
+   * 按邮件链接设新密码。
    * 邮件里的链接是 …/reset#token=…：令牌放在 # 后面，不会出现在服务器日志和 Referer 里；读到之后就从地址栏抹掉
    * （免得被截图、被浏览器历史同步走）。设好之后这个账户所有的会话都会结束，需要重新登录。
    */

@@ -8,7 +8,7 @@
  *     解析规则与面板自己门户里的 plan-description 一致。
  */
 
-/** HTML → 纯文本（只用于显示摘要、估字数；结果当文本插进页面，React 会转义） */
+/** HTML → 纯文本（只用于显示摘要、估字数） */
 function plain(html: string | null | undefined, limit = Infinity): string {
   return (html ?? '')
     .slice(0, limit)

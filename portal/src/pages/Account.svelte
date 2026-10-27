@@ -17,7 +17,7 @@
   import { setTheme, theme, type ThemeMode } from '$lib/theme.svelte';
 
   /*
-   * 设置（行为同 React 门户 pages/dash/account.tsx：单页 + 分区导航，只放「可以改的东西」）：
+   * 设置：
    *   #account       账户：邮箱（验证 / 更换）、套餐一行摘要
    *   #security      登录与安全：密码、通行密钥、只用通行密钥、退出所有设备（components/settings/Security）
    *   #subscription  订阅链接：状态 + 重置（旧格式链接也能重置；续费范围说明续费后可用）

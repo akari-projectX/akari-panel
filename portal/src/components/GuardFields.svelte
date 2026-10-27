@@ -6,7 +6,7 @@
   import Turnstile from './Turnstile.svelte';
 
   /*
-   * 公开表单里的防护字段（与 React 门户 components/form-guard.tsx 相同）：
+   * 公开表单里的防护字段：
    *   · 蜜罐：一个叫 website 的输入框，人看不见、读屏跳过、浏览器不自动填；机器人填了就会被面板按普通失败拒掉；
    *   · Turnstile：站长为这张表单开了才出现；加载失败（脚本被拦、组件出错、交互超时）时显示原因和「重试」。
    */

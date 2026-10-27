@@ -17,7 +17,7 @@
   import { t, tp } from '$lib/i18n.svelte';
 
   /*
-   * 确认订单（样稿 shop.html#confirm；行为同 React 门户 pages/dash/shop.tsx 的下单弹窗）。价格全部由面板按「现在下单」算好
+   * 确认订单（样稿 shop.html#confirm）。价格全部由面板按「现在下单」算好
    * （/me/shop 的 offers），优惠码、余额抵扣也是让面板重新报价——这里不做任何价格计算（「省 x%」「每月 ¥x」只是标价的换算）。
    *   购买时长（不止一档时）→ 优惠码（选填）→ 换套餐的作废确认 → 支付方式（要付钱且不止一种时）→ 金额明细 → 提交。
    * 有待支付订单时面板拒绝再下单：提醒放在最上面，提交按钮不可用。窄屏是底部抽屉（ui/Dialog）。
@@ -50,7 +50,7 @@
   let methodId = $state<string | null>(null);
   let ack = $state(false);
 
-  /* 每次打开从头来：优惠码输入框空着、作废确认没勾（支付方式记着上次选的，同 React 门户） */
+  /* 每次打开从头来：优惠码输入框空着、作废确认没勾 */
   $effect(() => {
     if (!open) return;
     untrack(() => {
@@ -84,7 +84,7 @@
   /* 步骤编号：只给显示出来的步骤编号（购买时长只有一档时不显示） */
   const base = $derived(offers.length > 1 ? 1 : 0);
 
-  /* 面板的 icon 是后台填的短名字：认得的换成对应图标（同 React 门户 payment-method-picker） */
+  /* 面板的 icon 是后台填的短名字：认得的换成对应图标 */
   const ICONS: Record<string, typeof QrCode> = { alipay: QrCode, wechat: QrCode, qq: QrCode, balance: Wallet, usdt: CircleDollarSign, crypto: CircleDollarSign };
   const methodIcon = (m: PayMethod) => ICONS[m.icon ?? m.kind] ?? CreditCard;
 

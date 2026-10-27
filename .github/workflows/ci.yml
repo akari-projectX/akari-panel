@@ -370,8 +370,8 @@ jobs:
   e2e-perf:
     # The timing runs, one per full run, alone on the machine: the portal's
     # performance report (portal/e2e/perf/: cold load / LCP / TTI / route
-    # switches on desktop and a throttled mid-range phone, bundle sizes, next
-    # to the React portal's last numbers; report only; artifact portal-perf)
+    # switches on desktop and a throttled mid-range phone, bundle sizes;
+    # report only; artifact portal-perf)
     # and the admin app's timing suite (admin/e2e/zz-perf.spec.ts; blocking
     # against admin/perf-budget.json; artifact admin-perf). Measured apart from
     # the functional shards so that other browsers and a busy panel cannot

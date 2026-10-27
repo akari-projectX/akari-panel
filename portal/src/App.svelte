@@ -14,7 +14,7 @@
   import { allowed, R, safeRedirect } from '$lib/routes';
 
   /*
-   * 门禁（与 React 门户 App.tsx / auth-provider.tsx 相同）：
+   * 门禁：
    *   · 访客页（登录、注册、找回密码）：已登录 → ?redirect= 指的站内页面；
    *   · 公开页（重置密码、注销结果、条款、隐私）：谁都能看；
    *   · 其余要登录：还不知道 → 启动画面；连不上面板 → 重试；没登录 → /login?redirect=<原地址>；

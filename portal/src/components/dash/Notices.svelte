@@ -16,7 +16,7 @@
 
   /*
    * 仪表盘的提醒（样稿 dashboard.html#notices：关键数字上方的细行，不是彩色卡片；图标单色，警告类琥珀）。
-   * 顺序与 React 门户相同：账户提醒在前（components/account-banners.tsx：续费范围、邮箱未验证），
+   * 顺序：账户提醒在前（续费范围、邮箱未验证），
    * 页面提醒按急迫程度在后：没付完的订单（components/pending-order.tsx）→ 客服回复了工单 → 流量快用完了（样稿新增）。
    * 最新公告是上面单独的横幅（Overview）。
    */
