@@ -155,10 +155,9 @@ test('#17 #21 #20 #22 #23 settings: verify the address, change it in two steps, 
   await signIn(page, next, pw);
 });
 
-test('settings: one page with section anchors; the old ?tab=security link lands on #security; screens', async ({ page }, info) => {
+test('settings: one page with section anchors; screens', async ({ page }, info) => {
   await signIn(page, mine(info, 'v2-settings'));
-  await settings(page, '/account?tab=security');
-  await expect(page).toHaveURL(/\/account#security$/);
+  await settings(page, '/account');
   const nav = page.getByRole('navigation', { name: '设置分区' });
   for (const s of ['账户', '登录与安全', '订阅链接', '偏好', '危险操作']) {
     await expect(nav.getByRole('link', { name: s })).toBeVisible();

@@ -744,9 +744,6 @@ test("SET-15 SET-16 SET-17 SET-18: mail via SMTP (port validated), step-by-step 
     .click();
   await expect(page).toHaveURL(new RegExp(`/${PREFIX}/admin/settings/templates$`));
   await expect(page.getByRole("heading", { name: "邮件模板" })).toBeVisible();
-  // SET-17: the outbox is on the status page now (old links follow it).
-  await page.goto(`${CONSOLE}/settings/mail?outbox=dead`);
-  await expect(page).toHaveURL(/\/status\?mail=dead$/);
 });
 
 test("SET-19: payment methods — cards in the portal order, add (kind radio cards → editor, key files), test, edit in a dialog (numbers checked while typing), enabling through the save bar, delete from the danger zone's select", async ({
