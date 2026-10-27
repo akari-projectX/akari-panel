@@ -524,7 +524,30 @@ ui_use_english() {
 	[ -z "$1" ] || printf '  %s %s\n' '-' "$1"
 }
 # ui_install_locale: the locales package, zh_CN.UTF-8 enabled and generated.
+# The package may create or fill the system default locale files; they are put
+# back exactly as they were (the default locale is the operator's).
 ui_install_locale() {
+	_sd=$(mktemp -d) || return 1
+	for _f in /etc/default/locale /etc/locale.conf; do
+		if [ -e "$_f" ] || [ -L "$_f" ]; then
+			cat "$_f" >"$_sd/$(printf '%s' "$_f" | tr / _)" 2>/dev/null || true
+			: >"$_sd/$(printf '%s' "$_f" | tr / _).had"
+		fi
+	done
+	_rc=0
+	ui_install_locale_pkgs || _rc=1
+	for _f in /etc/default/locale /etc/locale.conf; do
+		_n="$_sd/$(printf '%s' "$_f" | tr / _)"
+		if [ ! -e "$_n.had" ]; then
+			rm -f "$_f"
+		elif ! cmp -s "$_n" "$_f"; then
+			cat "$_n" >"$_f"
+		fi
+	done
+	rm -rf "$_sd"
+	return "$_rc"
+}
+ui_install_locale_pkgs() {
 	command -v apt-get >/dev/null 2>&1 || return 1
 	_l="${UI_LOG:-/dev/null}"
 	if ! command -v locale-gen >/dev/null 2>&1; then
