@@ -26,21 +26,8 @@ ALTER TABLE panel_settings
         sub_import_clients <@ ARRAY['clash', 'stash', 'shadowrocket', 'sing-box', 'hiddify', 'surge', 'surfboard']::text[]
         AND array_position(sub_import_clients, NULL) IS NULL));
 
--- The routing the templates replace. The panel converts it ONCE into the
--- four templates at startup (`sub::templates::import_legacy`, which needs
--- the old values), then drops `sub_routing_legacy`. Only a site that
--- changed the routing or the rule list URLs gets a row.
-CREATE TABLE sub_routing_legacy (
-    id boolean PRIMARY KEY DEFAULT true CONSTRAINT sub_routing_legacy_one CHECK (id),
-    routing jsonb,
-    clash_url text,
-    singbox_url text
-);
-INSERT INTO sub_routing_legacy (routing, clash_url, singbox_url)
-    SELECT sub_routing, sub_rule_set_clash_url, sub_rule_set_singbox_url
-    FROM panel_settings
-    WHERE sub_routing IS NOT NULL OR sub_rule_set_clash_url IS NOT NULL OR sub_rule_set_singbox_url IS NOT NULL;
-
+-- The old routing settings and hosted rule sets are not carried over: sites
+-- start with the built-in default templates (user ruling 2026-10-27).
 ALTER TABLE panel_settings
     DROP COLUMN sub_routing,
     DROP COLUMN sub_rule_set_clash_url,
