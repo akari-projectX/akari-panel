@@ -440,6 +440,39 @@ Flush（`make bench-seed` + `cargo bench -- db/flush`，本地 bench 栈，每�
 
 Flush（D9 / Q1 开销）：`ef` 对 5000 行块中的每个入口调用两次 plpgsql 的 `akari_entrance_rate()`；现在入口没有规则时直接读基础倍率（函数此时的返回值），只对有规则的入口调用函数。server 的 GCRA（`advanced`）和节点总量（`node_totals`）原本对该块聚合了两次（节点那次为 Sort + GroupAggregate，每块约 1.2 ms）；现在都读同一个 `per_node` 聚合（按 server 和节点）。计费结果不变（所有计费测试，包括倍率规则结算，原样通过）。
 
+## Panel load test, stage C (2026-10-27)（面板压测，阶段 C）
+
+Machine: one shared 4-vCPU / 16 GB box; PostgreSQL 18, Valkey, the panel, the load generator and 200 fake agents all on it, so every number is relative (the 2026-10-05 tables were taken on other hardware). Data: 50 000 users, 200 nodes x 10 000 users, 200 000 orders, 4.9 M `traffic_daily` rows. Subscription numbers were taken on `main` before the template-based routing (branch `sub-templates`) and predate it.
+
+Reproduce (bench stack and seed as above; the panel runs from `bench/panel-bench-1.toml`):
+
+```bash
+make bench-up && make bench-seed
+cargo run --release --manifest-path bench/Cargo.toml -- seed --orders-only --orders 200000
+bench/target/release/akari-bench http --concurrency 16 --seconds 5               # admin + subscription + orders scenarios
+bench/target/release/akari-bench flood --concurrency 256 --seconds 15 [--rate 1500]   # login flood + probes
+bench/target/release/akari-bench swarm --agents 200 --storm-rounds 2 [--storm-cold true] --report-all false
+cargo bench --manifest-path bench/Cargo.toml --bench panel -- flush
+```
+
+Bench-only accommodations (all flags of the real subcommands, none touch the panel): `http` sends a distinct `X-Forwarded-For` per subscription fetch and the bench panel trusts the loopback peer, because the built-in per-address subscription limit (120 per /64 per 10 min) would otherwise answer 404 to a single-source generator; `swarm` clears the built-in enrollment limit keys (`--valkey`) before first enrollment of 200 agents from one address. `flood --rate` fixes the request rate so the generator costs the same CPU in both runs.
+
+| Scenario | Before | After |
+|---|---|---|
+| Login flood, 256 workers, 20% right password (closed loop): refused request p50 / throughput | 144 ms / 1 465 req/s | 7.5 ms / 12 536 req/s |
+| ... admin `/me` p50 during the flood | 136 ms | 62 ms |
+| Login flood at a fixed 1 500 req/s: refused p50, `/me` p50 | 15.9 ms, 5.4 ms | 1.8 ms, 3.1 ms |
+| `GET /nodes` p50 (1 worker) | 145 ms | 39 ms |
+| `GET /nodes?view=summary` p50 (1 worker) | 119 ms | 32 ms |
+| `users_filtered` p50 (1 worker) | 41 ms | 29 ms |
+| 200 agents, change to agent p50 (idle box) | 1.15 s | not re-measured |
+| Subscription fetch, 16 workers (Clash / links / sing-box), pre-template code | not measurable before (per-address limit, see above) | 982 / 1089 / 1074 req/s, p50 14-15 ms, p99 30-45 ms |
+| flush 50 000 rows (criterion) | 0.58 s (2026-10) | 1.52 s on this box, code unchanged |
+
+Changes: (1) `login` answers 503 `request.busy` before any Valkey or database work when the hash line is full (`auth::argon2_line_full`); busy is still a function of load only and costs no rate-limit slot. (2) Serving pool connections run `SET jit = off`: JIT compiled the node list and filtered user lists (estimated cost > 100000) for 80-100 ms per request and database CPU although the statements run in milliseconds.
+
+Not changed, and why: `orders?q=` (substring `ILIKE` on `out_trade_no`/`trade_no`, ~90 ms single, seconds at 16-way on 200k orders) needs a `pg_trgm` index, i.e. an extension and a migration for an admin search box - left as an operator decision; `nodes` list cost is the correlated subqueries (about 100 ms of SQL per request, ETag does not save the query); `traffic_node` (732 ms at 16-way, 4.9 M daily rows) is already an index-only scan; the user list and desired-state read (68 ms for 10 000 users) are bounded by the 8 read permits and are the floor of a 200-agent cold reconnect; AuthUser stays uncached (invariant). Reconnect storm of 200 agents x 10 000 users: all back with a lease in 13-17 s (warm and cold, load generator on the same 4 vCPUs; the first convergence took 9.5-19 s), change to agent p50 1.8-2.6 s under that load - CPU-bound on the shared box, not measured on separate hardware. Flush 1.5 s vs 0.58 s: `FLUSH_SQL` was not touched; the box is slower than the earlier hardware and shares the CPU with PostgreSQL's checkpointer; re-run on the reference hardware before drawing a conclusion.
+
 ## Limits and honest caveats（局限与坦率的注意事项）
 
 - Flush 余量（W22）：5 万行 0.58 s，对照 1 s 预算（W11：0.49 s）；在更慢的磁盘或更繁忙的 PostgreSQL 上，flush 仍会平滑降级（分块把锁持有限制在一块之内），只是积压排空所需的时间会变长。
