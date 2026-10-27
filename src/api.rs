@@ -2444,7 +2444,6 @@ mod tests {
                         display_name: Some(Some("香港 01".into())),
                         sort: Some(Some(3)),
                         visible: Some(Some(false)),
-                        tags: Some(Some(vec!["IPLC".into()])),
                         ..Default::default()
                     },
                 ),

@@ -183,8 +183,7 @@ pub fn node_snapshot_sql(alias: &str) -> String {
     format!(
         "jsonb_build_object('server_id', {a}.server_id, 'name', {a}.name, \
          'enabled', {a}.enabled, 'region', {a}.region, \
-         'display_name', {a}.display_name, 'sort', {a}.sort, 'visible', {a}.visible, \
-         'tags', {a}.tags)",
+         'display_name', {a}.display_name, 'sort', {a}.sort, 'visible', {a}.visible)",
         a = alias
     )
 }
