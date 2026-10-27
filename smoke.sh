@@ -2149,7 +2149,7 @@ python3 -c "import json; p = json.load(open('/tmp/akari-smoke/last'))['probe']; 
 [ "$(patch_code "$BASE/api/v1/nodes/$NODE_ID" '{"display_name":null,"sort":0}')" = "200" ] \
   && [ "$(entrance_patch '{"rate":1,"connect_host":"node1.example.test","connect_port":null,"tags":[]}')" = "200" ] \
   || { echo "FAIL: reset W11 fields"; exit 1; }
-# next07 (migration 1100): for 30 s after 0.5x -> 1x the settlement bills
+# next07: for 30 s after 0.5x -> 1x the settlement bills
 # the lower rate (only under-bills). The quota steps below need 1x at once:
 # age the change past the window (the window itself is tested in
 # traffic::db_tests::rate_change_boundary_only_undercounts).
