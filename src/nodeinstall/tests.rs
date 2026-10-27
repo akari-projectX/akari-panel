@@ -204,8 +204,8 @@ async fn install_link_lifecycle() {
         // W23: the release's own units first (fallback: the copies above).
         assert!(s.contains("\"$TMP/akari-agent\" -print-unit \"$u\" >\"$TMP/$u\""));
         // The uninstall hint fits how the script ran (sudo or plain root).
-        assert!(s.contains("say \"uninstall later with: sudo $UNINSTALLER\""));
-        assert!(s.contains("say \"uninstall later with (as root): $UNINSTALLER\""));
+        assert!(s.contains("say uninstall_later_sudo \"$UNINSTALLER\""));
+        assert!(s.contains("say uninstall_later_root \"$UNINSTALLER\""));
     }
     // No release: the binary endpoint has nothing (canonical reject).
     let r = c

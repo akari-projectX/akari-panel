@@ -123,7 +123,7 @@ ui_log() { log "$*"; }
 # LC_ALL=C) the glyphs are ASCII.
 
 UI_LANG=zh UI_UTF=1 UI_TTY=0 UI_ANSI=0 UI_COLOR=0 UI_ECOLOR=0
-UI_TOTAL=0 UI_N=0 UI_T0=0 UI_OPEN=0 UI_MARK=0 UI_LABEL=''
+UI_TOTAL=0 UI_N=0 UI_T0=0 UI_OPEN=0 UI_MARK=0 UI_LABEL='' UI_SHOWLOG=1
 G_OK='✓' G_ERR='✗' G_DOT='·' G_ARROW='›' G_WARN='!' G_Q='?'
 c_accent='' c_dim='' c_ok='' c_warn='' c_err='' c_bold='' c_reset='' g1='' g2='' g3='' g4='' g5=''
 
@@ -235,7 +235,7 @@ die() {
 		printf '\n  %s %s %s\n' "$G_ERR" "$(msg ui_error)" "$_m" >&2
 	fi
 	[ "$_tail" = 1 ] && ui_tail_log
-	[ -z "${UI_LOG:-}" ] || [ "$UI_LOG" = /dev/null ] || printf '  %s%s %s%s\n' "$c_dim" "$(msg ui_log_is)" "$UI_LOG" "$c_reset" >&2
+	[ "$UI_SHOWLOG" = 1 ] && [ -n "${UI_LOG:-}" ] && [ "$UI_LOG" != /dev/null ] && printf '  %s%s %s%s\n' "$c_dim" "$(msg ui_log_is)" "$UI_LOG" "$c_reset" >&2
 	exit 1
 }
 
@@ -306,6 +306,11 @@ ui_spin() {
 		ui_tick
 	done
 	ui_clear
+}
+# ui_pulse N: one spinner frame for a wait loop that ticks once a second.
+ui_pulse() {
+	[ "$UI_ANSI" = 1 ] || return 0
+	printf '\r\033[K      %s%s%s %s %s%ds%s' "$c_accent" "$(ui_frame "$1")" "$c_reset" "$UI_LABEL" "$c_dim" $(($(date +%s) - UI_T0)) "$c_reset"
 }
 ui_clear() {
 	[ "$UI_ANSI" = 1 ] && printf '\r\033[K'
@@ -2837,7 +2842,7 @@ msg_zh() {
 	docker_compose_up_failed_see_log) m 'docker compose up 失败（见日志）' ;;
 	panel_did_not_become_healthy_docker) m '面板未通过健康检查（docker compose logs panel）' ;;
 	firewall_ufw_allowed) m '防火墙（ufw）已放行 %s/%s/%s' ;;
-	installation_complete) m '安装完成。' ;;
+	installation_complete) m '安装完成' ;;
 	shown_only_this_once_save_it) m '（密码只显示这一次，请立即保存）' ;;
 	admin_prefix_secret_only_those_who) m '后台地址中的前缀是机密：只有知道它的人才能进入后台（可在系统设置中更换或限制来源 IP）。' ;;
 	https_check_through_caddy_did_not) m '经 Caddy 的 HTTPS 检查未通过：确认 DNS 已指向本机、端口 %s/%s 已放行（云防火墙/安全组），证书签发可能需要几分钟' ;;
@@ -3095,7 +3100,7 @@ msg_en() {
 	docker_compose_up_failed_see_log) m 'docker compose up failed (see the log)' ;;
 	panel_did_not_become_healthy_docker) m 'the panel did not become healthy (docker compose logs panel)' ;;
 	firewall_ufw_allowed) m 'firewall (ufw): allowed %s/%s/%s' ;;
-	installation_complete) m 'Installation complete.' ;;
+	installation_complete) m 'Installation complete' ;;
 	shown_only_this_once_save_it) m '(shown only this once: save it now)' ;;
 	admin_prefix_secret_only_those_who) m 'The admin prefix is secret: only those who know it reach the console (rotate it or restrict source IPs in 系统设置).' ;;
 	https_check_through_caddy_did_not) m 'the HTTPS check through Caddy did not pass yet: make sure DNS points here and ports %s/%s are open (cloud firewall / security group); the certificate can take a few minutes' ;;

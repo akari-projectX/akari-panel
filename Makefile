@@ -37,7 +37,8 @@ SHELL_SCRIPTS = scripts/*.sh scripts/installer-test/*.sh fuzz/run.sh src/nodeins
 shellcheck:
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed (apt install shellcheck)"; exit 1; }
 	shellcheck $(SHELL_SCRIPTS)
-	shellcheck -s sh src/nodeinstall-uninstall.sh
+	shellcheck -s sh src/nodeinstall-ui.sh src/nodeinstall-uninstall.sh
+	python3 scripts/installer-test/ui-check.py
 	shellcheck -S warning smoke.sh
 	sh scripts/installer-test/validators.sh
 	bash scripts/installer-test/backup-auth.sh

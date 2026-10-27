@@ -50,58 +50,217 @@ VER_amd64='@@VER_AMD64@@'
 VER_arm64='@@VER_ARM64@@'
 
 @@UNINSTALL_FN@@
-die() {
-	printf 'akari-install: ERROR: %s\n' "$*" >&2
-	exit 1
+
+# The installer's messages (zh / en); the common ones are in the block above.
+# shellcheck disable=SC2016 # the texts quote $ and ` literally
+msg_zh() {
+	case "$1" in
+	banner_subtitle) m '节点安装器 · %s' ;;
+	run_as_root) m '请以 root 运行（… | sudo sh）' ;;
+	checking_machine) m '检查本机环境' ;;
+	systemd_required) m '需要 systemd >= 250（当前：%s）' ;;
+	openrc_no_supervise) m '需要带 supervise-daemon 的 OpenRC（OpenRC >= 0.45）' ;;
+	openrc_too_old) m '需要 OpenRC >= 0.45（capabilities、no_new_privs；当前：%s）' ;;
+	openrc_not_running) m '已安装 OpenRC，但本机没有运行它' ;;
+	no_init_system) m '需要 systemd (>= 250) 或 OpenRC（Alpine）；本机两者都没有运行' ;;
+	sha256sum_required) m '需要 sha256sum（coreutils 或 busybox）' ;;
+	unsupported_architecture) m '不支持的 CPU 架构 %s（仅 amd64、arm64）' ;;
+	curl_required_pinned) m '需要 curl（面板证书已固定）' ;;
+	curl_or_wget_required) m '需要 curl 或 wget' ;;
+	downloading_agent) m '下载并校验 agent' ;;
+	downloading_from_panel) m '从面板下载 akari-agent %s（%s）' ;;
+	download_from_panel_failed) m '从面板下载失败' ;;
+	no_release_downloading) m '面板上没有 %s 的 agent 发布，改从 %s 下载' ;;
+	download_failed) m '下载失败：%s' ;;
+	not_listed_in) m '%s 不在 %s 中' ;;
+	no_agent_binary) m '没有适用于 %s 的 agent 二进制：请在面板（更新）上传发布，或设置 install.fallback_binary_url' ;;
+	sha256_mismatch) m 'agent 二进制的 SHA-256 不符（期望 %s，得到 %s）' ;;
+	agent_does_not_run) m '下载的 agent 无法在本机运行' ;;
+	verified) m '已校验 %s' ;;
+	installing_files) m '安装文件与服务' ;;
+	no_openrc_support) m '该 agent 发布（%s）不支持 OpenRC：请在面板（更新）发布更新的版本' ;;
+	cannot_create_group) m '无法创建用户组 akari-agent' ;;
+	cannot_create_user) m '无法创建用户 akari-agent' ;;
+	units_from_installer) m '该 agent 发布不含 systemd 单元，改用安装器自带的副本' ;;
+	bbr_fq) m 'TCP BBR + fq' ;;
+	bbr_skipped_no_sysctl) m 'BBR + fq：已跳过（没有 net.core.default_qdisc / tcp_congestion_control：可能是有独立网络命名空间的容器）' ;;
+	bbr_enabled) m 'BBR + fq：已启用（%s）' ;;
+	bbr_enabled_again) m 'BBR + fq：已重新启用（%s）' ;;
+	bbr_not_applied_now) m 'BBR + fq 暂时无法生效（%s 保留，重启后生效）' ;;
+	bbr_already) m 'BBR + fq：本机已启用（保持原样）' ;;
+	bbr_skipped_no_module) m 'BBR + fq：已跳过（内核 %s 没有 tcp_bbr，或此处无法加载模块）' ;;
+	bbr_skipped_readonly) m 'BBR + fq：已跳过（此处内核参数只读：可能是容器）' ;;
+	bbr_skipped_cc) m 'BBR + fq：已跳过（此处无法设置拥塞控制：可能是容器）' ;;
+	bbr_enabled_was) m 'BBR + fq：已启用（原为 %s + %s；%s；fq 对网卡的生效要等它们重新启动，即重启之后）' ;;
+	openrc_sysctl_not_boot) m 'OpenRC 的 sysctl 服务不在 boot 运行级别，所以 %s 不会在开机时应用：rc-update add sysctl boot' ;;
+	bbr_not_changed) m 'BBR + fq：未改动（--no-bbr）' ;;
+	nftables_firewall) m 'nftables 与防火墙' ;;
+	nftables_installed) m 'nftables：已安装（中转入口的来源白名单）' ;;
+	nft_missing) m '未安装 nft：中转入口将不带来源白名单运行（请安装 nftables）' ;;
+	firewall_ufw_allowed) m '防火墙（ufw）：已放行 TCP 80 供证书验证' ;;
+	firewall_ufw_failed) m '无法在 ufw 放行 TCP 80，请手动执行：ufw allow 80/tcp' ;;
+	firewall_firewalld_allowed) m '防火墙（firewalld）：已放行 TCP 80 供证书验证' ;;
+	firewall_firewalld_failed) m '无法在 firewalld 放行 TCP 80，请手动处理' ;;
+	starting_agent) m '启动 agent，等待注册并连接' ;;
+	cannot_add_runlevel) m '无法把 %s 加入 default 运行级别' ;;
+	cannot_start) m '无法启动 %s' ;;
+	cannot_start_log) m '无法启动 akari-agent（见 %s）' ;;
+	cannot_enable_path) m '无法启用 akari-agent-update.path' ;;
+	success_connected) m '成功：agent 已注册并连接，节点在面板中显示为在线。' ;;
+	tls_certificate) m 'TLS 证书：agent 会自行为 %s 申请（Let'\''s Encrypt）并续期。
+    需要：%s 的 DNS 记录指向本机，且 TCP 80 对公网开放
+    （云防火墙 / 安全组也要放行；没有入站使用 TCP 443 时也可用 443）。
+    状态：面板中的节点页，或 %s' ;;
+	needs_certificate) m '注意：该节点有 TLS 入站。请把证书放到 %s 和
+    %s（权限 0600），然后执行：%s' ;;
+	uninstall_later_sudo) m '以后卸载：sudo %s' ;;
+	uninstall_later_root) m '以后卸载（root）：%s' ;;
+	enrollment_refused) m '面板拒绝了注册令牌（已过期或已使用）：请在面板中重新生成安装命令' ;;
+	enrollment_ratelimited) m '面板正在限制该地址的注册请求；agent 会继续重试（%s），或几分钟后重新执行本命令' ;;
+	agent_not_connected) m 'agent 在 90 秒内没有连上（见上面的日志；%s）' ;;
+	*) msg_zh_core "$1" ;;
+	esac
+}
+# shellcheck disable=SC2016 # the texts quote $ and ` literally
+msg_en() {
+	case "$1" in
+	banner_subtitle) m 'node installer · %s' ;;
+	run_as_root) m 'run as root (… | sudo sh)' ;;
+	checking_machine) m 'Checking this machine' ;;
+	systemd_required) m 'systemd >= 250 is required (found: %s)' ;;
+	openrc_no_supervise) m 'OpenRC without supervise-daemon (OpenRC >= 0.45 is required)' ;;
+	openrc_too_old) m 'OpenRC >= 0.45 is required (capabilities, no_new_privs; found: %s)' ;;
+	openrc_not_running) m 'OpenRC is installed but not running on this machine' ;;
+	no_init_system) m 'systemd (>= 250) or OpenRC (Alpine) is required; neither is running on this machine' ;;
+	sha256sum_required) m 'sha256sum is required (coreutils or busybox)' ;;
+	unsupported_architecture) m 'unsupported architecture %s (amd64 and arm64 only)' ;;
+	curl_required_pinned) m 'curl is required (the panel certificate is pinned)' ;;
+	curl_or_wget_required) m 'curl or wget is required' ;;
+	downloading_agent) m 'Downloading and verifying the agent' ;;
+	downloading_from_panel) m 'downloading akari-agent %s (%s) from the panel' ;;
+	download_from_panel_failed) m 'download from the panel failed' ;;
+	no_release_downloading) m 'no agent release for %s on the panel; downloading %s' ;;
+	download_failed) m 'download failed: %s' ;;
+	not_listed_in) m '%s is not listed in %s' ;;
+	no_agent_binary) m 'no agent binary available for %s: upload a release in the panel (Updates) or set install.fallback_binary_url' ;;
+	sha256_mismatch) m 'SHA-256 mismatch for the agent binary (expected %s, got %s)' ;;
+	agent_does_not_run) m 'the downloaded agent does not run on this machine' ;;
+	verified) m 'verified %s' ;;
+	installing_files) m 'Installing files and services' ;;
+	no_openrc_support) m 'this agent release (%s) has no OpenRC support: publish a newer release in the panel (Updates)' ;;
+	cannot_create_group) m 'cannot create the group akari-agent' ;;
+	cannot_create_user) m 'cannot create the user akari-agent' ;;
+	units_from_installer) m 'this agent release does not carry its systemd units; using the installer copies' ;;
+	bbr_fq) m 'TCP BBR + fq' ;;
+	bbr_skipped_no_sysctl) m 'BBR + fq: skipped (no net.core.default_qdisc / tcp_congestion_control here: a container with its own network namespace?)' ;;
+	bbr_enabled) m 'BBR + fq: enabled (%s)' ;;
+	bbr_enabled_again) m 'BBR + fq: enabled again (%s)' ;;
+	bbr_not_applied_now) m 'BBR + fq could not be applied now (%s stays; applies at boot)' ;;
+	bbr_already) m 'BBR + fq: already enabled on this machine (left as it is)' ;;
+	bbr_skipped_no_module) m 'BBR + fq: skipped (kernel %s has no tcp_bbr, or modules cannot be loaded here)' ;;
+	bbr_skipped_readonly) m 'BBR + fq: skipped (kernel settings are read-only here: a container?)' ;;
+	bbr_skipped_cc) m 'BBR + fq: skipped (cannot set the congestion control here: a container?)' ;;
+	bbr_enabled_was) m 'BBR + fq: enabled (was %s + %s; %s; fq applies to network interfaces as they come up, i.e. after a reboot)' ;;
+	openrc_sysctl_not_boot) m 'the OpenRC service sysctl is not in the boot runlevel, so %s is not applied at boot: rc-update add sysctl boot' ;;
+	bbr_not_changed) m 'BBR + fq: not changed (--no-bbr)' ;;
+	nftables_firewall) m 'nftables and firewall' ;;
+	nftables_installed) m 'nftables: installed (relay entrances source allowlists)' ;;
+	nft_missing) m 'nft is not installed: relay entrances will run without their source allowlists (install nftables)' ;;
+	firewall_ufw_allowed) m 'firewall (ufw): allowed TCP 80 for the certificate challenge' ;;
+	firewall_ufw_failed) m 'could not allow TCP 80 in ufw; do it by hand: ufw allow 80/tcp' ;;
+	firewall_firewalld_allowed) m 'firewall (firewalld): allowed TCP 80 for the certificate challenge' ;;
+	firewall_firewalld_failed) m 'could not allow TCP 80 in firewalld; do it by hand' ;;
+	starting_agent) m 'Starting the agent and waiting for it to enroll and connect' ;;
+	cannot_add_runlevel) m 'cannot add %s to the default runlevel' ;;
+	cannot_start) m 'cannot start %s' ;;
+	cannot_start_log) m 'cannot start akari-agent (see %s)' ;;
+	cannot_enable_path) m 'cannot enable akari-agent-update.path' ;;
+	success_connected) m 'SUCCESS: the agent enrolled and is connected; the node shows online in the panel.' ;;
+	tls_certificate) m 'TLS certificate: the agent obtains one for %s itself (Let'\''s Encrypt) and renews it.
+    Needs: the DNS record of %s pointing at this machine, and TCP 80 open to the
+    internet (cloud firewall / security group too; TCP 443 also works when no inbound uses it).
+    Status: the node page in the panel, or %s' ;;
+	needs_certificate) m 'NOTE: this node has TLS inbounds. Put the certificate in %s and
+    %s (0600), then: %s' ;;
+	uninstall_later_sudo) m 'uninstall later with: sudo %s' ;;
+	uninstall_later_root) m 'uninstall later with (as root): %s' ;;
+	enrollment_refused) m 'the panel refused the enrollment token (expired or already used): create a new install command in the panel' ;;
+	enrollment_ratelimited) m 'the panel is rate limiting enrollments from this address; the agent keeps retrying (%s), or run this again in a few minutes' ;;
+	agent_not_connected) m 'the agent did not connect within 90 s (see the log above; %s)' ;;
+	*) msg_en_core "$1" ;;
+	esac
 }
 
-[ "$(id -u)" -eq 0 ] || die "run as root (… | sudo sh)"
+ORIGIN_HOST=${ORIGIN#*://}
+
+[ "$(id -u)" -eq 0 ] || die run_as_root
 
 BBR=${AKARI_BBR:-1}
-for arg in "$@"; do
-	case "$arg" in
-	--uninstall)
-		uninstall
-		exit 0
-		;;
+LANG_OPT=${AKARI_LANG:-}
+DO_UNINSTALL=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--uninstall) DO_UNINSTALL=1 ;;
 	--no-bbr) BBR=0 ;;
-	*) die "unknown option: $arg (--no-bbr, --uninstall)" ;;
+	--lang)
+		[ $# -ge 2 ] || die unknown_option "$1"
+		LANG_OPT=$2
+		shift
+		;;
+	*) die unknown_option "$1" ;;
 	esac
+	shift
 done
+
+# First of all, before the banner: the language and its locale (LC_ALL for
+# this script and its children only; the system default locale is not
+# touched). Chinese by default, English where zh_CN.UTF-8 cannot be had.
+if [ -n "$LANG_OPT" ] && [ -z "$(ui_lang_name "$LANG_OPT")" ]; then
+	die unknown_language "$LANG_OPT"
+fi
+ui_locale_setup "$(ui_lang_name "$LANG_OPT")"
+ui_init
+ui_banner "$(msg banner_subtitle "$ORIGIN_HOST")"
+if [ "$DO_UNINSTALL" = 1 ]; then
+	uninstall
+	exit 0
+fi
+steps 6
+step checking_machine
 
 # --- preflight ---------------------------------------------------------------
 # The init system: systemd, or OpenRC (Alpine; W32).
 if [ -d /run/systemd/system ]; then
 	SVC_MGR=systemd
 	sdver=$(systemctl --version 2>/dev/null | sed -n '1s/^systemd \([0-9][0-9]*\).*/\1/p')
-	[ -n "$sdver" ] && [ "$sdver" -ge 250 ] || die "systemd >= 250 is required (found: ${sdver:-unknown})"
+	[ -n "$sdver" ] && [ "$sdver" -ge 250 ] || die systemd_required "${sdver:-unknown}"
 elif [ -x /sbin/openrc-run ] && command -v rc-service >/dev/null 2>&1; then
 	SVC_MGR=openrc
-	[ -x /sbin/supervise-daemon ] || die "OpenRC without supervise-daemon (OpenRC >= 0.45 is required)"
+	[ -x /sbin/supervise-daemon ] || die openrc_no_supervise
 	rcver=$(openrc --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')
 	rcmaj=${rcver%%.*}
 	rcmin=${rcver#*.}
 	{ [ "${rcmaj:-0}" -gt 0 ] || [ "${rcmin:-0}" -ge 45 ]; } 2>/dev/null ||
-		die "OpenRC >= 0.45 is required (capabilities, no_new_privs; found: ${rcver:-unknown})"
-	[ -d /run/openrc ] || die "OpenRC is installed but not running on this machine"
+		die openrc_too_old "${rcver:-unknown}"
+	[ -d /run/openrc ] || die openrc_not_running
 else
-	die "systemd (>= 250) or OpenRC (Alpine) is required; neither is running on this machine"
+	die no_init_system
 fi
-command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required (coreutils or busybox)"
+command -v sha256sum >/dev/null 2>&1 || die sha256sum_required
 
 case "$(uname -m)" in
 x86_64 | amd64) ARCH=amd64 ;;
 aarch64 | arm64) ARCH=arm64 ;;
-*) die "unsupported architecture $(uname -m) (amd64 and arm64 only)" ;;
+*) die unsupported_architecture "$(uname -m)" ;;
 esac
 
 if command -v curl >/dev/null 2>&1; then
 	HAVE_CURL=1
 elif command -v wget >/dev/null 2>&1; then
 	HAVE_CURL=0
-	[ -z "$PIN" ] || die "curl is required (the panel's certificate is pinned)"
+	[ -z "$PIN" ] || die curl_required_pinned
 else
-	die "curl or wget is required"
+	die curl_or_wget_required
 fi
 
 # fetch_panel URL OUT: from the panel (pinned when PIN is set).
@@ -138,26 +297,31 @@ case "$ARCH" in
 amd64) want=$SHA_amd64 ver=$VER_amd64 ;;
 *) want=$SHA_arm64 ver=$VER_arm64 ;;
 esac
+# shellcheck disable=SC2034 # read by the UI block
+UI_LOG=$TMP/step.log
+step downloading_agent
 if [ -n "$want" ]; then
-	say "downloading akari-agent $ver ($ARCH) from the panel"
-	fetch_panel "$BASE/agent/$want" "$TMP/akari-agent" || die "download from the panel failed"
+	note downloading_from_panel "$ver" "$ARCH"
+	ui_bg fetch_panel "$BASE/agent/$want" "$TMP/akari-agent" || die download_from_panel_failed
 elif [ -n "$FALLBACK_URL" ]; then
 	url=$(printf '%s' "$FALLBACK_URL" | sed "s/{arch}/$ARCH/g")
 	sums="${url%/*}/SHA256SUMS"
 	file="${url##*/}"
-	say "no agent release for $ARCH on the panel; downloading $url"
-	fetch_public "$url" "$TMP/akari-agent" || die "download failed: $url"
-	fetch_public "$sums" "$TMP/SHA256SUMS" || die "download failed: $sums"
+	note no_release_downloading "$ARCH" "$url"
+	ui_bg fetch_public "$url" "$TMP/akari-agent" || die download_failed "$url"
+	ui_bg fetch_public "$sums" "$TMP/SHA256SUMS" || die download_failed "$sums"
 	want=$(awk -v f="$file" '$2 == f || $2 == "*" f { print $1; exit }' "$TMP/SHA256SUMS")
-	[ -n "$want" ] || die "$file is not listed in $sums"
+	[ -n "$want" ] || die not_listed_in "$file" "$sums"
 else
-	die "no agent binary available for $ARCH: upload a release in the panel (Updates) or set install.fallback_binary_url"
+	die no_agent_binary "$ARCH"
 fi
 got=$(sha256sum "$TMP/akari-agent" | awk '{ print $1 }')
-[ "$got" = "$want" ] || die "SHA-256 mismatch for the agent binary (expected $want, got $got)"
+[ "$got" = "$want" ] || die sha256_mismatch "$want" "$got"
 chmod 0755 "$TMP/akari-agent"
-"$TMP/akari-agent" -version >/dev/null 2>&1 || die "the downloaded agent does not run on this machine"
-say "verified $("$TMP/akari-agent" -version 2>/dev/null)"
+"$TMP/akari-agent" -version >/dev/null 2>&1 || die agent_does_not_run
+note verified "$("$TMP/akari-agent" -version 2>/dev/null)"
+
+step installing_files
 
 # --- files ---------------------------------------------------------------------
 install -d -m 0700 "$CONF_DIR" "$CONF_DIR/tls"
@@ -172,15 +336,15 @@ if [ "$SVC_MGR" = openrc ]; then
 	# run under OpenRC.
 	for u in akari-agent akari-agent-update; do
 		if ! "$TMP/akari-agent" -print-unit "$u" >"$TMP/rc.$u" 2>/dev/null || [ ! -s "$TMP/rc.$u" ]; then
-			die "this agent release ($ver) has no OpenRC support: publish a newer release in the panel (Updates)"
+			die no_openrc_support "$ver"
 		fi
 	done
 	if ! grep -q '^akari-agent:' /etc/group; then
-		addgroup -S akari-agent >/dev/null || die "cannot create the group akari-agent"
+		addgroup -S akari-agent >/dev/null || die cannot_create_group
 	fi
 	if ! grep -q '^akari-agent:' /etc/passwd; then
 		adduser -S -D -H -h "$RC_STATE" -s /sbin/nologin -G akari-agent -g akari-agent akari-agent >/dev/null ||
-			die "cannot create the user akari-agent"
+			die cannot_create_user
 	fi
 	install -m 0755 "$TMP/rc.akari-agent" "$RC_AGENT"
 	install -m 0755 "$TMP/rc.akari-agent-update" "$RC_UPDATE"
@@ -198,7 +362,7 @@ for u in akari-agent.service akari-agent-update.service akari-agent-update.path;
 	fi
 done
 if [ "$units_from_binary" = 0 ]; then
-	say "this agent release does not carry its systemd units; using the installer's copies"
+	note units_from_installer
 	cat >"$TMP/akari-agent.service" <<'AKARI_UNIT_EOF'
 @@UNIT@@
 AKARI_UNIT_EOF
@@ -232,49 +396,52 @@ cat >"$TMP/uninstall" <<'AKARI_UNINSTALL_EOF'
 # Remove the Akari agent (written by the installer).
 set -eu
 @@UNINSTALL_FN@@
+msg_zh() { msg_zh_core "$1"; }
+msg_en() { msg_en_core "$1"; }
 usage() {
-	cat <<'AKARI_USAGE_EOF'
-Usage: akari-agent-uninstall [--yes]
-
-Remove the Akari agent from this machine: its services, binary,
-/etc/akari-agent (bootstrap, certificates), state directory and the
-BBR + fq settings the installer added. Delete the node in the panel as well.
-
-Options:
-  -y, --yes   do not ask for confirmation (required when not on a terminal)
-  -h, --help  show this help and exit
-AKARI_USAGE_EOF
+	printf '%s\n' "$(msg uninstall_usage)"
 }
 yes=0
-for arg in "$@"; do
-	case "$arg" in
+LANG_OPT=${AKARI_LANG:-}
+while [ $# -gt 0 ]; do
+	case "$1" in
 	-h | --help)
+		[ "$(ui_lang_name "$LANG_OPT")" != en ] || UI_LANG=en
 		usage
 		exit 0
 		;;
 	-y | --yes) yes=1 ;;
+	--lang)
+		[ $# -ge 2 ] || { say unknown_option "$1"; exit 2; }
+		LANG_OPT=$2
+		shift
+		;;
 	*)
-		say "unknown option: $arg"
+		[ "$(ui_lang_name "$LANG_OPT")" != en ] || UI_LANG=en
+		say unknown_option "$1"
 		usage >&2
 		exit 2
 		;;
 	esac
+	shift
 done
-[ "$(id -u)" -eq 0 ] || { say "run as root"; exit 1; }
+[ "$(id -u)" -eq 0 ] || { say run_as_root_plain; exit 1; }
+if [ -n "$LANG_OPT" ] && [ -z "$(ui_lang_name "$LANG_OPT")" ]; then
+	die unknown_language "$LANG_OPT"
+fi
+ui_locale_setup "$(ui_lang_name "$LANG_OPT")"
+ui_init
+ui_banner "$(msg banner_uninstall)"
 if [ "$yes" -ne 1 ]; then
 	if [ ! -t 0 ]; then
-		say "refusing to uninstall without confirmation: pass --yes"
+		say refuse_without_yes
 		exit 1
 	fi
-	printf 'Remove the Akari agent and its data from this machine? [y/N] ' >&2
-	read -r answer || answer=
-	case "$answer" in
-	y | Y | yes | YES) ;;
-	*)
-		say "cancelled"
+	INTERACTIVE=1
+	confirm confirm_uninstall n || {
+		say cancelled
 		exit 1
-		;;
-	esac
+	}
 fi
 uninstall
 AKARI_UNINSTALL_EOF
@@ -299,7 +466,7 @@ bbr_enable() {
 	ccf=/proc/sys/net/ipv4/tcp_congestion_control
 	qdf=/proc/sys/net/core/default_qdisc
 	if [ ! -r "$ccf" ] || [ ! -r "$qdf" ]; then
-		say "BBR + fq: skipped (no net.core.default_qdisc / tcp_congestion_control here: a container with its own network namespace?)"
+		note bbr_skipped_no_sysctl
 		return 0
 	fi
 	cc=$(cat "$ccf")
@@ -307,16 +474,16 @@ bbr_enable() {
 	if [ -f "$BBR_CONF" ]; then
 		modprobe tcp_bbr >/dev/null 2>&1 || true
 		if [ "$cc" = bbr ] && [ "$qd" = fq ]; then
-			say "BBR + fq: enabled ($BBR_CONF)"
+			note bbr_enabled "$BBR_CONF"
 		elif printf fq >"$qdf" 2>/dev/null && printf bbr >"$ccf" 2>/dev/null; then
-			say "BBR + fq: enabled again ($BBR_CONF)"
+			note bbr_enabled_again "$BBR_CONF"
 		else
-			say "WARNING: BBR + fq could not be applied now ($BBR_CONF stays; applies at boot)"
+			warn bbr_not_applied_now "$BBR_CONF"
 		fi
 		return 0
 	fi
 	if [ "$cc" = bbr ] && [ "$qd" = fq ]; then
-		say "BBR + fq: already enabled on this machine (left as it is)"
+		note bbr_already
 		return 0
 	fi
 	loaded=0
@@ -324,17 +491,17 @@ bbr_enable() {
 		if modprobe tcp_bbr >/dev/null 2>&1 && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
 			loaded=1
 		else
-			say "BBR + fq: skipped (kernel $(uname -r) has no tcp_bbr, or modules cannot be loaded here)"
+			note bbr_skipped_no_module "$(uname -r)"
 			return 0
 		fi
 	fi
 	if ! printf fq >"$qdf" 2>/dev/null; then
-		say "BBR + fq: skipped (kernel settings are read-only here: a container?)"
+		note bbr_skipped_readonly
 		return 0
 	fi
 	if ! printf bbr >"$ccf" 2>/dev/null; then
 		printf '%s' "$qd" >"$qdf" 2>/dev/null || true
-		say "BBR + fq: skipped (cannot set the congestion control here: a container?)"
+		note bbr_skipped_cc
 		return 0
 	fi
 	install -d -m 0755 "$(dirname "$BBR_CONF")"
@@ -352,17 +519,17 @@ EOF
 		printf '# Written by the Akari agent installer (W32): see %s\ntcp_bbr\n' "$BBR_CONF" >"$TMP/bbr-mod.conf"
 		install -m 0644 "$TMP/bbr-mod.conf" "$BBR_MOD"
 	fi
-	say "BBR + fq: enabled (was $cc + $qd; $BBR_CONF; fq applies to network interfaces as they come up, i.e. after a reboot)"
+	note bbr_enabled_was "$cc" "$qd" "$BBR_CONF"
 	if [ "$SVC_MGR" = openrc ] && ! rc-update show boot 2>/dev/null | grep -q '^ *sysctl '; then
-		say "      NOTE: the OpenRC service sysctl is not in the boot runlevel, so $BBR_CONF is not applied at"
-		say "      boot: rc-update add sysctl boot"
+		warn openrc_sysctl_not_boot "$BBR_CONF"
 	fi
 }
+step bbr_fq
 if [ "$BBR" = 0 ]; then
 	if [ -f "$BBR_CONF" ]; then
 		bbr_remove
 	else
-		say "BBR + fq: not changed (--no-bbr)"
+		note bbr_not_changed
 	fi
 else
 	bbr_enable
@@ -373,18 +540,18 @@ fi
 # no CAP_NET_ADMIN). Installed when missing and a package manager is at
 # hand; without it relay entrances work with credential isolation only (the
 # node page warns).
+step nftables_firewall
 if ! command -v nft >/dev/null 2>&1; then
 	if command -v apk >/dev/null 2>&1; then
-		apk add --no-cache -q nftables >/dev/null 2>&1 || true
+		ui_bg apk add --no-cache -q nftables || true
 	elif command -v apt-get >/dev/null 2>&1; then
-		export DEBIAN_FRONTEND=noninteractive
-		apt-get install -y -qq --no-install-recommends nftables >/dev/null 2>&1 \
-			|| { apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq --no-install-recommends nftables >/dev/null 2>&1; } || true
+		ui_bg env DEBIAN_FRONTEND=noninteractive sh -c 'apt-get install -y -qq --no-install-recommends nftables \
+			|| { apt-get update -qq && apt-get install -y -qq --no-install-recommends nftables; }' || true
 	fi
 	if command -v nft >/dev/null 2>&1; then
-		say "nftables: installed (relay entrances' source allowlists)"
+		note nftables_installed
 	else
-		say "NOTE: nft is not installed: relay entrances will run without their source allowlists (install nftables)"
+		warn nft_missing
 	fi
 fi
 
@@ -393,17 +560,17 @@ fi
 # a cloud firewall / security group is outside this machine (see the note at
 # the end).
 if [ -n "$TLS_DOMAIN" ]; then
-	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+	if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
 		if ufw allow 80/tcp comment 'akari-agent certificate' >/dev/null 2>&1; then
-			say "firewall (ufw): allowed TCP 80 for the certificate challenge"
+			note firewall_ufw_allowed
 		else
-			say "WARNING: could not allow TCP 80 in ufw; do it by hand: ufw allow 80/tcp"
+			warn firewall_ufw_failed
 		fi
 	elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
 		if firewall-cmd -q --permanent --add-port=80/tcp && firewall-cmd -q --reload; then
-			say "firewall (firewalld): allowed TCP 80 for the certificate challenge"
+			note firewall_firewalld_allowed
 		else
-			say "WARNING: could not allow TCP 80 in firewalld; do it by hand"
+			warn firewall_firewalld_failed
 		fi
 	fi
 fi
@@ -427,10 +594,10 @@ if [ "$SVC_MGR" = openrc ]; then
 	LOG_HINT="tail -f $AGENT_LOG"
 	RESTART_HINT="rc-service akari-agent restart"
 	LOG_OFF=$(log_size)
-	rc-update add akari-agent default >/dev/null 2>&1 || die "cannot add akari-agent to the default runlevel"
-	rc-update add akari-agent-update default >/dev/null 2>&1 || die "cannot add akari-agent-update to the default runlevel"
-	rc-service akari-agent-update restart >/dev/null 2>&1 || die "cannot start akari-agent-update"
-	rc-service akari-agent restart >/dev/null 2>&1 || die "cannot start akari-agent (see $AGENT_LOG)"
+	rc-update add akari-agent default >/dev/null 2>&1 || die cannot_add_runlevel akari-agent
+	rc-update add akari-agent-update default >/dev/null 2>&1 || die cannot_add_runlevel akari-agent-update
+	rc-service akari-agent-update restart >/dev/null 2>&1 || die cannot_start akari-agent-update
+	rc-service akari-agent restart >/dev/null 2>&1 || die cannot_start_log "$AGENT_LOG"
 else
 	START=$(date +%s)
 	agent_log() { journalctl -u akari-agent.service --since "@$START" -o cat --no-pager 2>/dev/null; }
@@ -440,11 +607,11 @@ else
 	RESTART_HINT="systemctl restart akari-agent"
 	systemctl daemon-reload
 	systemctl enable akari-agent.service >/dev/null 2>&1
-	systemctl enable --now akari-agent-update.path >/dev/null 2>&1 || die "cannot enable akari-agent-update.path"
+	systemctl enable --now akari-agent-update.path >/dev/null 2>&1 || die cannot_enable_path
 	systemctl restart akari-agent.service
 fi
 restarts0=$(agent_restarts)
-say "agent started; waiting for it to enroll and connect"
+step starting_agent
 
 i=0
 result=
@@ -470,39 +637,39 @@ while [ "$i" -lt 90 ]; do
 		result=failed
 		break
 	fi
+	ui_pulse "$i"
 	sleep 1
 	i=$((i + 1))
 done
+ui_clear
 
 case "$result" in
 ok)
-	say "SUCCESS: the agent enrolled and is connected; the node shows online in the panel."
+	step_end
+	ok success_connected
 	if [ -n "$TLS_DOMAIN" ]; then
-		say "TLS certificate: the agent obtains one for $TLS_DOMAIN itself (Let's Encrypt) and renews it."
-		say "      Needs: the DNS record of $TLS_DOMAIN pointing at this machine, and TCP 80 open to the"
-		say "      internet (cloud firewall / security group too; TCP 443 also works when no inbound uses it)."
-		say "      Status: the node page in the panel, or $LOG_HINT"
+		say tls_certificate "$TLS_DOMAIN" "$TLS_DOMAIN" "$LOG_HINT"
 	elif [ "$NEEDS_CERT" = 1 ] && { [ ! -s "$CONF_DIR/tls/fullchain.pem" ] || [ ! -s "$CONF_DIR/tls/privkey.pem" ]; }; then
-		say "NOTE: this node has TLS inbounds. Put the certificate in $CONF_DIR/tls/fullchain.pem and"
-		say "      $CONF_DIR/tls/privkey.pem (0600), then: $RESTART_HINT"
+		say needs_certificate "$CONF_DIR/tls/fullchain.pem" "$CONF_DIR/tls/privkey.pem" "$RESTART_HINT"
 	fi
 	# Run through sudo: say so; as root (images without sudo): plain.
 	if [ -n "${SUDO_USER:-}" ] && command -v sudo >/dev/null 2>&1; then
-		say "uninstall later with: sudo $UNINSTALLER"
+		say uninstall_later_sudo "$UNINSTALLER"
 	else
-		say "uninstall later with (as root): $UNINSTALLER"
+		say uninstall_later_root "$UNINSTALLER"
 	fi
+	printf '\n'
 	;;
 refused)
 	agent_log | tail -n 20 >&2 || true
-	die "the panel refused the enrollment token (expired or already used): create a new install command in the panel"
+	die enrollment_refused
 	;;
 ratelimited)
-	die "the panel is rate limiting enrollments from this address; the agent keeps retrying ($LOG_HINT), or run this again in a few minutes"
+	die enrollment_ratelimited "$LOG_HINT"
 	;;
 *)
 	agent_log | tail -n 30 >&2 || true
-	die "the agent did not connect within 90 s (see the log above; $LOG_HINT)"
+	die agent_not_connected "$LOG_HINT"
 	;;
 esac
 }

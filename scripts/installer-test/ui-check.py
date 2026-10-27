@@ -17,7 +17,8 @@ printf. This check fails when
   * the shared UI block (# >>> akari-ui >>> ... # <<< akari-ui <<<) differs
     between the two scripts.
 
-Run: scripts/installer-test/ui-check.py   (make shellcheck runs it)
+Run: scripts/installer-test/ui-check.py          (make shellcheck runs it)
+     scripts/installer-test/ui-check.py --sync   (copy the block into the node installer)
 """
 
 import re
@@ -60,7 +61,7 @@ def parse_table(text, start, end, label):
     lines = body.split("\n")
     # drop the header, `case`, the default arm, `esac` and the closing brace
     inner = "\n".join(lines[2:])
-    inner = inner.rsplit("\t*) m \"$1\" ;;", 1)[0]
+    inner = inner[: inner.rindex("\n\t*) ")]
     entries = {}
     pos = 0
     # entries start at "\t<key>) m '" at the beginning of a line
@@ -170,6 +171,15 @@ def block(path):
     return m.group(0)
 
 
+if "--sync" in sys.argv:
+    # copy the shared block from the panel installer into the node installer
+    ui = ROOT / "src/nodeinstall-ui.sh"
+    old = ui.read_text(encoding="utf-8")
+    new_block = block(ROOT / "scripts/install.sh")
+    old_block = re.search(r"^# >>> akari-ui >>>\n.*?^# <<< akari-ui <<<\n", old, re.S | re.M).group(0)
+    ui.write_text(old.replace(old_block, new_block), encoding="utf-8")
+    print("synced the UI block into src/nodeinstall-ui.sh")
+    sys.exit(0)
 for n, fs in SCRIPTS.items():
     check_script(n, fs)
 a, b = block(ROOT / "scripts/install.sh"), block(ROOT / "src/nodeinstall-ui.sh")
