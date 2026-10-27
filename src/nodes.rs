@@ -104,7 +104,10 @@ fn node_view_cols() -> String {
 
 /// The FROM clause that goes with `node_view_cols` (filters on `nodes.`).
 fn node_view_from() -> String {
-    format!("FROM nodes JOIN servers s ON s.id = nodes.server_id {SERVER_EXTRAS_FROM}")
+    format!(
+        "FROM nodes JOIN servers s ON s.id = nodes.server_id {SERVER_EXTRAS_FROM} {}",
+        crate::entrances::ENTRANCES_JOIN
+    )
 }
 
 /// The full list query (also `akari-bench explain`).
@@ -225,6 +228,7 @@ pub fn node_summary_sql() -> String {
          nodes.visible, {entrances} AS entrances, lb.latency, \
          coalesce(al.n, 0) AS alerts_firing, nodes.inbound, {warn} \
          FROM nodes JOIN servers s ON s.id = nodes.server_id {SERVER_EXTRAS_FROM} \
+         {entrances_join} \
          LEFT JOIN (SELECT DISTINCT ON (l.server_id) l.server_id, jsonb_build_object( \
             'source', l.source, 'target', l.target, 'delay_ms', l.delay_ms, \
             'error', l.error, 'measured_at', l.measured_at) AS latency \
@@ -233,6 +237,7 @@ pub fn node_summary_sql() -> String {
          ORDER BY nodes.sort, nodes.created_at, nodes.id",
         online = crate::nodestat::online_sql("s"),
         entrances = crate::entrances::ENTRANCES_JSON_SQL,
+        entrances_join = crate::entrances::ENTRANCES_JOIN,
         warn = crate::servers::server_warn_cols(),
     )
 }
