@@ -60,7 +60,9 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE_NO_PAD
 use hyper::body::Bytes;
 use serde_json::{Value, json};
 
-use super::crypto::{self, MAX_SKEW_SECS, Pricing, host_of, link_ok, text_field, token_ok};
+use super::crypto::{
+    self, AmountFormat, MAX_SKEW_SECS, Pricing, host_of, link_ok, text_field, token_ok,
+};
 use super::provider::{
     BoxFut, CallError, Checkout, Close, CreateReq, NotifyCheck, NotifyEvent, NotifyRequest,
     PaymentProvider, ProviderKind, Query, TestOutcome, Validated,
@@ -510,7 +512,7 @@ impl Coinbase {
         };
         let cents = f.cents.filter(|c| {
             currency == Some(self.params.pricing.currency.as_str())
-                && amount.is_some_and(|a| self.params.pricing.matches(*c, a, false))
+                && amount.is_some_and(|a| self.params.pricing.matches(*c, a, AmountFormat::Plain))
         });
         (f.status == "COMPLETED", cents)
     }
@@ -645,17 +647,16 @@ impl Coinbase {
         let Some(out_trade_no) = f.order.clone() else {
             return reject(true, "unknown_order", None, Some(event), Some(params));
         };
-        let (completed, total_cents) = self.judge(&f);
+        let (completed, verified_cents) = self.judge(&f);
+        let paid = completed && event == PAID_EVENT;
         NotifyCheck::Verified(NotifyEvent {
             out_trade_no,
             trade_no: f.id,
-            status: if f.status.is_empty() {
-                event.clone()
-            } else {
-                f.status
-            },
-            paid: completed && event == PAID_EVENT,
-            total_cents,
+            status: if f.status.is_empty() { event } else { f.status },
+            paid,
+            // Only a payment needs the verified amount; any other event just
+            // names the order it is about (acknowledged, nothing settles).
+            total_cents: if paid { verified_cents } else { f.cents },
             params,
         })
     }
@@ -1073,7 +1074,14 @@ pub(crate) mod tests {
             let body = payload(event, status, "AK1", "1.38", 990);
             let h = signed_headers(&body, NOW, HOOK);
             match check(&c, &body, &h, NOW) {
-                NotifyCheck::Verified(ev) => assert!(!ev.paid, "{event}/{status}"),
+                NotifyCheck::Verified(ev) => {
+                    assert!(!ev.paid, "{event}/{status}");
+                    assert_eq!(
+                        ev.total_cents,
+                        Some(990),
+                        "{event}/{status} names its order"
+                    );
+                }
                 r => panic!("{r:?}"),
             }
         }
