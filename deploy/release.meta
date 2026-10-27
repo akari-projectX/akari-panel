@@ -1,0 +1,14 @@
+# Release metadata, shipped in akari-deploy.tar.gz (signed with the release) and
+# read by `akari-ctl upgrade --rolling` on a multi-instance deployment
+# (docs/DEPLOY.md section 4). Key=value, no quotes.
+#
+# schema_compat_previous: true only when every migration of THIS release is
+# backward-compatible with the PREVIOUS release's binaries (additive:
+# new tables / nullable or defaulted columns / new indexes; nothing dropped,
+# renamed, retyped or made stricter). Then the instances not yet upgraded may
+# keep running while the first upgraded one migrates. false (the default,
+# and what a release without this file counts as): the installer makes the
+# operator stop the other instances before the first one is upgraded.
+# Whoever cuts a release reviews the migrations since the previous tag and
+# flips this; when in doubt, leave it false.
+schema_compat_previous=false
