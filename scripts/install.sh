@@ -1490,8 +1490,8 @@ write_panel_toml() {
 		echo "# Validate: sudo -u akari akari -c /etc/akari/panel.toml config check"
 		echo
 		echo "data_dir = \"$DATA\""
-		echo "database_url = \"postgres://akari:$db_pw@127.0.0.1:$PG_PORT/akari\""
-		echo "valkey_url = \"redis://:$vk_pw@127.0.0.1:$VALKEY_PORT\""
+		echo "database_url = \"${DB_URL_OPT:-postgres://akari:$db_pw@127.0.0.1:$PG_PORT/akari}\""
+		echo "valkey_url = \"${VK_URL_OPT:-redis://:$vk_pw@127.0.0.1:$VALKEY_PORT}\""
 		echo
 		echo "[web]"
 		echo "# Behind Caddy on this host: loopback only."
@@ -1514,7 +1514,8 @@ write_panel_toml() {
 }
 
 akari_cli() {
-	(cd / && runuser -u akari -- "$BIN" -c "$ETC/panel.toml" "$@")
+	# shellcheck disable=SC2046 # ssl_env prints one word or nothing
+	(cd / && runuser -u akari -- env $(ssl_env) "$BIN" -c "$ETC/panel.toml" "$@")
 }
 
 install_panel_units() {
@@ -1562,7 +1563,7 @@ wait_health() {
 
 panel_health_url() {
 	if [ "$MODE" = bare ]; then
-		printf 'http://127.0.0.1:%s/%s/healthz' "$WEB_PORT" "$1"
+		printf 'http://%s:%s/%s/healthz' "$(web_host)" "$WEB_PORT" "$1"
 	else
 		ip=$(docker_panel_ip)
 		printf 'http://%s:8080/%s/healthz' "${ip:-0.0.0.0}" "$1"
@@ -1696,6 +1697,11 @@ wait_docker_pg() {
 BACKUP_PATH=
 do_backup() {
 	parent=$1 plain=$2 releases=${3:-0}
+	if multi_backup_skip; then
+		BACKUP_PATH=''
+		note multi_no_backup_not_database_owner
+		return 0
+	fi
 	install -d -m 0700 "$parent"
 	ensure_backup_key
 	if [ "$plain" != 1 ] && [ -n "${AGE_RECIPIENT:-}" ]; then
@@ -1970,6 +1976,7 @@ install_total() {
 }
 
 cmd_install() {
+	multi_check_external_opts
 	if detect_existing && [ "$STATUS" = installing ]; then
 		# An earlier run stopped half way: run the installation again
 		# (every step is idempotent); our own services may hold the ports.
@@ -2008,8 +2015,8 @@ install_bare() {
 	get_binary "$TAG"
 	get_bundle
 	install_tools
-	install_postgres
-	install_valkey
+	[ -n "$DB_URL_OPT" ] || install_postgres
+	[ -n "$VK_URL_OPT" ] || install_valkey
 	install_caddy
 	step configuring_services
 	install_panel_units
@@ -2020,17 +2027,18 @@ install_bare() {
 	fi
 	[ -n "${db_pw:-}" ] || db_pw=$(rand_pw)
 	[ -n "${vk_pw:-}" ] || vk_pw=$(rand_pw)
-	setup_database "$db_pw"
-	write_valkey_conf "$vk_pw"
+	[ -n "$DB_URL_OPT" ] || setup_database "$db_pw"
+	[ -n "$VK_URL_OPT" ] || write_valkey_conf "$vk_pw"
 	write_panel_toml "$db_pw" "$vk_pw"
 	run systemctl daemon-reload
-	run systemctl enable --now akari-valkey.service || die valkey_does_not_start_journalctl_u
+	[ -n "$VK_URL_OPT" ] || run systemctl enable --now akari-valkey.service || die valkey_does_not_start_journalctl_u
 
 	install -m 0755 "$REL/akari" "$BIN.new"
 	mv -f "$BIN.new" "$BIN"
 	ensure_backup_key
 	CUR_VERSION=$TAG STATUS=installing
 	save_state
+	multi_record_external
 
 	if [ -n "$RESTORE_DIR" ]; then
 		restore_into
@@ -2055,6 +2063,7 @@ install_bare() {
 }
 
 install_docker_mode() {
+	[ -z "$DB_URL_OPT$VK_URL_OPT" ] || die multi_ext_docker
 	install_docker
 	step fetching_and_verifying_image_reference "$TAG"
 	get_image "$TAG"
@@ -2168,6 +2177,7 @@ cmd_upgrade() {
 		[ -n "$MODE" ] || adopt
 	fi
 	[ "$MODE" != bare ] || check_systemd
+	multi_upgrade_precheck
 	refuse_pre_baseline
 	base_packages
 	TAG=$(resolve_tag "$VERSION_REQ")
@@ -2185,6 +2195,7 @@ cmd_upgrade() {
 	fi
 	maybe_reexec "$TAG"
 	get_bundle
+	multi_rolling_check
 	# akari-ctl and the backup scripts of the new release are installed only
 	# once it runs (a failed upgrade keeps the old tools).
 	BACKUP_SH="$BUNDLE/scripts/backup.sh"
@@ -2199,6 +2210,7 @@ cmd_upgrade() {
 	else
 		upgrade_docker
 	fi
+	multi_after_upgrade
 }
 
 prefix_current() {
@@ -2258,7 +2270,8 @@ upgrade_bare() {
 }
 
 akari_cli_new() {
-	(cd / && runuser -u akari -- "$BIN.new" -c "$ETC/panel.toml" "$@")
+	# shellcheck disable=SC2046 # ssl_env prints one word or nothing
+	(cd / && runuser -u akari -- env $(ssl_env) "$BIN.new" -c "$ETC/panel.toml" "$@")
 }
 
 # refresh_bare_files: units and Caddyfile of the installer's bundle.
@@ -2331,7 +2344,8 @@ cmd_uninstall() {
 		die cancelled
 	fi
 	steps 0
-	if [ "$MODE" = bare ]; then uninstall_bare; else uninstall_docker; fi
+	multi_uninstall_guard
+	if [ "$MODE" = bare ]; then multi_unexpose; uninstall_bare; else uninstall_docker; fi
 	step_end
 	rm -f "$CTL"
 	if [ "$PURGE" = 1 ]; then
@@ -2400,6 +2414,7 @@ uninstall_docker() {
 cmd_backup() {
 	detect_existing || die no_installation_found
 	[ -n "$MODE" ] || adopt
+	multi_backup_guard
 	[ -x "$LIBDIR/backup.sh" ] || {
 		get_bundle
 		install_tools
@@ -2526,7 +2541,7 @@ cmd_status() {
 	[ -n "$MODE" ] || adopt
 	printf '%-10s %s\n' mode "$MODE" version "$CUR_VERSION" address "${DOMAIN:-$PUBLIC_IP}"
 	if [ "$MODE" = bare ]; then
-		for u in akari-panel akari-valkey postgresql@18-main caddy; do
+		for u in $(status_units); do
 			printf '%-10s %s\n' "$u" "$(systemctl is-active "$u.service" 2>/dev/null || true)"
 		done
 		prefix=$(prefix_bare)
@@ -2546,12 +2561,1140 @@ cmd_info() {
 	detect_existing || die no_installation_found
 	[ -n "$MODE" ] || adopt
 	if [ "$MODE" = bare ]; then prefix=$(prefix_bare); else prefix=$(docker_prefix_env); fi
+	if [ "$(multi_role)" = joined ]; then
+		multi_info
+		return 0
+	fi
 	o=$(origin)
 	printf '%s/%s/app\n%s/\n' "$o" "$prefix" "$o"
 	pub=$(backup_public_key)
 	if [ -n "$pub" ]; then
 		printf '\n%s\n%s\n' "$(msg backup_verification_public_key_keep_it "$BACKUP_SIGN_KEY")" "$pub"
 	fi
+	multi_info
+}
+
+# --- several panel instances (docs/DEPLOY.md §4) -------------------------------------------
+#
+# Instance 1 is a normal bare-metal install. `expose-data` turns its
+# PostgreSQL and Valkey into shared services (private address only, TLS with a
+# private CA, firewall + pg_hba limited to the given CIDRs); `join-bundle`
+# packs what another instance needs into ONE encrypted file; `install.sh
+# --join FILE` installs that instance (no PostgreSQL / Valkey / Caddy of its
+# own); `lb-config` prints the load balancer; `upgrade --rolling` upgrades one
+# instance at a time. No network secret channel: the operator carries the
+# file (scp) and the passphrase by hand.
+#
+# Only bare metal takes part (Docker mode refuses). The state of this feature
+# is /etc/akari/multi.env (no secrets): ROLE=single|primary|joined, LISTEN
+# (the private address), ALLOW (CIDRs), WEB_LISTEN (the web / ask bind).
+#
+# Every message of this section is a `multi_*` key of msg_zh / msg_en.
+
+MULTI_ENV=$ETC/multi.env
+SHARED_DIR=$ETC/shared
+SHARED_CA=$SHARED_DIR/ca.pem
+DATA_CA_DIR=$ETC/data-ca
+FIREWALL_NFT=$ETC/data-firewall.nft
+PG_CONF_DIR=/etc/postgresql/18/main
+JOIN_TTL=86400
+PEERS_KEY='akari:status:instances'
+ROLLED_KEY='akari:installer:rolled-to'
+ALLOW_OPT='' LISTEN_OPT='' NO_FIREWALL=0 JOIN_FILE='' PASS_FILE='' INSTANCES_OPT='' LB_ADDR_OPT='' LB_KIND=''
+ROLLING=0 DB_URL_OPT='' VK_URL_OPT='' DATA_CA_OPT='' TRUSTED_OPT='' MX_SECRET='' MX_OTHERS=0 MX_PEERS_OK=0
+
+# --- state of the feature -----------------------------------------------------------------
+
+multi_get() { kv_get "$MULTI_ENV" "$1"; }
+multi_set() {
+	[ -f "$MULTI_ENV" ] || install -m 0600 /dev/null "$MULTI_ENV"
+	kv_set "$MULTI_ENV" "$1" "$2"
+}
+# multi_role: single (no multi.env), primary (expose-data done), joined.
+multi_role() {
+	_mx_r=$(multi_get ROLE)
+	printf '%s' "${_mx_r:-single}"
+}
+# web_host: the address the local panel's web port answers on (health
+# checks): loopback, or the private address once it listens there.
+web_host() {
+	_mx_w=$(multi_get WEB_LISTEN)
+	printf '%s' "${_mx_w:-127.0.0.1}"
+}
+# ssl_env: the environment words the panel and its CLI need when Valkey
+# is reached over TLS with the private CA (rustls reads SSL_CERT_FILE).
+ssl_env() {
+	if [ -f "$SHARED_CA" ] && toml_get valkey_url | matches '^rediss://'; then
+		printf 'SSL_CERT_FILE=%s' "$SHARED_CA"
+	fi
+}
+need_bare_install() {
+	detect_existing || die multi_need_root_install
+	[ -n "$MODE" ] || adopt
+	[ "$MODE" = bare ] || die multi_need_bare "$MODE"
+}
+
+# --- validators (portable ERE, see validators.sh) -------------------------------------------
+
+# valid_cidr4 NET/BITS: an IPv4 network.
+valid_cidr4() {
+	re '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$' "$1" || return 1
+	_mx_b=${1#*/}
+	[ "$_mx_b" -le 32 ] && ip_hi32 "${1%/*}" >/dev/null
+}
+# private_cidr4 NET/BITS: the whole network lies inside RFC 1918 or the
+# shared address space (100.64/10); a wider one (10.0.0.0/7) is public.
+private_cidr4() {
+	valid_cidr4 "$1" || return 1
+	for _mx_blk in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+		if in_cidr "${1%/*}" "$_mx_blk" && [ "${1#*/}" -ge "${_mx_blk#*/}" ]; then return 0; fi
+	done
+	return 1
+}
+private_ip4() {
+	re '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' "$1" && private_cidr4 "$1/32"
+}
+# valid_proxy ADDR: an IP or CIDR for web.trusted_proxies; never the
+# whole internet (a trusted proxy can set the client address).
+valid_proxy() {
+	case "$1" in
+	*/*)
+		valid_cidr4 "$1" && [ "${1#*/}" -ge 8 ] && return 0
+		re '^[0-9A-Fa-f:]+/[0-9]{1,3}$' "$1" && [ "${1#*/}" -ge 16 ] && [ "${1#*/}" -le 128 ] && ip_hi32 "${1%/*}" >/dev/null
+		;;
+	*:*) re '^[0-9A-Fa-f:]+$' "$1" && ip_hi32 "$1" >/dev/null ;;
+	*) re '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' "$1" && ip_hi32 "$1" >/dev/null ;;
+	esac
+}
+# valid_host_port HOST[:WEB[:GRPC]]: an lb-config instance.
+valid_instance() {
+	re '^[A-Za-z0-9.-]+(:[0-9]{1,5}){0,2}$' "$1"
+}
+
+# --- small helpers --------------------------------------------------------------------------
+
+# toml_get KEY: a top-level string value of panel.toml.
+toml_get() {
+	sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$ETC/panel.toml" 2>/dev/null | sed -n 1p
+}
+# toml_set FILE SECTION KEY RAW: set KEY = RAW in [SECTION] ("" = the top
+# level), adding the key at the end of the section when it is missing.
+toml_set() {
+	awk -v sec="$2" -v key="$3" -v val="$4" '
+		function flush() { if (cur == sec && !done) { print key " = " val; done = 1 } }
+		BEGIN { cur = ""; done = 0 }
+		/^\[/ { flush(); cur = $0; gsub(/[][ ]/, "", cur); print; next }
+		cur == sec && $0 ~ "^" key "[ \t]*=" { if (!done) { print key " = " val; done = 1 } ; next }
+		{ print }
+		END { flush() }
+	' "$1" >"$1.tmp.$$" && cat "$1.tmp.$$" >"$1"
+	rm -f "$1.tmp.$$"
+}
+# url_part URL PART: user / pass / host / port / path of a URL
+# scheme://[user]:[pass]@host:port/path[?query] (no IPv6 literals).
+url_part() {
+	_mx_rest=${1#*://}
+	_mx_auth=${_mx_rest%%@*}
+	_mx_hp=${_mx_rest#*@}
+	_mx_path=${_mx_hp#*/}
+	[ "$_mx_path" != "$_mx_hp" ] || _mx_path=
+	_mx_hp=${_mx_hp%%/*}
+	case "$2" in
+	user) printf '%s' "${_mx_auth%%:*}" ;;
+	pass) printf '%s' "${_mx_auth#*:}" ;;
+	host) printf '%s' "${_mx_hp%%:*}" ;;
+	port) case "$_mx_hp" in *:*) printf '%s' "${_mx_hp##*:}" ;; esac ;;
+	path) printf '%s' "$_mx_path" ;;
+	esac
+}
+# local_ipv4s: the global IPv4 addresses of this machine, one per line.
+local_ipv4s() {
+	ip -4 -o addr show scope global 2>/dev/null | awk '{ sub(/\/.*/, "", $4); print $4 }'
+}
+# listen_for ALLOW...: the private address of this machine inside one of the
+# networks (--listen overrides).
+choose_listen() {
+	if [ -n "$LISTEN_OPT" ]; then
+		private_ip4 "$LISTEN_OPT" || die multi_listen_bad "$LISTEN_OPT"
+		LISTEN=$LISTEN_OPT
+		return
+	fi
+	_mx_found=
+	_mx_n=0
+	for _mx_a in $(local_ipv4s); do
+		for _mx_c in $ALLOW; do
+			if in_cidr "$_mx_a" "$_mx_c"; then
+				_mx_found="$_mx_found $_mx_a"
+				_mx_n=$((_mx_n + 1))
+				break
+			fi
+		done
+	done
+	[ "$_mx_n" -gt 0 ] || die multi_listen_none
+	[ "$_mx_n" -eq 1 ] || die multi_listen_many "$_mx_found"
+	LISTEN=${_mx_found# }
+}
+
+# --- the shared Valkey, spoken to over TLS with openssl (no valkey-cli needed on a joined machine)
+
+# vk_target: host / port / password / CA option of the panel's valkey_url.
+vk_parse() {
+	_mx_u=$(toml_get valkey_url)
+	case "$_mx_u" in rediss://*) ;; *) return 1 ;; esac
+	VK_HOST=$(url_part "$_mx_u" host)
+	VK_PORT=$(url_part "$_mx_u" port)
+	VK_PASS=$(url_part "$_mx_u" pass)
+	[ -n "$VK_HOST" ] && [ -n "$VK_PORT" ]
+}
+# vk_cmd COMMAND...: the raw reply of the commands (AUTH first). The password
+# goes through the shell's printf builtin to a pipe, never an argument.
+vk_cmd() {
+	vk_parse || return 1
+	_mx_ca=
+	[ ! -f "$SHARED_CA" ] || _mx_ca="-CAfile $SHARED_CA"
+	# shellcheck disable=SC2086 # an option list
+	{
+		printf 'AUTH %s\r\n' "$VK_PASS"
+		for _mx_c in "$@"; do printf '%s\r\n' "$_mx_c"; done
+		sleep 1
+	} | timeout 15 openssl s_client -quiet -connect "$VK_HOST:$VK_PORT" $_mx_ca -verify_return_error -verify_ip "$VK_HOST" 2>/dev/null
+}
+# peers_list: "id version alive sessions" per instance known to Valkey.
+# Fails when Valkey cannot be read.
+peers_list() {
+	# s_client's exit status after the server closes is not a result: the
+	# reply is (AUTH answered +OK).
+	_mx_raw=$(vk_cmd "HGETALL $PEERS_KEY" || true)
+	printf '%s' "$_mx_raw" | matches '^+OK' || return 1
+	_mx_now=$(date +%s)
+	printf '%s\n' "$_mx_raw" | tr -d '\r' | awk 'NR > 1 && !/^[*$:+-]/ { print }' | while IFS= read -r _mx_l; do
+		case "$_mx_l" in
+		'{'*) ;;
+		*) _mx_id=$_mx_l && continue ;;
+		esac
+		_mx_ver=$(printf '%s' "$_mx_l" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+		_mx_beat=$(printf '%s' "$_mx_l" | sed -n 's/.*"beat_at":"\([^"]*\)".*/\1/p')
+		_mx_ses=$(printf '%s' "$_mx_l" | sed -n 's/.*"agent_sessions":\([0-9]*\).*/\1/p')
+		_mx_t=$(date -d "$_mx_beat" +%s 2>/dev/null || echo 0)
+		if [ $((_mx_now - _mx_t)) -le 30 ]; then _mx_al=online; else _mx_al=offline; fi
+		printf '%s %s %s %s\n' "$(printf '%s' "$_mx_id" | cut -c1-8)" "${_mx_ver:-?}" "$_mx_al" "${_mx_ses:-0}"
+	done
+}
+# count_others: the number of OTHER online instances (this machine's own
+# running panel is one of the online ones) -> MX_OTHERS; MX_PEERS_OK=0 when the
+# list cannot be read.
+count_others() {
+	MX_OTHERS=0 MX_PEERS_OK=0
+	_mx_l=$(peers_list) || return 0
+	MX_PEERS_OK=1
+	_mx_on=$(printf '%s\n' "$_mx_l" | awk '$3 == "online"' | wc -l)
+	MX_OTHERS=$_mx_on
+	if systemctl is-active --quiet akari-panel.service 2>/dev/null && [ "$MX_OTHERS" -gt 0 ]; then
+		MX_OTHERS=$((MX_OTHERS - 1))
+	fi
+}
+
+# --- expose-data (instance 1) ---------------------------------------------------------------
+
+# mk_data_certs: the private CA (kept root-only, 10 years; reused when it
+# exists) and a server certificate for PostgreSQL and Valkey (5 years, SAN =
+# the listen address + loopback; made again on every run).
+mk_data_certs() {
+	install -d -m 0700 "$DATA_CA_DIR"
+	install -d -m 0750 -o root -g akari "$SHARED_DIR"
+	if [ ! -s "$DATA_CA_DIR/ca.key" ] || [ ! -s "$DATA_CA_DIR/ca.pem" ]; then
+		openssl ecparam -name prime256v1 -genkey -noout -out "$DATA_CA_DIR/ca.key" 2>>"$LOG" ||
+			die multi_cannot_generate_the_data_ca_key
+		openssl req -x509 -new -key "$DATA_CA_DIR/ca.key" -sha256 -days 3650 -subj '/CN=Akari data services CA' \
+			-addext 'basicConstraints=critical,CA:TRUE,pathlen:0' -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+			-out "$DATA_CA_DIR/ca.pem" 2>>"$LOG" || die multi_cannot_generate_the_data_ca_certificate
+	fi
+	openssl ecparam -name prime256v1 -genkey -noout -out "$DATA_CA_DIR/server.key" 2>>"$LOG" ||
+		die multi_cannot_generate_the_server_key
+	openssl req -new -key "$DATA_CA_DIR/server.key" -subj '/CN=akari-data' -out "$TMP/server.csr" 2>>"$LOG" ||
+		die multi_cannot_generate_the_certificate_request
+	printf 'subjectAltName=IP:%s,IP:127.0.0.1,DNS:localhost\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n' \
+		"$LISTEN" >"$TMP/server.ext"
+	openssl x509 -req -in "$TMP/server.csr" -CA "$DATA_CA_DIR/ca.pem" -CAkey "$DATA_CA_DIR/ca.key" -CAcreateserial \
+		-days 1825 -sha256 -extfile "$TMP/server.ext" -out "$DATA_CA_DIR/server.pem" 2>>"$LOG" ||
+		die multi_cannot_sign_the_server_certificate
+	chmod 0600 "$DATA_CA_DIR/server.key"
+	install -m 0644 "$DATA_CA_DIR/ca.pem" "$SHARED_CA"
+}
+
+# set_firewall PORTS: nftables table akari_data (loaded at boot by
+# akari-data-firewall.service): loopback and ALLOW pass, everything else to
+# those ports is dropped. Active ufw gets matching allow rules.
+set_firewall() {
+	_mx_ports=$1
+	_mx_nets=$(printf '%s' "$ALLOW" | tr ' ' ',' | sed 's/,/, /g')
+	have nft || {
+		[ "$APT_UPDATED" = 1 ] || apt_update
+		apt_install nftables
+	}
+	have nft || die multi_expose_nonft
+	cat >"$FIREWALL_NFT" <<EOF
+# Written by akari-ctl expose-data: PostgreSQL and Valkey are reachable from
+# these private networks only.
+table inet akari_data
+delete table inet akari_data
+table inet akari_data {
+	chain input {
+		type filter hook input priority -10; policy accept;
+		iifname "lo" accept
+		tcp dport { $_mx_ports } ip saddr { $_mx_nets } accept
+		tcp dport { $_mx_ports } drop
+	}
+}
+EOF
+	chmod 0644 "$FIREWALL_NFT"
+	_mx_nft=$(command -v nft)
+	cat >/etc/systemd/system/akari-data-firewall.service <<EOF
+# Written by akari-ctl expose-data.
+[Unit]
+Description=Akari: firewall for the shared PostgreSQL and Valkey ports
+DefaultDependencies=no
+After=network-pre.target
+Wants=network-pre.target
+Before=network.target postgresql@18-main.service akari-valkey.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$_mx_nft -f $FIREWALL_NFT
+ExecStop=-$_mx_nft delete table inet akari_data
+
+[Install]
+WantedBy=multi-user.target
+EOF
+	run systemctl daemon-reload
+	run systemctl enable akari-data-firewall.service
+	run systemctl restart akari-data-firewall.service || die multi_cannot_load_the_nftables_rules_see
+	if have ufw && ufw status 2>/dev/null | matches '^Status: active'; then
+		for _mx_c in $ALLOW; do
+			for _mx_p in $(printf '%s' "$_mx_ports" | tr ',' ' '); do
+				run ufw allow from "$_mx_c" to any port "$_mx_p" proto tcp || true
+			done
+		done
+	fi
+	step multi_expose_fw "$_mx_ports" "$(printf '%s' "$ALLOW" | tr ' ' ',')"
+}
+
+# expose_postgres: listen on loopback + LISTEN, TLS, hostssl rules for ALLOW.
+expose_postgres() {
+	_mx_d=$PG_CONF_DIR/akari-tls
+	[ -d "$PG_CONF_DIR" ] || die multi_no_postgresql_18_configuration_directory "$PG_CONF_DIR"
+	install -d -m 0750 -o postgres -g postgres "$_mx_d"
+	install -m 0644 -o postgres -g postgres "$DATA_CA_DIR/server.pem" "$_mx_d/server.crt"
+	install -m 0600 -o postgres -g postgres "$DATA_CA_DIR/server.key" "$_mx_d/server.key"
+	install -d -m 0755 "$PG_CONF_DIR/conf.d"
+	cat >"$PG_CONF_DIR/conf.d/90-akari-expose.conf" <<EOF
+# Written by akari-ctl expose-data.
+listen_addresses = '127.0.0.1,$LISTEN'
+ssl = on
+ssl_cert_file = '$_mx_d/server.crt'
+ssl_key_file = '$_mx_d/server.key'
+ssl_min_protocol_version = 'TLSv1.2'
+EOF
+	chown postgres:postgres "$PG_CONF_DIR/conf.d/90-akari-expose.conf"
+	install -d -m 0755 /etc/systemd/system/postgresql@18-main.service.d
+	printf '# Written by akari-ctl expose-data: the private address must exist before PostgreSQL binds.\n[Unit]\nAfter=network-online.target\nWants=network-online.target\n' \
+		>/etc/systemd/system/postgresql@18-main.service.d/akari-expose.conf
+	run systemctl daemon-reload
+	sed -i '/^# BEGIN akari-expose-data/,/^# END akari-expose-data/d' "$PG_CONF_DIR/pg_hba.conf"
+	{
+		echo '# BEGIN akari-expose-data'
+		for _mx_c in $ALLOW; do
+			echo "hostssl akari akari $_mx_c scram-sha-256"
+		done
+		echo '# END akari-expose-data'
+	} >>"$PG_CONF_DIR/pg_hba.conf"
+	run systemctl restart postgresql@18-main || die multi_expose_pgfail
+	_mx_i=0
+	until (cd / && runuser -u postgres -- pg_isready -q -p "$PG_PORT"); do
+		_mx_i=$((_mx_i + 1))
+		[ "$_mx_i" -lt 30 ] || die multi_expose_pgfail
+		sleep 1
+	done
+	step multi_expose_pg "$LISTEN:$PG_PORT" "$(printf '%s' "$ALLOW" | tr ' ' ',')"
+}
+
+# expose_valkey PASSWORD: TLS port only, on loopback + LISTEN; the key and
+# certificate reach the DynamicUser service as credentials.
+expose_valkey() {
+	{
+		echo "# Written by akari-ctl expose-data. Hot state only: no persistence."
+		echo "bind 127.0.0.1 $LISTEN"
+		echo "port 0"
+		echo "tls-port $VALKEY_PORT"
+		echo "tls-cert-file /run/credentials/akari-valkey.service/tls.crt"
+		echo "tls-key-file /run/credentials/akari-valkey.service/tls.key"
+		echo "tls-ca-cert-file /run/credentials/akari-valkey.service/ca.pem"
+		echo "tls-auth-clients no"
+		echo "tls-protocols \"TLSv1.2 TLSv1.3\""
+		echo "protected-mode yes"
+		echo "save \"\""
+		echo "appendonly no"
+		echo "requirepass $1"
+	} >"$TMP/valkey.conf"
+	install -m 0600 -o root -g root "$TMP/valkey.conf" "$ETC/valkey.conf"
+	install -d -m 0755 /etc/systemd/system/akari-valkey.service.d
+	cat >/etc/systemd/system/akari-valkey.service.d/expose.conf <<EOF
+# Written by akari-ctl expose-data: the TLS files for the DynamicUser service,
+# and the private address must exist before it binds.
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+LoadCredential=tls.crt:$DATA_CA_DIR/server.pem
+LoadCredential=tls.key:$DATA_CA_DIR/server.key
+LoadCredential=ca.pem:$DATA_CA_DIR/ca.pem
+EOF
+	run systemctl daemon-reload
+	run systemctl restart akari-valkey.service || die multi_expose_vkfail
+	_mx_i=0
+	until vk_cmd PING | matches '+PONG'; do
+		_mx_i=$((_mx_i + 1))
+		[ "$_mx_i" -lt 15 ] || die multi_expose_vkfail
+		sleep 1
+	done
+	step multi_expose_vk "$VALKEY_PORT"
+}
+
+# bind_web_private ADDR: the panel's web and tls_ask binds (and the local
+# Caddy's upstream) move from loopback to ADDR so a load balancer reaches
+# them. The ask endpoint needs allow_non_loopback.
+bind_web_private() {
+	toml_set "$ETC/panel.toml" web bind "\"$1:$WEB_PORT\""
+	toml_set "$ETC/panel.toml" tls_ask bind "\"$1:$ASK_PORT\""
+	toml_set "$ETC/panel.toml" tls_ask allow_non_loopback true
+	if [ -f "$ETC/caddy.env" ]; then
+		kv_set "$ETC/caddy.env" AKARI_UPSTREAM "$1:$WEB_PORT"
+		kv_set "$ETC/caddy.env" AKARI_ASK "http://$1:$ASK_PORT/ask"
+	fi
+	multi_set WEB_LISTEN "$1"
+}
+
+cmd_expose_data() {
+	steps 0
+	need_bare_install
+	[ "$(multi_role)" != joined ] || die multi_joined_no
+	[ "$(multi_get EXTERNAL)" != 1 ] || die multi_external_services
+	[ -n "$ALLOW_OPT" ] || die multi_allow_missing
+	ALLOW=
+	for _mx_c in $(printf '%s' "$ALLOW_OPT" | tr ',' ' '); do
+		valid_cidr4 "$_mx_c" || die multi_allow_bad "$_mx_c"
+		private_cidr4 "$_mx_c" || die multi_allow_public "$_mx_c"
+		ALLOW="$ALLOW${ALLOW:+ }$_mx_c"
+	done
+	choose_listen
+	base_packages
+	PG_PORT=${PG_PORT:-$(kv_get "$STATE_ENV" PG_PORT)}
+	VALKEY_PORT=${VALKEY_PORT:-6379}
+	_mx_pw=$(toml_get valkey_url | sed -n 's|^rediss\{0,1\}://:\([^@]*\)@.*|\1|p')
+	[ -n "$_mx_pw" ] || die multi_no_valkey_password_in_paneltoml
+	step multi_expose_start "$ALLOW" "$LISTEN"
+	if [ "$NO_FIREWALL" = 1 ]; then
+		warn multi_expose_nofw "$PG_PORT/$VALKEY_PORT"
+	else
+		set_firewall "$PG_PORT, $VALKEY_PORT"
+	fi
+	step multi_expose_ca "$LISTEN, 127.0.0.1"
+	mk_data_certs
+	expose_postgres
+	toml_set "$ETC/panel.toml" "" valkey_url "\"rediss://:$_mx_pw@127.0.0.1:$VALKEY_PORT\""
+	expose_valkey "$_mx_pw"
+	install -d -m 0755 /etc/systemd/system/akari-panel.service.d
+	printf '# Written by akari-ctl expose-data: Valkey is reached over TLS with the private CA.\n[Service]\nEnvironment=SSL_CERT_FILE=%s\n' "$SHARED_CA" \
+		>/etc/systemd/system/akari-panel.service.d/shared-data.conf
+	bind_web_private "$LISTEN"
+	multi_set ROLE primary
+	multi_set LISTEN "$LISTEN"
+	multi_set ALLOW "$(printf '%s' "$ALLOW" | tr ' ' ',')"
+	multi_set PG_PORT "$PG_PORT"
+	multi_set VALKEY_PORT "$VALKEY_PORT"
+	run systemctl daemon-reload
+	run systemctl restart akari-panel.service
+	[ ! -f "$ETC/caddy.env" ] || run systemctl restart caddy.service || true
+	_mx_prefix=$(prefix_bare)
+	wait_health "$(panel_health_url "${_mx_prefix:-x}")" 120 || die multi_expose_panelfail
+	step multi_expose_web "$LISTEN"
+	ensure_backup_key
+	step multi_expose_done
+}
+
+# --- join-bundle (instance 1) -----------------------------------------------------------------
+
+# make_join_secret: a fresh age identity; its secret key is the passphrase. It
+# is machine-generated with 256 bits, so no key stretching (scrypt) is needed,
+# and the age command line takes it from a file, not from a prompt that CI
+# and scripts cannot answer (age's own passphrase mode reads /dev/tty only).
+cmd_join_bundle() {
+	steps 0
+	need_bare_install
+	[ "$(multi_role)" != joined ] || die multi_joined_no
+	if [ "$(multi_get EXTERNAL)" != 1 ] && [ "$(multi_role)" != primary ]; then die multi_bundle_need_expose; fi
+	if ! have age || ! have age-keygen; then
+		note multi_bundle_need_age
+		[ "$APT_UPDATED" = 1 ] || apt_update
+		apt_install age
+	fi
+	_mx_stage="$TMP/jb"
+	rm -rf "$_mx_stage"
+	install -d -m 0700 "$_mx_stage" "$_mx_stage/data"
+	_mx_db=$(toml_get database_url)
+	_mx_vk=$(toml_get valkey_url)
+	if [ "$(multi_get EXTERNAL)" != 1 ]; then
+		_mx_l=$(multi_get LISTEN)
+		_mx_db="postgres://$(url_part "$_mx_db" user):$(url_part "$_mx_db" pass)@$_mx_l:$(multi_get PG_PORT)/$(url_part "$_mx_db" path)?sslmode=verify-full&sslrootcert=$SHARED_CA"
+		_mx_vk="rediss://:$(url_part "$_mx_vk" pass)@$_mx_l:$(multi_get VALKEY_PORT)"
+	fi
+	printf '%s\n' "$_mx_db" >"$_mx_stage/db.url"
+	printf '%s\n' "$_mx_vk" >"$_mx_stage/valkey.url"
+	[ ! -f "$SHARED_CA" ] || cp "$SHARED_CA" "$_mx_stage/ca.pem"
+	for _mx_f in ca.pem ca.key.pem jwt.key master.key state.json; do
+		[ -f "$DATA/$_mx_f" ] && cp "$DATA/$_mx_f" "$_mx_stage/data/$_mx_f"
+	done
+	for _mx_f in ca.pem ca.key.pem jwt.key master.key; do
+		[ -f "$_mx_stage/data/$_mx_f" ] || die multi_the_data_directory_has_no "$_mx_f"
+	done
+	printf 'format=1\ncreated_at=%s\nversion=%s\n' "$(date +%s)" "$CUR_VERSION" >"$_mx_stage/META"
+
+	_mx_id=$(age-keygen 2>/dev/null | sed -n '/^AGE-SECRET-KEY-/p')
+	[ -n "$_mx_id" ] || die multi_cannot_generate_the_join_passphrase
+	_mx_rcpt=$(printf '%s\n' "$_mx_id" | age-keygen -y 2>/dev/null)
+	case "${BACKUP_OUT:-}" in
+	'') _mx_out="/root/akari-join-$(date +%Y%m%d-%H%M%S).age" ;;
+	*/) _mx_out="${BACKUP_OUT}akari-join-$(date +%Y%m%d-%H%M%S).age" ;;
+	*) if [ -d "$BACKUP_OUT" ]; then _mx_out="$BACKUP_OUT/akari-join-$(date +%Y%m%d-%H%M%S).age"; else _mx_out=$BACKUP_OUT; fi ;;
+	esac
+	set -- META db.url valkey.url data
+	[ ! -f "$_mx_stage/ca.pem" ] || set -- "$@" ca.pem
+	tar -C "$_mx_stage" -cf "$TMP/join-out.tar" "$@" || die multi_cannot_pack_the_join_bundle
+	age -r "$_mx_rcpt" -o "$_mx_out" "$TMP/join-out.tar" || die multi_encrypting_the_join_bundle_failed
+	rm -f "$TMP/join-out.tar"
+	chmod 0600 "$_mx_out"
+	rm -rf "$_mx_stage"
+	step multi_bundle_done "$_mx_out" "$((JOIN_TTL / 3600))"
+	if [ -n "$PASS_FILE" ]; then
+		(
+			umask 077
+			printf '%s\n' "$_mx_id" >"$PASS_FILE"
+		)
+	else
+		card_open multi_bundle_secret
+		card_blank
+		card_text multi_secret_line "$_mx_id"
+		card_blank
+		card_close
+	fi
+	note multi_bundle_next "$_mx_out"
+}
+
+# --- join (a new machine) ---------------------------------------------------------------------
+
+# probe_tls KIND HOST PORT CAFILE: the endpoint answers TLS and its
+# certificate verifies against the CA (KIND pg: through the PostgreSQL SSL request).
+probe_tls() {
+	_mx_st=
+	[ "$1" != pg ] || _mx_st='-starttls postgres'
+	_mx_vf="-verify_hostname $2"
+	re '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' "$2" && _mx_vf="-verify_ip $2"
+	_mx_ca=
+	[ ! -f "$4" ] || _mx_ca="-CAfile $4"
+	# shellcheck disable=SC2086 # option lists
+	# -verify_return_error aborts the handshake on a bad certificate, so a
+	# zero exit is a verified connection (OpenSSL prints the verify result
+	# only when a session ticket arrived first).
+	timeout 20 openssl s_client -connect "$2:$3" $_mx_st $_mx_ca $_mx_vf -verify_return_error </dev/null >"$TMP/probe.out" 2>&1 || {
+		sed 's/^/    probe: /' "$TMP/probe.out" | sed -n 1,25p >>"$LOG"
+		return 1
+	}
+}
+
+# join_secret: the passphrase from the environment, a file or the terminal.
+join_secret() {
+	if [ -n "${AKARI_JOIN_PASSPHRASE:-}" ]; then
+		MX_SECRET=$AKARI_JOIN_PASSPHRASE
+	elif [ -n "$PASS_FILE" ]; then
+		[ -r "$PASS_FILE" ] || die multi_cannot_read "$PASS_FILE"
+		MX_SECRET=$(head -n 1 "$PASS_FILE")
+	else
+		ask_secret MX_SECRET multi_join_pass_ask
+	fi
+	unset AKARI_JOIN_PASSPHRASE
+	MX_SECRET=$(printf '%s' "$MX_SECRET" | tr -d ' \r\n' | tr '[:lower:]' '[:upper:]')
+	[ -n "$MX_SECRET" ] || die multi_join_nopass
+	re '^AGE-SECRET-KEY-1[0-9A-Z]{20,}$' "$MX_SECRET" || die multi_join_pass_bad
+}
+
+# join_unpack DIR: decrypt and check the bundle into DIR; sets MX_VERSION.
+join_unpack() {
+	_mx_d=$1
+	have age || {
+		[ "$APT_UPDATED" = 1 ] || apt_update
+		apt_install age
+	}
+	printf '%s\n' "$MX_SECRET" >"$TMP/join.id"
+	chmod 0600 "$TMP/join.id"
+	age -d -i "$TMP/join.id" -o "$TMP/join.tar" "$JOIN_FILE" 2>>"$LOG" || {
+		rm -f "$TMP/join.id"
+		die multi_join_decrypt
+	}
+	rm -f "$TMP/join.id"
+	MX_SECRET=
+	# Only the names we write; no links, devices, absolute paths.
+	tar -tf "$TMP/join.tar" | grep -vE '^(\./)?(META|db\.url|valkey\.url|ca\.pem|data/?|data/(ca\.pem|ca\.key\.pem|jwt\.key|master\.key|state\.json))$' >"$TMP/join.extra" || true
+	[ ! -s "$TMP/join.extra" ] || die multi_join_format "$(sed -n 1p "$TMP/join.extra")"
+	install -d -m 0700 "$_mx_d"
+	tar --no-same-owner --no-same-permissions -xf "$TMP/join.tar" -C "$_mx_d" || die multi_join_format tar
+	rm -f "$TMP/join.tar"
+	[ -z "$(find "$_mx_d" ! -type f ! -type d)" ] || die multi_join_format links
+	[ "$(kv_get "$_mx_d/META" format)" = 1 ] || die multi_join_format format
+	_mx_t=$(kv_get "$_mx_d/META" created_at)
+	MX_VERSION=$(kv_get "$_mx_d/META" version)
+	re '^[0-9]{1,12}$' "$_mx_t" || die multi_join_format created_at
+	re '^v[0-9][0-9A-Za-z.+-]*$' "$MX_VERSION" || die multi_join_format version
+	_mx_age=$(($(date +%s) - _mx_t))
+	[ "$_mx_age" -ge -300 ] || die multi_join_future
+	[ "$_mx_age" -le "$JOIN_TTL" ] || die multi_join_expired "$((_mx_age / 3600))" "$((JOIN_TTL / 3600))"
+	for _mx_f in db.url valkey.url data/ca.pem data/ca.key.pem data/jwt.key data/master.key; do
+		[ -s "$_mx_d/$_mx_f" ] || die multi_join_format "$_mx_f"
+	done
+	MX_DB=$(sed -n 1p "$_mx_d/db.url")
+	MX_VK=$(sed -n 1p "$_mx_d/valkey.url")
+	re '^postgres(ql)?://[A-Za-z0-9_:/@.?&=%+-]+$' "$MX_DB" || die multi_join_format db.url
+	re '^rediss?://[A-Za-z0-9_:/@.?&=%+-]+$' "$MX_VK" || die multi_join_format valkey.url
+}
+
+cmd_join() {
+	steps 0
+	[ -n "$JOIN_FILE" ] && [ -r "$JOIN_FILE" ] || die multi_join_nofile
+	if detect_existing; then die multi_join_exists; fi
+	check_ram
+	check_systemd
+	base_packages
+	join_secret
+	MX_DIR="$TMP/join"
+	join_unpack "$MX_DIR"
+	TAG=$(resolve_tag "${VERSION_REQ:-$MX_VERSION}")
+	[ "$TAG" = "$MX_VERSION" ] || die multi_join_version "$MX_VERSION" "$VERSION_REQ"
+	_mx_dbh=$(url_part "$MX_DB" host)
+	_mx_dbp=$(url_part "$MX_DB" port)
+	_mx_vkh=$(url_part "$MX_VK" host)
+	_mx_vkp=$(url_part "$MX_VK" port)
+	LISTEN=$LISTEN_OPT
+	if [ -z "$LISTEN" ]; then
+		LISTEN=$(ip -4 route get "$_mx_dbh" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | sed -n 1p)
+	fi
+	private_ip4 "${LISTEN:-x}" || die multi_join_noroute
+	GRPC_PORT=${GRPC_PORT:-8443}
+	step multi_join_start "$TAG" "$LISTEN"
+	check_ports "$WEB_PORT" "$ASK_PORT" "$GRPC_PORT"
+	step multi_join_probe "$_mx_dbh:$_mx_dbp"
+	probe_tls pg "$_mx_dbh" "$_mx_dbp" "$MX_DIR/ca.pem" || die multi_join_probe_fail "$_mx_dbh:$_mx_dbp" "$LISTEN"
+	case "$MX_VK" in
+	rediss://*)
+		step multi_join_probe "$_mx_vkh:$_mx_vkp"
+		probe_tls vk "$_mx_vkh" "$_mx_vkp" "$MX_DIR/ca.pem" || die multi_join_probe_fail "$_mx_vkh:$_mx_vkp" "$LISTEN"
+		;;
+	esac
+
+	step multi_downloading_and_verifying_akari "$TAG" "$ARCH"
+	get_binary "$TAG"
+	get_bundle
+	install_tools
+	install_panel_units
+	cat >/etc/systemd/system/akari-panel.service.d/installer.conf <<'EOF'
+# Written by the Akari installer: a joined instance has no local database.
+[Unit]
+After=network-online.target
+Wants=network-online.target
+EOF
+	for _mx_f in ca.pem ca.key.pem jwt.key master.key state.json; do
+		[ ! -f "$MX_DIR/data/$_mx_f" ] || install -m 0600 -o akari -g akari "$MX_DIR/data/$_mx_f" "$DATA/$_mx_f"
+	done
+	if [ -f "$MX_DIR/ca.pem" ]; then
+		install -d -m 0750 -o root -g akari "$SHARED_DIR"
+		install -m 0644 "$MX_DIR/ca.pem" "$SHARED_CA"
+	fi
+	case "$MX_VK" in
+	rediss://*)
+		printf '# Written by the Akari installer: Valkey is reached over TLS with the private CA.\n[Service]\nEnvironment=SSL_CERT_FILE=%s\n' "$SHARED_CA" \
+			>/etc/systemd/system/akari-panel.service.d/shared-data.conf
+		;;
+	esac
+	_mx_proxies=${TRUSTED_OPT:-127.0.0.1/32}
+	_mx_arr=
+	for _mx_p in $(printf '%s' "$_mx_proxies" | tr ',' ' '); do
+		valid_proxy "$_mx_p" || die multi_trusted_bad "$_mx_p"
+		_mx_arr="$_mx_arr${_mx_arr:+, }\"$_mx_p\""
+	done
+	{
+		echo "# /etc/akari/panel.toml, written by the Akari installer (join; root:akari 0640:"
+		echo "# it holds the database and Valkey passwords). Only what the process needs"
+		echo "# to start (R39); everything else is set in the admin console (系统设置)."
+		echo
+		echo "data_dir = \"$DATA\""
+		echo "database_url = \"$MX_DB\""
+		echo "valkey_url = \"$MX_VK\""
+		echo
+		echo "[web]"
+		echo "# Behind the load balancer (akari-ctl lb-config): the private address."
+		echo "bind = \"$LISTEN:$WEB_PORT\""
+		echo "cookie_secure = true"
+		echo "trusted_proxies = [$_mx_arr]"
+		echo
+		echo "[grpc]"
+		echo "# Agents reach this through the load balancer's TCP pass-through (mTLS)."
+		echo "bind = \"0.0.0.0:$GRPC_PORT\""
+		echo
+		echo "[tls_ask]"
+		echo "# On-demand TLS endpoint of Caddy, on the private address (allow_non_loopback)."
+		echo "bind = \"$LISTEN:$ASK_PORT\""
+		echo "allow_non_loopback = true"
+	} >"$TMP/panel.toml"
+	install -m 0640 -o root -g akari "$TMP/panel.toml" "$ETC/panel.toml"
+	install -m 0755 "$REL/akari" "$BIN.new"
+	mv -f "$BIN.new" "$BIN"
+	MODE=bare DOMAIN='' PUBLIC_IP=$LISTEN EMAIL='' HTTP_PORT=80 HTTPS_PORT=443 VALKEY_PORT=''
+	CUR_VERSION=$TAG STATUS=installing
+	save_state
+	multi_set ROLE joined
+	multi_set LISTEN "$LISTEN"
+	multi_set WEB_LISTEN "$LISTEN"
+	run akari_cli config check || die multi_configuration_check_failed_akari_config_check
+	step multi_join_start_panel
+	run systemctl daemon-reload
+	run systemctl enable akari-panel.service
+	run systemctl restart akari-panel.service
+	_mx_prefix=$(prefix_bare)
+	wait_health "$(panel_health_url "${_mx_prefix:-x}")" 120 || die multi_join_unhealthy
+	STATUS=installed
+	save_state
+	rm -f "$JOIN_FILE"
+	step multi_join_done "$LISTEN" "$WEB_PORT" "$LISTEN:$GRPC_PORT"
+	note multi_join_rm "$JOIN_FILE"
+	[ -n "$TRUSTED_OPT" ] || warn multi_join_notrusted
+	log "join finished: version=$CUR_VERSION listen=$LISTEN"
+}
+
+# --- load balancer configuration ------------------------------------------------------------------
+
+# lb_instances: INSTANCES as "host web grpc" lines (ports default 8080 / 8443).
+lb_instances() {
+	_mx_ifs=$IFS
+	IFS=,
+	set -f
+	# shellcheck disable=SC2086 # split on the commas only
+	set -- $INSTANCES_OPT
+	set +f
+	IFS=$_mx_ifs
+	for _mx_i in "$@"; do
+		valid_instance "$_mx_i" || die multi_lb_inst_bad "$_mx_i"
+		printf '%s\n' "$_mx_i" | awk -F: '{ printf "%s %s %s\n", $1, ($2 == "" ? 8080 : $2), ($3 == "" ? 8443 : $3) }'
+	done
+}
+
+lb_header() {
+	printf '# %s\n' "$(msg multi_lb_head1 "$LB_KIND")"
+	printf '# %s\n' "$(msg multi_lb_head2)"
+	printf '#   akari-ctl set-trusted-proxies %s\n' "${LB_ADDR_OPT:-<LB-ADDRESS>}"
+	printf '# %s\n' "$(msg multi_lb_head3)"
+	printf '#\n'
+}
+
+# lb_servers FORMAT web|grpc LIST: FORMAT (printf: index, host, port) per instance.
+lb_servers() {
+	_mx_n=1
+	printf '%s\n' "$3" | while read -r _mx_h _mx_w _mx_g; do
+		if [ "$2" = web ]; then _mx_pt=$_mx_w; else _mx_pt=$_mx_g; fi
+		# shellcheck disable=SC2059 # the caller's format
+		printf "$1" "$_mx_n" "$_mx_h" "$_mx_pt"
+		_mx_n=$((_mx_n + 1))
+	done
+}
+
+lb_caddy() {
+	lb_header
+	_mx_first=$(printf '%s\n' "$1" | sed -n 1p)
+	cat <<EOF
+{
+	default_sni $DOMAIN
+	on_demand_tls {
+		ask http://${_mx_first%% *}:$ASK_PORT/ask
+	}
+}
+
+(akari) {
+	encode zstd gzip
+	header {
+		-Server
+		-Via
+	}
+	reverse_proxy$(lb_servers ' %.0s%s:%s' web "$1") {
+		lb_policy least_conn
+		health_uri /healthz
+		health_interval 10s
+		health_timeout 3s
+		health_status 200
+		# An IP-literal Host passes the panel's host gate whatever the main domain is.
+		health_headers {
+			Host 127.0.0.1
+		}
+		header_up X-Request-Id {http.request.uuid}
+	}
+}
+
+$DOMAIN {
+	import akari
+}
+
+http://$DOMAIN {
+	header {
+		-Server
+		-Via
+	}
+	redir https://{host}{uri} 308
+}
+
+# Other names (subscription domains): a certificate on demand, only for names the panel confirms.
+https:// {
+	tls {
+		on_demand
+	}
+	import akari
+}
+
+# gRPC (agents, mutual TLS) needs L4 pass-through. Stock Caddy has none: build it with the
+# caddy-l4 plugin (xcaddy build --with github.com/mholt/caddy-l4) and move this block into the
+# global options at the top, or put HAProxy / nginx (stream) on this port (akari-ctl lb-config
+# haproxy|nginx).
+#layer4 {
+#	:8443 {
+#		route {
+#			proxy$(lb_servers ' %.0s%s:%s' grpc "$1") {
+#				lb_policy least_conn
+#				health_interval 10s
+#			}
+#		}
+#	}
+#}
+EOF
+}
+
+lb_haproxy() {
+	lb_header
+	cat <<EOF
+global
+	maxconn 20000
+
+defaults
+	log global
+	timeout connect 5s
+	timeout client 60s
+	timeout server 60s
+
+# TLS for the web: your certificate and key in one PEM (e.g. from certbot).
+frontend akari_web
+	mode http
+	bind :80
+	bind :443 ssl crt /etc/haproxy/certs/$DOMAIN.pem alpn h2,http/1.1
+	http-request redirect scheme https unless { ssl_fc }
+	option forwardfor
+	default_backend akari_web
+
+backend akari_web
+	mode http
+	balance leastconn
+	option httpchk
+	# An IP-literal Host passes the panel's host gate whatever the main domain is.
+	http-check send meth GET uri /healthz ver HTTP/1.1 hdr Host 127.0.0.1
+	http-check expect status 200
+$(lb_servers '\tserver web%s %s:%s check inter 5s fall 3 rise 2\n' web "$1")
+
+# gRPC: plain TCP, the agents' mutual TLS is not touched.
+frontend akari_grpc
+	mode tcp
+	bind :8443
+	option tcplog
+	default_backend akari_grpc
+
+backend akari_grpc
+	mode tcp
+	balance leastconn
+$(lb_servers '\tserver grpc%s %s:%s check inter 5s fall 3 rise 2\n' grpc "$1")
+EOF
+}
+
+lb_nginx() {
+	lb_header
+	cat <<EOF
+# A complete nginx.conf (Debian layout). The open-source nginx checks upstreams passively
+# (max_fails); active /healthz checks need nginx Plus or HAProxy.
+user www-data;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
+
+events {
+	worker_connections 8192;
+}
+
+http {
+	server_tokens off;
+	# No access log: the request URI can hold the admin prefix and subscription tokens.
+	access_log off;
+
+	upstream akari_web {
+		least_conn;
+$(lb_servers '\t\tserver %.0s%s:%s max_fails=3 fail_timeout=10s;\n' web "$1")
+	}
+
+	server {
+		listen 80;
+		server_name $DOMAIN;
+		return 301 https://\$host\$request_uri;
+	}
+
+	server {
+		listen 443 ssl http2;
+		server_name $DOMAIN;
+		ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+		ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+		ssl_protocols TLSv1.2 TLSv1.3;
+		client_max_body_size 1m;
+		location / {
+			proxy_pass http://akari_web;
+			proxy_http_version 1.1;
+			proxy_set_header Host \$host;
+			# APPEND: the panel takes the rightmost hop that is not a trusted proxy.
+			proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+			proxy_set_header X-Forwarded-Proto \$scheme;
+			proxy_set_header X-Request-Id \$request_id;
+			proxy_next_upstream error timeout http_502 http_503;
+		}
+	}
+}
+
+# gRPC: plain TCP, the agents' mutual TLS is not touched.
+stream {
+	upstream akari_grpc {
+		least_conn;
+$(lb_servers '\t\tserver %.0s%s:%s max_fails=3 fail_timeout=10s;\n' grpc "$1")
+	}
+	server {
+		listen 8443;
+		proxy_pass akari_grpc;
+		proxy_connect_timeout 5s;
+	}
+}
+EOF
+}
+
+cmd_lb_config() {
+	case "$LB_KIND" in caddy | haproxy | nginx) ;; *) die multi_lb_kind ;; esac
+	[ -n "$INSTANCES_OPT" ] || die multi_lb_kind
+	if [ -z "$DOMAIN" ]; then detect_existing 2>/dev/null || true; fi
+	[ -n "$DOMAIN" ] || die multi_lb_domain
+	_mx_list=$(lb_instances)
+	"lb_$LB_KIND" "$_mx_list"
+}
+
+# --- trusted proxies ---------------------------------------------------------------------------
+
+cmd_set_trusted_proxies() {
+	steps 0
+	need_bare_install
+	[ -n "$TRUSTED_OPT" ] || die multi_trusted_none
+	_mx_arr=
+	_mx_seen=
+	_mx_list=
+	# The local Caddy of instance 1 (and a single install) stays trusted.
+	[ "$(multi_role)" = joined ] || _mx_seen=127.0.0.1/32
+	for _mx_p in $_mx_seen $(printf '%s' "$TRUSTED_OPT" | tr ',' ' '); do
+		valid_proxy "$_mx_p" || die multi_trusted_bad "$_mx_p"
+		case " $_mx_list " in *" $_mx_p "*) continue ;; esac
+		_mx_list="$_mx_list $_mx_p"
+		_mx_arr="$_mx_arr${_mx_arr:+, }\"$_mx_p\""
+	done
+	toml_set "$ETC/panel.toml" web trusted_proxies "[$_mx_arr]"
+	run akari_cli config check || die multi_configuration_check_failed_akari_config_check
+	run systemctl restart akari-panel.service
+	_mx_prefix=$(prefix_bare)
+	wait_health "$(panel_health_url "${_mx_prefix:-x}")" 120 || die multi_the_panel_is_not_healthy_after
+	step multi_trusted_done "[$_mx_arr]"
+}
+
+# --- web exposure of a single / external-services installation -----------------------------------
+
+cmd_expose_web() {
+	steps 0
+	need_bare_install
+	[ "$(multi_role)" != joined ] || die multi_joined_no
+	[ -n "$LISTEN_OPT" ] && private_ip4 "$LISTEN_OPT" || die multi_listen_bad "$LISTEN_OPT"
+	bind_web_private "$LISTEN_OPT"
+	[ -n "$(multi_get ROLE)" ] || multi_set ROLE primary
+	run systemctl restart akari-panel.service
+	[ ! -f "$ETC/caddy.env" ] || run systemctl restart caddy.service || true
+	_mx_prefix=$(prefix_bare)
+	wait_health "$(panel_health_url "${_mx_prefix:-x}")" 120 || die multi_expose_panelfail
+	step multi_expose_web "$LISTEN_OPT"
+}
+
+# --- external PostgreSQL / Valkey (install --database-url / --valkey-url) -------------------------------
+
+# multi_check_external_opts: before anything is changed.
+multi_check_external_opts() {
+	[ -n "$DB_URL_OPT$VK_URL_OPT$DATA_CA_OPT" ] || return 0
+	if [ -n "$DB_URL_OPT" ]; then
+		re '^postgres(ql)?://[A-Za-z0-9_:/@.?&=%+-]+$' "$DB_URL_OPT" || die multi_ext_url_bad --database-url postgres
+		case "$DB_URL_OPT" in *sslmode=verify-full* | *sslmode=verify-ca*) ;; *) warn multi_ext_db_tls ;; esac
+	fi
+	if [ -n "$VK_URL_OPT" ]; then
+		re '^rediss?://[A-Za-z0-9_:/@.?&=%+-]+$' "$VK_URL_OPT" || die multi_ext_url_bad --valkey-url redis
+		case "$VK_URL_OPT" in rediss://*) ;; *) warn multi_ext_vk_tls ;; esac
+	fi
+	[ -z "$DATA_CA_OPT" ] || [ -r "$DATA_CA_OPT" ] || die multi_ext_ca "$DATA_CA_OPT"
+	[ "$MODE" != docker ] || die multi_ext_docker
+}
+
+# multi_record_external: after the panel files exist, before it starts.
+multi_record_external() {
+	[ -n "$DB_URL_OPT$VK_URL_OPT" ] || return 0
+	multi_set ROLE primary
+	multi_set EXTERNAL 1
+	if [ -n "$DATA_CA_OPT" ]; then
+		install -d -m 0750 -o root -g akari "$SHARED_DIR"
+		install -m 0644 "$DATA_CA_OPT" "$SHARED_CA"
+	fi
+	case "$VK_URL_OPT" in
+	rediss://*)
+		install -d -m 0755 /etc/systemd/system/akari-panel.service.d
+		printf '# Written by the Akari installer: Valkey is reached over TLS.\n[Service]\nEnvironment=SSL_CERT_FILE=%s\n' "$SHARED_CA" \
+			>/etc/systemd/system/akari-panel.service.d/shared-data.conf
+		[ -f "$SHARED_CA" ] || rm -f /etc/systemd/system/akari-panel.service.d/shared-data.conf
+		run systemctl daemon-reload
+		;;
+	esac
+}
+
+# --- upgrade --rolling --------------------------------------------------------------------------
+
+# multi_upgrade_precheck: before anything is downloaded or changed.
+multi_upgrade_precheck() {
+	_mx_role=$(multi_role)
+	[ "$_mx_role" != single ] || return 0
+	[ "$ROLLING" != 1 ] || return 0
+	[ "$_mx_role" != joined ] || die multi_upgrade_joined "$_mx_role"
+	count_others
+	if [ "$MX_PEERS_OK" != 1 ] || [ "$MX_OTHERS" -gt 0 ]; then
+		die multi_upgrade_peers "$([ "$MX_PEERS_OK" = 1 ] && echo "$MX_OTHERS" || echo '?')"
+	fi
+}
+
+# multi_rolling_check: the release's schema flag against the instances that
+# are online (BUNDLE is the target release's deploy bundle).
+multi_rolling_check() {
+	[ "$ROLLING" = 1 ] || return 0
+	[ "$(multi_role)" != single ] || return 0
+	note multi_roll_order
+	_mx_compat=$(kv_get "$BUNDLE/deploy/release.meta" schema_compat_previous)
+	if [ "$_mx_compat" = true ]; then
+		note multi_roll_compat
+		return 0
+	fi
+	_mx_rolled=$( (vk_cmd "GET $ROLLED_KEY" || true) | tr -d '\r' | sed -n 3p)
+	if [ "$_mx_rolled" = "$TAG" ]; then
+		return 0
+	fi
+	count_others
+	[ "$FORCE" = 1 ] && return 0
+	[ "$MX_PEERS_OK" = 1 ] || die multi_roll_unknown
+	[ "$MX_OTHERS" -eq 0 ] || die multi_roll_incompat "${_mx_compat:-unknown}" "$MX_OTHERS"
+}
+
+# multi_after_upgrade: the first instance upgraded to an incompatible schema
+# leaves a marker (a week) in the shared Valkey: the others may follow.
+multi_after_upgrade() {
+	[ "$ROLLING" = 1 ] || return 0
+	[ "$(multi_role)" != single ] || return 0
+	[ "$(kv_get "$BUNDLE/deploy/release.meta" schema_compat_previous)" != true ] || return 0
+	# two +OK: the AUTH and the SET
+	(vk_cmd "SET $ROLLED_KEY $TAG EX 604800" || true) | awk '/^\+OK/ { n++ } END { exit n < 2 }' || return 0
+	note multi_roll_done_marker "$TAG"
+}
+
+# --- backups, status, info, uninstall ---------------------------------------------------------------
+
+# multi_backup_skip: this instance does not own the database.
+multi_backup_skip() {
+	[ "$(multi_role)" = joined ] || [ "$(multi_get EXTERNAL)" = 1 ]
+}
+multi_backup_guard() {
+	if [ "$(multi_role)" = joined ]; then die multi_joined_backup; fi
+	if [ "$(multi_get EXTERNAL)" = 1 ]; then die multi_ext_backup; fi
+}
+status_units() {
+	if [ "$(multi_role)" = joined ]; then
+		echo akari-panel
+	else
+		echo akari-panel akari-valkey postgresql@18-main caddy
+	fi
+}
+
+multi_info() {
+	_mx_role=$(multi_role)
+	[ "$_mx_role" != single ] || return 0
+	printf '\n%s\n' "$(msg multi_info_role "$_mx_role")"
+	if [ "$_mx_role" = primary ] && [ "$(multi_get EXTERNAL)" != 1 ]; then
+		printf '%s\n' "$(msg multi_info_data_primary "$(multi_get LISTEN)" "$(multi_get PG_PORT)" "$(multi_get LISTEN)" "$(multi_get VALKEY_PORT)" "$(multi_get ALLOW)")"
+	else
+		_mx_d=$(toml_get database_url)
+		_mx_v=$(toml_get valkey_url)
+		printf '%s\n' "$(msg multi_info_data_ext "$(url_part "$_mx_d" host)" "$(url_part "$_mx_d" port)" "$(url_part "$_mx_v" host)" "$(url_part "$_mx_v" port)")"
+	fi
+	printf '\n'
+	if _mx_l=$(peers_list); then
+		printf '%s\n' "$(msg multi_info_peers)"
+		printf '%s\n' "$_mx_l" | while read -r _mx_a _mx_b _mx_c _mx_d; do
+			[ -z "$_mx_a" ] || printf '%s\n' "$(msg multi_info_peer_row "$_mx_a" "$_mx_b" "$_mx_c" "$_mx_d")"
+		done
+	else
+		printf '%s\n' "$(msg multi_info_nopeers)"
+	fi
+}
+
+# multi_uninstall_guard: instance 1 does not go while others use its database.
+multi_uninstall_guard() {
+	[ "$(multi_role)" = primary ] || return 0
+	[ "$(multi_get EXTERNAL)" != 1 ] || return 0
+	count_others
+	[ "$FORCE" = 1 ] && return 0
+	[ "$MX_OTHERS" -eq 0 ] || die multi_uninstall_primary "$MX_OTHERS"
+}
+
+# multi_unexpose: undo expose-data (the firewall rules, the TLS and listen
+# settings of PostgreSQL, the unit drop-ins) and forget the state. PostgreSQL
+# is back on loopback only before the services are removed.
+multi_unexpose() {
+	[ -f "$MULTI_ENV" ] || return 0
+	if [ -f /etc/systemd/system/akari-data-firewall.service ]; then
+		run systemctl disable --now akari-data-firewall.service || true
+		rm -f /etc/systemd/system/akari-data-firewall.service "$FIREWALL_NFT"
+	fi
+	if [ -f "$PG_CONF_DIR/conf.d/90-akari-expose.conf" ]; then
+		rm -f "$PG_CONF_DIR/conf.d/90-akari-expose.conf"
+		rm -rf "$PG_CONF_DIR/akari-tls" /etc/systemd/system/postgresql@18-main.service.d/akari-expose.conf
+		sed -i '/^# BEGIN akari-expose-data/,/^# END akari-expose-data/d' "$PG_CONF_DIR/pg_hba.conf"
+		run systemctl restart postgresql@18-main || true
+	fi
+	rm -rf /etc/systemd/system/akari-valkey.service.d /etc/systemd/system/akari-panel.service.d/shared-data.conf
+	rm -rf "$DATA_CA_DIR" "$SHARED_DIR"
+	rm -f "$MULTI_ENV"
+	run systemctl daemon-reload
 }
 
 # --- arguments, main ---------------------------------------------------------------------
@@ -2568,6 +3711,8 @@ parse_args() {
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		install | upgrade | uninstall | migrate | backup | status | info) CMD=$1 ;;
+		expose-data | expose-web | join-bundle | lb-config | set-trusted-proxies) CMD=$1 ;;
+		caddy | haproxy | nginx) LB_KIND=$1 ;;
 		-y | --yes) YES=1 ;;
 		--mode) MODE=$2 MODE_GIVEN=1 && shift ;;
 		--domain) DOMAIN=$2 DOMAIN_GIVEN=1 && shift ;;
@@ -2596,12 +3741,30 @@ parse_args() {
 		--purge) PURGE=1 ;;
 		--confirm) CONFIRM_PURGE=$2 && shift ;;
 		--force) FORCE=1 ;;
+		--allow) ALLOW_OPT=$2 && shift ;;
+		--listen) LISTEN_OPT=$2 && shift ;;
+		--no-firewall) NO_FIREWALL=1 ;;
+		--join) JOIN_FILE=$2 CMD=join && shift ;;
+		--passphrase-file) PASS_FILE=$2 && shift ;;
+		--instances) INSTANCES_OPT=$2 && shift ;;
+		--lb-address) LB_ADDR_OPT=$2 && shift ;;
+		--trusted-proxies) TRUSTED_OPT=$2 && shift ;;
+		--rolling) ROLLING=1 ;;
+		--database-url) DB_URL_OPT=$2 && shift ;;
+		--valkey-url) VK_URL_OPT=$2 && shift ;;
+		--data-ca) DATA_CA_OPT=$2 && shift ;;
 		--lang) LANG_OPT=$2 && shift ;;
 		-h | --help)
 			usage
 			exit 0
 			;;
-		*) die unknown_option_help "$1" ;;
+		*)
+			if [ "$CMD" = set-trusted-proxies ] && [ -z "$TRUSTED_OPT" ]; then
+				TRUSTED_OPT=$1
+			else
+				die unknown_option_help "$1"
+			fi
+			;;
 		esac
 		shift
 	done
@@ -2647,7 +3810,7 @@ resolve_lang() {
 become_root() {
 	[ "$(id -u)" -ne 0 ] || return 0
 	have sudo || die run_as_root_or_install_sudo
-	keep='AKARI_MODE,AKARI_DOMAIN,AKARI_PUBLIC_IP,AKARI_EMAIL,AKARI_ADMIN,AKARI_ADMIN_PASSWORD,AKARI_NODE_ADDRESS,AKARI_VERSION,AKARI_DOCKER_DIR,AKARI_RELEASES_URL,AKARI_COSIGN_KEY,AKARI_SOURCE_DIR,AKARI_BACKUP_AGENT_RELEASES,AKARI_LANG,AKARI_NO_BANNER,LANG,LC_ALL,LC_MESSAGES'
+	keep='AKARI_JOIN_PASSPHRASE,AKARI_MODE,AKARI_DOMAIN,AKARI_PUBLIC_IP,AKARI_EMAIL,AKARI_ADMIN,AKARI_ADMIN_PASSWORD,AKARI_NODE_ADDRESS,AKARI_VERSION,AKARI_DOCKER_DIR,AKARI_RELEASES_URL,AKARI_COSIGN_KEY,AKARI_SOURCE_DIR,AKARI_BACKUP_AGENT_RELEASES,AKARI_LANG,AKARI_NO_BANNER,LANG,LC_ALL,LC_MESSAGES'
 	if [ -n "$SELF_FILE" ]; then
 		exec sudo --preserve-env="$keep" sh "$SELF_FILE" "$@"
 	fi
@@ -2726,6 +3889,12 @@ main() {
 	backup) cmd_backup ;;
 	status) cmd_status ;;
 	info) cmd_info ;;
+	expose-data) cmd_expose_data ;;
+	expose-web) cmd_expose_web ;;
+	join-bundle) cmd_join_bundle ;;
+	join) cmd_join ;;
+	lb-config) cmd_lb_config ;;
+	set-trusted-proxies) cmd_set_trusted_proxies ;;
 	esac
 	step_end
 }
@@ -2965,6 +4134,20 @@ msg_zh() {
   install.sh uninstall [--purge [--confirm purge]]
   install.sh status | info
 
+多实例（docs/DEPLOY.md 第 4 节）：
+  akari-ctl expose-data --allow CIDR[,CIDR] [--listen IP] [--no-firewall]
+                                       实例 1：PostgreSQL + Valkey 监听私有地址，TLS，防火墙
+  akari-ctl expose-web --listen IP     web / ask 端口监听私有地址（供负载均衡器访问）
+  akari-ctl join-bundle [--out FILE] [--passphrase-file F]
+                                       为新实例生成一个加密文件；口令只显示一次
+  install.sh --join FILE [--listen IP] [--trusted-proxies A,B] [--passphrase-file F]
+                                       用加入包安装一个实例（AKARI_JOIN_PASSPHRASE 或提示）
+  akari-ctl lb-config caddy|haproxy|nginx --instances A[:WEB[:GRPC]],B,... [--domain D] [--lb-address IP]
+  akari-ctl set-trusted-proxies A[,B,...]
+  akari-ctl upgrade --rolling          多实例逐台升级
+  install.sh --database-url URL --valkey-url URL [--data-ca FILE]
+                                       使用自己运维的 PostgreSQL / Valkey（本机不装）
+
 界面默认简体中文，需要 UTF-8 终端（SSH 客户端须设为 UTF-8）。本机缺少 zh_CN.UTF-8 时，
 安装器会为本次运行安装它（不改系统默认语言）；装不上就自动改用英文。--lang en 直接用英文。' ;;
 	help_options_heading) m '选项（括号内为环境变量）' ;;
@@ -2989,6 +4172,100 @@ msg_zh() {
 	help_testing_heading) m '测试 / 私有镜像' ;;
 	help_testing) m '  AKARI_RELEASES_URL（发布基址）、AKARI_COSIGN_KEY（用 cosign 公钥代替 keyless 发布身份验证）、
   AKARI_SOURCE_DIR（部署文件取自源码目录）、AKARI_NO_BANNER=1（不显示横幅）。' ;;
+	multi_need_bare) m '多实例只支持裸机安装（本机是 %s 模式）' ;;
+	multi_need_root_install) m '没有找到安装（先运行安装）' ;;
+	multi_allow_missing) m '用 --allow <CIDR[,CIDR…]> 指定允许连接数据库的内网网段，例如 --allow 10.0.0.0/24' ;;
+	multi_allow_bad) m '网段无效：%s（IPv4，形如 10.0.0.0/24）' ;;
+	multi_allow_public) m '拒绝 %s：不是私有网段。PostgreSQL 与 Valkey 只允许暴露给内网（10/8、172.16/12、192.168/16、100.64/10），公网上的数据库会被扫描和爆破；跨机房请先用 WireGuard 等建立私网' ;;
+	multi_listen_bad) m '监听地址无效或不是私有地址：%s' ;;
+	multi_listen_none) m '本机没有位于 --allow 网段内的私有 IPv4 地址；用 --listen <地址> 指定' ;;
+	multi_listen_many) m '本机有多个地址位于 --allow 网段内（%s）；用 --listen <地址> 选择一个' ;;
+	multi_external_services) m '本机的 PostgreSQL / Valkey 是外部服务（--database-url / --valkey-url），没有可暴露的本地数据服务' ;;
+	multi_joined_no) m '这是加入的实例（joined），数据服务在实例 1 上；该命令只能在实例 1 上运行' ;;
+	multi_expose_start) m '把 PostgreSQL 与 Valkey 暴露给内网 %s（监听 %s，TLS）' ;;
+	multi_expose_ca) m '生成数据服务的私有 CA 与服务器证书（SAN：%s）' ;;
+	multi_expose_fw) m '防火墙：端口 %s 只允许 %s' ;;
+	multi_expose_nofw) m '未配置防火墙（--no-firewall）：仅靠监听地址、pg_hba 和密码保护 Valkey；请自行用云防火墙/安全组限制 %s' ;;
+	multi_expose_nonft) m '无法安装 nftables（见日志）；确认没有更好的办法后可加 --no-firewall' ;;
+	multi_expose_pg) m 'PostgreSQL：监听 %s，仅 TLS（hostssl），pg_hba 限定 %s' ;;
+	multi_expose_vk) m 'Valkey：仅 TLS 端口 %s（明文端口关闭），密码保留' ;;
+	multi_expose_web) m '面板的 web / ask 端口改为监听 %s（负载均衡器经内网访问）' ;;
+	multi_expose_pgfail) m 'PostgreSQL 重启后未就绪（journalctl -u postgresql@18-main）' ;;
+	multi_expose_vkfail) m 'Valkey 重启后未经 TLS 应答（journalctl -u akari-valkey；上游构建不含 TLS？）' ;;
+	multi_expose_panelfail) m '面板重启后未通过健康检查（journalctl -u akari-panel）' ;;
+	multi_expose_done) m '数据服务已暴露。下一步：akari-ctl join-bundle 生成加入包；在其他机器上运行 install.sh --join <文件>' ;;
+	multi_bundle_need_expose) m '还没有暴露数据服务：先运行 akari-ctl expose-data --allow <CIDR>（或使用外部 PostgreSQL / Valkey 安装）' ;;
+	multi_bundle_need_age) m '安装 age（加密加入包）' ;;
+	multi_bundle_done) m '加入包已写入 %s（0600，%s 小时内有效）' ;;
+	multi_bundle_next) m '在新机器上：install.sh --join %s（口令经提示输入，或环境变量 AKARI_JOIN_PASSPHRASE / --passphrase-file）。成功后新机器会删除这份加入包；也请删除实例 1 上的原件。' ;;
+	multi_join_nofile) m '用 --join <加入包文件>' ;;
+	multi_join_exists) m '本机已有安装；加入只能在全新的机器上进行' ;;
+	multi_join_nopass) m '需要加入口令：交互输入、AKARI_JOIN_PASSPHRASE 或 --passphrase-file' ;;
+	multi_join_pass_ask) m '加入口令（实例 1 上 join-bundle 打印的 AGE-SECRET-KEY-…）' ;;
+	multi_join_pass_bad) m '口令格式不对（应为 AGE-SECRET-KEY-1…）' ;;
+	multi_join_decrypt) m '无法解密加入包：口令不对或文件已损坏' ;;
+	multi_join_format) m '加入包内容不合法（%s）' ;;
+	multi_join_expired) m '加入包已过期（生成于 %s 小时前，有效期 %s 小时）：在实例 1 上重新运行 akari-ctl join-bundle' ;;
+	multi_join_future) m '加入包的生成时间在未来（本机时钟不准？）' ;;
+	multi_join_version) m '加入包来自版本 %s，与 --version %s 不同；所有实例必须同一版本' ;;
+	multi_join_start) m '加入多实例部署：版本 %s，监听 %s' ;;
+	multi_join_probe) m '检查到 %s 的连通性与 TLS（证书由加入包里的 CA 验证）' ;;
+	multi_join_probe_fail) m '无法连接 %s 或 TLS 验证失败：确认两台机器在同一内网、实例 1 的 --allow 包含本机地址 %s' ;;
+	multi_join_noroute) m '无法确定本机用于访问数据库的内网地址；用 --listen <地址> 指定' ;;
+	multi_join_start_panel) m '启动面板（迁移已由实例 1 完成）' ;;
+	multi_join_unhealthy) m '面板未通过健康检查（journalctl -u akari-panel）。加入包没有删除，可修正后重试' ;;
+	multi_join_done) m '已加入。本实例的 web 在 %s:%s、gRPC 在 %s；把它加入负载均衡器（akari-ctl lb-config），并在本机运行 akari-ctl set-trusted-proxies <负载均衡器地址>' ;;
+	multi_join_rm) m '已删除本机的加入包副本 %s。实例 1 上的原件和口令也请删除/作废（它内含 CA 私钥与主密钥）。' ;;
+	multi_join_notrusted) m '尚未设置受信任的代理：客户端 IP 现在是负载均衡器的地址（登录限速、审计会受影响）。运行 akari-ctl set-trusted-proxies <负载均衡器地址>' ;;
+	multi_ext_url_bad) m '%s 无效（须为 %s://…，且只含 URL 安全字符）' ;;
+	multi_ext_db_tls) m '--database-url 没有 sslmode=verify-full（或 verify-ca）：数据库连接将不验证服务器证书' ;;
+	multi_ext_vk_tls) m '--valkey-url 不是 rediss://：Valkey 连接将是明文' ;;
+	multi_ext_docker) m '--database-url / --valkey-url 目前只支持裸机安装（--mode bare）' ;;
+	multi_ext_ca) m '--data-ca 文件无法读取：%s' ;;
+	multi_ext_backup) m '数据库是外部服务：备份请用服务商的工具（akari-ctl backup 只备份本机数据库）' ;;
+	multi_joined_backup) m '这是加入的实例：备份只在拥有数据库的实例上做（实例 1）' ;;
+	multi_upgrade_joined) m '这是多实例部署的一员（%s）：升级必须逐台进行，请用 akari-ctl upgrade --rolling。顺序：先升级实例 1（拥有数据库），再逐台升级其他实例；迁移只能前进，在第一台升级的实例上执行' ;;
+	multi_upgrade_peers) m '还有其他面板实例在线（%s 个）：用 akari-ctl upgrade --rolling 逐台升级' ;;
+	multi_roll_order) m '滚动升级：一次一台，实例 1（拥有数据库）先升；迁移只能前进，在第一台升级的实例上运行' ;;
+	multi_roll_compat) m '本版本的数据库结构与上一版本兼容（schema_compat_previous=true）：其他实例可以继续运行旧版本，逐台升级即可' ;;
+	multi_roll_incompat) m '本版本的数据库结构与上一版本不兼容（schema_compat_previous=%s）：先停止所有其他实例（systemctl stop akari-panel），升级本机，再逐台升级并启动其他实例。仍在线的其他实例：%s' ;;
+	multi_roll_unknown) m '无法读取在线实例列表（Valkey）：不能确认其他实例已停止；确认后加 --force' ;;
+	multi_roll_done_marker) m '已在共享的 Valkey 记下"数据库结构已升级到 %s"，其他实例升级时据此放行' ;;
+	multi_uninstall_primary) m '还有其他面板实例在使用本机的数据库（%s 个在线）：先卸载/停止它们' ;;
+	multi_trusted_none) m '用 akari-ctl set-trusted-proxies <地址[,地址…]>' ;;
+	multi_trusted_bad) m '代理地址无效或范围过大：%s（IP 或 CIDR；IPv4 前缀至少 /8，不接受 0.0.0.0/0）' ;;
+	multi_trusted_done) m 'web.trusted_proxies = %s，面板已重启' ;;
+	multi_lb_kind) m '用 akari-ctl lb-config caddy|haproxy|nginx --instances <地址[:web端口[:gRPC端口]],…>' ;;
+	multi_lb_inst_bad) m '实例地址无效：%s' ;;
+	multi_lb_domain) m '用 --domain <主域名>（负载均衡器对外的域名）' ;;
+	multi_cannot_generate_the_data_ca_key) m '无法生成数据 CA 私钥' ;;
+	multi_cannot_generate_the_data_ca_certificate) m '无法生成数据 CA 证书' ;;
+	multi_cannot_generate_the_server_key) m '无法生成服务器私钥' ;;
+	multi_cannot_generate_the_certificate_request) m '无法生成证书请求' ;;
+	multi_cannot_sign_the_server_certificate) m '无法签发服务器证书' ;;
+	multi_cannot_load_the_nftables_rules_see) m '无法加载 nftables 规则（见日志）' ;;
+	multi_no_postgresql_18_configuration_directory) m '找不到 PostgreSQL 18 配置目录 %s' ;;
+	multi_no_valkey_password_in_paneltoml) m 'panel.toml 里没有 Valkey 密码' ;;
+	multi_the_data_directory_has_no) m '数据目录里没有 %s' ;;
+	multi_cannot_generate_the_join_passphrase) m '无法生成加入口令' ;;
+	multi_cannot_pack_the_join_bundle) m '加入包打包失败' ;;
+	multi_encrypting_the_join_bundle_failed) m '加入包加密失败' ;;
+	multi_cannot_read) m '无法读取 %s' ;;
+	multi_downloading_and_verifying_akari) m '下载并验证 akari %s（%s）' ;;
+	multi_configuration_check_failed_akari_config_check) m '配置校验失败（akari config check，见日志）' ;;
+	multi_the_panel_is_not_healthy_after) m '面板重启后未通过健康检查（journalctl -u akari-panel）' ;;
+	multi_bundle_secret) m '加入口令（只显示这一次，不写入日志；与加入包分开传递，例如换一个渠道）' ;;
+	multi_secret_line) m '%s' ;;
+	multi_lb_head1) m '负载均衡器配置（akari-ctl lb-config %s 生成）。网页：HTTPS 反向代理 + /healthz 健康检查；gRPC：L4 TCP 直通（节点的双向 TLS 必须原样到达面板，均衡器不能终止它）。' ;;
+	multi_lb_head2) m '每个实例的 panel.toml 的 web.trusted_proxies 必须包含均衡器地址，否则登录限速与审计里的客户端 IP 都是均衡器的地址。在每个实例上运行：' ;;
+	multi_lb_head3) m '节点通信域名（系统设置）要解析到均衡器的 gRPC 端口，且不能经过 Cloudflare 代理。' ;;
+	multi_info_role) m '角色: %s' ;;
+	multi_info_data_primary) m '共享数据服务: PostgreSQL %s:%s (TLS)，Valkey %s:%s (TLS)，允许 %s' ;;
+	multi_info_data_ext) m '共享数据服务: PostgreSQL %s:%s，Valkey %s:%s' ;;
+	multi_info_peers) m '在线实例（Valkey 心跳）:' ;;
+	multi_info_nopeers) m '在线实例（Valkey 心跳）: 无法读取实例列表' ;;
+	multi_info_peer_row) m '  %s  版本 %s  %s  agent 会话 %s' ;;
+	multi_no_backup_not_database_owner) m '本实例不拥有数据库，跳过备份（备份在实例 1 上做）' ;;
 	*) m "$1" ;;
 	esac
 }
@@ -3223,6 +4500,20 @@ msg_en() {
   install.sh uninstall [--purge [--confirm purge]]
   install.sh status | info
 
+Several panel instances (docs/DEPLOY.md, section 4):
+  akari-ctl expose-data --allow CIDR[,CIDR] [--listen IP] [--no-firewall]
+                                       instance 1: PostgreSQL + Valkey on the private address, TLS, firewall
+  akari-ctl expose-web --listen IP     web / ask ports on the private address (a load balancer reaches them)
+  akari-ctl join-bundle [--out FILE] [--passphrase-file F]
+                                       one encrypted file for a new instance; prints the passphrase once
+  install.sh --join FILE [--listen IP] [--trusted-proxies A,B] [--passphrase-file F]
+                                       install an instance from the bundle (AKARI_JOIN_PASSPHRASE or a prompt)
+  akari-ctl lb-config caddy|haproxy|nginx --instances A[:WEB[:GRPC]],B,... [--domain D] [--lb-address IP]
+  akari-ctl set-trusted-proxies A[,B,...]
+  akari-ctl upgrade --rolling          upgrade one instance of a multi-instance deployment
+  install.sh --database-url URL --valkey-url URL [--data-ca FILE]
+                                       install with PostgreSQL / Valkey you run yourself (nothing local)
+
 The interface is Simplified Chinese by default and needs a UTF-8 terminal (set your SSH
 client to UTF-8). If zh_CN.UTF-8 is missing the installer installs it for this run (the
 system default locale is not changed); if that fails the run is English. --lang en = English.' ;;
@@ -3249,6 +4540,100 @@ system default locale is not changed); if that fails the run is English. --lang 
 	help_testing) m '  AKARI_RELEASES_URL (release base), AKARI_COSIGN_KEY (verify with a cosign public key instead
   of the keyless release identity), AKARI_SOURCE_DIR (deploy files from a source tree),
   AKARI_NO_BANNER=1 (no banner).' ;;
+	multi_need_bare) m 'several instances need a bare-metal installation (this one is %s)' ;;
+	multi_need_root_install) m 'no installation found (install first)' ;;
+	multi_allow_missing) m 'pass --allow <CIDR[,CIDR...]> with the private networks that may reach the database, e.g. --allow 10.0.0.0/24' ;;
+	multi_allow_bad) m 'invalid network: %s (IPv4, like 10.0.0.0/24)' ;;
+	multi_allow_public) m 'refusing %s: not a private network. PostgreSQL and Valkey may only be exposed to private networks (10/8, 172.16/12, 192.168/16, 100.64/10): a database on a public address gets scanned and attacked; across sites build a private network first (WireGuard)' ;;
+	multi_listen_bad) m 'invalid or non-private listen address: %s' ;;
+	multi_listen_none) m 'this machine has no private IPv4 address inside the --allow networks; pass --listen <address>' ;;
+	multi_listen_many) m 'several addresses of this machine are inside the --allow networks (%s); choose one with --listen <address>' ;;
+	multi_external_services) m 'this installation uses external PostgreSQL / Valkey (--database-url / --valkey-url); there are no local data services to expose' ;;
+	multi_joined_no) m 'this is a joined instance; the data services live on instance 1 and this command runs there only' ;;
+	multi_expose_start) m 'exposing PostgreSQL and Valkey to %s (listening on %s, TLS)' ;;
+	multi_expose_ca) m 'making the private CA and server certificate of the data services (SAN: %s)' ;;
+	multi_expose_fw) m 'firewall: ports %s only from %s' ;;
+	multi_expose_nofw) m 'no firewall set up (--no-firewall): Valkey is protected by its bind address, TLS and password only; restrict %s with your own firewall / security group' ;;
+	multi_expose_nonft) m 'cannot install nftables (see the log); add --no-firewall only if you protect the ports another way' ;;
+	multi_expose_pg) m 'PostgreSQL: listening on %s, TLS only (hostssl), pg_hba limited to %s' ;;
+	multi_expose_vk) m 'Valkey: TLS port %s only (the plain port is off), password kept' ;;
+	multi_expose_web) m 'the panel web / ask ports now listen on %s (the load balancer reaches them over the private network)' ;;
+	multi_expose_pgfail) m 'PostgreSQL is not ready after the restart (journalctl -u postgresql@18-main)' ;;
+	multi_expose_vkfail) m 'Valkey does not answer over TLS after the restart (journalctl -u akari-valkey; an upstream build without TLS?)' ;;
+	multi_expose_panelfail) m 'the panel is not healthy after the restart (journalctl -u akari-panel)' ;;
+	multi_expose_done) m 'data services exposed. Next: akari-ctl join-bundle makes the join bundle; run install.sh --join <file> on the other machines' ;;
+	multi_bundle_need_expose) m 'the data services are not exposed yet: run akari-ctl expose-data --allow <CIDR> first (or install with external PostgreSQL / Valkey)' ;;
+	multi_bundle_need_age) m 'installing age (encrypts the join bundle)' ;;
+	multi_bundle_done) m 'join bundle written to %s (0600, valid for %s hours)' ;;
+	multi_bundle_next) m 'on the new machine: install.sh --join %s (the passphrase is prompted for, or taken from AKARI_JOIN_PASSPHRASE / --passphrase-file). The new machine deletes its copy after a successful join; delete the original on instance 1 too.' ;;
+	multi_join_nofile) m 'pass --join <join bundle file>' ;;
+	multi_join_exists) m 'this machine already has an installation; joining is for a fresh machine' ;;
+	multi_join_nopass) m 'the join passphrase is needed: type it, or set AKARI_JOIN_PASSPHRASE / --passphrase-file' ;;
+	multi_join_pass_ask) m 'join passphrase (the AGE-SECRET-KEY-... printed by join-bundle on instance 1)' ;;
+	multi_join_pass_bad) m 'malformed passphrase (expected AGE-SECRET-KEY-1...)' ;;
+	multi_join_decrypt) m 'cannot decrypt the join bundle: wrong passphrase or damaged file' ;;
+	multi_join_format) m 'the join bundle is malformed (%s)' ;;
+	multi_join_expired) m 'the join bundle has expired (made %s hours ago, valid for %s hours): run akari-ctl join-bundle on instance 1 again' ;;
+	multi_join_future) m 'the join bundle was made in the future (is this clock wrong?)' ;;
+	multi_join_version) m 'the bundle is from version %s, not --version %s; all instances must run the same version' ;;
+	multi_join_start) m 'joining the multi-instance deployment: version %s, listening on %s' ;;
+	multi_join_probe) m 'checking reachability and TLS of %s (the certificate is verified against the CA in the bundle)' ;;
+	multi_join_probe_fail) m 'cannot reach %s or its TLS check failed: make sure both machines share the private network and instance 1 allows this address (%s) in --allow' ;;
+	multi_join_noroute) m 'cannot determine this machine'\''s private address towards the database; pass --listen <address>' ;;
+	multi_join_start_panel) m 'starting the panel (the schema is already migrated by instance 1)' ;;
+	multi_join_unhealthy) m 'the panel did not become healthy (journalctl -u akari-panel). The bundle was kept; fix the problem and retry' ;;
+	multi_join_done) m 'joined. This instance serves web on %s:%s and gRPC on %s; add it to the load balancer (akari-ctl lb-config) and run akari-ctl set-trusted-proxies <load balancer address> here' ;;
+	multi_join_rm) m 'deleted this machine'\''s copy of the bundle %s. Delete the original on instance 1 and forget the passphrase too (it holds the CA key and the master key).' ;;
+	multi_join_notrusted) m 'no trusted proxy set yet: the client address is the load balancer'\''s (login rate limits and the audit log suffer). Run akari-ctl set-trusted-proxies <load balancer address>' ;;
+	multi_ext_url_bad) m 'invalid %s (must be %s://... with URL-safe characters only)' ;;
+	multi_ext_db_tls) m '--database-url has no sslmode=verify-full (or verify-ca): the database connection would not verify the server certificate' ;;
+	multi_ext_vk_tls) m '--valkey-url is not rediss://: the Valkey connection would be plain text' ;;
+	multi_ext_docker) m '--database-url / --valkey-url need a bare-metal installation (--mode bare) for now' ;;
+	multi_ext_ca) m 'cannot read the --data-ca file: %s' ;;
+	multi_ext_backup) m 'the database is external: back it up with the provider'\''s tools (akari-ctl backup covers the local database only)' ;;
+	multi_joined_backup) m 'this is a joined instance: back up on the instance that owns the database (instance 1)' ;;
+	multi_upgrade_joined) m 'this instance is part of a multi-instance deployment (%s): upgrade one instance at a time with akari-ctl upgrade --rolling. Order: instance 1 (the database owner) first, then the others one by one; migrations are forward-only and run on the first instance upgraded' ;;
+	multi_upgrade_peers) m 'other panel instances are online (%s): upgrade one at a time with akari-ctl upgrade --rolling' ;;
+	multi_roll_order) m 'rolling upgrade: one instance at a time, instance 1 (the database owner) first; migrations are forward-only and run on the first instance upgraded' ;;
+	multi_roll_compat) m 'this release'\''s schema is compatible with the previous release (schema_compat_previous=true): the other instances may keep running the old version; upgrade them one by one' ;;
+	multi_roll_incompat) m 'this release'\''s schema is NOT compatible with the previous release (schema_compat_previous=%s): stop every other instance first (systemctl stop akari-panel), upgrade this one, then upgrade and start the others one by one. Other instances still online: %s' ;;
+	multi_roll_unknown) m 'cannot read the list of online instances (Valkey): cannot confirm the others are stopped; add --force once you have checked' ;;
+	multi_roll_done_marker) m 'recorded "schema upgraded to %s" in the shared Valkey; the other instances'\'' upgrades are allowed because of it' ;;
+	multi_uninstall_primary) m 'other panel instances use this machine'\''s database (%s online): remove or stop them first' ;;
+	multi_trusted_none) m 'use akari-ctl set-trusted-proxies <address[,address...]>' ;;
+	multi_trusted_bad) m 'invalid or too wide proxy address: %s (an IP or CIDR; IPv4 prefix /8 or longer, never 0.0.0.0/0)' ;;
+	multi_trusted_done) m 'web.trusted_proxies = %s; the panel was restarted' ;;
+	multi_lb_kind) m 'use akari-ctl lb-config caddy|haproxy|nginx --instances <address[:web-port[:grpc-port]],...>' ;;
+	multi_lb_inst_bad) m 'invalid instance address: %s' ;;
+	multi_lb_domain) m 'pass --domain <main domain> (the name the load balancer serves)' ;;
+	multi_cannot_generate_the_data_ca_key) m 'cannot generate the data CA key' ;;
+	multi_cannot_generate_the_data_ca_certificate) m 'cannot generate the data CA certificate' ;;
+	multi_cannot_generate_the_server_key) m 'cannot generate the server key' ;;
+	multi_cannot_generate_the_certificate_request) m 'cannot generate the certificate request' ;;
+	multi_cannot_sign_the_server_certificate) m 'cannot sign the server certificate' ;;
+	multi_cannot_load_the_nftables_rules_see) m 'cannot load the nftables rules (see the log)' ;;
+	multi_no_postgresql_18_configuration_directory) m 'no PostgreSQL 18 configuration directory %s' ;;
+	multi_no_valkey_password_in_paneltoml) m 'no Valkey password in panel.toml' ;;
+	multi_the_data_directory_has_no) m 'the data directory has no %s' ;;
+	multi_cannot_generate_the_join_passphrase) m 'cannot generate the join passphrase' ;;
+	multi_cannot_pack_the_join_bundle) m 'cannot pack the join bundle' ;;
+	multi_encrypting_the_join_bundle_failed) m 'encrypting the join bundle failed' ;;
+	multi_cannot_read) m 'cannot read %s' ;;
+	multi_downloading_and_verifying_akari) m 'downloading and verifying akari %s (%s)' ;;
+	multi_configuration_check_failed_akari_config_check) m 'configuration check failed (akari config check, see the log)' ;;
+	multi_the_panel_is_not_healthy_after) m 'the panel is not healthy after the restart (journalctl -u akari-panel)' ;;
+	multi_bundle_secret) m 'join passphrase (shown only this once, not logged; hand it over separately from the file, e.g. another channel)' ;;
+	multi_secret_line) m '%s' ;;
+	multi_lb_head1) m 'Load balancer configuration (made by akari-ctl lb-config %s). Web: HTTPS reverse proxy with a /healthz health check. gRPC: L4 TCP pass-through (the agents'\'' mutual TLS must reach the panel untouched; never terminate it here).' ;;
+	multi_lb_head2) m 'web.trusted_proxies in every instance'\''s panel.toml must include the load balancer, or the login rate limits and the audit log see the balancer as the client. Run on every instance:' ;;
+	multi_lb_head3) m 'The node communication domain (系统设置) must resolve to the balancer'\''s gRPC port and must not go through a Cloudflare proxy.' ;;
+	multi_info_role) m 'role: %s' ;;
+	multi_info_data_primary) m 'shared services: PostgreSQL %s:%s (TLS), Valkey %s:%s (TLS), allow %s' ;;
+	multi_info_data_ext) m 'shared services: PostgreSQL %s:%s, Valkey %s:%s' ;;
+	multi_info_peers) m 'instances seen in Valkey:' ;;
+	multi_info_nopeers) m 'instances seen in Valkey: cannot read the instance list' ;;
+	multi_info_peer_row) m '  %s  version %s  %s  agent sessions %s' ;;
+	multi_no_backup_not_database_owner) m 'this instance does not own the database: no backup (back up on instance 1)' ;;
 	*) m "$1" ;;
 	esac
 }

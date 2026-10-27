@@ -5,6 +5,7 @@
 # workflow's keyless identity.
 #
 #   make-release.sh OUT TAG [--binary FILE] [--image REF] [--broken] [--latest]
+#                   [--wrapper REAL_BINARY] [--schema-compat true|false]
 #
 #   --binary FILE  the panel binary (akari-linux-amd64; arm64 gets the same
 #                  bytes: these tests run on amd64)
@@ -13,19 +14,25 @@
 #   --broken       the binary is a stub that reports TAG's version and
 #                  passes `config check` but cannot serve (rollback test)
 #   --latest       also make TAG the "latest" release
+#   --wrapper REAL a stub that reports TAG's version and runs REAL (a path on
+#                  the machine under test) instead of a binary: a "newer"
+#                  release without a second build (multi-instance upgrades)
+#   --schema-compat  schema_compat_previous of the release (deploy/release.meta)
 #
 # Needs: cosign (COSIGN, default `cosign`), git, sha256sum.
 set -eu
 out=${1:?usage}
 tag=${2:?usage}
 shift 2
-bin='' image='' broken=0 latest=0
+bin='' image='' broken=0 latest=0 wrapper='' compat=''
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--binary) bin=$2 && shift ;;
 	--image) image=$2 && shift ;;
 	--broken) broken=1 ;;
 	--latest) latest=1 ;;
+	--wrapper) wrapper=$2 && shift ;;
+	--schema-compat) compat=$2 && shift ;;
 	*) echo "make-release: unknown option $1" >&2 && exit 1 ;;
 	esac
 	shift
@@ -48,13 +55,27 @@ case "\$*" in
 esac
 STUB
 	chmod 0755 "$dir/akari-linux-amd64"
+elif [ -n "$wrapper" ]; then
+	cat >"$dir/akari-linux-amd64" <<STUB
+#!/bin/sh
+# Test release: reports TAG's version and runs the real panel binary.
+case "\$*" in
+*--version*) echo "akari $ver (wrapper)" ;;
+*) exec $wrapper "\$@" ;;
+esac
+STUB
+	chmod 0755 "$dir/akari-linux-amd64"
 else
-	[ -n "$bin" ] || { echo "make-release: --binary or --broken" >&2; exit 1; }
+	[ -n "$bin" ] || { echo "make-release: --binary, --wrapper or --broken" >&2; exit 1; }
 	install -m 0755 "$bin" "$dir/akari-linux-amd64"
 fi
 cp "$dir/akari-linux-amd64" "$dir/akari-linux-arm64"
 printf '%s\n' "${image:-localhost:5000/akari-panel:$ver@sha256:0000000000000000000000000000000000000000000000000000000000000000}" >"$dir/akari-panel-image.txt"
-"$root/scripts/release-bundle.sh" "$tag" "$dir" >/dev/null
+if [ -n "$compat" ]; then
+	"$root/scripts/release-bundle.sh" "$tag" "$dir" --schema-compat "$compat" >/dev/null
+else
+	"$root/scripts/release-bundle.sh" "$tag" "$dir" >/dev/null
+fi
 (cd "$dir" && sha256sum akari-linux-amd64 akari-linux-arm64 akari-panel-image.txt install.sh akari-deploy.tar.gz >SHA256SUMS)
 
 if [ ! -f "$out/cosign.key" ]; then
