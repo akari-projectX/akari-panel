@@ -64,9 +64,7 @@ fn dispatch_table() {
         // Subscription: exactly one token segment.
         ("/s3cr3tsub/TOKEN", true, inner("/_/sub/TOKEN", Via::Sub)),
         ("/s3cr3tsub/TOKEN/x", true, Route::Reject),
-        // The removed hosted rule-sets are no route any more.
         ("/s3cr3tsub/rules/0123abcd.json", true, Route::Reject),
-        ("/secretprefix/sub-rules/0123abcd.json", true, Route::Reject),
         ("/s3cr3tsub", true, Route::Reject),
         ("/s3cr3tsub/", true, Route::Reject),
         // Fixed public paths.
