@@ -31,6 +31,7 @@ if [ -n "$images" ]; then
 	bad=1
 fi
 
+# shellcheck disable=SC2016 # the awk program is single-quoted on purpose
 runs=$(git ls-files '.github/workflows/*.yml' scripts smoke.sh |
 	xargs awk '/docker run/ {
 		for (i = 1; i <= NF; i++) {
