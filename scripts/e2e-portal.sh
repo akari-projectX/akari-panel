@@ -11,8 +11,9 @@
 # and `npx playwright install chromium` once.
 #
 # The browser opens https://portal.e2e.test:8493 (portal/e2e/support/tls-proxy.mjs with
-# a throwaway certificate Chromium is told to trust, the name mapped to
-# 127.0.0.1): the main domain is an https origin like in production, so
+# a throwaway certificate Chromium is told to trust, the names mapped to
+# the TLS front, port included: the passkey centre's related-origins file is
+# fetched from the default port 443 of its name): the main domain is an https origin like in production, so
 # passkeys (WebAuthn, a virtual authenticator) work end to end, and mail
 # links point at it. API calls of the seed and the tests go straight to the
 # panel on 127.0.0.1 (IP literals pass the host gate).
@@ -29,6 +30,15 @@ GRPC_PORT=${E2E_GRPC_PORT:-8453}
 PAY_PORT=${E2E_PAY_PORT:-18489}
 TLS_PORT=${E2E_TLS_PORT:-8493}
 HOST=portal.e2e.test
+# More names for the passkey specs (portal/e2e/passkeys.spec.ts): a second
+# main domain, the passkey centre, and the domains of the related-origins
+# label-limit measurement (distinct registrable labels). All resolve to the
+# TLS front in the browser (playwright.config.ts) and are on its certificate.
+HOST_B=portal-b.e2e.test
+HOST_CENTRE=pk.e2e.test
+HOST_CENTRE_LABELS=pklab.e2e.test
+LABEL_HOSTS="lab1.test lab2.test lab3.test lab4.test lab5.test lab6.test"
+ALL_HOSTS="$HOST $HOST_B $HOST_CENTRE $HOST_CENTRE_LABELS $LABEL_HOSTS"
 DIR=${E2E_DIR:-/tmp/akari-e2e-portal}
 export DATABASE_URL="postgres://akari:akari-dev@localhost:5432/$E2E_DB"
 export VALKEY_URL="redis://127.0.0.1:6379/$E2E_VALKEY_DB"
@@ -77,13 +87,16 @@ python3 portal/e2e/support/mock-alipay.py "$PAY" "$PAY_PORT" >"$DIR/mock-alipay.
 PAY_PID=$!
 PIDS+=("$PAY_PID")
 
-# The TLS front: a throwaway certificate for $HOST; Chromium trusts exactly
-# its key (--ignore-certificate-errors-spki-list, playwright.config.ts).
+# The TLS front: a throwaway certificate for every name above; Chromium
+# trusts exactly its key (--ignore-certificate-errors-spki-list,
+# playwright.config.ts).
+SAN=$(for h in $ALL_HOSTS; do printf 'DNS:%s,' "$h"; done)
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=$HOST" \
-  -addext "subjectAltName=DNS:$HOST" -keyout "$DIR/tls-key.pem" -out "$DIR/tls-cert.pem" 2>/dev/null
+  -addext "subjectAltName=${SAN%,}" -keyout "$DIR/tls-key.pem" -out "$DIR/tls-cert.pem" 2>/dev/null
 E2E_TLS_SPKI=$(openssl x509 -in "$DIR/tls-cert.pem" -pubkey -noout | openssl pkey -pubin -outform der \
   | openssl dgst -sha256 -binary | base64)
-export E2E_TLS_SPKI E2E_TLS_HOST=$HOST
+export E2E_TLS_SPKI E2E_TLS_HOST=$HOST E2E_TLS_HOSTS="$ALL_HOSTS" E2E_TLS_PORT=$TLS_PORT
+export E2E_HOST_B=$HOST_B E2E_HOST_CENTRE=$HOST_CENTRE E2E_HOST_CENTRE_LABELS=$HOST_CENTRE_LABELS E2E_LABEL_HOSTS="$LABEL_HOSTS"
 node portal/e2e/support/tls-proxy.mjs "$DIR/tls-cert.pem" "$DIR/tls-key.pem" "$TLS_PORT" "http://127.0.0.1:$PORT" >"$DIR/tls-proxy.log" 2>&1 &
 TLS_PID=$!
 PIDS+=("$TLS_PID")
