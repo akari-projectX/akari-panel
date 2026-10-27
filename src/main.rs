@@ -405,7 +405,7 @@ mod tests {
             .and_then(|a| a.get_env().map(|e| e.to_os_string()));
         assert_eq!(arg_env.as_deref(), Some("AKARI_CONFIG".as_ref()));
 
-        // SAFETY (edition 2024: env mutation is unsafe): this is the only
+        // SAFETY: edition 2024 makes env mutation unsafe; this is the only
         // test in the binary's test harness, so no other thread reads or
         // writes the environment concurrently. Keep it the only one.
         unsafe { std::env::set_var("AKARI_CONFIG", "/etc/akari/panel.toml") };
