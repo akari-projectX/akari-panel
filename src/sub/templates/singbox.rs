@@ -66,7 +66,11 @@ pub(super) fn render(
         && let Some((k, _)) = m.iter().find(|(k, _)| !TOP_LEVEL.contains(&k.as_str()))
         && strict
     {
-        return Err(TemplateError::at(body, k, format!("{k:?} is not a sing-box configuration key")));
+        return Err(TemplateError::at(
+            body,
+            k,
+            format!("{k:?} is not a sing-box configuration key"),
+        ));
     }
     substitute(&mut doc, ctx);
     let kept = docs::kept(proxies, "sing-box");
@@ -77,7 +81,11 @@ pub(super) fn render(
             for o in os {
                 match o.get("tag").and_then(Doc::as_str) {
                     Some(t) if tags.iter().any(|x| x == t) => {
-                        return Err(TemplateError::at(body, t, format!("two outbounds have the tag {t:?}")));
+                        return Err(TemplateError::at(
+                            body,
+                            t,
+                            format!("two outbounds have the tag {t:?}"),
+                        ));
                     }
                     Some(t) => tags.push(t.to_string()),
                     None if strict => return Err(TemplateError::new("an outbound has no tag")),
@@ -98,7 +106,11 @@ pub(super) fn render(
     };
     let has_direct = tags.iter().any(|t| t == "direct");
     for o in &mut list {
-        let tag = o.get("tag").and_then(Doc::as_str).unwrap_or_default().to_string();
+        let tag = o
+            .get("tag")
+            .and_then(Doc::as_str)
+            .unwrap_or_default()
+            .to_string();
         let Some(Doc::Seq(members)) = o.get_mut("outbounds") else {
             continue;
         };
@@ -106,7 +118,11 @@ pub(super) fn render(
         let mut seen: HashSet<String> = HashSet::new();
         for m in members.drain(..) {
             let Doc::Str(s) = m else {
-                return Err(TemplateError::at(body, &tag, format!("outbound {tag:?}: members are tags")));
+                return Err(TemplateError::at(
+                    body,
+                    &tag,
+                    format!("outbound {tag:?}: members are tags"),
+                ));
             };
             match member_filter(body, &s)? {
                 Some(re) => {
@@ -134,7 +150,11 @@ pub(super) fn render(
         if out.is_empty() && has_direct {
             out.push(Doc::Str("direct".into()));
         } else if out.is_empty() && strict {
-            return Err(TemplateError::at(body, &tag, format!("outbound {tag:?} has no members and there is no \"direct\" outbound")));
+            return Err(TemplateError::at(
+                body,
+                &tag,
+                format!("outbound {tag:?} has no members and there is no \"direct\" outbound"),
+            ));
         }
         if let Some(Doc::Str(d)) = o.get("default")
             && !out.iter().any(|m| m.as_str() == Some(d.as_str()))
@@ -158,7 +178,13 @@ pub(super) fn render(
                 match r.get("outbound").and_then(Doc::as_str) {
                     Some(t) if !exists(t) => {
                         if strict {
-                            return Err(TemplateError::at(body, t, format!("a route rule sends traffic to {t:?}, which does not exist")));
+                            return Err(TemplateError::at(
+                                body,
+                                t,
+                                format!(
+                                    "a route rule sends traffic to {t:?}, which does not exist"
+                                ),
+                            ));
                         }
                     }
                     _ => out.push(r),
@@ -170,7 +196,11 @@ pub(super) fn render(
             && !exists(f)
         {
             if strict {
-                return Err(TemplateError::at(body, f, format!("route.final is {f:?}, which does not exist")));
+                return Err(TemplateError::at(
+                    body,
+                    f,
+                    format!("route.final is {f:?}, which does not exist"),
+                ));
             }
             route.set("final", if has_direct { "direct" } else { "" });
         }
@@ -183,7 +213,11 @@ pub(super) fn render(
                 && !exists(d)
             {
                 if strict {
-                    return Err(TemplateError::at(body, d, format!("a DNS server detours through {d:?}, which does not exist")));
+                    return Err(TemplateError::at(
+                        body,
+                        d,
+                        format!("a DNS server detours through {d:?}, which does not exist"),
+                    ));
                 }
                 if let Doc::Map(m) = s {
                     m.retain(|(k, _)| k != "detour");

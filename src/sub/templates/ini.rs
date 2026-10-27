@@ -152,7 +152,9 @@ fn check(
     if strict {
         for s in SECTIONS {
             if !sections.iter().any(|x| x == s) {
-                return Err(TemplateError::new(format!("the template needs a [{s}] section")));
+                return Err(TemplateError::new(format!(
+                    "the template needs a [{s}] section"
+                )));
             }
         }
     }
@@ -205,9 +207,12 @@ fn group_line(t: &str, known: &HashSet<String>, strict: bool) -> Result<String, 
     let name = name.trim();
     let mut fields: Vec<&str> = rest.split(',').map(str::trim).collect();
     let kind = fields.remove(0);
-    let (params, mut members): (Vec<&str>, Vec<&str>) = fields.into_iter().partition(|f| f.contains('='));
+    let (params, mut members): (Vec<&str>, Vec<&str>) =
+        fields.into_iter().partition(|f| f.contains('='));
     let self_filling = params.iter().any(|p| {
-        p.starts_with("include-all-proxies") || p.starts_with("policy-path") || p.starts_with("include-other-group")
+        p.starts_with("include-all-proxies")
+            || p.starts_with("policy-path")
+            || p.starts_with("include-other-group")
     });
     let before = members.len();
     if strict && let Some(m) = members.iter().find(|m| !known.contains(**m)) {

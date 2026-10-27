@@ -1604,7 +1604,15 @@ async fn subscription_switch_settings() {
     );
     assert_eq!(
         v["subscription"]["import_clients_shown"],
-        json!(["clash", "stash", "shadowrocket", "sing-box", "hiddify", "surge", "surfboard"])
+        json!([
+            "clash",
+            "stash",
+            "shadowrocket",
+            "sing-box",
+            "hiddify",
+            "surge",
+            "surfboard"
+        ])
     );
     // Section 5 switches: ids checked, normalized to the canonical order.
     for (body, code) in [
@@ -1665,7 +1673,10 @@ async fn subscription_switch_settings() {
         )
         .await;
     assert_eq!(r.status, StatusCode::OK);
-    assert_eq!(state.settings().get().sub_formats, crate::sub::all_formats());
+    assert_eq!(
+        state.settings().get().sub_formats,
+        crate::sub::all_formats()
+    );
     let audits = audit_rows(&db, "settings.subscription.update").await;
     assert_eq!(audits.len(), 2);
     assert_eq!(

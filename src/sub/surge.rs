@@ -111,7 +111,10 @@ pub(crate) fn line(p: &Proxy, name: &str, d: Dialect) -> Result<String, &'static
                     if net.host.contains(['|', '"']) {
                         return Err(bad);
                     }
-                    parts.push(format!("ws-headers={}", value(&format!("Host:{}", net.host)).ok_or(bad)?));
+                    parts.push(format!(
+                        "ws-headers={}",
+                        value(&format!("Host:{}", net.host)).ok_or(bad)?
+                    ));
                 }
             }
             p.protocol
@@ -125,5 +128,9 @@ pub(crate) fn line(p: &Proxy, name: &str, d: Dialect) -> Result<String, &'static
         }
         _ => return Err("this protocol is not documented for the client"),
     };
-    Ok(format!("{name} = {kind}, {host}, {}, {}", net.port, parts.join(", ")))
+    Ok(format!(
+        "{name} = {kind}, {host}, {}, {}",
+        net.port,
+        parts.join(", ")
+    ))
 }
