@@ -182,7 +182,7 @@ pub(crate) fn collect_proxies(rows: &[NodeRow]) -> Vec<Proxy> {
             Some(f) if flow_applies(&spec.id, &net) => f,
             _ => "",
         };
-        // The entrance's name, then the entrance's tags (1104) ("香港 Direct
+        // The entrance's name, then the entrance's tags ("香港 Direct
         // | IPLC"; the landing node's name is not in it), and only with the
         // operator switch its base multiplier when not 1x ("香港 Direct |
         // IPLC 2.0x"); names stay unique across the subscription and stable

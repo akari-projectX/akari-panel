@@ -1,7 +1,7 @@
 //! Linking the panel's own names to DNS: "point this at the panel".
 //!
-//! * The panel's public addresses (`panel_settings.public_ipv4/ipv6`,
-//!   migration 1120) are the owner's to set (`PUT /settings/public-addresses`,
+//! * The panel's public addresses (`panel_settings.public_ipv4/ipv6`)
+//!   are the owner's to set (`PUT /settings/public-addresses`,
 //!   audited, global unicast only).
 //! * `GET /dns/domains` lists the site domains (main / subscription / node /
 //!   passkey centre) with the A / AAAA / CNAME records that exist for each

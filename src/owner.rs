@@ -1,4 +1,4 @@
-//! R47: the owner (super admin), migration 1013.
+//! R47: the owner (super admin).
 //!
 //! One account — the first admin `akari admin add` creates (the
 //! installer's) — is the owner (`users.is_owner`). Only the owner may:

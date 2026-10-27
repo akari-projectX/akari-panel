@@ -1219,7 +1219,7 @@ pub async fn apply_reset_login(
         .await?
         .rows_affected() as i64;
     // Every session of the account ends: the reset is the answer to a lost
-    // device or a leaked credential (the 0009 trigger watches neither the
+    // device or a leaked credential (the trigger watches neither the
     // passkeys nor `password_login_disabled_at`).
     sqlx::query(
         "UPDATE users SET password_login_disabled_at = NULL, session_ver = session_ver + 1 \

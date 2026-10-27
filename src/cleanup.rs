@@ -1,5 +1,5 @@
 //! D10: never-used accounts — the definition, the console's bulk deletion,
-//! the automatic cleanup (migration 1017).
+//! the automatic cleanup.
 //!
 //! "Never used" (`NEVER_USED`, alias `u`): a role=user account that is not
 //! erased, never had a plan, has no finance record (`erase::HAS_FINANCE`),

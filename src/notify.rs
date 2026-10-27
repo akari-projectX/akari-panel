@@ -2,7 +2,7 @@
 //!
 //! Every committed change of a node's desired-state versions, and every node
 //! deletion, raises `NOTIFY akari_change` from a trigger on `nodes`
-//! (migration 0007) inside the writing transaction; PostgreSQL delivers it
+//! inside the writing transaction; PostgreSQL delivers it
 //! on commit to every listening panel instance. Payload: the node id, or
 //! `del:<node id>` for a deletion. Writes that do not change the versions
 //! (flush, lease, online status, failures) never notify.

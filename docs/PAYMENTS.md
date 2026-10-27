@@ -6,11 +6,9 @@ R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式
 另有两个托管的加密货币网关：**CoinPayments**（`coinpayments`，API v2）与 **Coinbase**（`coinbase`，Business Checkouts API），
 见下文「加密货币网关」。同一类型可以有多个支付方式（例如两个支付宝商户，或同一易支付商户的支付宝与微信两个渠道）。
 
-- 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载 / 旧配置导入，
+- 代码：`src/billing/`（`provider.rs` 为 trait 与注册表，`methods.rs` 为支付方式 / API / 重载，
   `alipay.rs` 为支付宝类型，`epay.rs` 为易支付类型，`coinpayments.rs` / `coinbase.rs` / `crypto.rs` 为加密货币网关；W7 套餐目录：`catalog.rs`）
-- 迁移：`0040_billing.sql`、`0070_plan_catalog.sql`、`0140_payment_methods.sql`（均已并入 `1000_baseline.sql`）、
-  `1110_payment_kind_epay.sql`（`payment_methods.kind` 加 `epay`）、`1123_payment_kinds_crypto.sql`（加 `coinpayments`、`coinbase`）；C2 的 USDT 链上收款（`1111`）已由
-  `1114_drop_usdt_chain.sql` 整体移除（2026-10-23 用户裁决；USDT **提现**不受影响，见「Withdrawals」）
+- 表：`payment_methods`（`kind` ∈ `alipay_f2f`/`epay`/`coinpayments`/`coinbase`）、`orders`、`payment_events`、套餐目录表（`plan_period_prices`）；C2 的 USDT 链上收款已整体移除（2026-10-23 用户裁决；USDT **提现**不受影响，见「Withdrawals」）
 - 门户：`portal/src/pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`、`portal/src/components/shop/`；
   后台：`admin/src/console/`（订单、套餐价格、系统设置 → 支付）。
 
@@ -164,7 +162,7 @@ amount  = price − min(credit, price)        -- never negative
 
 ## Coupons, balance, invite commission (W16, M7)（优惠券、余额、邀请返利）
 
-代码：`src/billing/{coupons,ledger,commission}.rs`；迁移 `0105_inviter.sql` … `0108_commissions.sql`；
+代码：`src/billing/{coupons,ledger,commission}.rs`；
 SPA：购买页（优惠券输入框、"pay with my balance"）、门户 `wallet.tsx`（余额 + 我的邀请）、
 控制台 `admin-coupons.tsx`（优惠券）、`admin-finance.tsx`（资金），退款在 `admin-orders.tsx`。
 
@@ -255,7 +253,7 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
 设置（资金 → 邀请返利设置，`PUT /commission-settings`，审计 `commission.settings.update`）：
 `enabled`、`rate_percent`（0–100）、`first_order_only`、`hold_days`（0–365）、`min_withdrawal_cents`。
 
-- 归属：`users.inviter_id`（注册时凭邀请码设置——W15；迁移 0105 只保证该列存在，且绝不表达自我邀请或环，
+- 归属：`users.inviter_id`（注册时凭邀请码设置——W15；数据库保证该列绝不表达自我邀请或环，
   由触发器 `users_inviter_acyclic` 保证，SQLSTATE `AK002` → 409）。只有客户（`role=user`）邀请人才有返利。
 - 被邀请客户的订单付款时（在 `apply_mark_paid` 内，因此恰好一次——`commissions.order_id` 也是 UNIQUE）：
   若返利计划已启用且支付宝实付金额 > 0（并且在 `first_order_only` 下，这是被邀请人第一笔有支付宝金额的已付款订单），
@@ -275,7 +273,7 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
 
 可提现金额 = min(余额, 已入账返利 − 已追回返利（中-4）− 未被拒绝或取消的提现, 余额中仍是返利的部分)：退款和管理员充值的金额可用于购买套餐，但不能提现。
 
-「余额中仍是返利的部分」（计费审查 C1，迁移 1102 `akari_withdrawable_part`）按账本顺序重放：余额分成返利部分与其他部分，
+「余额中仍是返利的部分」（计费审查 C1，`akari_withdrawable_part`）按账本顺序重放：余额分成返利部分与其他部分，
 返利和提现退回进返利部分，管理员充值和支付宝部分的退款进其他部分；下单用余额时**先用其他部分**，再用返利部分，
 订单未付结束或退款时余额部分按原样退回各自的部分；管理员扣减先扣其他部分，追回返利先扣返利部分。
 所以花在订单上的返利不会因为之后有别的钱进入余额而重新变成可提现。
@@ -283,7 +281,7 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
 会立即扣除金额（账本 `withdrawal`）；管理员附原因批准或拒绝（账本 `withdrawal_reversal`）；用户在待处理时可取消。
 已删除用户的提现只能批准。
 
-**只付 USDT（PR ③ R46，迁移 1019，`billing/usdt.rs`）**：提现只能以 USDT 支付，其他收款方式（支付宝/微信/银行卡）已移除。
+**只付 USDT（PR ③ R46，`billing/usdt.rs`）**：提现只能以 USDT 支付，其他收款方式（支付宝/微信/银行卡）已移除。
 
 - 用户在门户「钱包 → 申请提现」选择网络并填写收款地址；可选网络由后台「资金 → 邀请返利设置 → 提现网络」决定
   （`commission_settings.usdt_chains`，默认全部开启）：TRC20（Tron）、Plasma、Polygon、Arbitrum One、Solana、
@@ -297,7 +295,6 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
   `withdrawal.approved`（`usdt_micros`、`txid`）。拒绝照旧退回余额。
 - 可选**参考汇率**（`usdt_rate_cents`，每 1 USDT 多少分人民币）只用于显示：门户与后台显示「约 N USDT」，
   实际打款数量由管理员按当时行情决定并如实记录。
-- 迁移 1019 遇到已有提现记录的 v0.4 开发库会拒绝执行（自由文本收款账号无法可靠转换），需重建开发库。
 
 ### Refunds (admin) / 退款（管理员）
 
@@ -335,7 +332,7 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
   有实付金额时必填，运营审查中-3：以前登记为 0，仪表盘与导出漏记）。订单记录
   `refund_balance_cents`（退到余额）、`refund_external_cents`（支付宝后台已退），
   `refund_cents` = 两者之和，另记 `refund_gateway_cents` = 其中支付渠道的钱
-  （`to_balance` 时为整个实付金额，否则为 `refund_external_cents`；迁移 1103）。
+  （`to_balance` 时为整个实付金额，否则为 `refund_external_cents`）。
   订单 CSV 三列都有；仪表盘按下文「Revenue」只扣渠道部分。
   待结算的邀请返利撤销，已入账的追回（中-4，见上文「Invite commission」）。
 - **优惠券与首单（低-2）**：退款把该订单用掉的优惠券次数还回去（券的总次数与该用户的
@@ -382,7 +379,7 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
 它**不是新的支付路径**：订单行的创建方式与客户订单一致（该周期价格在 SQL 中从 `plan_period_prices` 读取并复制到
 `list_price_cents`；请求不带金额，带 `amount_cents` 成员则返回 400），然后在同一事务内由
 `orders::apply_mark_paid(…, Via::Manual, …, reason)` 付清——`entitle::lock`、条件翻转（恰好一次）、
-savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价（迁移 0166；金额恒等式变为
+savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价（金额恒等式变为
 `amount = list − credit − discount − balance − gift`），于是 `amount_cents` = 0，收入（`amount_cents` 之和）不变。
 已付款的人工订单是标记为 `paid_via = 'manual'` 的收入：仪表盘按时间窗口报告 `manual_cents` 和 `gift_cents`，
 订单列表可用 `?via=manual` 过滤，CSV 有 `manual` 列。与网关付款不同，开通失败的人工订单
@@ -393,7 +390,7 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 
 `POST /coupon-batches` 生成 N（≤5000）个共用一个模板的码：`prefix`（0–16 个 `A-Za-z0-9_-`）加 `length`（6–16，默认 10）个字符，
 字符来自操作系统 CSPRNG，取自 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`（无 0/O/1/I；32 个符号，每个 5 位，无取模偏差）。
-每个码都是带 `batch_id` 的普通 `coupons` 行（迁移 0167），因此资格检查、创建订单时的无竞态预留、释放与兑现都沿用 W16 的路径；
+每个码都是带 `batch_id` 的普通 `coupons` 行，因此资格检查、创建订单时的无竞态预留、释放与兑现都沿用 W16 的路径；
 唯一性由 `coupons_code` 唯一索引保证（`ON CONFLICT DO NOTHING`，冲突时重新生成，轮数有限）。每个码的使用次数默认为 1。
 单张优惠券列表隐藏批次内的码；批次列表显示 码数/已用/已兑现，可把码导出为 CSV，撤销批次会停用其中所有码
 （已做的预留仍然有效）。

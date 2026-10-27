@@ -1,6 +1,6 @@
 //! R40 (W24): payment methods — configured instances of a provider kind
-//! (`provider.rs`), stored ONLY in the database (`payment_methods`,
-//! migration 0140; no panel.toml).
+//! (`provider.rs`), stored ONLY in the database (`payment_methods`;
+//! no panel.toml).
 //!
 //! - **Secrets** (e.g. the Alipay app private key) are one JSON object
 //!   sealed with AES-256-GCM under a key derived from data/master.key (label
@@ -12,7 +12,7 @@
 //!   (optimistic concurrency on `version`, audit `payment_method.*` in the
 //!   same transaction). Enabling requires a complete configuration that
 //!   builds.
-//! - **Reload**: the 0060 trigger function notifies every instance
+//! - **Reload**: the trigger function notifies every instance
 //!   (`settings`); `settings::reload` calls `reload` here, which rebuilds
 //!   the clients of changed rows and swaps the whole set atomically
 //!   (`AppState::payments`). A call in flight keeps the client it took.

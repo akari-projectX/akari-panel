@@ -201,7 +201,7 @@ pub async fn token_usable(pg: &sqlx::PgPool, token: &str) -> sqlx::Result<bool> 
 }
 
 /// Consume `token` and set the new password hash, in the caller's
-/// transaction. The 0009 trigger bumps session_ver (every session ends).
+/// transaction. The trigger bumps session_ver (every session ends).
 /// None = invalid/expired/used token.
 pub async fn apply_reset(
     conn: &mut PgConnection,

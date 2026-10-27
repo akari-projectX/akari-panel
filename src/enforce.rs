@@ -1,6 +1,6 @@
 //! Periodic, restart-safe enforcement passes (run from the traffic flush
 //! loop). Each pass flips its marker AND bumps the affected nodes' versions
-//! in one transaction; the bump's trigger (migration 0007) notifies every
+//! in one transaction; the bump's trigger notifies every
 //! panel instance on commit. Lock order as in api.rs: servers -> nodes -> users -> entrance_users.
 
 use sqlx::PgConnection;
@@ -96,7 +96,7 @@ pub async fn apply_traffic_limits(conn: &mut PgConnection) -> sqlx::Result<Vec<U
 }
 
 /// The candidates of the expiry pass. Must stay implied by the predicate of
-/// the partial index `users_expiry_due` (migration 1118).
+/// the partial index `users_expiry_due`.
 fn expiry_due() -> String {
     format!("({EXPIRED} AND NOT u.expiry_enforced)")
 }

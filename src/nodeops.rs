@@ -125,7 +125,7 @@ fn read_password_hash() -> Result<String> {
     crate::auth::hash_password(&password)
 }
 
-/// Reset an account's password. The users trigger (migration 0009) bumps
+/// Reset an account's password. The users trigger bumps
 /// session_ver, so every existing session of the account ends.
 pub async fn admin_passwd(cfg: PanelConfig, email: String) -> Result<()> {
     let email = email.trim().to_lowercase();

@@ -168,7 +168,7 @@ pub async fn balance(conn: &mut PgConnection, user_id: Uuid) -> sqlx::Result<i64
 /// (中-4: recovered or still owed) and their withdrawals that were not
 /// rejected or cancelled (refunds and admin credits are spendable on
 /// orders, not withdrawable), and at most the commission money still in
-/// the balance (C1, migration 1102 `akari_withdrawable_part`: a ledger
+/// the balance (C1, `akari_withdrawable_part`: a ledger
 /// replay where orders spend the non-withdrawable part first; commission
 /// money spent on an order does not become withdrawable again when other
 /// money reaches the balance later).

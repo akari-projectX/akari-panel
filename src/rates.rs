@@ -1,7 +1,7 @@
 //! D9 (PLAN-v0.4, W28-b): time-window multipliers on entrances.
 //!
 //! An entrance has a base multiplier (`entrances.rate_permille`, PATCH
-//! /entrances/{id}) and up to `MAX_RULES` rules (migration 1038): weekdays,
+//! /entrances/{id}) and up to `MAX_RULES` rules: weekdays,
 //! a window in the site time zone and a multiplier. Where rules overlap the
 //! highest applies (`PUT` answers with overlap warnings); outside every
 //! rule the base applies. The SQL function `akari_entrance_rate(entrance,
@@ -228,7 +228,7 @@ pub async fn apply_set_rules(
     .fetch_optional(&mut *conn)
     .await?;
     let before = found.ok_or_else(ApiError::not_found)?;
-    // A rule change is a rate change (1100): for the settlement window the
+    // A rule change is a rate change: for the settlement window the
     // bytes moved before it bill at most at the old configuration's rate.
     sqlx::query(
         "UPDATE entrances SET rate_prev_permille = akari_entrance_settle_rate(id), \

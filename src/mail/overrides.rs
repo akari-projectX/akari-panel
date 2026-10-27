@@ -1,7 +1,7 @@
 //! Ops: editable email templates (系统设置 → 邮件模板).
 //!
 //! An admin may replace the subject and body of any mail kind in either
-//! language. Overrides live in `mail_templates` (migration 0158; absent
+//! language. Overrides live in `mail_templates` (absent
 //! row = the built-in default from `templates::defaults`) and are looked
 //! up by `render_for` inside the transaction that enqueues the mail, so a
 //! committed edit is what the next mail uses on every instance — no cache,
