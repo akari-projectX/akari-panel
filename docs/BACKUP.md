@@ -121,9 +121,6 @@ AKARI_BACKUP_VERIFY_KEY=backup-sign.pub AGE_IDENTITY_FILE=akari-backup.key scrip
 
 ## Restore（恢复）
 
-**v0.3.x 做的备份无法恢复到 v0.4**：v0.4 把迁移合并成了新基线 （`migrations/1000_baseline.sql`），面板会拒绝历史早于该基线的数据库
-（`database from v0.3.x — fresh install required`；见 docs/DEPLOY.md §5）。这类备份只能用 v0.3.x 二进制恢复。
-
 1. 停止面板（`systemctl stop akari-panel` / `docker compose stop panel`）。agent 保持运行，会自行重连。
 2. 准备一个空数据库（`createdb`；要复用旧库须先 `dropdb`，因为 `pg_restore --clean` 无法删除 `traffic_daily`
    的月度分区），服务器须为 PostgreSQL >= 18。

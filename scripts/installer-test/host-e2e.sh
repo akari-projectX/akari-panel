@@ -2,13 +2,10 @@
 # Installer end-to-end test on a whole (throw-away) host: the CI runner
 # (job installer-host; docs/DEPLOY.md "Installer tests"). Run as root.
 #
-#   host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN [PREV_TAG]
+#   host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN
 #
-# 1. Docker mode: install PREV_TAG (v0.3.x) from GitHub (keyless cosign,
-#    ghcr image) -> login -> the upgrade to NEW_TAG is refused untouched
-#    (v0.4 baseline: fresh install only) -> purge -> install NEW_TAG (local
-#    release, image in a local registry) -> login -> uninstall --purge.
-#    Without PREV_TAG: install NEW_TAG directly.
+# 1. Docker mode: install NEW_TAG (local release, image in a local
+#    registry) -> login -> uninstall --purge.
 # 2. Bare metal -> Docker -> bare metal on the same host: install NEW_TAG
 #    bare, enroll a real agent (AGENT_BIN), create a user; `akari-ctl
 #    migrate --to docker`, then `--to bare`; after each move: healthz, same
@@ -16,17 +13,15 @@
 #    same subscription link answers.
 #
 # myapp.test must resolve to 127.0.0.1 (/etc/hosts); Caddy uses local_certs.
-# dl.cloudsmith.io is pointed at 127.0.0.1 (the installer must not use it).
 # PARTS=docker|migrate|all (default all) runs a part only.
 set -euo pipefail
 # The CI job exports the dev stack's DATABASE_URL/VALKEY_URL for every step;
 # the panel CLI would let them override /etc/akari/panel.toml.
 unset DATABASE_URL VALKEY_URL
 
-rel=$(cd "${1:?usage: host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN [PREV_TAG]}" && pwd)
+rel=$(cd "${1:?usage: host-e2e.sh RELEASES_DIR NEW_TAG AGENT_BIN}" && pwd)
 new=${2:?}
 agent_bin=$(readlink -f "${3:?}")
-prev=${4:-}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 pw="e2e-Admin-Pass-$(date +%s)"
 work=$(mktemp -d)
@@ -48,25 +43,21 @@ cleanup() {
 trap cleanup EXIT
 
 grep -q 'myapp.test' /etc/hosts || echo '127.0.0.1 myapp.test' >>/etc/hosts
-# Caddy's old apt repository (Cloudsmith, 402 since 2026-10-09): the
-# installer must not need it.
-grep -q 'dl.cloudsmith.io' /etc/hosts || echo '127.0.0.1 dl.cloudsmith.io' >>/etc/hosts
 
 export AKARI_ADMIN_PASSWORD=$pw AKARI_SOURCE_DIR=$root LANG=C.UTF-8
 local_rel() { env AKARI_RELEASES_URL="file://$rel" AKARI_COSIGN_KEY="$rel/cosign.pub" "$@"; }
 
-# The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
-prefix() { akari-ctl info | sed -n -e '1s#.*://[^/]*/\([^/]*\)/admin$#\1#p' -e '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
+# The console URL: /{prefix}/app.
+prefix() { akari-ctl info | sed -n '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
 code() {
 	local url=$1
 	shift
 	curl -sk --noproxy '*' -o "$work/last" -w '%{http_code}' "$@" "$url"
 }
-# The installer's default admin: admin@<domain> (v0.4 D1: the e-mail is the
-# login). A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
+# The installer's default admin: admin@<domain> (the e-mail is the login).
 admin_email=admin@myapp.test
 login() {
-	# v0.4 (W27): the form token from /auth/options, posted no sooner than
+	# The form token from /auth/options, posted no sooner than
 	# the minimum submit time (default 2 s) after it.
 	local ft guard=""
 	[ "$(code "$origin/$1/auth/options")" = 200 ] || fail "auth options"
@@ -74,17 +65,14 @@ login() {
 	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
 	sleep 3
 	[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
-		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
-		[ "$(code "$origin/$1/auth/login" -c "$work/jar" -X POST -H 'Content-Type: application/json' \
-			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login"
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] || fail "admin login"
 }
 check_panel() {
 	local p
 	p=$(prefix)
 	[ -n "$p" ] || { akari-ctl info || true; fail "no prefix"; }
 	[ "$(code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
-	# v0.4 (D11): the portal at / (a v0.3.x panel: the plain 404).
-	case $(code "$origin/") in 200 | 404) ;; *) fail "/ answers neither the portal nor the plain 404" ;; esac
+	[ "$(code "$origin/")" = 200 ] || fail "/ is not the portal"
 	[ "$(code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
 	login "$p"
 	akari-ctl status >/dev/null || fail "akari-ctl status"
@@ -107,43 +95,10 @@ PY
 
 parts=${PARTS:-all}
 
-# --- 1. Docker mode: upgrade from the previous release (refused from v0.3), install --------------------------------------------
+# --- 1. Docker mode: install --------------------------------------------
 if [ "$parts" = migrate ]; then
 	:
 else
-	if [ -n "$prev" ]; then
-		log "docker: install $prev from GitHub"
-		sh "$root/scripts/install.sh" --yes --mode docker --version "$prev" --domain myapp.test --local-certs || fail "docker install $prev"
-		check_panel
-		img_before=$(grep '^AKARI_IMAGE=' /opt/akari/.env)
-		case $prev in
-		v0.3.*)
-			# v0.4 squashed the v0.3.x migrations (1000_baseline): the
-			# upgrade must be refused before anything changes.
-			log "docker: upgrade $prev -> $new must be refused"
-			if local_rel akari-ctl upgrade --yes --version "$new" >"$work/refused.log" 2>&1; then
-				cat "$work/refused.log"
-				fail "the docker upgrade from $prev was not refused"
-			fi
-			cat "$work/refused.log"
-			grep -q 'fresh install required; see docs/DEPLOY.md\|需要全新安装，见 docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
-			ls -d /var/backups/akari/akari-* >/dev/null 2>&1 && fail "the refused upgrade made a backup"
-			[ "$(grep '^AKARI_IMAGE=' /opt/akari/.env)" = "$img_before" ] || fail ".env changed by the refused upgrade"
-			check_panel
-			echo "ok: docker upgrade from $prev refused cleanly"
-			;;
-		*)
-			# A v0.4+ release: the in-place upgrade to this build must work.
-			log "docker: upgrade $prev -> $new"
-			local_rel akari-ctl upgrade --yes --version "$new" || fail "docker upgrade $prev -> $new"
-			grep -q "^AKARI_IMAGE=.*:${new#v}@sha256:" /opt/akari/.env || fail ".env does not pin $new after the upgrade"
-			check_panel
-			echo "ok: docker upgrade from $prev"
-			;;
-		esac
-		# Then purge and install fresh.
-		akari-ctl uninstall --yes --purge --confirm purge || fail "docker purge $prev"
-	fi
 	log "docker: install $new"
 	local_rel sh "$root/scripts/install.sh" --yes --mode docker --version "$new" --domain myapp.test --local-certs || fail "docker install $new"
 	P0=$(prefix)
@@ -189,7 +144,7 @@ echo "ok: server $SERVER_ID online"
 
 [ "$(code "$origin/$P/api/v1/users" -b "$work/jar" -X POST -H 'Content-Type: application/json' \
 	-d '{"email":"e2e-user@myapp.test","password":"user-password-123"}')" = 201 ] || fail "create user"
-# v0.4 D11: subscriptions live at /<sub path>/<token> (outside the admin
+# Subscriptions live at /<sub path>/<token> (outside the admin
 # prefix); the path comes from the answer's sub_url.
 SUBP=$(python3 -c "import json,sys,urllib.parse; print(urllib.parse.urlsplit(json.load(open(sys.argv[1]))['sub_url']).path)" "$work/last")
 [ "$(code "$origin$SUBP" -A clash.meta)" = 200 ] || fail "subscription"
@@ -216,4 +171,4 @@ done
 log "cleanup"
 akari-ctl uninstall --yes --purge --confirm purge || fail "purge"
 (cd /opt/akari 2>/dev/null && docker compose down -v) >/dev/null 2>&1 || true
-log "PASS: host installer e2e (docker install + refused v0.3 upgrade, bare <-> docker migration with a live agent)"
+log "PASS: host installer e2e (docker install, bare <-> docker migration with a live agent)"

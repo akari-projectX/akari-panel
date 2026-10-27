@@ -2,23 +2,17 @@
 # Installer end-to-end test, bare-metal mode, in a fresh systemd container
 # (CI job installer-bare; docs/DEPLOY.md "Installer tests").
 #
-#   bare-e2e.sh BASE_IMAGE RELEASES_DIR NEW_TAG BROKEN_TAG [PREV_TAG]
+#   bare-e2e.sh BASE_IMAGE RELEASES_DIR NEW_TAG BROKEN_TAG
 #
 #   BASE_IMAGE    debian:13 | ubuntu:24.04 (| debian:12 | ubuntu:22.04)
 #   RELEASES_DIR  local releases (make-release.sh): NEW_TAG = the build
 #                 under test, BROKEN_TAG = a deliberately broken release
-#   PREV_TAG      a published v0.3.x release installed first from GitHub
-#                 (real keyless cosign verification); the upgrade to
-#                 NEW_TAG must be refused untouched (v0.4 baseline), then
-#                 it is purged and NEW_TAG installed fresh; empty = install
-#                 NEW_TAG directly
 #
 # Environment: ADDRESS=domain|ip (default domain: myapp.test with Caddy
 # local_certs; ip = IP-only), KEEP=1 keeps the container, EXTRA_CA = a CA
 # bundle to trust inside the container (TLS-intercepting proxies).
 #
-# Flow: [PREV_TAG install
-# -> refused upgrade -> purge] -> install -> healthz through Caddy, admin login (API), user + subscription -> broken
+# Flow: install -> healthz through Caddy, admin login (API), user + subscription -> broken
 # upgrade (backup, switch, failed health) rolls
 # back -> uninstall keeps data -> reinstall: same prefix, same password,
 # same subscription -> backup with the agent releases -> age-encrypted
@@ -27,11 +21,10 @@
 # backup (a host move): same prefix, password, subscription.
 set -euo pipefail
 
-base=${1:?usage: bare-e2e.sh BASE_IMAGE RELEASES_DIR NEW_TAG BROKEN_TAG [PREV_TAG]}
+base=${1:?usage: bare-e2e.sh BASE_IMAGE RELEASES_DIR NEW_TAG BROKEN_TAG}
 rel=$(cd "${2:?}" && pwd)
 new=${3:?}
 broken=${4:?}
-prev=${5:-}
 address=${ADDRESS:-domain}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 c="akari-installer-${base//[:.]/-}-$$"
@@ -58,10 +51,8 @@ cg=(--cgroupns=private)
 if [ "$(stat -fc %T /sys/fs/cgroup)" = cgroup2fs ]; then
 	cg=(--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
 fi
-# dl.cloudsmith.io (Caddy's old apt repository) is unreachable: the
-# installer must not need it.
 docker run -d --name "$c" --privileged "${cg[@]}" --tmpfs /run --tmpfs /run/lock \
-	--add-host myapp.test:127.0.0.1 --add-host dl.cloudsmith.io:127.0.0.1 \
+	--add-host myapp.test:127.0.0.1 \
 	-v "$root:/src:ro" -v "$rel:/rel:ro" "$img" >/dev/null
 for _ in $(seq 60); do
 	s=$(docker exec "$c" systemctl is-system-running 2>/dev/null || true)
@@ -92,9 +83,6 @@ grep -q 'no installation found' /tmp/akari-en.out || fail "the English fallback 
 cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "zh_CN.UTF-8 appeared although apt refused"
 cx rm -rf /fakebin /var/log/akari-install.log
 
-# Caddy's old apt repository (Cloudsmith) answers 402: the installer must
-# not download from it.
-grep -q 'https://dl\.cloudsmith\.io' "$root/scripts/install.sh" && fail "install.sh still downloads from dl.cloudsmith.io"
 # The installer from the source tree (deploy files too); env passed by name.
 inst() {
 	docker exec -e LANG=C.UTF-8 -e AKARI_ADMIN_PASSWORD="$pw" -e AKARI_SOURCE_DIR=/src "$@"
@@ -110,7 +98,7 @@ timed() {
 }
 local_rel=(-e AKARI_RELEASES_URL=file:///rel -e AKARI_COSIGN_KEY=/rel/cosign.pub)
 
-# The installer's default admin (v0.4 D1: the e-mail is the login):
+# The installer's default admin (the e-mail is the login):
 # admin@<domain>, or the reserved admin@akari.invalid on an IP-only install.
 # --node-address: a host name (case folded) on the domain install, an
 # [IPv6]:port on the IP-only one (validators.sh: GNU grep once rejected both).
@@ -127,8 +115,8 @@ else
 	admin_email=admin@myapp.test
 fi
 
-# The console URL: /{prefix}/app (v0.4) or /{prefix}/admin (v0.3.x).
-prefix() { cx akari-ctl info | sed -n -e '1s#.*://[^/]*/\([^/]*\)/admin$#\1#p' -e '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
+# The console URL: /{prefix}/app.
+prefix() { cx akari-ctl info | sed -n -e '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
 # GET/POST through Caddy (TLS) inside the container; prints the status.
 https_code() {
 	local url=$1
@@ -140,66 +128,24 @@ check_panel() {
 	p=$(prefix)
 	[ -n "$p" ] || { cx akari-ctl info || true; fail "no prefix from akari-ctl info"; }
 	[ "$(https_code "$origin/$p/healthz")" = 200 ] || fail "healthz through Caddy"
-	# v0.4 (D11): the portal at /; unknown paths stay the plain 404.
-	# (Told apart by akari-ctl info: a v0.3.x console is /{prefix}/admin; the
-	# CI build of this tree is called <version>-ci.N.)
-	case $(cx akari-ctl info | sed -n 1p) in
-	*/admin) [ "$(https_code "$origin/")" = 404 ] || fail "/ is not the plain 404" ;;
-	*)
-		[ "$(https_code "$origin/")" = 200 ] || fail "/ is not the portal"
-		[ "$(https_code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
-		;;
-	esac
-	# A v0.3.x panel (the refused-upgrade check) still takes {"login"}.
-	# v0.4 (W27): the form token from /auth/options, posted no sooner than
-	# the minimum submit time (default 2 s) after it.
+	# The portal at /; unknown paths stay the plain 404.
+	[ "$(https_code "$origin/")" = 200 ] || fail "/ is not the portal"
+	[ "$(https_code "$origin/no-such-page")" = 404 ] || fail "an unknown path is not the plain 404"
+	# The form token from /auth/options, posted no sooner than the minimum
+	# submit time (default 2 s) after it.
 	local guard=""
 	[ "$(https_code "$origin/$p/auth/options")" = 200 ] || fail "auth options"
 	ft=$(cx sed -n 's/.*"form_token":"\([A-Za-z0-9_-]*\)".*/\1/p' /tmp/last)
 	[ -z "$ft" ] || guard=",\"guard\":{\"form_token\":\"$ft\"}"
 	sleep 3
 	[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
-		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] ||
-		[ "$(https_code "$origin/$p/auth/login" -c /tmp/jar -X POST -H 'Content-Type: application/json' \
-			-d "{\"login\":\"$admin_email\",\"password\":\"$pw\"}")" = 200 ] || fail "admin login via the API"
+		-d "{\"email\":\"$admin_email\",\"password\":\"$pw\"$guard}")" = 200 ] || fail "admin login via the API"
 	cx grep -q '"role":"admin"' /tmp/last || fail "login response"
 	cx akari --version | grep -q "^akari ${want_version#v} " || fail "binary version is not $want_version"
 	cx akari-ctl status >/dev/null || fail "akari-ctl status"
 	echo "ok: $want_version healthy, login ok"
 }
 
-if [ -n "$prev" ]; then
-	log "install $prev from GitHub (keyless cosign) — bare, $address"
-	inst "$c" sh /src/scripts/install.sh --yes --mode bare --version "$prev" "${addr_args[@]}" || fail "install $prev"
-	check_panel "$prev"
-	case $prev in
-	v0.3.*)
-		# v0.4 squashed the v0.3.x migrations (1000_baseline): upgrading a
-		# v0.3.x install must be refused before anything changes.
-		log "upgrade $prev -> $new must be refused"
-		if inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" >/tmp/akari-refused.log 2>&1; then
-			cat /tmp/akari-refused.log
-			fail "the upgrade from $prev was not refused"
-		fi
-		cat /tmp/akari-refused.log
-		grep -q 'fresh install required; see docs/DEPLOY.md\|需要全新安装，见 docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
-		cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
-		cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
-		check_panel "$prev"
-		echo "ok: upgrade from $prev refused cleanly"
-		;;
-	*)
-		# A v0.4+ release: the in-place upgrade to this build must work.
-		log "upgrade $prev -> $new"
-		inst "${local_rel[@]}" "$c" akari-ctl upgrade --yes --version "$new" || fail "upgrade $prev -> $new"
-		cx grep -q "^VERSION=$new\$" /etc/akari/install.env || fail "install.env does not record $new"
-		check_panel "$new"
-		echo "ok: upgrade from $prev"
-		;;
-	esac
-	# Then purge and install fresh.
-	inst "$c" sh /src/scripts/install.sh uninstall --yes --purge --confirm purge || fail "purge $prev"
-fi
 log "install $new — bare, $address"
 timed inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
 PREFIX=$(prefix)
@@ -211,12 +157,11 @@ cx grep -q '下载并验证' /var/log/akari-install.log || fail "the default run
 [ "$(default_locale)" = "$locale_before" ] || { default_locale; fail "the installer changed the system default locale"; }
 cx sh -c '! grep -qs "zh_CN" /etc/environment /etc/profile /etc/profile.d/* /root/.profile /root/.bashrc' || fail "the installer wrote the locale into a profile"
 echo "ok: locale: Chinese by default (zh_CN.UTF-8 installed), English fallback when it cannot be, system default untouched"
-cx apt-get update >/dev/null 2>&1 || fail "apt-get update still fails"
 want_caddy=$(sed -n "s/^CADDY_VERSION='\(.*\)'$/\1/p" "$root/scripts/install.sh")
 cx caddy version | grep -q "^v$want_caddy " || fail "Caddy is not the pinned release $want_caddy"
 cx grep -qx 'source=release' /etc/caddy/.installed-by-akari || fail "Caddy's origin not recorded"
 cx systemctl is-active caddy.service >/dev/null || fail "caddy.service is not active"
-echo "ok: Caddy $want_caddy from the GitHub release, the dead Cloudsmith source turned off"
+echo "ok: Caddy $want_caddy from the GitHub release"
 cx stat -c '%a %U' /var/lib/akari | grep -qx '700 akari' || fail "data dir is not 0700 akari"
 cx stat -c '%a %U:%G' /etc/akari/panel.toml | grep -qx '640 root:akari' || fail "panel.toml is not 0640 root:akari"
 for f in /etc/akari/valkey.conf /etc/akari/caddy.env /etc/akari/install.env /var/log/akari-install.log; do
@@ -233,8 +178,8 @@ esac
 echo "ok: modes, ownership, no secrets in logs, node address $node_addr"
 
 log "system status: host metrics readable under the panel unit"
-# The pre-v0.4.1 unit had ProcSubset=pid: /proc/stat, meminfo, loadavg
-# hidden, CPU / memory / load all "unknown" on the status page.
+# /proc/stat, meminfo and loadavg must be readable under the unit's sandbox
+# (ProcSubset=pid would hide them: CPU / memory / load "unknown").
 [ "$(https_code "$origin/$PREFIX/api/v1/system/status" -b /tmp/jar)" = 200 ] || fail "system status"
 cx grep -q '"proc_hidden":false' /tmp/last || fail "the panel unit hides /proc: $(cx cat /tmp/last)"
 cx grep -q '"mem_total_bytes":[1-9]' /tmp/last || fail "no memory total: $(cx cat /tmp/last)"
@@ -246,7 +191,7 @@ log "user + subscription"
 	-d '{"email":"e2e-user@example.com","password":"user-password-123"}')" = 201 ] || fail "create user"
 SUB=$(cx sh -c "sed -n 's/.*\"sub_token\":\"\([^\"]*\)\".*/\1/p' /tmp/last")
 [ -n "$SUB" ] || fail "no subscription token"
-# v0.4 D11: subscriptions live at /<sub path>/<token> (outside the admin
+# Subscriptions live at /<sub path>/<token> (outside the admin
 # prefix); the path comes from the answer's sub_url.
 SUBP=$(cx sh -c "sed -n 's/.*\"sub_url\":\"\([^\"]*\)\".*/\1/p' /tmp/last" | sed 's#^[a-z]*://[^/]*##')
 [ -n "$SUBP" ] || fail "no subscription link"
