@@ -125,7 +125,9 @@ function SignupForm({ s }: { s: Signup }) {
       <Warnings items={s.warnings} />
       {!s.email_verify && (
         <Callout tone="warning">
-          <strong>{tr("建议开启「注册需要验证邮箱」。", "We recommend turning on email verification for sign-ups.")}</strong>{" "}
+          <strong>
+            {tr("建议开启「注册需要验证邮箱」。", "We recommend turning on email verification for sign-ups.")}
+          </strong>{" "}
           {s.mail_enabled
             ? tr(
                 "发信通道已就绪：开启后注册邮箱必须验证，才能收到找回密码与账号提醒邮件，也能挡住批量注册。",

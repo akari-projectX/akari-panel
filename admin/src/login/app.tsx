@@ -67,7 +67,10 @@ export const LOGIN_ERRORS: ErrorTable = {
   ],
   "request.rate_limited": ["尝试次数过多，请稍后再试", "Too many attempts. Please try again later."],
   "request.busy": ["服务器繁忙，请稍后再试", "The server is busy. Please try again shortly."],
-  "request.cross_site": ["请求来自其他网站，已被拒绝。请回到本站页面再操作", "The request came from another site and was refused. Go back to this site and try again."],
+  "request.cross_site": [
+    "请求来自其他网站，已被拒绝。请回到本站页面再操作",
+    "The request came from another site and was refused. Go back to this site and try again.",
+  ],
 };
 const errorText = (e: unknown, lang: "zh" | "en") => errorTextWith(LOGIN_ERRORS, e, lang);
 
