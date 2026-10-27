@@ -17,8 +17,7 @@
 # local_certs; ip = IP-only), KEEP=1 keeps the container, EXTRA_CA = a CA
 # bundle to trust inside the container (TLS-intercepting proxies).
 #
-# Flow: a stale Caddy Cloudsmith apt source answering 402 (turned off by
-# the installer; Caddy from its pinned GitHub release) -> [PREV_TAG install
+# Flow: [PREV_TAG install
 # -> refused upgrade -> purge] -> install -> healthz through Caddy, admin login (API), user + subscription -> broken
 # upgrade (backup, switch, failed health) rolls
 # back -> uninstall keeps data -> reinstall: same prefix, same password,
@@ -93,20 +92,9 @@ grep -q 'no installation found' /tmp/akari-en.out || fail "the English fallback 
 cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "zh_CN.UTF-8 appeared although apt refused"
 cx rm -rf /fakebin /var/log/akari-install.log
 
-# A host set up by an older installer: Caddy's Cloudsmith apt source, which
-# answers 402 since 2026-10-09 (a local stand-in: same host name, plain
-# HTTP on 8402). apt-get update fails on it; the installer must turn that
-# source off and go on.
+# Caddy's old apt repository (Cloudsmith) answers 402: the installer must
+# not download from it.
 grep -q 'https://dl\.cloudsmith\.io' "$root/scripts/install.sh" && fail "install.sh still downloads from dl.cloudsmith.io"
-# shellcheck disable=SC2016 # perl code
-cx systemd-run --unit fake-cloudsmith perl -MIO::Socket::INET -e '
-	my $s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 8402, Listen => 5, ReuseAddr => 1) or die;
-	while (my $c = $s->accept) {
-		while (<$c>) { last if /^\r?$/ }
-		print $c "HTTP/1.1 402 Payment Required\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-		close $c;
-	}' >/dev/null || fail "fake Cloudsmith"
-cx sh -c 'echo "deb [signed-by=/etc/apt/keyrings/caddy.asc] http://dl.cloudsmith.io:8402/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list'
 # The installer from the source tree (deploy files too); env passed by name.
 inst() {
 	docker exec -e LANG=C.UTF-8 -e AKARI_ADMIN_PASSWORD="$pw" -e AKARI_SOURCE_DIR=/src "$@"
@@ -216,9 +204,6 @@ log "install $new — bare, $address"
 timed inst "${local_rel[@]}" "$c" sh /src/scripts/install.sh --yes --mode bare --version "$new" "${addr_args[@]}" || fail "install $new"
 PREFIX=$(prefix)
 check_panel "$new"
-cx test -e /etc/apt/sources.list.d/caddy-stable.list && fail "the dead Cloudsmith source is still on"
-cx test -f /etc/apt/sources.list.d/caddy-stable.list.akari.disabled || fail "the Cloudsmith source was not kept as *.akari.disabled"
-cx grep -q 'disabled Caddy.s Cloudsmith apt repository\|已停用 Caddy 的 Cloudsmith' /var/log/akari-install.log || fail "no message about the Cloudsmith source"
 # The default run: zh_CN.UTF-8 installed for the installer, Chinese output,
 # and the system default locale untouched.
 cx sh -c 'locale -a | grep -i "^zh_cn\.utf-\?8$"' >/dev/null || fail "zh_CN.UTF-8 was not installed"

@@ -66,9 +66,6 @@ VALKEY_SHA_jammy_arm64='c8bcafe7351a40f4932d9c0522d9de26faba59905d86a731699b54c3
 CADDY_VERSION='2.11.7'
 CADDY_SHA_amd64='727b91701a392de6ebc5027509f548bf39979e5216340d0faed8fa5e69c84f8b'
 CADDY_SHA_arm64='d8fc6d179a5d283028a472a5618564f6ad8a86fed513e64f032b3b0b7cc45e42'
-# An apt source of that repository (older installers added one): an apt-get
-# update that fails only because of it turns it off (apt_update).
-CADDY_APT_RE='dl\.cloudsmith\.io(:[0-9]+)?/public/caddy/'
 
 PGDG_KEY_FPR='B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8'
 DOCKER_KEY_FPR='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
@@ -921,7 +918,6 @@ apt_has() {
 APT_UPDATED=0
 apt_update() {
 	if ! apt_update_once; then
-		disable_caddy_apt_source || die apt_get_update_failed
 		apt_update_once || die apt_get_update_failed
 	fi
 	APT_UPDATED=1
@@ -935,26 +931,6 @@ apt_update_once() {
 	fi
 	cat "$TMP/apt-update.out" >>"$LOG"
 	return 1
-}
-
-# disable_caddy_apt_source: after a failed apt-get update whose every error
-# is about Caddy's Cloudsmith repository, rename the sources.list.d files
-# that use it to *.akari.disabled (apt ignores them). Fails otherwise.
-disable_caddy_apt_source() {
-	grep -q '^E:' "$TMP/apt-update.out" || return 1
-	grep '^E:' "$TMP/apt-update.out" >"$TMP/apt-update.errors"
-	! grep -qvE "$CADDY_APT_RE" "$TMP/apt-update.errors" || return 1
-	if grep -qsE "^[^#]*$CADDY_APT_RE" /etc/apt/sources.list; then
-		die etc_apt_sources_list_has_caddys
-	fi
-	found=
-	for f in /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
-		[ -f "$f" ] && grep -qE "^[^#]*$CADDY_APT_RE" "$f" || continue
-		mv -f "$f" "$f.akari.disabled"
-		warn disabled_caddys_cloudsmith_apt_repository_unavailable "$f" "$f"
-		found=1
-	done
-	[ -n "$found" ]
 }
 
 base_packages() {
@@ -1093,7 +1069,7 @@ get_image() {
 # get_bundle: the deploy files (compose file, Caddyfile, units, backup
 # scripts, this installer) -> $BUNDLE. From the fetched release when it
 # carries akari-deploy.tar.gz, else from a source checkout (development,
-# CI), else from this installer's own release.
+# CI).
 BUNDLE=
 get_bundle() {
 	BUNDLE="$TMP/bundle"
@@ -1110,15 +1086,6 @@ get_bundle() {
 		cp -R "$src/deploy" "$BUNDLE/deploy"
 		mkdir -p "$BUNDLE/scripts"
 		cp "$src/scripts/backup.sh" "$src/scripts/restore.sh" "$src/scripts/install.sh" "$BUNDLE/scripts/"
-		return
-	fi
-	if [ "$INSTALLER_VERSION" != '@@AKARI_INSTALLER_VERSION@@' ]; then
-		saved_rel=$REL saved_tag=$tag
-		fetch_release "$INSTALLER_VERSION"
-		release_has akari-deploy.tar.gz || die no_deploy_bundle_available
-		release_file akari-deploy.tar.gz
-		tar -xzf "$REL/akari-deploy.tar.gz" -C "$BUNDLE" || die cannot_unpack_deploy_bundle
-		REL=$saved_rel tag=$saved_tag
 		return
 	fi
 	die no_deploy_bundle_set_akari_source
@@ -1449,9 +1416,6 @@ configure_caddy() {
 	opts=$(caddy_options bare "$NL")
 	{
 		echo "AKARI_DOMAIN=${DOMAIN:-$PUBLIC_IP}"
-		# Only the Caddyfile of releases before v0.4 D4/D11 (which forwarded
-		# just the prefix) reads it; the current one forwards everything.
-		echo "AKARI_PREFIX=$1"
 		echo "AKARI_UPSTREAM=127.0.0.1:$WEB_PORT"
 		echo "AKARI_ASK=http://127.0.0.1:$ASK_PORT/ask"
 		# systemd EnvironmentFile: a quoted value may span lines.
@@ -1461,7 +1425,7 @@ configure_caddy() {
 	install -d -m 0755 /etc/systemd/system/caddy.service.d
 	cat >"$TMP/caddy-dropin.conf" <<'EOF'
 # Written by the Akari installer.
-# AKARI_DOMAIN / AKARI_PREFIX (secret; older releases) / upstream / ask endpoint for
+# AKARI_DOMAIN / upstream / ask endpoint for
 # /etc/caddy/Caddyfile. No --environ (it logs the environment), and the
 # admin API is off (`admin off`), so restart instead of reload.
 [Unit]
@@ -2086,8 +2050,6 @@ install_docker_mode() {
 	fi
 	prefix=$(docker_prefix)
 	[ -n "$prefix" ] || die cannot_read_admin_prefix
-	# Read only by the compose file of releases before v0.4 D4/D11.
-	kv_set "$DOCKER_DIR/.env" AKARI_PREFIX "$prefix"
 	step starting_containers
 	run dc up -d || die docker_compose_up_failed_see_log
 	wait_health "$(panel_health_url "$prefix")" 180 ||
@@ -3925,8 +3887,6 @@ msg_zh() {
 	ports_already_in_use_ss_ltnp) m '端口已被占用：%s（ss -ltnp 查看占用者；或用 --http-port/--https-port/--grpc-port 换端口）' ;;
 	apt_get_install_failed_see_log) m 'apt-get install $* 失败（见日志）' ;;
 	apt_get_update_failed) m 'apt-get update 失败' ;;
-	etc_apt_sources_list_has_caddys) m '/etc/apt/sources.list 含 Caddy 的 Cloudsmith 软件源（已失效，402），请删除该行后重试' ;;
-	disabled_caddys_cloudsmith_apt_repository_unavailable) m '已停用 Caddy 的 Cloudsmith 软件源（不可用，402）：%s → %s.akari.disabled（docs/DEPLOY.md）' ;;
 	installing_base_tools) m '安装基础工具：%s' ;;
 	cannot_download_repository_key) m '下载 %s 软件源密钥失败' ;;
 	cannot_download_cosign) m '下载 cosign 失败' ;;
@@ -3946,7 +3906,6 @@ msg_zh() {
 	image_reference_does_not_match_release) m '镜像引用与版本不符：%s' ;;
 	cannot_unpack_deploy_bundle) m '解压部署文件失败' ;;
 	deploy_files_from_source_tree) m '部署文件取自源码目录 %s' ;;
-	no_deploy_bundle_available) m '找不到部署文件' ;;
 	no_deploy_bundle_set_akari_source) m '找不到部署文件（从源码运行时设置 AKARI_SOURCE_DIR）' ;;
 	backup_signing_key_backup_sign_key) m '备份签名密钥 %s（install.env 的 BACKUP_SIGN_KEY）不可读' ;;
 	cannot_generate_backup_signing_key) m '无法生成备份签名密钥' ;;
@@ -4291,8 +4250,6 @@ msg_en() {
 	ports_already_in_use_ss_ltnp) m 'ports already in use:%s (ss -ltnp shows by what; or choose others with --http-port/--https-port/--grpc-port)' ;;
 	apt_get_install_failed_see_log) m 'apt-get install $* failed (see the log)' ;;
 	apt_get_update_failed) m 'apt-get update failed' ;;
-	etc_apt_sources_list_has_caddys) m '/etc/apt/sources.list has Caddy'\''s Cloudsmith repository (unavailable: 402); remove that line and retry' ;;
-	disabled_caddys_cloudsmith_apt_repository_unavailable) m 'disabled Caddy'\''s Cloudsmith apt repository (unavailable: 402): %s -> %s.akari.disabled (docs/DEPLOY.md)' ;;
 	installing_base_tools) m 'installing base tools:%s' ;;
 	cannot_download_repository_key) m 'cannot download the %s repository key' ;;
 	cannot_download_cosign) m 'cannot download cosign' ;;
@@ -4312,7 +4269,6 @@ msg_en() {
 	image_reference_does_not_match_release) m 'image reference does not match the release: %s' ;;
 	cannot_unpack_deploy_bundle) m 'cannot unpack the deploy bundle' ;;
 	deploy_files_from_source_tree) m 'deploy files from the source tree %s' ;;
-	no_deploy_bundle_available) m 'no deploy bundle available' ;;
 	no_deploy_bundle_set_akari_source) m 'no deploy bundle (set AKARI_SOURCE_DIR when running from a source tree)' ;;
 	backup_signing_key_backup_sign_key) m 'the backup signing key %s (BACKUP_SIGN_KEY in install.env) is not readable' ;;
 	cannot_generate_backup_signing_key) m 'cannot generate the backup signing key' ;;
