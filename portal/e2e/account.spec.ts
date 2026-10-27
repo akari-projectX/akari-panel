@@ -3,7 +3,7 @@
  * （#17 #20–#23 验证 / 更换邮箱、改密码、邮件语言；分区锚点与旧 ?tab=security；明暗三档；站点没开发信；退出所有设备；
  * 旧格式订阅链接的重置；#26 自助注销与它的阻止状态），通行密钥的管理在 auth.spec.ts 的 #3–#5 里（同一个账户接着做）。
  * #18 / #19 的账户范围在 dashboard.spec.ts / shell.spec.ts / shop.spec.ts。
- * 账户（e2e/support/seed.ts，每个视口一个）：v2-account-、v2-settings-、v2-legacy-、v2-delete-；退出所有设备的账户在用例里建。
+ * 账户（e2e/support/seed.ts，每个视口一个）：v2-account-、v2-settings-、v2-unreadable-、v2-delete-；退出所有设备的账户在用例里建。
  */
 import type { Page, TestInfo } from '@playwright/test';
 import { Client, latestMail, psql } from './support/panel.ts';
@@ -237,15 +237,15 @@ test('settings: sign out of every device from the security section', async ({ pa
   await other.close();
 });
 
-test('settings: an old-format link (no stored copy) can still be reset from settings', async ({ page }, info) => {
-  const email = mine(info, 'v2-legacy');
-  /* 先签发一次，再去掉可显示的密文：0120 之前的账户就是这样（只有哈希） */
+test('settings: an unreadable link (stored copy does not open) can still be reset from settings', async ({ page }, info) => {
+  const email = mine(info, 'v2-unreadable');
+  /* 先签发一次，再把密文换成打不开的内容（主密钥换过的站点就是这样） */
   await (await Client.user(email, seed.password)).call('GET', '/api/v1/me');
-  psql(`UPDATE users SET sub_token_enc = NULL WHERE email = '${email}';`);
+  psql(`UPDATE users SET sub_token_enc = '\\x01' WHERE email = '${email}';`);
   await signIn(page, email);
   await settings(page, '/account#subscription');
   const sub = page.locator('#subscription');
-  await expect(sub.getByText('旧格式链接，重置后可查看')).toBeVisible();
+  await expect(sub.getByText('无法显示，重置后可查看')).toBeVisible();
   await expect(sub.getByRole('link', { name: '去导入' })).toHaveCount(0);
   await sub.getByRole('button', { name: '重置', exact: true }).click();
   const confirm = page.getByRole('alertdialog', { name: '重置订阅？' });

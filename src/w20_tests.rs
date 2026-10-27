@@ -108,7 +108,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     );
     let me = me.json();
     let token = me["sub_token"].as_str().unwrap().to_string();
-    assert_eq!(me["sub_legacy"], false);
+    assert_eq!(me["sub_unreadable"], false);
     assert_eq!(me["sub_url"], format!("https://sub.example/sub/{token}"));
     assert!(me["probe_interval_secs"].as_u64().unwrap() >= 600);
     let (hash, enc) = stored(&db, id).await;
@@ -177,7 +177,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     assert_eq!(r.status, StatusCode::OK);
     assert_eq!(r.headers.get("cache-control").unwrap(), "no-store");
     assert_eq!(r.json()["sub_token"], t2);
-    assert_eq!(r.json()["legacy"], false);
+    assert_eq!(r.json()["unreadable"], false);
     assert_eq!(r.json()["sub_url"], format!("https://sub.example/sub/{t2}"));
     assert_eq!(
         ac.get(&format!("/test/api/v1/users/{admin}/subscription"))
@@ -207,7 +207,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     .fetch_all(&db.pool)
     .await
     .unwrap();
-    assert_eq!(read, [(Some(admin), json!({"legacy": false}))]);
+    assert_eq!(read, [(Some(admin), json!({"unreadable": false}))]);
     // Admin regeneration also stores the ciphertext.
     let r = ac
         .post(&format!("/test/api/v1/users/{id}/sub-token"), json!({}))
@@ -232,54 +232,24 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     db.drop().await;
 }
 
-/// Pre-0120 accounts (hash only) keep their working link and are never
-/// rotated implicitly: /me says `sub_legacy` until the user resets. The
-/// renewal scope gets no link. A hash rewritten by hand drops the stale
-/// ciphertext (0120 trigger); a ciphertext without a hash is refused.
+/// A link whose stored ciphertext does not open (data/master.key was
+/// replaced, or the row was edited by hand) keeps working and is never
+/// rotated implicitly: /me and the admin read say `unreadable` until the
+/// user resets. The hash and the ciphertext exist together (CHECK).
 #[tokio::test]
-async fn legacy_tokens_are_kept_and_guarded() {
+async fn unreadable_tokens_are_kept_and_guarded() {
     let Some(db) = TestDb::new().await else {
         return;
     };
     let state = AppState::for_test(db.pool.clone()).await;
     let (id, login) = user_with_password(&db).await;
-    let legacy = crate::sub::generate_token();
-    sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
-        .bind(id)
-        .bind(hash_token(&legacy))
-        .execute(&db.pool)
-        .await
-        .unwrap();
     let c = signed_in(&state, &login).await;
-    let me = c.get("/test/api/v1/me").await.json();
-    assert_eq!(me["sub_legacy"], true);
-    assert!(me["sub_token"].is_null() && me["sub_url"].is_null());
-    assert_eq!(
-        stored(&db, id).await.0,
-        Some(hash_token(&legacy)),
-        "not rotated"
-    );
-    let anon = Client::new(&state, rand_ip());
-    assert_eq!(
-        anon.get(&format!("/sub/{legacy}")).await.status,
-        StatusCode::OK
-    );
-    assert!(audit_actions(&db, id).await.is_empty());
-    // Reset → a showable link.
-    let t = c.post("/test/api/v1/me/sub-token", json!({})).await.json()["sub_token"]
+    let t = c.get("/test/api/v1/me").await.json()["sub_token"]
         .as_str()
         .unwrap()
         .to_string();
-    let me = c.get("/test/api/v1/me").await.json();
-    assert_eq!(me["sub_legacy"], false);
-    assert_eq!(me["sub_token"], t);
-    assert_eq!(
-        me["sub_url"],
-        format!("/sub/{t}"),
-        "no subscription domain: root-relative on the panel (D11)"
-    );
 
-    // A ciphertext from another key file (or row) opens to nothing: legacy.
+    // A ciphertext from another key file (or row) opens to nothing.
     let mut conn = db.pool.acquire().await.unwrap();
     let other = masterkey::Keys::from_material(&[9u8; 32]).unwrap();
     sqlx::query("UPDATE users SET sub_token_enc = $2 WHERE id = $1")
@@ -288,38 +258,25 @@ async fn legacy_tokens_are_kept_and_guarded() {
         .execute(&mut *conn)
         .await
         .unwrap();
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_unreadable"], true);
+    assert!(me["sub_token"].is_null() && me["sub_url"].is_null());
+    assert_eq!(stored(&db, id).await.0, Some(hash_token(&t)), "not rotated");
+    let anon = Client::new(&state, rand_ip());
+    assert_eq!(
+        anon.get(&format!("/sub/{t}")).await.status,
+        StatusCode::OK,
+        "the link still works"
+    );
     let actor = crate::audit::Actor::cli();
     assert_eq!(
         crate::sub::ensure_token(&mut conn, state.master_key(), &actor, id)
             .await
             .unwrap(),
-        Some(Stored::Legacy)
+        Some(Stored::Unreadable)
     );
-    // The trigger: a hand-written hash change drops the ciphertext.
-    sqlx::query("UPDATE users SET sub_token_enc = $2 WHERE id = $1")
-        .bind(id)
-        .bind(state.master_key().seal_sub_token(id, &t).unwrap())
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE users SET sub_token_hash = 'x' WHERE id = $1")
-        .bind(id)
-        .execute(&mut *conn)
-        .await
-        .unwrap();
-    assert_eq!(stored(&db, id).await, (Some("x".into()), None));
-    let err = sqlx::query(
-        "UPDATE users SET sub_token_hash = NULL, sub_token_enc = '\\x01' WHERE id = $1",
-    )
-    .bind(id)
-    .execute(&mut *conn)
-    .await
-    .unwrap_err();
-    assert!(
-        err.to_string().contains("users_sub_token_enc_has_hash"),
-        "{err}"
-    );
-    // A ciphertext whose plaintext does not match the lookup hash is legacy.
+    // A ciphertext whose plaintext does not match the lookup hash is
+    // unreadable too.
     let u = crate::sub::generate_token();
     sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 WHERE id = $1")
         .bind(id)
@@ -332,9 +289,40 @@ async fn legacy_tokens_are_kept_and_guarded() {
         crate::sub::ensure_token(&mut conn, state.master_key(), &actor, id)
             .await
             .unwrap(),
-        Some(Stored::Legacy)
+        Some(Stored::Unreadable)
     );
+    // The two columns exist together.
+    for sql in [
+        "UPDATE users SET sub_token_hash = NULL WHERE id = $1",
+        "UPDATE users SET sub_token_enc = NULL WHERE id = $1",
+    ] {
+        let err = sqlx::query(sql)
+            .bind(id)
+            .execute(&mut *conn)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("users_sub_token_pair"), "{err}");
+    }
     drop(conn);
+    assert!(
+        !audit_actions(&db, id)
+            .await
+            .contains(&"user.sub_token.rotate".to_string()),
+        "never rotated implicitly"
+    );
+    // Reset → a showable link.
+    let t = c.post("/test/api/v1/me/sub-token", json!({})).await.json()["sub_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let me = c.get("/test/api/v1/me").await.json();
+    assert_eq!(me["sub_unreadable"], false);
+    assert_eq!(me["sub_token"], t);
+    assert_eq!(
+        me["sub_url"],
+        format!("/sub/{t}"),
+        "no subscription domain: root-relative on the panel (D11)"
+    );
 
     // Renewal scope (expired): no link, nothing issued.
     let (id2, login2) = user_with_password(&db).await;
@@ -347,7 +335,7 @@ async fn legacy_tokens_are_kept_and_guarded() {
     let me = c2.get("/test/api/v1/me").await.json();
     assert_eq!(me["expired"], true);
     assert!(me["sub_token"].is_null());
-    assert_eq!(me["sub_legacy"], false);
+    assert_eq!(me["sub_unreadable"], false);
     assert_eq!(stored(&db, id2).await, (None, None));
     drop(state);
     db.drop().await;
@@ -667,7 +655,7 @@ async fn own_client_only_mode() {
     assert_eq!(me["sub_own_client"], true);
     assert_eq!(me["sub_token"], serde_json::Value::Null);
     assert_eq!(me["sub_url"], serde_json::Value::Null);
-    assert_eq!(me["sub_legacy"], false);
+    assert_eq!(me["sub_unreadable"], false);
     assert_eq!(me["sub_formats"], json!([]));
     assert_eq!(me["sub_import_clients"], json!([]));
 

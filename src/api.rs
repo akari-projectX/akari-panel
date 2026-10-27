@@ -483,12 +483,13 @@ pub struct MeView {
     /// `/<sub_path>/<token>` when no subscription/main domain is
     /// configured: the portal prefixes its own origin). Both null for
     /// admins, for the renewal scope (the subscription refuses those
-    /// accounts), for `sub_legacy`, and in own-client-only mode.
+    /// accounts), for `sub_unreadable`, and in own-client-only mode.
     sub_token: Option<String>,
     sub_url: Option<String>,
-    /// W20: a link from before 0120 works but cannot be shown (hash only);
-    /// resetting it gives a showable one. Never rotated implicitly.
-    sub_legacy: bool,
+    /// W20: the link works but its stored ciphertext does not open
+    /// (data/master.key was replaced); resetting it gives a showable one.
+    /// Never rotated implicitly.
+    sub_unreadable: bool,
     /// PR ② section 5: the subscription formats that are on (the portal's
     /// format selector) and the one-click import buttons to show.
     sub_formats: Vec<String>,
@@ -541,12 +542,12 @@ pub async fn me(
     };
     tx.commit().await?;
     let settings = state.settings().get();
-    let (sub_token, sub_legacy) = match stored {
+    let (sub_token, sub_unreadable) = match stored {
         // Own-client-only mode: the link is never shown (the Akari client
         // fetches its profile itself).
         Some(crate::sub::Stored::Ready(_)) if settings.sub_own_client_only => (None, false),
         Some(crate::sub::Stored::Ready(t)) => (Some(t), false),
-        Some(crate::sub::Stored::Legacy) => (None, true),
+        Some(crate::sub::Stored::Unreadable) => (None, true),
         None => (None, false),
     };
     let sub_url = sub_token.as_deref().map(|t| state.sub_link(user.id, t));
@@ -571,7 +572,7 @@ pub async fn me(
         locale: row.locale,
         sub_token,
         sub_url,
-        sub_legacy,
+        sub_unreadable,
         sub_formats: settings.sub_formats.clone(),
         sub_import_clients: settings.sub_import_clients.clone(),
         sub_own_client: settings.sub_own_client_only,
@@ -598,8 +599,9 @@ pub fn no_store(body: impl IntoResponse) -> Response {
 /// user's subscription token and URL. Reading another account's credential
 /// is audited (`user.sub_token.read`, no token material) in the same
 /// transaction; an account without any token gets one first (audited
-/// `user.sub_token.issue`). `legacy: true` = a pre-0120 link that works but
-/// cannot be shown (regenerate to get a showable one). Admin accounts have
+/// `user.sub_token.issue`). `unreadable: true` = the link works but its
+/// ciphertext does not open (data/master.key was replaced; regenerate to get
+/// a showable one). Admin accounts have
 /// no subscription (400).
 pub async fn user_subscription(
     State(state): State<AppState>,
@@ -630,7 +632,7 @@ pub async fn user_subscription(
         .ok_or_else(ApiError::not_found)?;
     let token = match stored {
         crate::sub::Stored::Ready(t) => Some(t),
-        crate::sub::Stored::Legacy => None,
+        crate::sub::Stored::Unreadable => None,
     };
     crate::audit::record(
         &mut tx,
@@ -639,13 +641,13 @@ pub async fn user_subscription(
         "user",
         Some(id.to_string()),
         None,
-        Some(json!({ "legacy": token.is_none() })),
+        Some(json!({ "unreadable": token.is_none() })),
     )
     .await?;
     tx.commit().await?;
     let sub_url = token.as_deref().map(|t| state.sub_link(id, t));
     Ok(no_store(Json(json!({
-        "legacy": token.is_none(),
+        "unreadable": token.is_none(),
         "sub_token": token,
         "sub_url": sub_url,
     }))))

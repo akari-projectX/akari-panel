@@ -884,7 +884,7 @@ async fn apply_one(
                 return Ok(Step::Skipped("无已验证邮箱".into()));
             };
             // D11: `{sub_url}` = the recipient's own subscription link (a
-            // link that cannot be shown — pre-0120 or unreadable — skips;
+            // link that cannot be shown (unreadable) skips;
             // so does every recipient in own-client-only mode, where links
             // are never handed out). The audit keeps the template (a link
             // is a credential).
