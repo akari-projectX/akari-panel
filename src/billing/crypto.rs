@@ -32,8 +32,6 @@ use crate::auth::{ApiError, bad_request};
 pub const HOME_CURRENCY: &str = "CNY";
 /// Longest hosted-checkout link stored (`orders.pay_url` CHECK).
 pub const MAX_LINK: usize = 2048;
-/// Longest secret / id accepted in a form.
-pub const MAX_SECRET: usize = 4096;
 /// Attempts of an idempotent read (transport errors, 429, 5xx).
 const READ_ATTEMPTS: u32 = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(300);
