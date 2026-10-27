@@ -1,0 +1,3 @@
+x: &a {k: v}
+proxy-groups:
+  - {<<: *a, name: G, type: select, proxies: [$proxies]}

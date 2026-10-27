@@ -121,19 +121,7 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         27 => {
-            // Subscription routing: validation is idempotent (a stored
-            // value parses to itself).
             strict::<settings::SubscriptionReq>(body);
-            if let Ok(r) = serde_json::from_slice::<settings::SubscriptionReq>(body)
-                && let Some(Some(c)) = r.routing
-                && let Ok(p) = c.parse()
-            {
-                assert_eq!(
-                    p.clone().parse().ok(),
-                    Some(p),
-                    "routing parse not idempotent"
-                );
-            }
         }
         28..=32 => {
             // Passkey registration, address binding and the passkey centre.

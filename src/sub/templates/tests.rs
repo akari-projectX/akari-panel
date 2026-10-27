@@ -175,7 +175,7 @@ rules:
     assert!(!out.contains("Gone"), "{out}");
     let e = strict_err(TemplateFormat::Clash, dangling);
     assert!(e.message.contains("\"Gone\""), "{e:?}");
-    assert_eq!((e.line, e.column), (Some(2), Some(37)), "{e:?}");
+    assert_eq!((e.line, e.column), (Some(2), Some(39)), "{e:?}");
     // Duplicate group names and cycles.
     let e = strict_err(TemplateFormat::Clash, "proxy-groups:\n  - {name: G, type: select, proxies: [DIRECT]}\n  - {name: G, type: select, proxies: [DIRECT]}\n");
     assert!(e.message.contains("two proxy groups"), "{e:?}");
@@ -392,8 +392,7 @@ async fn templates_api_versions_audit_and_preview() {
     let r = pv(json!({"body": good})).await.json();
     assert!(r["body"].as_str().unwrap().contains("香港 01"), "{r}");
     assert_eq!(r["content_type"], "text/yaml; charset=utf-8");
-    assert!(!r["body"].as_str().unwrap().contains("SAMPLE-TOKEN") || r["body"].as_str().unwrap().contains("sample"));
-    assert_eq!(pv(json!({})).await.json()["body"].as_str().unwrap().trim(), "mixed-port: 1\nrules: []\nproxies: []".trim().to_string() + "");
+    assert!(pv(json!({})).await.json()["body"].as_str().unwrap().starts_with("mixed-port: 1\nrules: []\nproxies:\n"));
     let u = db.user().await;
     let r = pv(json!({"user_id": u})).await;
     assert_eq!(r.status, StatusCode::OK);

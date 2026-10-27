@@ -241,3 +241,11 @@ impl Serialize for Doc {
         }
     }
 }
+
+/// Block-style YAML with indented list items (`  - name: …`, the layout
+/// operators and the smoke scripts know).
+pub(crate) fn to_yaml(doc: &Doc) -> Result<String, String> {
+    let mut options = serde_saphyr::SerializerOptions::default();
+    options.compact_list_indent = false;
+    serde_saphyr::to_string_with_options(doc, options).map_err(|e| e.to_string())
+}

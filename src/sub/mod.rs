@@ -756,6 +756,12 @@ mod tests {
         .unwrap()
     }
 
+    /// The proxies of a rendered Clash profile as JSON values.
+    fn clash_proxies(yaml: &str) -> Vec<Value> {
+        let doc: Value = serde_saphyr::from_str(yaml).unwrap();
+        doc["proxies"].as_array().unwrap().clone()
+    }
+
     fn render_sing_box_default(proxies: &[Proxy]) -> Value {
         serde_json::from_str(
             &templates::render_sample_for(
@@ -941,7 +947,7 @@ mod tests {
         }
         assert_eq!(
             import_clients(None, &all),
-            ["clash", "stash", "shadowrocket", "sing-box", "hiddify"]
+            ["clash", "stash", "shadowrocket", "sing-box", "hiddify", "surge", "surfboard"]
         );
         assert_eq!(
             import_clients(None, &on(&["links"])),
@@ -991,68 +997,49 @@ mod tests {
 
         let (ct, body) = render("clash.meta", &rows);
         assert_eq!(ct, "text/yaml; charset=utf-8");
-        // The recommended DNS first, then the proxies (exact), then the
-        // groups and rules (golden files `w26_golden_tests`).
+        // The built-in template: its DNS first, the proxies injected where
+        // the template has `proxies:`, groups expanded, rules last.
         let body = body.trim_end();
-        assert!(body.starts_with("dns:\n  enable: true\n"), "{body}");
-        let proxies =
-            &body[body.find("proxies:\n").unwrap()..body.find("proxy-groups:\n").unwrap()];
+        assert!(body.starts_with("# Akari") || body.starts_with("mixed-port:"), "{body}");
+        let ps = clash_proxies(body);
         assert_eq!(
-            proxies,
-            r#"proxies:
-  - name: "in-vless"
-    type: vless
-    server: hk.example.com
-    port: 443
-    uuid: 11111111-1111-1111-1111-111111111111
-    flow: xtls-rprx-vision
-    network: tcp
-    tls: true
-    servername: www.apple.com
-    client-fingerprint: firefox
-    reality-opts:
-      public-key: PUBKEY
-      short-id: ab12
-  - name: "in-vmess"
-    type: vmess
-    server: hk.example.com
-    port: 8443
-    uuid: 22222222-2222-2222-2222-222222222222
-    alterId: 0
-    cipher: auto
-    network: ws
-    ws-opts:
-      path: /ws
-      headers:
-        Host: cdn.example.com
-  - name: "in-trojan"
-    type: trojan
-    server: hk.example.com
-    port: 9443
-    password: pw
-    network: tcp
-    tls: true
-    sni: t.example.com
-"#
+            ps,
+            [
+                json!({"name": "in-vless", "type": "vless", "server": "hk.example.com", "port": 443,
+                    "uuid": "11111111-1111-1111-1111-111111111111", "flow": "xtls-rprx-vision",
+                    "network": "tcp", "tls": true, "servername": "www.apple.com",
+                    "client-fingerprint": "firefox",
+                    "reality-opts": {"public-key": "PUBKEY", "short-id": "ab12"}}),
+                json!({"name": "in-vmess", "type": "vmess", "server": "hk.example.com", "port": 8443,
+                    "uuid": "22222222-2222-2222-2222-222222222222", "alterId": 0, "cipher": "auto",
+                    "network": "ws", "ws-opts": {"path": "/ws", "headers": {"Host": "cdn.example.com"}}}),
+                json!({"name": "in-trojan", "type": "trojan", "server": "hk.example.com", "port": 9443,
+                    "password": "pw", "network": "tcp", "tls": true, "sni": "t.example.com"}),
+            ]
         );
-        assert!(body.contains(
-            "proxy-groups:\n  - name: \"🚀 默认代理\"\n    type: select\n    proxies:\n      - \"♻️ 全部节点\"\n      - \"in-vless\"\n      - \"in-vmess\"\n      - \"in-trojan\"\n"
-        ));
-        // No line pinned: every recommended service points at the default proxy.
-        assert!(body.contains(
-            "  - name: \"🎬 Netflix\"\n    type: select\n    proxies:\n      - \"🚀 默认代理\"\n      - \"♻️ 全部节点\"\n      - DIRECT\n"
-        ));
+        let doc: Value = serde_saphyr::from_str(body).unwrap();
+        let group = |n: &str| doc["proxy-groups"].as_array().unwrap().iter().find(|g| g["name"] == n).unwrap().clone();
+        assert_eq!(
+            group("🚀 默认代理")["proxies"],
+            json!(["♻️ 自动选择", "🇭🇰 香港", "🇯🇵 日本", "🇺🇸 美国", "🇸🇬 新加坡", "🇹🇼 台湾", "in-vless", "in-vmess", "in-trojan", "DIRECT"])
+        );
+        assert_eq!(group("🇭🇰 香港")["filter"], "(?i)港|hk|hong");
+        assert!(group("🇭🇰 香港").get("proxies").is_none(), "include-all groups list nothing");
         for want in [
-            "  - RULE-SET,geosite-category-ads-all,REJECT\n  - RULE-SET,geosite-private,DIRECT\n  - RULE-SET,geoip-private,DIRECT,no-resolve\n  - RULE-SET,geosite-cn,DIRECT\n  - RULE-SET,geoip-cn,DIRECT,no-resolve\n  - RULE-SET,geosite-netflix,🎬 Netflix\n",
-            "  geosite-cn:\n    type: http\n    behavior: domain\n    format: text\n    url: \"https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@meta/geo/geosite/cn.list\"\n    interval: 86400\n",
-            "  nameserver-policy:\n    \"rule-set:geosite-private,geosite-cn\": [\"https://223.5.5.5/dns-query\",\"https://doh.pub/dns-query\"]\n",
+            "  - RULE-SET,geosite-category-ads-all,REJECT\n  - RULE-SET,geosite-private,DIRECT\n  - RULE-SET,geoip-private,DIRECT,no-resolve\n  - RULE-SET,geosite-cn,DIRECT\n  - RULE-SET,geoip-cn,DIRECT,no-resolve\n  - RULE-SET,geosite-netflix,",
+            "nameserver-policy:",
         ] {
             assert!(body.contains(want), "missing:\n{want}\nin:\n{body}");
         }
-        assert!(body.ends_with("\n  - MATCH,🚀 默认代理"));
+        assert!(body.ends_with("\n  - MATCH,🚀 默认代理"), "{body}");
 
         let (ct, body) = render("sing-box 1.12", &rows);
         assert_eq!(ct, "application/json; charset=utf-8");
+        let v = serde_json::from_str::<Value>(body.trim_end()).unwrap();
+        let all = v["outbounds"].as_array().unwrap();
+        let groups = all.iter().take_while(|o| o["type"] == "selector" || o["type"] == "urltest").count();
+        // The template's groups, its direct outbound, then the proxies.
+        assert_eq!(all[groups], json!({"type": "direct", "tag": "direct"}));
         let want = json!([
             {"flow": "xtls-rprx-vision", "server": "hk.example.com", "server_port": 443,
              "tag": "in-vless",
@@ -1063,17 +1050,10 @@ mod tests {
              "transport": {"headers": {"Host": "cdn.example.com"}, "path": "/ws", "type": "ws"},
              "type": "vmess", "uuid": "22222222-2222-2222-2222-222222222222"},
             {"password": "pw", "server": "hk.example.com", "server_port": 9443, "tag": "in-trojan",
-             "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"},
-            {"tag": "direct", "type": "direct"}]);
-        let v = serde_json::from_str::<Value>(body.trim_end()).unwrap();
-        // The routing groups come first (7: default, 5 services, all lines).
-        let all = v["outbounds"].as_array().unwrap();
-        assert_eq!(all[7..], want.as_array().unwrap()[..]);
-        assert_eq!(
-            all[0],
-            json!({"type": "selector", "tag": "🚀 默认代理",
-                   "outbounds": ["♻️ 全部节点", "in-vless", "in-vmess", "in-trojan"]})
-        );
+             "tls": {"enabled": true, "server_name": "t.example.com"}, "type": "trojan"}]);
+        assert_eq!(all[groups + 1..], want.as_array().unwrap()[..]);
+        assert_eq!(all[0]["tag"], "🚀 默认代理");
+        assert_eq!(all[0]["outbounds"].as_array().unwrap()[6..], [json!("in-vless"), json!("in-vmess"), json!("in-trojan"), json!("direct")]);
         // W30: a complete client profile: TUN + local mixed inbound, DNS,
         // the routing, everything else through the default proxy.
         assert_eq!(v["inbounds"][0]["type"], "tun");
@@ -1090,6 +1070,16 @@ mod tests {
                    {"query_type": ["A", "AAAA"], "server": "fakeip"}])
         );
         assert_eq!(v["experimental"]["cache_file"]["store_fakeip"], true);
+
+        // Surge and Surfboard: the VLESS line is left out, the others written.
+        let (ct, body) = render("Surge iOS/3000", &rows);
+        assert_eq!(ct, "text/plain; charset=utf-8");
+        assert!(body.contains("in-vmess = vmess, hk.example.com, 8443, username=22222222-2222-2222-2222-222222222222, vmess-aead=true, ws=true, ws-path=/ws, ws-headers=Host:cdn.example.com\n"), "{body}");
+        assert!(body.contains("in-trojan = trojan, hk.example.com, 9443, password=pw, sni=t.example.com\n"), "{body}");
+        assert!(!body.contains("in-vless ="), "{body}");
+        let (_, body) = render("Surfboard/2.30", &rows);
+        assert!(body.contains("in-trojan = trojan, hk.example.com, 9443, password=pw, udp-relay=true, sni=t.example.com\n"), "{body}");
+        assert!(body.contains("in-vmess = vmess, hk.example.com, 8443, username=22222222-2222-2222-2222-222222222222, udp-relay=true, ws=true, ws-path=/ws, ws-headers=Host:cdn.example.com\n"), "{body}");
     }
 
     /// W8 matrix rows: every new protocol/transport the renderers branch on.
@@ -1186,35 +1176,53 @@ mod tests {
     #[test]
     fn w8_matrix_clash() {
         let (_, body) = render("mihomo/1.19", &matrix_rows());
-        let y = body.trim_end();
-        // vmess+xhttp has no mihomo equivalent: left out (and out of the group).
-        assert!(!y.contains("vx"), "{y}");
-        for want in [
-            "  - name: \"rx\"\n    type: vless\n    server: n.example.com\n    port: 443\n    uuid: 11111111-1111-1111-1111-111111111111\n    network: xhttp\n    tls: true\n    servername: www.apple.com\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: PUB\n      short-id: ab\n    xhttp-opts:\n      path: /xh\n      mode: stream-one\n",
-            "    network: ws\n    tls: true\n    servername: n.example.com\n    ws-opts:\n      path: /up\n      headers:\n        Host: n.example.com\n      v2ray-http-upgrade: true\n",
-            "    type: trojan\n    server: n.example.com\n    port: 2087\n    password: tp\n    network: grpc\n    tls: true\n    sni: n.example.com\n    grpc-opts:\n      grpc-service-name: svc\n",
-            "    type: vmess\n    server: n.example.com\n    port: 2096\n    uuid: 33333333-3333-3333-3333-333333333333\n    alterId: 0\n    cipher: auto\n    network: grpc\n    grpc-opts:\n      grpc-service-name: vs\n",
-            "  - name: \"ss\"\n    type: ss\n    server: n.example.com\n    port: 8388\n    cipher: 2022-blake3-aes-128-gcm\n    password: \"+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==\"\n    udp: true\n",
-            "  - name: \"hy\"\n    type: hysteria2\n    server: n.example.com\n    port: 443\n    password: a1b2\n    sni: n.example.com\n    alpn:\n      - h3\n",
-            "    uuid: 55555555-5555-5555-5555-555555555555\n    network: ws\n    ws-opts:\n      path: /w\n",
-        ] {
-            assert!(y.contains(want), "missing:\n{want}\nin:\n{y}");
-        }
-        assert!(!y.contains("flow:"), "stale vision flow rendered: {y}");
-        // 7 proxies (+ 7 groups: default, 5 services, all lines); every
-        // proxy in the default group and the all-lines group.
-        assert_eq!(y.matches("  - name: ").count(), 14);
-        let proxies = &y[..y.find("proxy-groups:").unwrap()];
+        let ps = clash_proxies(&body);
+        let by = |n: &str| ps.iter().find(|p| p["name"] == n).unwrap_or_else(|| panic!("no {n}"));
+        // vmess+xhttp has no mihomo equivalent: left out (and out of the groups).
+        assert!(ps.iter().all(|p| p["name"] != "vx"), "{body}");
+        assert_eq!(
+            by("rx"),
+            &json!({"name": "rx", "type": "vless", "server": "n.example.com", "port": 443,
+                "uuid": "11111111-1111-1111-1111-111111111111", "network": "xhttp", "tls": true,
+                "servername": "www.apple.com", "client-fingerprint": "chrome",
+                "reality-opts": {"public-key": "PUB", "short-id": "ab"},
+                "xhttp-opts": {"path": "/xh", "mode": "stream-one"}})
+        );
+        assert_eq!(by("hu")["ws-opts"], json!({"path": "/up", "headers": {"Host": "n.example.com"}, "v2ray-http-upgrade": true}));
+        assert_eq!((by("hu")["network"].clone(), by("hu")["servername"].clone()), (json!("ws"), json!("n.example.com")));
+        assert_eq!(
+            by("gr"),
+            &json!({"name": "gr", "type": "trojan", "server": "n.example.com", "port": 2087, "password": "tp",
+                "network": "grpc", "tls": true, "sni": "n.example.com", "grpc-opts": {"grpc-service-name": "svc"}})
+        );
+        assert_eq!(
+            by("vg"),
+            &json!({"name": "vg", "type": "vmess", "server": "n.example.com", "port": 2096,
+                "uuid": "33333333-3333-3333-3333-333333333333", "alterId": 0, "cipher": "auto",
+                "network": "grpc", "grpc-opts": {"grpc-service-name": "vs"}})
+        );
+        assert_eq!(
+            by("ss"),
+            &json!({"name": "ss", "type": "ss", "server": "n.example.com", "port": 8388,
+                "cipher": "2022-blake3-aes-128-gcm", "password": "+/+/+/+/+/+/+/+/+/+/+w==:dXNlcmtleXVzZXJrZXkxMg==", "udp": true})
+        );
+        assert_eq!(
+            by("hy"),
+            &json!({"name": "hy", "type": "hysteria2", "server": "n.example.com", "port": 443,
+                "password": "a1b2", "sni": "n.example.com", "alpn": ["h3"]})
+        );
+        assert_eq!(by("ws")["uuid"], "55555555-5555-5555-5555-555555555555");
+        assert_eq!(by("ws")["ws-opts"], json!({"path": "/w"}));
+        assert!(!body.contains("flow:"), "stale vision flow rendered: {body}");
+        // Every proxy is in the default and the automatic group.
+        let doc: Value = serde_saphyr::from_str(&body).unwrap();
+        let groups = doc["proxy-groups"].as_array().unwrap();
         for name in ["rx", "hu", "gr", "vg", "ss", "hy", "ws"] {
-            assert!(
-                proxies.contains(&format!("  - name: \"{name}\"\n")),
-                "{name}"
-            );
-            assert_eq!(
-                y.matches(&format!("      - \"{name}\"\n")).count(),
-                2,
-                "{name}"
-            );
+            let n = groups
+                .iter()
+                .filter(|g| g["proxies"].as_array().is_some_and(|m| m.iter().any(|x| x == name)))
+                .count();
+            assert!(n >= 2, "{name} is in {n} groups");
         }
     }
 
@@ -1222,18 +1230,19 @@ mod tests {
     fn w8_matrix_sing_box() {
         let (_, body) = render("sing-box/1.12", &matrix_rows());
         let v: Value = serde_json::from_str(body.trim_end()).unwrap();
-        // [0] is the default proxy over the proxies; the 7 routing groups
-        // come first.
         let all = v["outbounds"].as_array().unwrap();
+        // The template's groups come first, the proxies after them.
+        let groups = all.iter().take_while(|o| o["type"] == "selector" || o["type"] == "urltest").count();
         assert_eq!(
-            all[0],
-            json!({"type": "selector", "tag": "🚀 默认代理",
-                   "outbounds": ["♻️ 全部节点", "hu", "gr", "vg", "ss", "hy", "ws"]})
+            all[0]["outbounds"],
+            json!(["♻️ 自动选择", "🇭🇰 香港", "🇯🇵 日本", "🇺🇸 美国", "🇸🇬 新加坡", "🇹🇼 台湾", "hu", "gr", "vg", "ss", "hy", "ws", "direct"])
         );
-        let ob = &all[7..];
+        let ob = &all[groups..];
         let tags: Vec<&str> = ob.iter().filter_map(|o| o["tag"].as_str()).collect();
-        // Both xhttp proxies are left out (sing-box has no xhttp).
-        assert_eq!(tags, ["hu", "gr", "vg", "ss", "hy", "ws", "direct"]);
+        // Both xhttp proxies are left out (sing-box has no xhttp); the
+        // template's own direct outbound sits before the proxies.
+        assert_eq!(tags, ["direct", "hu", "gr", "vg", "ss", "hy", "ws"]);
+        let ob = &ob[1..];
         assert_eq!(
             ob[0]["transport"],
             json!({"type": "httpupgrade", "path": "/up", "host": "n.example.com"})
@@ -1318,10 +1327,8 @@ mod tests {
         assert_eq!(proxies[4].net.port, 443);
 
         let (_, clash) = render("clash.meta", &rows);
-        assert!(
-            clash.contains("server: relay.example.net\n    port: 30443\n"),
-            "{clash}"
-        );
+        let relay = clash_proxies(&clash);
+        assert_eq!((relay[2]["server"].as_str(), relay[2]["port"].as_i64()), (Some("relay.example.net"), Some(30443)));
         let (_, links) = render("v2rayN", &rows);
         let links = String::from_utf8(STANDARD.decode(links.trim_end()).unwrap_or_default())
             .unwrap_or(links);
@@ -1360,15 +1367,15 @@ mod tests {
         });
         let p = [plain_proxy("vless", "s.example", &inbound)];
         let clash = render_clash_default(&p);
-        let doc: Vec<&str> = clash.lines().collect();
-        assert!(
-            !doc.iter().any(|l| l.trim_start().starts_with("udp:")),
-            "{clash}"
-        );
-        assert!(!doc.iter().any(|l| l.starts_with("rules: [x]")), "{clash}");
-        assert!(clash.contains("      public-key: \"k: v #c\"\n"), "{clash}");
-        assert!(clash.contains("      short-id: \"ab&flow=x\"\n"), "{clash}");
-        assert!(clash.contains("        Host: \"[a]\"\n"), "{clash}");
+        let doc: Value = serde_saphyr::from_str(&clash).unwrap();
+        // The hostile strings are values, not structure.
+        assert_eq!(doc["rules"].as_array().unwrap().last().unwrap(), "MATCH,🚀 默认代理");
+        assert!(doc.get("udp").is_none(), "{clash}");
+        let px = &clash_proxies(&clash)[0];
+        assert_eq!(px["servername"], "a.example\n    udp: true\nrules: [x]");
+        assert_eq!(px["reality-opts"]["public-key"], "k: v #c");
+        assert_eq!(px["reality-opts"]["short-id"], "ab&flow=x");
+        assert_eq!(px["ws-opts"]["headers"]["Host"], "[a]");
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(!links.contains("&flow=x"), "{links}");
         assert!(links.contains("sid=ab%26flow%3Dx"), "{links}");
@@ -1404,7 +1411,7 @@ mod tests {
         assert!(links.contains("@203.0.113.7:443?"), "{links}");
         let p = [plain_proxy("vless", "2001:db8::1", &tcp)];
         let clash = render_clash_default(&p);
-        assert!(clash.contains("    server: \"2001:db8::1\"\n"), "{clash}");
+        assert_eq!(clash_proxies(&clash)[0]["server"], "2001:db8::1");
     }
 
     #[test]
