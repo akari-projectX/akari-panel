@@ -1,8 +1,8 @@
 //! W28-a (PLAN-v0.4 section 5): entrances — how clients reach a node.
 //!
 //! Every node has one built-in `direct` entrance (created with the node by
-//! the `nodes_direct_entrance` trigger, migration 1030; it can be disabled,
-//! not deleted) and any number of `relay` entrances (migration 1031): an
+//! the `nodes_direct_entrance` trigger; it can be disabled,
+//! not deleted) and any number of `relay` entrances: an
 //! external relay (IPLC, a forwarding VPS) that forwards to the node. An
 //! entrance carries the address/port clients dial (subscriptions), the
 //! traffic multiplier (settled per entrance by `traffic::FLUSH_SQL`) and
@@ -46,7 +46,7 @@ pub const RELAY: &str = "relay";
 pub const DIRECT_TAG: &str = "direct";
 
 pub const MAX_NAME_CHARS: usize = 64;
-/// Source networks per relay entrance (migration 1031 CHECK).
+/// Source networks per relay entrance.
 pub const MAX_SOURCE_CIDRS: usize = 64;
 
 /// The agent-side inbound tag of the entrance numbered `wire_no` on its
@@ -211,7 +211,7 @@ pub struct EntranceView {
     /// The entrance's number on its node (0 = direct): its agent inbound
     /// tag and traffic key suffix.
     pub wire_no: i32,
-    /// Optimistic concurrency (1100): +1 on every update; PATCH may send it
+    /// Optimistic concurrency: +1 on every update; PATCH may send it
     /// back (`EntranceReq::version`) to refuse a stale form.
     pub version: i64,
     /// Relay: the derived inbound's port on the node and the relay's

@@ -755,7 +755,7 @@ WITH input AS (
     -- its own entrances), its node (history and node totals) and its
     -- multiplier: D9, akari_entrance_settle_rate = the lower of the rates
     -- now and 30 s ago (akari_entrance_rate: base or time-window rule,
-    -- site time zone; before a manual change, the old rate: 1100), so
+    -- site time zone; before a manual change, the old rate), so
     -- bytes moved at a cheaper rate are never billed at a dearer one.
     -- Without rules and without a change in the window both instants are
     -- the base rate (what the function returns at once): read it here
@@ -906,7 +906,7 @@ WITH input AS (
                 ELSE amount END AS billed
     FROM server_cap
 ), backlog AS MATERIALIZED (
-    -- Backlogged rows (1101): a delta that starts before the burst window
+    -- Backlogged rows: a delta that starts before the burst window
     -- (only under a reconnect or flush-outage credit, `nf.floor`) covers
     -- the whole outage. On an entrance whose rate can vary (rules, or a
     -- manual change since the delta's start) it is billed at the
@@ -1644,7 +1644,7 @@ async fn history_tx(
     Ok(got.then_some(tx))
 }
 
-/// Q3 (migration 1033): create the monthly traffic_daily partitions that
+/// Q3: create the monthly traffic_daily partitions that
 /// are missing around the current site month. Returns how many were
 /// created (0 when another instance holds the history lock).
 pub async fn ensure_partitions(pg: &sqlx::PgPool) -> anyhow::Result<i32> {
@@ -2407,7 +2407,7 @@ mod db_tests {
         .unwrap()
     }
 
-    /// Q3 (migration 1033): traffic_daily has a partition per month from
+    /// Q3: traffic_daily has a partition per month from
     /// last month to two months ahead (in the test's own schema); whole
     /// months past the retention move into traffic_monthly and their
     /// partitions are dropped (exactly once, two passes at once, nothing
@@ -3207,7 +3207,7 @@ mod db_tests {
         .unwrap()
     }
 
-    /// next07 (migration 1100): a manual multiplier change is a D9
+    /// next07: a manual multiplier change is a D9
     /// boundary. Bytes reported before the change but flushed after it
     /// (pending in the buffer while the admin saves) bill at the lower of
     /// the old and new rates for the settlement window (30 s ≥ one agent

@@ -1,5 +1,5 @@
 //! Account erasure (W27 self-service deletion; D10 never-used account
-//! cleanup — one routine, migration 1016).
+//! cleanup — one routine).
 //!
 //! `apply_erase` deletes a role=user account outright when it has no finance
 //! records (orders, balance ledger rows, commissions as inviter or invitee,

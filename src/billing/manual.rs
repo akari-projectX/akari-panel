@@ -1,4 +1,4 @@
-//! Ops: admin-created ("manual") paid orders (migration 0166).
+//! Ops: admin-created ("manual") paid orders.
 //!
 //! `POST /orders/manual {user_id, plan_id, period, gift, reason}`: the
 //! admin records a sale made outside the gateway (bank transfer, cash) or a

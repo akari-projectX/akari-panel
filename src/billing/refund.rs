@@ -514,7 +514,7 @@ pub async fn apply_refund(
 // ① Original route (the provider refunds)
 // ---------------------------------------------------------------------------
 
-/// `orders.refund_request` (migration 1018).
+/// `orders.refund_request`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OriginalRequest {
     pub out_request_no: String,

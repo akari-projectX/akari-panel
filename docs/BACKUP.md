@@ -153,7 +153,7 @@ DRILL PASS: prefix kept, logins and users restored, agent reconnected in 1 s (pa
 2026-10-02（W14）在当时的 schema 上重跑（迁移至 0091，PostgreSQL 18，age 1.2.1）：
 
 ```
-DRILL PASS: prefix kept, logins (with TOTP) and users restored, agent reconnected in 9 s (panel start to online)
+DRILL PASS: prefix kept, logins and users restored, agent reconnected in 9 s (panel start to online)
 ```
 
 这里的 9 s（首次为 1 s）是面板因恢复而停机期间 agent 的重连退避时间，并非恢复耗时。备份大小 108 KiB（db 86 KiB，data 10 KiB）。

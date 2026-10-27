@@ -68,7 +68,7 @@ flush 现在还会按用户、节点和 UTC 日记录它结算了什么。设计
 
 ## Node top users (2026-10-03)（节点 top 用户）
 
-`GET /nodes/{id}/traffic`（管理端节点页：按天 + top 20 用户）是 W22 中最慢的读取（`traffic_node`，16 客户端下 p99 55.4 ms）。在 bench 数据集（30 天历史、最繁忙节点、30 天范围）上对 `trafficlog::node_top_users` 做 `EXPLAIN (ANALYZE, BUFFERS)`：约 8k 个用户的 1.55 万个 `traffic_daily` 行来自一次位图堆扫描，涉及 **8.8k 个堆页**（表按主键聚簇，user 在前），然后是哈希聚合：每次查询 36–48 ms。迁移 0151 把 `traffic_daily_node (node_id, day)` 替换为 `traffic_daily_node_cov (node_id, day) INCLUDE (user_id, up_bytes, down_bytes, billed_bytes)`：变成仅索引扫描，226 个缓冲区、0 次堆读取，每次查询 **约 10 ms**（现在大部分时间在哈希聚合）。查询文本不变。
+`GET /nodes/{id}/traffic`（管理端节点页：按天 + top 20 用户）是 W22 中最慢的读取（`traffic_node`，16 客户端下 p99 55.4 ms）。在 bench 数据集（30 天历史、最繁忙节点、30 天范围）上对 `trafficlog::node_top_users` 做 `EXPLAIN (ANALYZE, BUFFERS)`：约 8k 个用户的 1.55 万个 `traffic_daily` 行来自一次位图堆扫描，涉及 **8.8k 个堆页**（表按主键聚簇，user 在前），然后是哈希聚合：每次查询 36–48 ms。把 `traffic_daily_node (node_id, day)` 替换为 `traffic_daily_node_cov (node_id, day) INCLUDE (user_id, up_bytes, down_bytes, billed_bytes)`：变成仅索引扫描，226 个缓冲区、0 次堆读取，每次查询 **约 10 ms**（现在大部分时间在哈希聚合）。查询文本不变。
 
 在本次运行的机器上测得（4 vCPU 云容器；bench 栈在 Docker 中；压测生成器、面板和 PostgreSQL 在同一批核心上），`akari-bench http --only traffic_node`，每轮 10 s：
 
@@ -209,7 +209,7 @@ CI：`.github/workflows/bench.yml`（手动）在已灌入种子的数据集上�
 - 分块 flush：每个事务 5000 行，节点 id 从大到小。每块持有其节点和用户的行锁约 100 ms，所以即使重启使所有 agent 重新上报数百万行，管理员写入和变更传播最多也只等一块。对计费安全：每行都是幂等的，每个上限（每节点 GCRA、已离开的用户-节点对）都是跨事务累计的。
 - 每会话的用户集保存为紧凑摘要（200 × 1 万的运行曾因此内存耗尽）；读许可限制完整用户集的加载并发。
 - `mimalloc` 作为全局分配器（发布的二进制是静态 musl；它的分配器会把这种分配密集的负载串行化）。
-- 迁移 0012：为用户列表建 `users(created_at, id)`（延迟 join 分页：第 1 页 0.2 ms，offset 49000 为 3.6 ms），`users` 和 `traffic_counters` 的 fillfactor 设为 85/80，使计费更新为 HOT。不要给 `traffic_counters.updated_at` 或计数器建索引：否则每次计费更新都不再是 HOT。
+- 为用户列表建 `users(created_at, id)`（延迟 join 分页：第 1 页 0.2 ms，offset 49000 为 3.6 ms），`users` 和 `traffic_counters` 的 fillfactor 设为 85/80，使计费更新为 HOT。不要给 `traffic_counters.updated_at` 或计数器建索引：否则每次计费更新都不再是 HOT。
 - 审计过滤（actor、action 前缀）走各自的 `(column, id)` 索引。
 - 用户在节点之后按 id 顺序加锁（全局锁顺序），这样两个实例 flush 共享用户的节点时不会死锁。
 
@@ -246,7 +246,7 @@ CI：`.github/workflows/bench.yml`（手动）在已灌入种子的数据集上�
 
 ## M2-3: `AuthUser` per-request cost（每请求开销）
 
-`AuthUser` 每个请求做一次带索引的查询（会话版本、enabled、过期、TOTP 状态）：服务器侧 0.03 ms；端到端实测约 0.4 ms，含连接池取连接和往返（`/me` 会执行两次：1.0 ms，对比单客户端 `/healthz` 的 0.11 ms）。16 连接的池每秒可承受数万次这样的查询，比管理流量高三个数量级，管理 API 的 p99 因此远低于目标。**没有加缓存**：当前的保证是，被撤销的会话（登出、改密码、禁用、改角色、`session_ver` 递增）在每个实例上都会在下一个请求就被拒绝（`akari-bench multi` 会断言这一点），而任何缓存都会把它变成"在 TTL 内"。如果将来需要，要写明的上界就是 TTL（<= 1 s）；没有跨实例失效机制可依赖，所以 TTL 就是最坏的撤销延迟。
+`AuthUser` 每个请求做一次带索引的查询（会话版本、enabled、过期）：服务器侧 0.03 ms；端到端实测约 0.4 ms，含连接池取连接和往返（`/me` 会执行两次：1.0 ms，对比单客户端 `/healthz` 的 0.11 ms）。16 连接的池每秒可承受数万次这样的查询，比管理流量高三个数量级，管理 API 的 p99 因此远低于目标。**没有加缓存**：当前的保证是，被撤销的会话（登出、改密码、禁用、改角色、`session_ver` 递增）在每个实例上都会在下一个请求就被拒绝（`akari-bench multi` 会断言这一点），而任何缓存都会把它变成"在 TTL 内"。如果将来需要，要写明的上界就是 TTL（<= 1 s）；没有跨实例失效机制可依赖，所以 TTL 就是最坏的撤销延迟。
 
 ## M2-4: multiple instances（多实例）
 
@@ -262,7 +262,7 @@ CI：`.github/workflows/bench.yml`（手动）在已灌入种子的数据集上�
 
 ## M2-5: `traffic_counters` retention（保留策略）
 
-`traffic_counters` 是计费基线（`new - old`），所以只删除可证明已死的行（迁移 0013，`traffic::retention_pass`，由任一实例的 reaper 循环每 10 分钟运行，并发运行安全）：
+`traffic_counters` 是计费基线（`new - old`），所以只删除可证明已死的行（`traffic::retention_pass`，由任一实例的 reaper 循环每 10 分钟运行，并发运行安全）：
 
 1. 只有当会话所属节点拥有至少 1 小时前的排空证明时，会话才会被退役（在 `traffic_sessions` 中写墓碑，`FLUSH_SQL` 会遵守：已退役会话的迟到上报会被丢弃，绝不重复计费）：排空证明是一次 Hello，其流保持了 60 s 且携带 `finals_drained_session`，证明 agent 在那次 Hello 之前已交付它所取代的每个会话的最后一次上报；并且该会话不是 agent 当前的会话。
 2. 已退役会话的行按 1 万行一批删除；已删除节点的行同理。存活会话的行无论多旧都不会被删除。
@@ -433,7 +433,7 @@ Flush（`make bench-seed` + `cargo bench -- db/flush`，本地 bench 栈，每�
 
 快照读取的开销在哪里（`EXPLAIN (ANALYZE, BUFFERS)`，1 万用户的 server，5 万用户）：
 
-- **堆分散。** 一个入口的 1 万行 `entrance_users` 在 pinned 种子中位于 182 个堆页，而逐用户写入时分布在约 9.5k 页上（一个用户在其全部 40 个入口上的行会落在一起）：位图堆扫描 9.5k 页，多 10–13 ms。迁移 1090 把主键改为覆盖式，`(entrance_id, user_id) INCLUDE (protocol, account)`：无论堆顺序如何，都是约 190–330 页的仅索引扫描（`Heap Fetches: 0`）。它取代旧键（只有一个索引，每个分配多约 95 字节：按顺序构建的 200 万行从 95 MB 增至 286 MB，逐用户构建时为 507 MB）；键列不变，所以 flush 的准入探测和所有 ON CONFLICT 与之前一致。该表在变更/插入行达 1 % 时 vacuum，以保持可见性映射新鲜。`account` 更新（重置凭据）不再是 HOT；这种操作很少。
+- **堆分散。** 一个入口的 1 万行 `entrance_users` 在 pinned 种子中位于 182 个堆页，而逐用户写入时分布在约 9.5k 页上（一个用户在其全部 40 个入口上的行会落在一起）：位图堆扫描 9.5k 页，多 10–13 ms。把主键改为覆盖式，`(entrance_id, user_id) INCLUDE (protocol, account)`：无论堆顺序如何，都是约 190–330 页的仅索引扫描（`Heap Fetches: 0`）。它取代旧键（只有一个索引，每个分配多约 95 字节：按顺序构建的 200 万行从 95 MB 增至 286 MB，逐用户构建时为 507 MB）；键列不变，所以 flush 的准入探测和所有 ON CONFLICT 与之前一致。该表在变更/插入行达 1 % 时 vacuum，以保持可见性映射新鲜。`account` 更新（重置凭据）不再是 HOT；这种操作很少。
 - **排序。** `ORDER BY eu.user_id, e.wire_no` 在 PostgreSQL 中对 1 万个宽行排序（约 1 ms）。一个入口的行从该键中按用户顺序出来，所以面板现在改在 Rust 中排序（`sort_unstable_by_key`，对这种顺序段是线性的）；发给 agent 的 op 顺序不变（测试 `snapshot_users_are_ordered_by_user_then_entrance`）。
 - **Rust 构建**（占总量约 1.9 ms）：每个入口克隆一个 tag 字符串，而不是每行格式化；`stat_key` 直接编码进精确大小的字符串；`BEGIN ISOLATION LEVEL …` 合并为一次往返。
 - **剩余部分**，以及为何不改：`users` 过滤（`enforce::SERVED`）和限速（`user_plans`）是对*所有*用户和生效套餐的哈希 join（顺序扫描 + 哈希，5 万规模下各约 5–7 ms）：1 万次索引探测开销相同（实测每次约 0.7 µs），`users` 的仅索引扫描会退回堆（计费会更新每个活跃用户的行），而对 `users_pkey` 做 `= ANY(array)` 探测更慢（6 ms）。bench 的默认种子没有 `user_plans`；`--plans` 展示生产形态（见上）。

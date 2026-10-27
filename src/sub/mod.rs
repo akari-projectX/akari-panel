@@ -224,7 +224,7 @@ pub struct NodeRow {
     pub entrance_id: Uuid,
     pub region: Option<String>,
     pub name: String,
-    /// W11 (`nodemeta.rs`): user-facing name; `tags` are the entrance's (1104).
+    /// W11 (`nodemeta.rs`): user-facing name; `tags` are the entrance's.
     pub display_name: Option<String>,
     pub tags: Vec<String>,
     /// The entrance's name ("直连", "IPLC") and the multiplier the proxy

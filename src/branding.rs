@@ -2,7 +2,7 @@
 //! links, terms / privacy links, client download links per platform.
 //!
 //! - Stored in `site_branding` (one row, `version` for optimistic
-//!   concurrency, migration 0157), **database only** (R39: no panel.toml
+//!   concurrency), **database only** (R39: no panel.toml
 //!   keys). Text fields are written by `apply_update` (audited
 //!   `settings.branding.update` with before/after), images by
 //!   `apply_set_image` / `apply_clear_image` (audited

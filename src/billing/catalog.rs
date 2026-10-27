@@ -466,7 +466,7 @@ pub fn decide(cur: Option<Current>, sale: &Sale, period: PeriodKind) -> Result<A
     }
 }
 
-/// How a list price is covered (SQL `akari_split`, migration 0107): the
+/// How a list price is covered (SQL `akari_split`): the
 /// coupon discount on the list price, then the switch credit, then the
 /// balance, each capped at what is left; the amount is the rest (what
 /// Alipay is asked for). Integer fen.

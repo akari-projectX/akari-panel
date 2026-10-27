@@ -1479,7 +1479,7 @@ impl UserPlanChange {
 /// replacing the active one (status `replaced`), and zero their usage.
 /// Credentials of nodes the old and new plan share are kept. The new
 /// subscription snapshots the plan's terms (quota, reset policy, speed,
-/// groups — triggers of migration 1059, 中-5).
+/// groups — snapshotted by triggers on `user_plans`, 中-5).
 pub async fn apply_set_user_plan(
     conn: &mut PgConnection,
     actor: &Actor,

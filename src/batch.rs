@@ -1,4 +1,4 @@
-//! Ops: batch operations on users from the admin console (migration 0165).
+//! Ops: batch operations on users from the admin console.
 //!
 //! A job = one action applied to a fixed set of users (the selected ids,
 //! or every user matching the users-list filter when the job was created).

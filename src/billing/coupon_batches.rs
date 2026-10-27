@@ -1,4 +1,4 @@
-//! Ops: batch coupon generation (migration 0167).
+//! Ops: batch coupon generation.
 //!
 //! `POST /coupon-batches` makes N coupons sharing one template (kind,
 //! value, plans, periods, minimum, validity, per-code use limit (default

@@ -3,8 +3,8 @@
 //! pending work and the latest orders.
 //!
 //! Every figure is a bounded query: the revenue windows are index-only
-//! scans (`orders_paid_at` / `orders_refunded_at` INCLUDE the amounts,
-//! migration 0125), users are counted in one pass (sign-up windows and the
+//! scans (`orders_paid_at` / `orders_refunded_at` INCLUDE the amounts),
+//! users are counted in one pass (sign-up windows and the
 //! total together), the pending counts use the partial indexes of their
 //! queues, and the node part reads the (small) node table once plus one
 //! Valkey MGET of the online nodes' heartbeats. All SQL runs in one

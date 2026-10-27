@@ -30,7 +30,7 @@ pub struct ChangePasswordReq {
 /// session, any role; renewal scope: also expired users, R21): change your own password. The current password is
 /// required; a wrong one is 400 "invalid password" and counts against the
 /// login rate limit of the account and the client address. In one
-/// transaction: new hash (the 0009 trigger bumps session_ver, ending every
+/// transaction: new hash (the trigger bumps session_ver, ending every
 /// other session of the account), audit row. This session continues with
 /// a fresh cookie.
 pub async fn change_own_password(

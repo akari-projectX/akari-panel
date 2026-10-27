@@ -216,14 +216,14 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-/// SQLSTATE raised by the owner guard (R47, migration 1013): deleting the
+/// SQLSTATE raised by the owner guard: deleting the
 /// owner, or ending the ownership without a transfer.
 pub const OWNER_SQLSTATE: &str = "AK001";
-/// CHECK constraint: the owner is an enabled admin (migration 1013).
+/// CHECK constraint: the owner is an enabled admin.
 pub const OWNER_CHECK: &str = "users_owner_enabled_admin";
-/// SQLSTATE of the inviter guard (migration 0105): self-referral or cycle.
+/// SQLSTATE of the inviter guard: self-referral or cycle.
 pub const INVITER_SQLSTATE: &str = "AK002";
-/// SQLSTATE of the balance ledger (migration 0106): the entry would make
+/// SQLSTATE of the balance ledger: the entry would make
 /// the balance negative.
 pub const BALANCE_SQLSTATE: &str = "AK003";
 
