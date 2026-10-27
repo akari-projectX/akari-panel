@@ -185,7 +185,7 @@ mod tests {
         let base = json!({"method": "2022-blake3-aes-128-gcm",
                           "password": "AAAAAAAAAAAAAAAAAAAAAA==", "clients": []});
         assert_eq!(check_inbound(&ss(base.clone())), Ok(()));
-        let mut downgraded = base.clone();
+        let mut downgraded = base;
         downgraded["METHOD"] = json!("aes-128-gcm");
         assert!(
             check_inbound(&ss(downgraded))
@@ -300,7 +300,7 @@ mod tests {
         let plain = json!({"protocol": "vless"});
         assert_eq!(
             refit_account(&plain, &json!({"id": "x", "flow": VISION})),
-            Some(a.clone())
+            Some(a)
         );
         let s128 =
             json!({"protocol": "shadowsocks", "settings": {"method": "2022-blake3-aes-128-gcm"}});

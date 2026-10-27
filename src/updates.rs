@@ -978,14 +978,7 @@ mod tests {
         assert!(verify(M.as_bytes(), std::slice::from_ref(&s), &[]).is_err());
         // Rotation: dual-signed verifies under either key.
         let s2 = sign(&kp2, &k2.id, M.as_bytes());
-        assert!(
-            verify(
-                M.as_bytes(),
-                &[s.clone(), s2.clone()],
-                std::slice::from_ref(&k2)
-            )
-            .is_ok()
-        );
+        assert!(verify(M.as_bytes(), &[s, s2], std::slice::from_ref(&k2)).is_ok());
         // No context prefix = not a release signature.
         let bare = Signature {
             key_id: k.id.clone(),

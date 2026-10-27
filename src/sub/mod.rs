@@ -782,8 +782,8 @@ mod tests {
     pub(crate) fn rows_of(
         name: &str,
         server: Option<&str>,
-        inbounds: Value,
-        creds: Value,
+        inbounds: &Value,
+        creds: &Value,
     ) -> Vec<NodeRow> {
         let mut rows = Vec::new();
         for c in creds.as_array().into_iter().flatten() {
@@ -836,7 +836,7 @@ mod tests {
                 {"id": "22222222-2222-2222-2222-222222222222"}},
             {"inbound_tag": "in-trojan", "protocol": "trojan", "account": {"password": "pw"}},
         ]);
-        rows_of("HK 1", Some("hk.example.com"), inbounds, creds)
+        rows_of("HK 1", Some("hk.example.com"), &inbounds, &creds)
     }
 
     /// Section 5: which format answers, among the enabled ones.
@@ -1085,7 +1085,7 @@ mod tests {
             // A stale Vision flow on a ws inbound is never rendered.
             {"inbound_tag": "ws", "protocol": "vless", "account": {"id": "55555555-5555-5555-5555-555555555555", "flow": "xtls-rprx-vision"}},
         ]);
-        rows_of("N", Some("n.example.com"), inbounds, creds)
+        rows_of("N", Some("n.example.com"), &inbounds, &creds)
     }
 
     #[test]
@@ -1290,7 +1290,7 @@ mod tests {
         assert!(sb.contains("\"server_port\":30443"), "{sb}");
     }
 
-    fn plain_proxy(protocol: &'static str, server: &str, inbound: Value) -> Proxy {
+    fn plain_proxy(protocol: &'static str, server: &str, inbound: &Value) -> Proxy {
         Proxy {
             name: "n".into(),
             entrance: None,
@@ -1302,7 +1302,7 @@ mod tests {
             method: "2022-blake3-aes-128-gcm".into(),
             udp: false,
             server: server.into(),
-            net: net_from_inbound(&inbound).unwrap(),
+            net: net_from_inbound(inbound).unwrap(),
         }
     }
 
@@ -1320,7 +1320,7 @@ mod tests {
                     "publicKey": "k: v #c",
                     "shortId": "ab&flow=x"}},
         });
-        let p = [plain_proxy("vless", "s.example", inbound)];
+        let p = [plain_proxy("vless", "s.example", &inbound)];
         let clash = render_clash(&p, &routing::Routing::default());
         let doc: Vec<&str> = clash.lines().collect();
         assert!(
@@ -1352,19 +1352,19 @@ mod tests {
             assert!(l.starts_with(prefix), "{l}");
         };
         for protocol in ["vless", "trojan", "hysteria2"] {
-            let p = [plain_proxy(protocol, "2001:db8::1", tcp.clone())];
+            let p = [plain_proxy(protocol, "2001:db8::1", &tcp)];
             let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
             let at = links.split('@').nth(1).unwrap();
             want(at, "[2001:db8::1]:443");
         }
-        let p = [plain_proxy("ss2022", "2001:db8::1", ss)];
+        let p = [plain_proxy("ss2022", "2001:db8::1", &ss)];
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(links.contains("@[2001:db8::1]:8388#"), "{links}");
         // IPv4 and names are untouched.
-        let p = [plain_proxy("vless", "203.0.113.7", tcp.clone())];
+        let p = [plain_proxy("vless", "203.0.113.7", &tcp)];
         let links = String::from_utf8(STANDARD.decode(render_links(&p)).unwrap()).unwrap();
         assert!(links.contains("@203.0.113.7:443?"), "{links}");
-        let p = [plain_proxy("vless", "2001:db8::1", tcp)];
+        let p = [plain_proxy("vless", "2001:db8::1", &tcp)];
         let clash = render_clash(&p, &routing::Routing::default());
         assert!(clash.contains("    server: \"2001:db8::1\"\n"), "{clash}");
     }
