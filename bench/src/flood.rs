@@ -43,6 +43,11 @@ pub struct FloodArgs {
     /// Percentage of the flood that logs in with the right password.
     #[arg(long, default_value_t = 20)]
     pub right_pct: u32,
+    /// Total login requests per second (0 = closed loop: every worker
+    /// sends the next request as soon as the last was answered). A fixed
+    /// rate keeps the load generator's own CPU the same across runs.
+    #[arg(long, default_value_t = 0)]
+    pub rate: u64,
     /// Seeded user count (the subscription probe derives tokens from it).
     #[arg(long, default_value_t = 50_000)]
     pub users: usize,
@@ -86,6 +91,8 @@ pub async fn run(a: FloodArgs) -> Result<()> {
         let client = client.clone();
         let base = base.clone();
         let right_pct = a.right_pct;
+        let period =
+            (a.rate > 0).then(|| Duration::from_secs_f64(a.concurrency as f64 / a.rate as f64));
         workers.push(tokio::spawn(async move {
             let mut by: BTreeMap<(bool, String), Hist> = BTreeMap::new();
             while Instant::now() < deadline {
@@ -125,6 +132,9 @@ pub async fn run(a: FloodArgs) -> Result<()> {
                     std::collections::btree_map::Entry::Vacant(v) => v.insert(new_hist()),
                 };
                 common::record(h, t.elapsed());
+                if let Some(p) = period {
+                    tokio::time::sleep(p.saturating_sub(t.elapsed())).await;
+                }
             }
             by
         }));
