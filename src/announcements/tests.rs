@@ -10,7 +10,7 @@ use super::*;
 use crate::testdb::TestDb;
 use crate::testdb::http::{Client, client_for, rand_ip};
 
-fn body(title: &str, extra: Value) -> Value {
+fn body(title: &str, extra: &Value) -> Value {
     let mut v = json!({ "title_zh": title, "body_zh": "**正文** <script>x</script>" });
     for (k, val) in extra.as_object().cloned().unwrap_or_default() {
         v[k] = val;
@@ -83,7 +83,7 @@ fn text_rules() {
             .code(),
         "announcement.body_long"
     );
-    let base: AnnouncementReq = serde_json::from_value(body("t", json!({}))).unwrap();
+    let base: AnnouncementReq = serde_json::from_value(body("t", &json!({}))).unwrap();
     let c = check(&base).unwrap();
     assert!(c.enabled && !c.pinned && c.audience == "all" && c.title_en.is_none());
     let mut r = base.clone();
@@ -96,13 +96,13 @@ fn text_rules() {
     r.visible_from = Some(Utc::now());
     r.visible_until = Some(Utc::now() - chrono::Duration::hours(1));
     assert_eq!(check(&r).unwrap_err().code(), "announcement.window_invalid");
-    let mut r = base.clone();
+    let mut r = base;
     r.title_en = Some("  ".into());
     r.body_en = Some(String::new());
     let c = check(&r).unwrap();
     assert!(c.title_en.is_none() && c.body_en.is_none());
     // Unknown members are refused (deny_unknown_fields).
-    assert!(serde_json::from_value::<AnnouncementReq>(body("t", json!({ "zz": 1 }))).is_err());
+    assert!(serde_json::from_value::<AnnouncementReq>(body("t", &json!({ "zz": 1 }))).is_err());
 }
 
 /// Users see enabled announcements inside their window for their
@@ -123,34 +123,34 @@ async fn users_see_only_visible_ones() {
         &admin,
         body(
             "A 所有人",
-            json!({ "title_en": "A everyone", "body_en": "english *body*" }),
+            &json!({ "title_en": "A everyone", "body_en": "english *body*" }),
         ),
     )
     .await;
-    let b = create(&admin, body("B 停用", json!({ "enabled": false }))).await;
+    let b = create(&admin, body("B 停用", &json!({ "enabled": false }))).await;
     let c = create(
         &admin,
         body(
             "C 未来",
-            json!({ "visible_from": now + chrono::Duration::hours(1) }),
+            &json!({ "visible_from": now + chrono::Duration::hours(1) }),
         ),
     )
     .await;
-    let d = create(&admin, body("D 过去", json!({ "visible_from": now - chrono::Duration::hours(2), "visible_until": now - chrono::Duration::hours(1) }))).await;
+    let d = create(&admin, body("D 过去", &json!({ "visible_from": now - chrono::Duration::hours(2), "visible_until": now - chrono::Duration::hours(1) }))).await;
     let e = create(
         &admin,
         body(
             "E 有套餐",
-            json!({ "audience": "with_plan", "pinned": true }),
+            &json!({ "audience": "with_plan", "pinned": true }),
         ),
     )
     .await;
     let f = create(
         &admin,
-        body("F 无套餐", json!({ "audience": "without_plan" })),
+        body("F 无套餐", &json!({ "audience": "without_plan" })),
     )
     .await;
-    let g = create(&admin, body("G 窗口内", json!({ "visible_from": now - chrono::Duration::hours(1), "visible_until": now + chrono::Duration::hours(1) }))).await;
+    let g = create(&admin, body("G 窗口内", &json!({ "visible_from": now - chrono::Duration::hours(1), "visible_until": now + chrono::Duration::hours(1) }))).await;
 
     let cf = client_for(&state, free).await;
     let r = cf.get("/test/api/v1/me/announcements").await;
@@ -309,9 +309,9 @@ async fn admin_crud_and_audit() {
             .json()["code"],
         "announcement.audience_invalid"
     );
-    let id = create(&admin, body("维护", json!({ "pinned": true }))).await;
+    let id = create(&admin, body("维护", &json!({ "pinned": true }))).await;
     assert_eq!(
-        user.post("/test/api/v1/announcements", body("x", json!({})))
+        user.post("/test/api/v1/announcements", body("x", &json!({})))
             .await
             .status,
         StatusCode::FORBIDDEN
@@ -343,7 +343,7 @@ async fn admin_crud_and_audit() {
     let put = |v: Value| admin.req(Method::PUT, &path, Some(v));
     let r = put(body(
         "维护（更新）",
-        json!({ "enabled": false, "pinned": true }),
+        &json!({ "enabled": false, "pinned": true }),
     ))
     .await;
     assert_eq!(
@@ -356,7 +356,7 @@ async fn admin_crud_and_audit() {
     assert_eq!(
         put(body(
             "维护（更新）",
-            json!({ "enabled": false, "pinned": true })
+            &json!({ "enabled": false, "pinned": true })
         ))
         .await
         .status,
@@ -373,7 +373,7 @@ async fn admin_crud_and_audit() {
             .req(
                 Method::PUT,
                 &format!("/test/api/v1/announcements/{}", Uuid::new_v4()),
-                Some(body("x", json!({})))
+                Some(body("x", &json!({})))
             )
             .await
             .status,
@@ -465,7 +465,7 @@ async fn mailing_batches_the_audience() {
         &admin,
         body(
             "通知",
-            json!({ "title_en": "Notice", "body_en": "english", "audience": "with_plan" }),
+            &json!({ "title_en": "Notice", "body_en": "english", "audience": "with_plan" }),
         ),
     )
     .await;
@@ -539,7 +539,7 @@ async fn mailing_batches_the_audience() {
             .json()["recipients"],
         3
     );
-    let other = create(&admin, body("全部", json!({ "audience": "without_plan" }))).await;
+    let other = create(&admin, body("全部", &json!({ "audience": "without_plan" }))).await;
     let list = admin.get("/test/api/v1/announcements").await.json();
     let n = |x: Uuid| {
         list.as_array()

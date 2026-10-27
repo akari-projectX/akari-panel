@@ -63,9 +63,9 @@ fn cbor(v: &Cbor, out: &mut Vec<u8>) {
     }
 }
 
-fn enc(v: Cbor) -> Vec<u8> {
+fn enc(v: &Cbor) -> Vec<u8> {
     let mut out = Vec::new();
-    cbor(&v, &mut out);
+    cbor(v, &mut out);
     out
 }
 
@@ -101,7 +101,7 @@ impl SoftKey {
 
     fn cose_key(&self) -> Vec<u8> {
         let pk = self.key.public_key().as_ref(); // 0x04 || x || y
-        enc(Cbor::Map(vec![
+        enc(&Cbor::Map(vec![
             (Cbor::Int(1), Cbor::Int(2)),  // kty: EC2
             (Cbor::Int(3), Cbor::Int(-7)), // alg: ES256
             (Cbor::Int(-1), Cbor::Int(1)), // crv: P-256
@@ -130,7 +130,7 @@ impl SoftKey {
         auth.extend((self.cred_id.len() as u16).to_be_bytes());
         auth.extend(&self.cred_id);
         auth.extend(self.cose_key());
-        let att = enc(Cbor::Map(vec![
+        let att = enc(&Cbor::Map(vec![
             (Cbor::Text("fmt"), Cbor::Text("none")),
             (Cbor::Text("attStmt"), Cbor::Map(vec![])),
             (Cbor::Text("authData"), Cbor::Bytes(auth)),

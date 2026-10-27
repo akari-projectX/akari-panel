@@ -708,7 +708,7 @@ fn w26_golden_accounts() {
             "vless",
             json!({"id": "22222222-2222-4222-8222-222222222222", "flow": "xtls-rprx-vision"}),
         ),
-        ("t13", "shadowsocks", k16.clone()),
+        ("t13", "shadowsocks", k16),
         (
             "t0",
             "vmess",

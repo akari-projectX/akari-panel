@@ -86,7 +86,7 @@ fn text_rules() {
         title_zh: "t".into(),
         title_en: None,
         body_zh: "b".into(),
-        body_en: Some("".into()),
+        body_en: Some(String::new()),
         sort: 0,
         published: true,
         slug: Some(" ".into()),
