@@ -2660,6 +2660,12 @@ BJAR="$LOG/buyer-cookies"
 [ "$(code -c "$BJAR" -X POST "$BASE/auth/login" -H 'Content-Type: application/json' \
     -d '{"email":"smoke-buyer@smoke.test","password":"buyer-password-123"}')" = "200" ] || { echo "FAIL: buyer login"; exit 1; }
 [ "$(code -b "$BJAR" "$BASE/api/v1/me/shop")" = "200" ] || { echo "FAIL: shop"; exit 1; }
+# 低-8 / 低-3: every offer says whether it is payable now and whether it forfeits a permanent plan.
+python3 -c "
+import json; d=json.load(open('/tmp/akari-smoke/last'))
+assert d['payments_available'] is True, d
+assert all(set(('payable','balance_only','forfeits_permanent')) <= set(o) for p in d['plans'] for o in p['offers']), d
+" || { echo "FAIL: shop offer payability fields"; cat /tmp/akari-smoke/last; exit 1; }
 python3 -c "
 import json; d=json.load(open('/tmp/akari-smoke/last')); p=[x for x in d['plans'] if x['plan_id']=='$PAID_PLAN'][0]
 o={x['period']: x for x in p['offers']}

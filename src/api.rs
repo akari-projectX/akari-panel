@@ -2145,7 +2145,6 @@ mod tests {
                     traffic_quota_bytes: None,
                     period: "monthly".into(),
                     speed_limit_mbps: None,
-                    device_seats: None,
                     sort: None,
                     enabled: None,
                     group_ids: Some(vec![g]),

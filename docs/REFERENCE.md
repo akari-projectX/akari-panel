@@ -264,7 +264,7 @@ make check             # fmt + clippy + tsc (fast gate); make lint test deny = C
 | POST | /api/v1/users/{id}/plan/reset-traffic | admin | D12 `{confirm: true}`：套餐流量清零（重置计划不变，因配额被禁用的账号重新启用，被封禁的永不启用）；审计 `user.traffic.reset`；返回 `{subscription}` |
 | GET/POST | /api/v1/node-groups | admin | 列表 / 创建 `{name, description?, entrance_ids?}`（W28-a：组包含入口） |
 | PATCH/DELETE | /api/v1/node-groups/{id} | admin | 重命名、修改描述、替换 `entrance_ids` / 删除 |
-| GET/POST | /api/v1/plans | admin | 列表 / 创建 `{name, period, traffic_quota_bytes?, speed_limit_mbps?, device_seats?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, renew_off_sale? (中-6, default true: off sale, subscribers still renew), allow_switch_in?, recommended?（门户商店「推荐」标签，只影响显示，默认 false；PATCH 同样可改，审计 `plan.update` 快照含此字段）}`（视图包含 `on_sale` 和 `prices`） |
+| GET/POST | /api/v1/plans | admin | 列表 / 创建 `{name, period, traffic_quota_bytes?, speed_limit_mbps?, sort?, enabled?, group_ids?, description?, capacity?, renewal_only?, renew_off_sale? (中-6, default true: off sale, subscribers still renew), allow_switch_in?, recommended?（门户商店「推荐」标签，只影响显示，默认 false；PATCH 同样可改，审计 `plan.update` 快照含此字段）}`（视图包含 `on_sale` 和 `prices`） |
 | PATCH/DELETE | /api/v1/plans/{id} | admin | 更新（字段同上；null 清除可空字段；中-5：默认只影响新购买，除非带 `apply_to_existing: true`，此时现有订阅获得套餐当前的全部期限）/ 删除（仍有用户持有时 409） |
 | POST | /api/v1/plans/{id}/impact | admin | 中-5：请求体 = 要预览的 PATCH → `{subscribers, over_quota}`（有效订阅数；其中已用量超过新配额的有多少） |
 | GET/POST | /api/v1/servers | admin | Q1：服务器（机器，agent）连同其节点和入口分组：`[{id, name, created_at, status, online, agent_version, core_version, agent_os, agent_arch, agent_protocol, agent_capabilities, update_status, config_version, user_version, tls_domain, agent_addr, last_error, last_error_at, failed_config_version, failed_user_version, lease_expires_at, lease_remaining_seconds, traffic_max_rate_bytes_per_sec, deleting_at, last_seen_at, enrolled, cert_not_after, enroll_token_expires_at, latency, probe_requested_at, alerts_firing, heartbeat, warnings, nodes: [{id, name, display_name, enabled, visible, sort, region, tags, protocol, port, transport, security, block_rules_enabled, entrances: [EntranceView]}]}]`（`transport`/`security` = 入站的 `streamSettings.network`/`.security`，null = xray 默认（tcp / 无））（ETag，`If-None-Match` → 304）/ 创建服务器 `{name, tls_domain?, install?: {origin?}}`（201：一次性注册令牌 + bootstrap 文件 + 安装命令，只显示一次；节点用 `POST /nodes {server_id}` 添加）。审计 `server.create`、`server.enroll_token` |
@@ -419,7 +419,6 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 
 - **节点组（Node groups）**汇集节点（一个节点可属于多个组）。**套餐**授予节点组，并设置流量配额（`null` = 不限）和重置周期：`monthly`（在锚点日期的当月同一天，不足则取月末，按站点时区——Q3）、`days-N`（每 N 天，1–3650）或 `none`。
   - `speed_limit_mbps` 由 agent 按用户**强制执行**（W7，agent protocol 4：每个方向，由用户在节点上的所有连接共享，受限用户禁用 XTLS splice）。
-  - `device_seats` 为席位绑定而存储（随客户端做，R25），**不强制执行**。
   - 被禁用的套餐不再提供给新的分配；现有订阅者保留它。价格、库存和销售规则见 docs/PAYMENTS.md。
 - **套餐条款会被快照（中-5）**：订阅保留创建订阅时套餐的配额、重置周期、限速和节点组（`user_plans` + `user_plan_groups`，由每条创建路径上的触发器复制）；续期也保留它们。
   - 编辑套餐只改变新购买所得。若要同时改变该套餐现有订阅者，保存时选择 **同时应用到现有用户**（`apply_to_existing: true`）：他们将获得套餐当前的全部条款（审计中记录人数）；控制台会先显示 `POST /plans/{id}/impact`（订阅者人数，以及已经超过新配额、将被暂停的人数）。

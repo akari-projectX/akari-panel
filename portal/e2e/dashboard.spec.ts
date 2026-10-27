@@ -61,7 +61,7 @@ async function stubNotices(page: Page) {
   await page.route(/\/api\/v1\/me\/plan$/, (r) => r.fulfill({
     json: {
       plan: {
-        name: 'E2E 标准', traffic_quota_bytes: 100 * GiB, period: 'monthly', speed_limit_mbps: 300, device_seats: null,
+        name: 'E2E 标准', traffic_quota_bytes: 100 * GiB, period: 'monthly', speed_limit_mbps: 300,
         starts_at: iso(-20 * 86_400_000), expires_at: iso(10 * 86_400_000), period_anchor: iso(-20 * 86_400_000), last_reset_at: null,
         next_reset_at: iso(10 * 86_400_000),
       },

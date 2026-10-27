@@ -24,8 +24,7 @@
 //!   `UserOp.speed_limit_bytes_per_sec`, both directions, shared by all of
 //!   the user's connections on a node). Every change of a user's effective
 //!   limit (plan edit, plan change, cancel, expiry) bumps the user's nodes
-//!   in the same transaction. `device_seats` is stored for the client's
-//!   seat binding (R25) and not enforced.
+//!   in the same transaction.
 //! - W7 catalogue fields (description, on_sale, capacity, renewal_only,
 //!   allow_switch_in) and the prices (`plan_period_prices`) are sale rules
 //!   used by `billing/`; admin assignment ignores them.
@@ -509,7 +508,6 @@ struct PlanRow {
     reset_period: String,
     reset_days: Option<i32>,
     speed_limit_mbps: Option<i32>,
-    device_seats: Option<i32>,
     sort: i32,
     enabled: bool,
     description: String,
@@ -536,8 +534,6 @@ pub struct PlanView {
     period: String,
     /// Per-user limit, both directions, enforced by the agent (protocol 4).
     speed_limit_mbps: Option<i32>,
-    /// Reserved for the client's seat binding (R25); NOT enforced.
-    device_seats: Option<i32>,
     sort: i32,
     /// Offered for new assignments.
     enabled: bool,
@@ -572,7 +568,6 @@ impl From<PlanRow> for PlanView {
             traffic_quota_bytes: r.traffic_quota_bytes,
             period: Period::from_columns(&r.reset_period, r.reset_days).render(),
             speed_limit_mbps: r.speed_limit_mbps,
-            device_seats: r.device_seats,
             sort: r.sort,
             enabled: r.enabled,
             description: r.description,
@@ -592,7 +587,7 @@ impl From<PlanRow> for PlanView {
 }
 
 const PLAN_VIEW_SQL: &str = "SELECT p.id, p.name, p.traffic_quota_bytes, p.reset_period, \
-     p.reset_days, p.speed_limit_mbps, p.device_seats, p.sort, p.enabled, p.description, \
+     p.reset_days, p.speed_limit_mbps, p.sort, p.enabled, p.description, \
      p.on_sale, p.capacity, p.renewal_only, p.allow_switch_in, p.renew_off_sale, \
      p.recommended, COALESCE((SELECT jsonb_agg(jsonb_build_object('period', pp.period, 'days', pp.days, \
        'price_cents', pp.price_cents) ORDER BY array_position(ARRAY['month', 'quarter', \
@@ -619,7 +614,7 @@ fn plan_snapshot_sql(alias: &str) -> String {
     format!(
         "jsonb_build_object('name', {a}.name, 'traffic_quota_bytes', {a}.traffic_quota_bytes, \
          'reset_period', {a}.reset_period, 'reset_days', {a}.reset_days, \
-         'speed_limit_mbps', {a}.speed_limit_mbps, 'device_seats', {a}.device_seats, \
+         'speed_limit_mbps', {a}.speed_limit_mbps, \
          'sort', {a}.sort, 'enabled', {a}.enabled, 'description', {a}.description, \
          'capacity', {a}.capacity, 'renewal_only', {a}.renewal_only, \
          'allow_switch_in', {a}.allow_switch_in, 'renew_off_sale', {a}.renew_off_sale, 'recommended', {a}.recommended)",
@@ -647,7 +642,6 @@ pub struct CreatePlanReq {
     pub traffic_quota_bytes: Option<i64>,
     pub period: String,
     pub speed_limit_mbps: Option<i32>,
-    pub device_seats: Option<i32>,
     pub sort: Option<i32>,
     pub enabled: Option<bool>,
     pub group_ids: Option<Vec<Uuid>>,
@@ -676,8 +670,6 @@ pub struct UpdatePlanReq {
     pub period: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
     pub speed_limit_mbps: Option<Option<i32>>,
-    #[serde(default, deserialize_with = "double_option")]
-    pub device_seats: Option<Option<i32>>,
     #[serde(default, deserialize_with = "double_option")]
     pub sort: Option<Option<i32>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -716,7 +708,6 @@ impl UpdatePlanReq {
             || self.traffic_quota_bytes.is_some()
             || self.period.is_some()
             || self.speed_limit_mbps.is_some()
-            || self.device_seats.is_some()
             || self.sort.is_some()
             || self.enabled.is_some()
             || self.group_ids.is_some()
@@ -733,11 +724,7 @@ impl UpdatePlanReq {
 /// The highest accepted speed limit (100 Gbit/s).
 const MAX_SPEED_MBPS: i32 = 100_000;
 
-fn check_plan_numbers(
-    quota: Option<i64>,
-    speed: Option<i32>,
-    seats: Option<i32>,
-) -> Result<(), ApiError> {
+fn check_plan_numbers(quota: Option<i64>, speed: Option<i32>) -> Result<(), ApiError> {
     if quota.is_some_and(|q| q < 0) {
         return Err(bad_request!(
             "plan.quota_negative",
@@ -749,12 +736,6 @@ fn check_plan_numbers(
             "plan.speed_limit_range",
             "speed_limit_mbps must be 1..={max_speed_mbps}",
             max_speed_mbps = MAX_SPEED_MBPS
-        ));
-    }
-    if seats.is_some_and(|s| s < 0) {
-        return Err(bad_request!(
-            "plan.seats_negative",
-            "device_seats must be >= 0"
         ));
     }
     Ok(())
@@ -778,11 +759,7 @@ pub async fn apply_create_plan(
 ) -> Result<Uuid, ApiError> {
     let name = clean_name("name", &req.name)?;
     let period = parse_period(&req.period)?;
-    check_plan_numbers(
-        req.traffic_quota_bytes,
-        req.speed_limit_mbps,
-        req.device_seats,
-    )?;
+    check_plan_numbers(req.traffic_quota_bytes, req.speed_limit_mbps)?;
     check_capacity(req.capacity)?;
     let description = clean_plan_description(req.description.as_deref().unwrap_or(""))?;
     let groups = id_set(req.group_ids.as_deref().unwrap_or(&[]));
@@ -792,9 +769,9 @@ pub async fn apply_create_plan(
     let (kind, days) = period.columns();
     let r: Result<Value, _> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "INSERT INTO plans (id, name, traffic_quota_bytes, reset_period, reset_days, \
-         speed_limit_mbps, device_seats, sort, enabled, description, capacity, renewal_only, \
+         speed_limit_mbps, sort, enabled, description, capacity, renewal_only, \
          allow_switch_in, renew_off_sale, recommended) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING {}",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING {}",
         plan_snapshot_sql("plans")
     )))
     .bind(id)
@@ -803,7 +780,6 @@ pub async fn apply_create_plan(
     .bind(kind)
     .bind(days)
     .bind(req.speed_limit_mbps)
-    .bind(req.device_seats)
     .bind(req.sort.unwrap_or(0))
     .bind(req.enabled.unwrap_or(true))
     .bind(&description)
@@ -882,7 +858,6 @@ pub async fn apply_update_plan(
     check_plan_numbers(
         req.traffic_quota_bytes.flatten(),
         req.speed_limit_mbps.flatten(),
-        req.device_seats.flatten(),
     )?;
     check_capacity(req.capacity.flatten())?;
     if name.is_none()
@@ -892,7 +867,6 @@ pub async fn apply_update_plan(
         && groups.is_none()
         && req.traffic_quota_bytes.is_none()
         && req.speed_limit_mbps.is_none()
-        && req.device_seats.is_none()
         && description.is_none()
         && req.capacity.is_none()
         && renewal_only.is_none()
@@ -936,9 +910,6 @@ pub async fn apply_update_plan(
     }
     if let Some(s) = req.speed_limit_mbps {
         set.push("speed_limit_mbps = ").push_bind_unseparated(s);
-    }
-    if let Some(s) = req.device_seats {
-        set.push("device_seats = ").push_bind_unseparated(s);
     }
     if let Some(s) = sort {
         set.push("sort = ").push_bind_unseparated(s);
@@ -1198,7 +1169,6 @@ pub async fn plan_impact(
     check_plan_numbers(
         req.traffic_quota_bytes.flatten(),
         req.speed_limit_mbps.flatten(),
-        req.device_seats.flatten(),
     )?;
     let row: Option<(i64, i64)> = sqlx::query_as(
         "WITH q AS (SELECT CASE WHEN $2 THEN $3 ELSE p.traffic_quota_bytes END AS quota \
@@ -2271,7 +2241,6 @@ struct MyPlanRow {
     reset_period: String,
     reset_days: Option<i32>,
     speed_limit_mbps: Option<i32>,
-    device_seats: Option<i32>,
     starts_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
     period_anchor: DateTime<Utc>,
@@ -2299,7 +2268,7 @@ pub async fn my_plan(
     .ok_or_else(ApiError::unauthorized)?;
     let plan = sqlx::query_as::<_, MyPlanRow>(
         "SELECT p.name, up.quota_bytes AS traffic_quota_bytes, up.reset_period, up.reset_days, \
-         up.speed_limit_mbps, p.device_seats, up.starts_at, up.expires_at, up.period_anchor, \
+         up.speed_limit_mbps, up.starts_at, up.expires_at, up.period_anchor, \
          up.last_reset_at, \
          up.next_reset_at, akari_site_offset(up.next_reset_at) AS next_reset_offset \
          FROM user_plans up JOIN plans p ON p.id = up.plan_id \
@@ -2327,7 +2296,6 @@ pub async fn my_plan(
             "traffic_quota_bytes": p.traffic_quota_bytes,
             "period": Period::from_columns(&p.reset_period, p.reset_days).render(),
             "speed_limit_mbps": p.speed_limit_mbps,
-            "device_seats": p.device_seats,
             "starts_at": p.starts_at,
             "expires_at": p.expires_at,
             "period_anchor": p.period_anchor,
@@ -2591,7 +2559,6 @@ mod tests {
                 traffic_quota_bytes: quota,
                 period: "monthly".into(),
                 speed_limit_mbps: None,
-                device_seats: None,
                 sort: None,
                 enabled: None,
                 group_ids: Some(groups.to_vec()),
@@ -3732,7 +3699,7 @@ mod tests {
             .post(
                 "/test/api/v1/plans",
                 json!({ "name": "basic", "traffic_quota_bytes": 1000, "period": "days-30",
-                        "speed_limit_mbps": 100, "device_seats": 3, "group_ids": [g] }),
+                        "speed_limit_mbps": 100, "group_ids": [g] }),
             )
             .await;
         assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());

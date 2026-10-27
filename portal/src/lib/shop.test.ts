@@ -5,6 +5,7 @@ import { mmss, safeUrl, savePercent, toneClass } from './shop';
 const offer = (period: Offer['period'], price: number): Offer => ({
   period, days: null, price_cents: price, amount_cents: price, discount_cents: 0, credit_cents: 0, forfeited_cents: 0,
   balance_cents: 0, coupon_refusal: null, action: 'new', refusal: null,
+  forfeits_permanent: false, payable: true, balance_only: false,
 });
 
 describe('savePercent', () => {

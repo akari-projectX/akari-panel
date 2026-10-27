@@ -158,7 +158,6 @@ export type PlanView = {
   period: string;
   traffic_quota_bytes: number | null;
   speed_limit_mbps: number | null;
-  device_seats: number | null;
   sort: number;
   enabled: boolean;
   group_ids: string[];

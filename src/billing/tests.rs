@@ -324,7 +324,6 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
             traffic_quota_bytes: Some(1 << 30),
             period: "monthly".into(),
             speed_limit_mbps: None,
-            device_seats: None,
             sort: None,
             enabled: None,
             group_ids: Some(vec![g]),

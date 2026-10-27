@@ -74,11 +74,11 @@ export function planRefusal(p: ShopPlan): OfferRefusal | null {
 }
 
 /**
- * 换套餐需要二次确认的情形（低-3）：有作废的折算金额，或者从一个不过期的套餐换出去（永久套餐的价值不会折算回来）。
+ * 换套餐需要二次确认的情形（低-3）：有作废的折算金额，或者从一个不过期的套餐换出去（面板的 forfeits_permanent：
+ * 永久套餐剩下的权益作废，不折算、不转余额；下单要带 accept_forfeit）。
  */
-export function needsSwitchConfirm(o: Offer, shop: Pick<Shop, 'current'>): boolean {
-  if (o.action !== 'switch') return false;
-  return o.forfeited_cents > 0 || (shop.current !== null && shop.current.expires_at === null);
+export function needsSwitchConfirm(o: Offer): boolean {
+  return o.action === 'switch' && (o.forfeited_cents > 0 || o.forfeits_permanent);
 }
 
 /** 这一单要不要选支付方式：要付钱、且可选的方式多于一种 */

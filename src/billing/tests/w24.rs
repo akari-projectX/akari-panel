@@ -383,7 +383,7 @@ async fn payment_methods_api() {
         (json!(false), json!("alipay_key_wrong"))
     );
 
-    // Disable: not served, notify = canonical rejection, shop says off.
+    // Disable: not served, notify = canonical rejection, shop has no methods.
     let mut b = create_body(&mock.url);
     b.as_object_mut().unwrap().remove("kind");
     b["version"] = json!(version(&db, &id).await);
@@ -402,9 +402,14 @@ async fn payment_methods_api() {
     );
     assert!(!state.payments().any_usable());
     let shop = cb.get("/test/api/v1/me/shop").await.json();
+    // 低-8: the shop stays open; it says no payment method is usable.
     assert_eq!(
-        (shop["enabled"].clone(), shop["methods"].clone()),
-        (json!(false), json!([]))
+        (
+            shop["enabled"].clone(),
+            shop["payments_available"].clone(),
+            shop["methods"].clone()
+        ),
+        (json!(true), json!(false), json!([]))
     );
     let canonical = c.get("/test/not/here").await.fingerprint();
     let r = post_notify_to(
