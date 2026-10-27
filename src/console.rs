@@ -136,10 +136,10 @@ fn encoded<A: RustEmbed>(key: &str, headers: &HeaderMap) -> Option<Asset> {
         if accepts(accept, enc)
             && let Some(f) = A::get(&format!("{key}.{ext}"))
         {
-            return Some(Asset::of(f, Some(enc)));
+            return Some(Asset::of(&f, Some(enc)));
         }
     }
-    Some(Asset::of(plain, None))
+    Some(Asset::of(&plain, None))
 }
 
 /// One variant of an asset: its bytes, `Content-Encoding` and a strong
@@ -152,7 +152,7 @@ struct Asset {
 }
 
 impl Asset {
-    fn of(f: rust_embed::EmbeddedFile, encoding: Option<&'static str>) -> Self {
+    fn of(f: &rust_embed::EmbeddedFile, encoding: Option<&'static str>) -> Self {
         let h = f.metadata.sha256_hash();
         let etag = format!(
             "\"{}\"",

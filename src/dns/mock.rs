@@ -96,7 +96,7 @@ impl Mock {
     }
 }
 
-fn envelope(result: Value, info: Option<Value>) -> Response {
+fn envelope(result: &Value, info: Option<Value>) -> Response {
     let mut v = json!({ "success": true, "errors": [], "messages": [], "result": result });
     if let Some(i) = info {
         v["result_info"] = i;
@@ -152,7 +152,7 @@ fn page_of(items: Vec<Value>, page: usize, per_page: usize) -> Response {
     let from = (page - 1) * per_page;
     let slice: Vec<Value> = items.into_iter().skip(from).take(per_page).collect();
     envelope(
-        Value::Array(slice),
+        &Value::Array(slice),
         Some(
             json!({ "page": page, "per_page": per_page, "total_count": total,
                      "total_pages": total.div_ceil(per_page).max(1) }),
@@ -240,7 +240,7 @@ async fn one(
         .into_iter()
         .find(|r| r["id"] == id && r["zone_id"] == zone)
     {
-        Some(r) => envelope(r, None),
+        Some(r) => envelope(&r, None),
         None => failure(StatusCode::NOT_FOUND, 81044, "Record does not exist."),
     }
 }
@@ -273,7 +273,7 @@ async fn create(
             "A record with those settings already exists.",
         );
     }
-    let mut rec = body.clone();
+    let mut rec = body;
     let mut g = m.0.lock().unwrap();
     g.next += 1;
     rec["id"] = json!(id_of("c", g.next));
@@ -281,7 +281,7 @@ async fn create(
     rec["zone_name"] = json!(name);
     rec["proxiable"] = json!(true);
     g.records.push(rec.clone());
-    envelope(rec, None)
+    envelope(&rec, None)
 }
 
 async fn patch(
@@ -306,7 +306,7 @@ async fn patch(
             for (k, v) in body.as_object().unwrap() {
                 r[k] = v.clone();
             }
-            envelope(r.clone(), None)
+            envelope(&r.clone(), None)
         }
         None => failure(StatusCode::NOT_FOUND, 81044, "Record does not exist."),
     }
@@ -330,5 +330,5 @@ async fn remove(
     if g.records.len() == before {
         return failure(StatusCode::NOT_FOUND, 81044, "Record does not exist.");
     }
-    envelope(json!({ "id": id }), None)
+    envelope(&json!({ "id": id }), None)
 }

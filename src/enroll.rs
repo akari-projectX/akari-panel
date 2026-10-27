@@ -310,6 +310,7 @@ pub async fn note_legacy_expiry(
     }
 }
 
+#[expect(clippy::needless_pass_by_value, reason = "used as a map_err callback")]
 fn csr_status(e: CsrError) -> Status {
     Status::invalid_argument(e.to_string())
 }

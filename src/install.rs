@@ -687,7 +687,7 @@ mod tests {
         assert!(check_csr(&bad_sig).is_err());
         assert_eq!(check_csr(b"junk").err(), Some(CsrError::Malformed));
         assert_eq!(check_csr(&[]).err(), Some(CsrError::Malformed));
-        let mut trailing = good.clone();
+        let mut trailing = good;
         trailing.push(0);
         assert_eq!(check_csr(&trailing).err(), Some(CsrError::Malformed));
         assert_eq!(

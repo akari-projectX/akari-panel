@@ -247,15 +247,15 @@ async fn list_zones(
                 can_edit: zone.can_edit(),
                 zone,
             })),
-            Some(Err(e)) => errors.push(error_entry(&row, ApiError::from(e))),
-            None => errors.push(error_entry(&row, token_unreadable())),
+            Some(Err(e)) => errors.push(error_entry(&row, &ApiError::from(e))),
+            None => errors.push(error_entry(&row, &token_unreadable())),
         }
     }
     zones.sort_by(|a, b| a.zone.name.cmp(&b.zone.name));
     Ok(Json(json!({ "zones": zones, "errors": errors })))
 }
 
-fn error_entry(row: &accounts::Row, e: ApiError) -> Value {
+fn error_entry(row: &accounts::Row, e: &ApiError) -> Value {
     json!({ "account_id": row.id, "account_name": row.name,
             "code": e.code(), "message": e.message(), "params": e.params() })
 }

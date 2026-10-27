@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn tags_and_names() {
         assert_eq!(
-            tags(&[" 香港 ".into(), "".into(), "0.5x".into(), "香港".into()]).unwrap(),
+            tags(&[" 香港 ".into(), String::new(), "0.5x".into(), "香港".into()]).unwrap(),
             vec!["香港".to_string(), "0.5x".to_string()]
         );
         assert!(tags(&["a|b".into()]).is_err());
