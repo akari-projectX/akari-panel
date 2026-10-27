@@ -212,7 +212,7 @@ jobs:
         run: |
           if [ "$DRY_RUN" = true ]; then
             # Throwaway registry on the runner: the dry run publishes nothing.
-            docker run -d --name registry -p 5000:5000 registry:3
+            docker run -d --name registry -p 5000:5000 registry:3@sha256:d4032d4cc323c1731c707931ecada07a53076eac38e3b61ae57533f170f2c6c3
             echo "image=localhost:5000/akari-panel" >>"$GITHUB_OUTPUT"
             echo "cosign_flags=--allow-http-registry" >>"$GITHUB_OUTPUT"
           else

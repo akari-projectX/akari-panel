@@ -48,7 +48,7 @@ TOML
 MAILPIT=akari-e2e-mailpit
 docker rm -f "$MAILPIT" >/dev/null 2>&1 || true
 docker run -d --name "$MAILPIT" --network host -e MP_SMTP_BIND_ADDR=127.0.0.1:11026 \
-  -e MP_UI_BIND_ADDR=127.0.0.1:18026 axllent/mailpit:v1.27 >/dev/null
+  -e MP_UI_BIND_ADDR=127.0.0.1:18026 ghcr.io/axllent/mailpit:v1.27@sha256:e22dce5b36f93c77082e204a3942fb6b283b7896e057458400a4c88344c3df68 >/dev/null
 
 # D4: the admin prefix (the first start imports data/state.json's into the
 # database; `info` prints that one before the first start).

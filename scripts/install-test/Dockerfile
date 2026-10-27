@@ -4,7 +4,7 @@
 # and --tmpfs /var/lib/private:mode=0700 (the container's overlayfs cannot
 # be idmapped, so without it systemd would NOT mount the agent's
 # StateDirectory noexec,idmapped as it does on a real VPS). Test use only.
-FROM debian:13
+FROM debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       systemd systemd-sysv curl ca-certificates \
