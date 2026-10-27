@@ -126,7 +126,7 @@ else
 				fail "the docker upgrade from $prev was not refused"
 			fi
 			cat "$work/refused.log"
-			grep -q 'fresh install required; see docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
+			grep -q 'fresh install required; see docs/DEPLOY.md\|需要全新安装，见 docs/DEPLOY.md' "$work/refused.log" || fail "no clear refusal message"
 			ls -d /var/backups/akari/akari-* >/dev/null 2>&1 && fail "the refused upgrade made a backup"
 			[ "$(grep '^AKARI_IMAGE=' /opt/akari/.env)" = "$img_before" ] || fail ".env changed by the refused upgrade"
 			check_panel

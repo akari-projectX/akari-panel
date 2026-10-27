@@ -76,6 +76,21 @@ fi
 
 cx() { docker exec -e LANG=C.UTF-8 "$c" "$@"; }
 
+# Language and locale (installer UI): the image has no zh_CN locale.
+# (1) apt cannot install `locales`: the run goes on in English, says why, and
+# the machine is left without the locale. (2) The default run below then
+# installs zh_CN.UTF-8 for itself and speaks Chinese.
+log "locale: zh_CN.UTF-8 cannot be installed -> English"
+cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "the image already has zh_CN.UTF-8"
+cx sh -c 'mkdir -p /fakebin && printf "%s\n" "#!/bin/sh" "case \"\$*\" in *locales*) exit 100 ;; esac" "exec /usr/bin/apt-get \"\$@\"" >/fakebin/apt-get && chmod +x /fakebin/apt-get'
+docker exec -e LANG=C.UTF-8 -e PATH=/fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$c" \
+	sh /src/scripts/install.sh info >/tmp/akari-en.out 2>&1 && fail "akari-ctl info succeeded without an installation"
+cat /tmp/akari-en.out
+grep -q 'continuing in English' /tmp/akari-en.out || fail "no English fallback message"
+grep -q 'no installation found' /tmp/akari-en.out || fail "the English fallback run did not speak English"
+cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "zh_CN.UTF-8 appeared although apt refused"
+cx rm -rf /fakebin /var/log/akari-install.log
+
 # A host set up by an older installer: Caddy's Cloudsmith apt source, which
 # answers 402 since 2026-10-09 (a local stand-in: same host name, plain
 # HTTP on 8402). apt-get update fails on it; the installer must turn that
@@ -177,7 +192,7 @@ if [ -n "$prev" ]; then
 			fail "the upgrade from $prev was not refused"
 		fi
 		cat /tmp/akari-refused.log
-		grep -q 'fresh install required; see docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
+		grep -q 'fresh install required; see docs/DEPLOY.md\|需要全新安装，见 docs/DEPLOY.md' /tmp/akari-refused.log || fail "no clear refusal message"
 		cx sh -c 'ls -d /var/backups/akari/akari-* >/dev/null 2>&1' && fail "the refused upgrade made a backup"
 		cx grep -q "^VERSION=$prev\$" /etc/akari/install.env || fail "install.env changed by the refused upgrade"
 		check_panel "$prev"
@@ -201,7 +216,14 @@ PREFIX=$(prefix)
 check_panel "$new"
 cx test -e /etc/apt/sources.list.d/caddy-stable.list && fail "the dead Cloudsmith source is still on"
 cx test -f /etc/apt/sources.list.d/caddy-stable.list.akari.disabled || fail "the Cloudsmith source was not kept as *.akari.disabled"
-cx grep -q 'disabled Caddy.s Cloudsmith apt repository' /var/log/akari-install.log || fail "no message about the Cloudsmith source"
+cx grep -q 'disabled Caddy.s Cloudsmith apt repository\|已停用 Caddy 的 Cloudsmith' /var/log/akari-install.log || fail "no message about the Cloudsmith source"
+# The default run: zh_CN.UTF-8 installed for the installer, Chinese output,
+# and the system default locale untouched.
+cx sh -c 'locale -a | grep -i "^zh_cn\.utf-\?8$"' >/dev/null || fail "zh_CN.UTF-8 was not installed"
+cx grep -q '下载并验证' /var/log/akari-install.log || fail "the default run was not Chinese"
+cx sh -c '! grep -qs "^LANG=" /etc/default/locale /etc/locale.conf' || fail "the installer changed the system default locale"
+cx sh -c '! grep -qs "zh_CN" /etc/environment /etc/profile /etc/profile.d/* /root/.profile /root/.bashrc' || fail "the installer wrote the locale into a profile"
+echo "ok: locale: Chinese by default (zh_CN.UTF-8 installed), English fallback when it cannot be, system default untouched"
 cx apt-get update >/dev/null 2>&1 || fail "apt-get update still fails"
 want_caddy=$(sed -n "s/^CADDY_VERSION='\(.*\)'$/\1/p" "$root/scripts/install.sh")
 cx caddy version | grep -q "^v$want_caddy " || fail "Caddy is not the pinned release $want_caddy"
