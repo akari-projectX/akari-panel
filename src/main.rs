@@ -257,7 +257,7 @@ async fn serve(cfg: PanelConfig) -> Result<()> {
     );
     let install = install::ensure(&cfg)?;
 
-    let pg = sqlx::postgres::PgPoolOptions::new()
+    let pg = akari_panel::db::pool_options()
         .max_connections(16)
         .acquire_timeout(std::time::Duration::from_secs(10))
         .connect(&cfg.database_url)
