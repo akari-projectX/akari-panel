@@ -864,7 +864,7 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 {"name_rate": true}`，默认关）。开启后只显示入口的**基础倍率**（1x 不显示），**不显示时段倍率**；代价是每次改基础倍率
 都会改名，客户端刷新后可能切换线路（开启时后台会确认，入口抽屉的倍率框也会提示）。倍率请在门户的线路列表里看。
 
-**订阅模板（2026-10-27，迁移 1123，取代分流页）**（系统设置 → 订阅模板；接口 `GET /api/v1/sub-templates`、
+**订阅模板（2026-10-27，迁移 1124，取代分流页）**（系统设置 → 订阅模板；接口 `GET /api/v1/sub-templates`、
 `PUT|DELETE /api/v1/sub-templates/{sing-box|clash|surge|surfboard}`、`POST …/{format}/preview`）：
 每种客户端一份完整的配置模板，运营者直接改。没有保存过的格式用内置默认（拦截 → 直连 → 服务分组 → 🚀 默认代理，
 地区自动选择组，推荐 DNS）；「恢复默认」删除自定义内容。模板最大 256 KiB，保存要带当前 `version`（别人先改过
