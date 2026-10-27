@@ -30,6 +30,8 @@
     auto: '自动识别',
     clash: 'Clash / mihomo',
     'sing-box': 'sing-box',
+    surge: 'Surge',
+    surfboard: 'Surfboard',
     links: '通用链接',
   };
 

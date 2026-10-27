@@ -183,7 +183,7 @@ export type HolderProof = { password: string } | { passkey: { state: string; cre
 
 /* ───────────── 订阅、节点、流量 ───────────── */
 
-export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'links';
+export type SubFormat = 'auto' | 'clash' | 'sing-box' | 'surge' | 'surfboard' | 'links';
 
 export type SubTokenReset = { sub_token: string; sub_url: string | null; credentials_rotated: number };
 
