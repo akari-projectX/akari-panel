@@ -66,12 +66,7 @@ pub enum Job {
 }
 
 impl Job {
-    pub const ALL: [Job; 4] = [
-        Job::Settlement,
-        Job::Reconciliation,
-        Job::Mail,
-        Job::Alerts,
-    ];
+    pub const ALL: [Job; 4] = [Job::Settlement, Job::Reconciliation, Job::Mail, Job::Alerts];
 
     /// Normal period; a job without a success for 6 periods is `stale`.
     fn period_secs(self) -> i64 {

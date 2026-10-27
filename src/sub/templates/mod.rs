@@ -150,12 +150,7 @@ impl TemplateError {
                 line = line,
                 column = column
             ),
-            _ => bad_request!(
-                "sub_template.invalid",
-                "{msg}",
-                field = "body",
-                msg = msg
-            ),
+            _ => bad_request!("sub_template.invalid", "{msg}", field = "body", msg = msg),
         }
     }
 }
@@ -225,7 +220,11 @@ pub(crate) fn rule_target<'a>(rule: &'a str, final_kw: &str) -> Option<&'a str> 
     {
         return None;
     }
-    let idx = if kind.eq_ignore_ascii_case(final_kw) { 0 } else { 1 };
+    let idx = if kind.eq_ignore_ascii_case(final_kw) {
+        0
+    } else {
+        1
+    };
     fields.nth(idx).filter(|t| !t.is_empty())
 }
 
@@ -256,7 +255,12 @@ pub(crate) fn render(
 
 /// The built-in sample user: one line of every kind the formats carry.
 pub(crate) fn sample_rows() -> Vec<super::NodeRow> {
-    let row = |entrance: &str, region: &str, server: &str, inbound: Value, protocol: &str, account: Value| {
+    let row = |entrance: &str,
+               region: &str,
+               server: &str,
+               inbound: Value,
+               protocol: &str,
+               account: Value| {
         super::NodeRow {
             entrance_id: Uuid::new_v4(),
             region: Some(region.into()),
@@ -368,10 +372,11 @@ pub(crate) fn render_sample_for(
 
 /// The template the site uses for `format`: its row, else the built-in.
 pub async fn body_of(pg: &sqlx::PgPool, format: TemplateFormat) -> sqlx::Result<String> {
-    let stored: Option<String> = sqlx::query_scalar("SELECT body FROM sub_templates WHERE format = $1")
-        .bind(format.id())
-        .fetch_optional(pg)
-        .await?;
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT body FROM sub_templates WHERE format = $1")
+            .bind(format.id())
+            .fetch_optional(pg)
+            .await?;
     Ok(stored.unwrap_or_else(|| format.default_body().to_string()))
 }
 
@@ -388,10 +393,12 @@ pub struct Stored {
 }
 
 pub async fn load(conn: &mut PgConnection, format: TemplateFormat) -> sqlx::Result<Option<Stored>> {
-    sqlx::query_as("SELECT body, version, updated_at, updated_by FROM sub_templates WHERE format = $1")
-        .bind(format.id())
-        .fetch_optional(conn)
-        .await
+    sqlx::query_as(
+        "SELECT body, version, updated_at, updated_by FROM sub_templates WHERE format = $1",
+    )
+    .bind(format.id())
+    .fetch_optional(conn)
+    .await
 }
 
 fn sha(body: &str) -> String {
@@ -502,7 +509,11 @@ const fn ph(token: &'static str, zh: &'static str, en: &'static str) -> Placehol
 
 fn placeholders(f: TemplateFormat) -> Vec<Placeholder> {
     let mut v = vec![
-        ph("$subs_link", "订阅链接（含 token）", "The subscription link (with the token)"),
+        ph(
+            "$subs_link",
+            "订阅链接（含 token）",
+            "The subscription link (with the token)",
+        ),
         ph("$subs_domain", "订阅域名", "The subscription domain"),
         ph("$site_name", "站点名称", "The site name"),
     ];
@@ -525,9 +536,21 @@ fn placeholders(f: TemplateFormat) -> Vec<Placeholder> {
             ));
         }
         TemplateFormat::Surge | TemplateFormat::Surfboard => {
-            v.push(ph("$proxies", "单独一行：每条线路一行代理", "Alone on a line: one proxy line per line"));
-            v.push(ph("$proxy_group", "线路名称，逗号分隔（无线路时为 DIRECT）", "Line names, comma-separated (DIRECT when none)"));
-            v.push(ph("$subscribe_info", "upload=…, download=…, total=…, expire=…", "upload=…, download=…, total=…, expire=…"));
+            v.push(ph(
+                "$proxies",
+                "单独一行：每条线路一行代理",
+                "Alone on a line: one proxy line per line",
+            ));
+            v.push(ph(
+                "$proxy_group",
+                "线路名称，逗号分隔（无线路时为 DIRECT）",
+                "Line names, comma-separated (DIRECT when none)",
+            ));
+            v.push(ph(
+                "$subscribe_info",
+                "upload=…, download=…, total=…, expire=…",
+                "upload=…, download=…, total=…, expire=…",
+            ));
         }
     }
     v
@@ -647,7 +670,8 @@ pub async fn preview(
     let out = match req.user_id {
         None => render_sample(f, &body),
         Some(id) => {
-            let rows = super::load_rows(state.pg(), id, state.settings().get().sub_name_rate).await?;
+            let rows =
+                super::load_rows(state.pg(), id, state.settings().get().sub_name_rate).await?;
             let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM users WHERE id = $1")
                 .bind(id)
                 .fetch_optional(state.pg())
@@ -682,7 +706,12 @@ pub async fn preview(
                         .site_name
                         .as_deref()
                         .unwrap_or(crate::settings::DEFAULT_SITE_NAME),
-                    info: Info { upload: 0, download: 0, total: 0, expire: 0 },
+                    info: Info {
+                        upload: 0,
+                        download: 0,
+                        total: 0,
+                        expire: 0,
+                    },
                     format_id: f.id(),
                 },
                 true,
@@ -690,5 +719,7 @@ pub async fn preview(
         }
     };
     let rendered = out.map_err(TemplateError::into_api)?;
-    Ok(Json(json!({ "content_type": f.content_type(), "body": rendered })))
+    Ok(Json(
+        json!({ "content_type": f.content_type(), "body": rendered }),
+    ))
 }
