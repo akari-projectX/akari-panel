@@ -11,11 +11,12 @@
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:errors": "node scripts/check-error-codes.mjs",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:weights && npm run check:i18n && npm run check:errors && npm run test",
+    "check": "npm run typecheck && npm run lint && npm run check:colors && npm run check:weights && npm run check:i18n && npm run check:errors && npm run check:unused && npm run test",
     "report:size": "node scripts/bundle-report.mjs dist/app",
     "e2e": "../scripts/e2e-portal.sh",
     "check:colors": "node scripts/check-colors.mjs",
-    "check:weights": "node scripts/check-weights.mjs"
+    "check:weights": "node scripts/check-weights.mjs",
+    "check:unused": "knip"
   },
   "engines": {
     "node": ">=22.18"
@@ -32,6 +33,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.6.5",
     "@typescript/native": "npm:typescript@^7.0.2",
+    "knip": "^6.43.0",
     "oxlint": "^1.89.0",
     "parse5": "^8.0.1",
     "svelte": "^5.57.2",

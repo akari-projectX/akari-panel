@@ -116,27 +116,6 @@ export function KV({
   );
 }
 
-/** Row with a title/description on the left and a control on the right (stacks on a phone). */
-export function SettingRow({
-  title,
-  description,
-  children,
-}: {
-  title: ReactNode;
-  description?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-      <div className="min-w-0">
-        <div className="text-body font-medium">{title}</div>
-        {description && <div className="mt-0.5 text-footnote text-muted-foreground">{description}</div>}
-      </div>
-      <div className="max-w-full shrink-0">{children}</div>
-    </div>
-  );
-}
-
 /**
  * Section title. Default: the small grey heading inside a dialog or card.
  * `page` (v2): a headline outside the cards, with an optional count pill

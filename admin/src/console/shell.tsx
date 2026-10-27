@@ -86,7 +86,7 @@ function count(it: NavItem, b: Badges | undefined): number {
 }
 
 /** The site mark: the uploaded logo, else the Akari icon (shared/ui/brand). */
-export function AppMark({ size = 28 }: { size?: number }) {
+function AppMark({ size = 28 }: { size?: number }) {
   const site = useSite();
   return <BrandMark name={site.siteName} logoUrl={site.logoUrl} size={size} />;
 }

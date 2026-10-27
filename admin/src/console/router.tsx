@@ -21,7 +21,7 @@ export function navigate(to: string, replace = false): void {
 export type Route = { page: string; sub: string[]; query: URLSearchParams };
 
 /** Page id, sub-path segments and query of a console-relative path. */
-export function parseRoute(pathname: string, search = ""): Route {
+function parseRoute(pathname: string, search = ""): Route {
   const segs = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   return { page: segs[0] ?? "dashboard", sub: segs.slice(1), query: new URLSearchParams(search) };
 }

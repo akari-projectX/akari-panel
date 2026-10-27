@@ -18,7 +18,7 @@ export type GuardedForm = 'login' | 'register' | 'reset';
 export type TurnstileFailure = 'script' | 'widget';
 
 /** 表单挂着时多久重新取一次防护设置 */
-export const GUARD_POLL_MS = 30_000;
+const GUARD_POLL_MS = 30_000;
 
 export class FormGuard {
   website = $state('');

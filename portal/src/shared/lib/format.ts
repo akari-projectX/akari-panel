@@ -250,7 +250,7 @@ export function resetPeriodText(p: ResetPeriod, tr: Tr, tp: Tp): string {
   return tr('流量不重置');
 }
 
-export const ORDER_STATUS: Record<OrderStatus, string> = {
+const ORDER_STATUS: Record<OrderStatus, string> = {
   pending: '待支付',
   paid: '已付款',
   expired: '已超时',
@@ -259,7 +259,7 @@ export const ORDER_STATUS: Record<OrderStatus, string> = {
 
 export type StatusTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
 
-export const ORDER_TONE: Record<OrderStatus, StatusTone> = {
+const ORDER_TONE: Record<OrderStatus, StatusTone> = {
   pending: 'warning',
   paid: 'success',
   expired: 'neutral',

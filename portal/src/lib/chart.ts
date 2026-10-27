@@ -1,6 +1,5 @@
 /*
  * 流量图（仪表盘的平滑面积图，样稿 design/portal-v2-2026-10/chart.js）的纯函数：纵轴的单位与刻度、平滑曲线的路径。
- * 画图本身在 components/dash/TrafficChart.svelte（手写 SVG，不用图表库）。
  */
 
 const UNITS = [

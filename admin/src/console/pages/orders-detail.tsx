@@ -157,7 +157,7 @@ function fulfilFix(e: string, o: Order, tr: Tr): { text: string; fix?: { to: str
   };
 }
 
-export function effectText(e: RefundEffect, tr: Tr): string {
+function effectText(e: RefundEffect, tr: Tr): string {
   switch (e.kind) {
     case "cancel":
       return tr(`取消订阅「${e.plan_name}」并踢线`, `Cancels the "${e.plan_name}" subscription (user disconnected)`);

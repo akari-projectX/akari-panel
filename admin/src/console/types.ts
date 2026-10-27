@@ -1,7 +1,7 @@
 // API shapes shared by several console views (mirrors of the panel's
 // views: servers.rs, entrances.rs, plans.rs, catalog.rs).
 
-export type RateRuleView = { weekdays: number[]; start: number; end: number; rate: number };
+type RateRuleView = { weekdays: number[]; start: number; end: number; rate: number };
 
 export type EntranceView = {
   id: string;
@@ -48,7 +48,7 @@ export type ServerNode = {
   entrances: EntranceView[];
 };
 
-export type TrafficQuota = {
+type TrafficQuota = {
   bytes: number | null;
   mode: "both" | "up" | "down";
   reset_day: number | null;
@@ -60,7 +60,7 @@ export type TrafficQuota = {
   exceeded_at: string | null;
 };
 
-export type HeartbeatMetrics = {
+type HeartbeatMetrics = {
   load1: number | null;
   load5: number | null;
   load15: number | null;
@@ -75,7 +75,7 @@ export type HeartbeatMetrics = {
   xray_version: string;
 };
 
-export type CertStatus = {
+type CertStatus = {
   state: string;
   domain?: string | null;
   not_after?: string | null;
@@ -83,7 +83,7 @@ export type CertStatus = {
   error?: string | null;
 };
 
-export type Heartbeat = {
+type Heartbeat = {
   cpu_percent: number | null;
   mem_used_bytes: number | null;
   mem_total_bytes: number | null;
@@ -96,7 +96,7 @@ export type Heartbeat = {
   source_filter?: { applied?: boolean; state?: string; error?: string | null } | null;
 };
 
-export type UpdateStatus = {
+type UpdateStatus = {
   rollout_id: string;
   version: string;
   rollout_status: string;
@@ -172,16 +172,4 @@ export type PlanView = {
   on_sale: boolean;
   prices: PlanPrice[];
   active_users: number;
-};
-
-/** Install / enrollment answer (servers.rs `create_with_enrollment`, nodeinstall). */
-export type InstallView = {
-  command?: string;
-  command_wget?: string;
-  expires_at?: string;
-  warnings?: string[];
-  bootstrap?: string;
-  enroll_token?: string;
-  token_expires_at?: string;
-  [k: string]: unknown;
 };

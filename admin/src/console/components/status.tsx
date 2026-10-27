@@ -88,7 +88,7 @@ export function orderState(o: OrderLike): OrdState {
   return "cancelled";
 }
 
-export function ordChip(s: OrdState, tr: Tr): Chip {
+function ordChip(s: OrdState, tr: Tr): Chip {
   return {
     pending: { label: tr("待支付", "Pending"), tone: "info", icon: Clock },
     completed: { label: tr("已完成", "Completed"), tone: "success", icon: CircleCheck },
@@ -123,7 +123,7 @@ export type UserLike = {
 };
 
 /** Same precedence as the server's status filter: erased > banned > over quota > expired > no plan > active. */
-export function userState(u: UserLike, now = Date.now()): UserState {
+function userState(u: UserLike, now = Date.now()): UserState {
   if (u.erased) return "deleted";
   if (!u.enabled && u.disabled_reason !== "quota") return "banned";
   if (!u.enabled) return "exhausted";
@@ -132,7 +132,7 @@ export function userState(u: UserLike, now = Date.now()): UserState {
   return "active";
 }
 
-export function userChip(s: UserState, tr: Tr): Chip {
+function userChip(s: UserState, tr: Tr): Chip {
   return {
     active: { label: tr("正常", "Active"), tone: "success" },
     expired: { label: tr("已到期", "Expired"), tone: "warning", icon: Clock },
@@ -170,7 +170,7 @@ export function couponState(c: CouponLike, now = Date.now()): CouponState {
   return "live";
 }
 
-export function couponChip(s: CouponState, tr: Tr): Chip {
+function couponChip(s: CouponState, tr: Tr): Chip {
   return {
     live: { label: tr("生效中", "Live"), tone: "success" },
     scheduled: { label: tr("未开始", "Scheduled"), tone: "info", icon: CalendarClock },
@@ -208,7 +208,7 @@ export function serverStateOf(
   return s.online ? "online" : "offline";
 }
 
-export function serverChip(s: ServerState, tr: Tr): Chip {
+function serverChip(s: ServerState, tr: Tr): Chip {
   return {
     online: { label: tr("在线", "Online"), tone: "success" },
     offline: { label: tr("离线", "Offline"), tone: "danger" },

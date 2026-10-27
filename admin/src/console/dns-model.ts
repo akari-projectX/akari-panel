@@ -10,7 +10,7 @@ export type RType = (typeof TYPES)[number];
 export const PROXIABLE: readonly string[] = ["A", "AAAA", "CNAME"];
 export const TTL_AUTO = 1;
 export const TTLS = [1, 60, 120, 300, 600, 900, 1800, 3600, 7200, 18000, 43200, 86400];
-export const COMMENT_MAX = 100;
+const COMMENT_MAX = 100;
 /** Records per page (Cloudflare pages; the backend allows 5-100). */
 export const PER_PAGE = 50;
 
@@ -51,7 +51,7 @@ export type DnsRecord = {
   uses: Use[];
 };
 export type PageInfo = { page: number; per_page: number; total_count: number; total_pages: number };
-export type BatchResult = { id: string; name: string | null; ok: boolean } & Partial<DnsFailure>;
+type BatchResult = { id: string; name: string | null; ok: boolean } & Partial<DnsFailure>;
 export type BatchAnswer = { ok: number; failed: number; results: BatchResult[] };
 export type TestAnswer =
   | { ok: true; zones: number; editable: number; read_only: number; unknown: number; sample: string[] }
@@ -77,7 +77,7 @@ export function isIPv6(s: string): boolean {
   }
 }
 
-export type Srv = {
+type Srv = {
   service: string;
   proto: string;
   name: string;
@@ -86,7 +86,7 @@ export type Srv = {
   port: string;
   target: string;
 };
-export type Caa = { flags: string; tag: string; value: string };
+type Caa = { flags: string; tag: string; value: string };
 export type Draft = {
   type: RType;
   name: string;

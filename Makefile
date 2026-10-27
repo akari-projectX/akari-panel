@@ -2,7 +2,7 @@ AGENT_DIR ?= ../akari-agent
 
 FUZZ_SECS ?= 30
 
-.PHONY: shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down portal admin panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
+.PHONY: machete jscpd shellcheck gen-protocols check-generated monitoring-check fuzz fuzz-lint coverage third-party bench-up bench-down dev-up dev-down portal admin panel agent-build check smoke e2e lint test deny ci bench bench-seed bench-lint
 
 dev-up:
 	docker compose up -d --wait
@@ -24,10 +24,23 @@ panel:
 agent-build:
 	$(MAKE) -C $(AGENT_DIR) build
 
-check: check-generated shellcheck
+check: check-generated shellcheck machete jscpd
 	cargo fmt --check && cargo clippy -- -D warnings
 	cd portal && npm run check
 	cd admin && npm run check
+
+# Dead code. Unused Rust dependencies: cargo-machete over the three crates
+# (cargo install cargo-machete --locked --version 0.9.1; reads manifests and
+# sources, compiles nothing; deliberate exceptions live in
+# [package.metadata.cargo-machete] with a reason). Unused TS files, exports and
+# packages: knip, part of `npm run check` in portal/ and admin/. Copy/paste
+# against per-tree ceilings: scripts/jscpd.sh. CI job `dead code`.
+machete:
+	@command -v cargo-machete >/dev/null || { echo "cargo-machete not installed (cargo install cargo-machete --locked --version 0.9.1)"; exit 1; }
+	cargo machete . && cargo machete bench && cargo machete fuzz
+
+jscpd:
+	./scripts/jscpd.sh
 
 # Every shell script (installer, backup/restore, smoke, test drivers, the
 # node installer templates). smoke.sh predates the gate: warnings and

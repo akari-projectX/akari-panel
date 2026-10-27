@@ -46,7 +46,7 @@ export async function setStorage(page: Page, key: string, value: string | null):
 }
 
 /** The page's data has arrived (shell.tsx sets main[data-ready]). */
-export const ready = (page: Page) => expect(page.locator("main[data-ready]")).toBeVisible({ timeout: 20_000 });
+const ready = (page: Page) => expect(page.locator("main[data-ready]")).toBeVisible({ timeout: 20_000 });
 
 /** Open a console path ("" = dashboard, "/users?open=…") and wait for its data. */
 export async function goto(page: Page, path: string): Promise<void> {

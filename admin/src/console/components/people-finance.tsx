@@ -145,7 +145,7 @@ export const shortTime = (iso: string) => dateTime(iso).slice(5);
 
 /* ---------- chains ---------- */
 
-export const CHAINS: Record<string, { label: string; name: string; tone: Tone }> = {
+const CHAINS: Record<string, { label: string; name: string; tone: Tone }> = {
   trc20: { label: "TRC20", name: "Tron (TRC20)", tone: "danger" },
   plasma: { label: "Plasma", name: "Plasma", tone: "primary" },
   polygon: { label: "Polygon", name: "Polygon PoS", tone: "info" },
@@ -156,7 +156,7 @@ export const CHAINS: Record<string, { label: string; name: string; tone: Tone }>
 };
 const EVM = new Set(["plasma", "polygon", "arbitrum", "xlayer"]);
 
-export function ChainBadge({ chain }: { chain: string }) {
+function ChainBadge({ chain }: { chain: string }) {
   const c = CHAINS[chain];
   return (
     <Badge tone={c?.tone ?? "neutral"} className="font-mono">
@@ -211,7 +211,7 @@ const W_STATUS: Record<string, WStatusLabel> = {
 };
 const W_UNKNOWN: WStatusLabel = { zh: "未知状态", en: "Unknown", tone: "neutral", icon: Clock };
 
-export function WithdrawalBadge({ status }: { status: string }) {
+function WithdrawalBadge({ status }: { status: string }) {
   const tr = useTr();
   const { zh, en, tone, icon: Icon } = W_STATUS[status] ?? W_UNKNOWN;
   return (

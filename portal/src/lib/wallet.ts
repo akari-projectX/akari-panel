@@ -55,7 +55,7 @@ export const W_STATUS: Record<WithdrawalStatus, { text: string; tone: Tone }> = 
   cancelled: { text: '已撤回', tone: '' },
 };
 
-export const C_STATUS: Record<CommissionStatus, { text: string; tone: Tone }> = {
+const C_STATUS: Record<CommissionStatus, { text: string; tone: Tone }> = {
   pending: { text: '冻结中', tone: 'warn' },
   credited: { text: '已入账', tone: 'ok' },
   reversed: { text: '已追回', tone: '' },

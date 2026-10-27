@@ -11,12 +11,12 @@ import { MANIFEST, type ManifestField, type ManifestProtocol } from "./protocols
 
 const byId = <T extends { id: string }>(list: T[], id: string): T | undefined => list.find((x) => x.id === id);
 
-export function protocolSpec(id: string): ManifestProtocol | undefined {
+function protocolSpec(id: string): ManifestProtocol | undefined {
   return byId(MANIFEST.protocols, id);
 }
 
 /** Transports with their own settings: the ones the free template stacks. */
-export function stackableTransports(): string[] {
+function stackableTransports(): string[] {
   return MANIFEST.transports.filter((t) => t.fields.length > 0).map((t) => t.id);
 }
 

@@ -394,56 +394,6 @@ export function EntranceChip({
 
 /* ---------- Structure ---------- */
 
-/**
- * Phone card list row (also narrow desktop lists): leading icon/avatar,
- * title + subtitle, trailing value/badges; the whole row is a button when
- * `onClick` is given.
- */
-export function ListItem({
-  leading,
-  title,
-  subtitle,
-  trailing,
-  onClick,
-  className,
-  chevron,
-  selected,
-}: {
-  leading?: ReactNode;
-  title: ReactNode;
-  subtitle?: ReactNode;
-  trailing?: ReactNode;
-  onClick?: () => void;
-  className?: string;
-  chevron?: boolean;
-  selected?: boolean;
-}) {
-  const body = (
-    <>
-      {leading}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-body font-medium">{title}</span>
-        {subtitle && <span className="mt-0.5 block truncate text-footnote text-muted-foreground">{subtitle}</span>}
-      </span>
-      {trailing && <span className="flex shrink-0 flex-col items-end gap-1 text-right">{trailing}</span>}
-      {chevron && <ChevronRight className="size-4 shrink-0 text-faint" aria-hidden="true" />}
-    </>
-  );
-  const cls = cn(
-    "flex min-h-14 w-full items-center gap-3 px-4 py-2.5 text-left",
-    onClick && "transition-colors hover:bg-accent active:bg-accent",
-    selected && "bg-primary-soft/50",
-    className,
-  );
-  return onClick ? (
-    <button type="button" onClick={onClick} className={cls} aria-current={selected || undefined}>
-      {body}
-    </button>
-  ) : (
-    <div className={cls}>{body}</div>
-  );
-}
-
 export type TimelineItem = {
   title: ReactNode;
   time: ReactNode;

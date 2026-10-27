@@ -38,7 +38,7 @@ export function setUnauthorizedHandler(f: (() => void) | null): void {
   onUnauthorized = f;
 }
 
-export async function request<T>(url: string, init?: RequestInit): Promise<T> {
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {

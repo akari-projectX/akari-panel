@@ -52,7 +52,7 @@ import { useAction } from "../data";
 import { useDebounced } from "../kit";
 import { useQS } from "../router";
 
-export type Category = { id: string; name_zh: string; name_en: string | null; sort: number; articles: number };
+type Category = { id: string; name_zh: string; name_en: string | null; sort: number; articles: number };
 export type Article = {
   id: string;
   category_id: string | null;

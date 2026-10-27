@@ -16,9 +16,6 @@ export function siteTimeZone(): string {
   return timeZone;
 }
 
-const GiB = 1024 ** 3;
-export { GiB };
-
 export function bytes(n: number | null | undefined): string {
   if (n === null || n === undefined) return "—";
   const neg = n < 0;

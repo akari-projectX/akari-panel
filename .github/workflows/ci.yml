@@ -167,6 +167,8 @@ jobs:
       - run: npm run check:colors
       - run: npm run check:i18n
       - run: npm run check:errors
+      # knip: unused files, exports and dependencies (portal/knip.json).
+      - run: npm run check:unused
       - run: npm test
       - run: npm run build
       - run: node scripts/bundle-report.mjs dist/app --markdown "$RUNNER_TEMP/size.md" && cat "$RUNNER_TEMP/size.md" >>"$GITHUB_STEP_SUMMARY"
@@ -198,6 +200,27 @@ jobs:
           name: admin-bundle-report
           path: admin/dist/bundle-report.json
           retention-days: 14
+
+  dead-code:
+    # Dead and duplicated code, on every PR (needs nothing built): unused
+    # Rust dependencies in the three crates (cargo-machete; exceptions are
+    # listed with a reason in Cargo.toml), copy/paste against per-tree
+    # ceilings (scripts/jscpd.sh). Unused TS files/exports/packages (knip)
+    # run in the portal and admin jobs. Route <-> auth coverage is a unit
+    # test (auth::route_auth_tests) in the rust job.
+    name: dead code (cargo-machete, jscpd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # rust-toolchain.toml pins the compiler (same as the Dockerfile).
+      - run: rustup toolchain install --profile minimal
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: cargo install cargo-machete --locked --version 0.9.1
+      - run: make machete
+      - run: make jscpd
 
   deny:
     name: cargo-deny

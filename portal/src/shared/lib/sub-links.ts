@@ -5,7 +5,7 @@
  */
 import type { Me, SubFormat } from '@/api';
 
-export const SUB_FORMATS: SubFormat[] = ['auto', 'clash', 'sing-box', 'surge', 'surfboard', 'links'];
+const SUB_FORMATS: SubFormat[] = ['auto', 'clash', 'sing-box', 'surge', 'surfboard', 'links'];
 
 /** 面板开着的格式（auto = 按客户端的 User-Agent 在开着的格式里选，总是可选） */
 export function enabledFormats(me: Pick<Me, 'sub_formats'> | undefined): SubFormat[] {
