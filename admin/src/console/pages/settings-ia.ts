@@ -1,7 +1,6 @@
 // 系统设置的信息架构（2026-10 改版 v2，proposal-v2 §5）：8 组 22 个分区，
 // 每个分区一个 URL（/settings/<id>）；原"站点与品牌"按任务拆成 站点信息 /
-// 外观与品牌 / 条款与下载链接。旧的标签页地址与旧 id 重定向到新分区
-// （OLD_IDS、ALIASES），搜索覆盖分区名、说明、旧名称（keywords）与分区内的
+// 外观与品牌 / 条款与下载链接。搜索覆盖分区名、说明、旧名称（keywords）与分区内的
 // 行标签（rows：搜到行时显示"行 ↳ 组 › 分区"）。
 // Tile colours are icon-tile data like nav.ts (system-settings style).
 import {
@@ -668,20 +667,6 @@ export function searchSettings(q: string): SearchHit[] {
   }
   return out;
 }
-
-/** Old tab ids (`/settings/<tab>` before the 2026-10 redesign) and aliases → the section. */
-export const OLD_IDS: Record<string, SectionId> = {
-  security: "access",
-  branding: "brand",
-  nodes: "install",
-  "block-rules": "block",
-  "audit-rules": "block",
-  sub: "subscription",
-  "mail-template": "templates",
-  // The v2 design's ids for two sections.
-  notify: "notices",
-  passkeys: "account",
-};
 
 /** Things that moved out of the settings: search finds them and points there. */
 export const MOVED_OUT: { zh: string; en: string; to: string; where: [string, string]; keywords: string }[] = [

@@ -48,7 +48,6 @@ export function Dialog({
   icon: Icon,
   tone = "default",
   size = "md",
-  wide,
   actions,
   tabs,
   footer,
@@ -64,8 +63,6 @@ export function Dialog({
   icon?: LucideIcon;
   tone?: keyof typeof toneTile;
   size?: DialogSize;
-  /** Legacy: `wide` = size "lg". */
-  wide?: boolean;
   /** Extra header buttons (left of the close button). */
   actions?: ReactNode;
   /** A tab row under the header (wide detail dialogs). */
@@ -119,7 +116,7 @@ export function Dialog({
           className={cn(
             "fixed z-50 flex flex-col bg-card text-foreground outline-none",
             "inset-0 sm:inset-auto sm:top-1/2 sm:left-1/2 sm:max-h-[min(88vh,900px)] sm:w-[calc(100vw-48px)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl sm:shadow-dialog",
-            widths[wide ? "lg" : size],
+            widths[size],
             "data-[state=closed]:pointer-events-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 sm:data-[state=closed]:zoom-out-[0.98] sm:data-[state=open]:zoom-in-[0.97] max-sm:data-[state=open]:slide-in-from-bottom-6",
             className,
           )}

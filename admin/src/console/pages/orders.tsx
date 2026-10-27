@@ -305,17 +305,6 @@ export function dayLabel(day: string, today: string, tr: Tr): string {
 export function OrdersPage() {
   const tr = useTr();
   const [query, patch] = useQS();
-  // Links from elsewhere (dashboard, user detail, finance) use the old
-  // parameters: map them onto the ledger's (replace, no history entry).
-  useEffect(() => {
-    const legacy: Record<string, string | null> = {};
-    if (query.get("unfulfilled") === "1") Object.assign(legacy, { unfulfilled: null, status: "unfulfilled" });
-    const email = query.get("email");
-    const no = query.get("no");
-    if (email) Object.assign(legacy, { email: null, q: `@${email}` });
-    else if (no) Object.assign(legacy, { no: null, q: no });
-    if (Object.keys(legacy).length) patch(legacy, true);
-  }, [query, patch]);
   const seg = (SEGS.includes(query.get("status") as Seg) ? query.get("status") : "all") as Seg;
   const via = query.get("via") ?? "";
   const q = query.get("q") ?? "";

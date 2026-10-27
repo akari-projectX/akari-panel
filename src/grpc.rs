@@ -1637,7 +1637,6 @@ async fn record_too_old(pg: &sqlx::PgPool, server_id: Uuid, protocol: u32) {
 #[derive(Default, Clone)]
 struct HelloInfo {
     version: String,
-    protocol: u32,
     os: String,
     arch: String,
 }
@@ -1657,7 +1656,6 @@ async fn on_hello_update(sess: &Session, hello: &crate::pb::Hello) {
     let info = hello.info.clone().unwrap_or_default();
     *lock_or_recover(&sess.agent) = HelloInfo {
         version: info.agent_version.clone(),
-        protocol: hello.protocol_version,
         os: info.os,
         arch: info.arch,
     };
@@ -1697,7 +1695,6 @@ async fn maybe_offer_update(sess: &Session) {
     let offer = match crate::rollout::offer_for(
         sess.state.pg(),
         sess.server_id,
-        info.protocol,
         &info.version,
         (&info.os, &info.arch),
     )

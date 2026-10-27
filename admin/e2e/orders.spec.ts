@@ -161,8 +161,8 @@ test("ORD-04 ORD-08: mark an unpaid order paid (reason), payment events in words
   sql(
     `INSERT INTO payment_events (order_id, out_trade_no, source, verified, outcome) SELECT id, out_trade_no, 'precreate', true, 'ok' FROM orders WHERE out_trade_no = '${no}'`,
   );
-  // The user page's old link (?email=) lands on the ledger's search.
-  await openConsole(page, `/orders?email=${encodeURIComponent(email)}`);
+  // The user page's link lands on the ledger's search.
+  await openConsole(page, `/orders?q=${encodeURIComponent(`@${email}`)}`);
   await expect(page).toHaveURL(/q=%40/);
   await openRow(page, "¥15.00");
   const d = dialog(page, /^订单 /);
@@ -233,7 +233,7 @@ test("ORD-09: a refund the provider confirmed but the panel could not record is 
       `0, 0, 0, 'none', 'e2e', now() + interval '15 minutes', 'new', 'paid', 'notify', now(), 1500, now(), '${request}'::jsonb ` +
       `FROM users u WHERE u.email = '${email}'`,
   );
-  await openConsole(page, `/orders?email=${encodeURIComponent(email)}`);
+  await openConsole(page, `/orders?q=${encodeURIComponent(`@${email}`)}`);
   // The list says the provider already refunded it.
   await expect(row(page, "¥15.00")).toContainText("待登记退款");
   await expect(row(page, "¥15.00")).toContainText("渠道已退 ¥15.00，待登记");

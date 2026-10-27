@@ -309,7 +309,7 @@ function useQueueItems(d: Dashboard): Item[] {
           )}
         </>
       ),
-      to: "/orders?unfulfilled=1",
+      to: "/orders?status=unfulfilled",
       cta: tr("去处理", "Handle"),
       action: x.order_sample_id ? (
         <AsyncButton size="sm" variant="outline" done={tr("已处理", "Done")} onClick={retryOrder}>

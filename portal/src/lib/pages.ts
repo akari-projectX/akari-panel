@@ -51,11 +51,6 @@ export const PAGES: Page[] = [
   pub(R.privacy, '隐私政策', legal),
 ];
 
-/** 旧地址：`/invite` → 钱包页的邀请分页（邮件、收藏夹里的链接） */
-export const REDIRECTS: Record<string, string> = {
-  [R.invite]: R.walletTab('invite'),
-};
-
 /** 按地址找页面；`:id` 段匹配任意一段非空路径。找不到 = undefined（显示「找不到页面」） */
 export function match(path: string): { page: Page; params: Record<string, string> } | undefined {
   const parts = trim(path).split('/');

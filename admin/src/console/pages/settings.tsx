@@ -26,7 +26,6 @@ import { DomainsSection } from "./settings-domains";
 import { BrandSection, LinksSection, SiteSection } from "./settings-general";
 import {
   MOVED_OUT,
-  OLD_IDS,
   OVERVIEW_TINT,
   SECTIONS,
   SETTINGS_IA,
@@ -85,16 +84,10 @@ const BODIES: Record<Exclude<SectionId, "templates">, ComponentType> = {
 };
 
 export function SettingsPage() {
-  const { sub, query } = useRoute();
+  const { sub } = useRoute();
   const wide = useWide();
   const data = useOverview();
   const id = sub[0];
-  // Old addresses: `?section=`, the tab ids of the previous layout and the v2 aliases, the outbox.
-  const legacy = query.get("section");
-  if (!id && legacy) return <Navigate to={`/settings/${OLD_IDS[legacy] ?? legacy}`} replace />;
-  if (id === "mail" && query.has("outbox"))
-    return <Navigate to={`/status?mail=${query.get("outbox") || "dead"}`} replace />;
-  if (id && OLD_IDS[id]) return <Navigate to={`/settings/${OLD_IDS[id]}${location.search}`} replace />;
   const cur = id ? SECTIONS.find((s) => s.id === id) : undefined;
   if (id && !cur) return <Navigate to="/settings" replace />;
   if (cur?.href) return <Navigate to={cur.href} replace />;
@@ -112,7 +105,7 @@ function placeName(path: string, tr: ReturnType<typeof useTr>): string | undefin
   const m = /\/settings(?:\/([^/?#]+))?\/?$/.exec(path);
   if (!m) return undefined;
   if (!m[1]) return tr("概览", "Overview");
-  const s = SECTIONS.find((x) => x.id === (OLD_IDS[m[1]] ?? m[1]));
+  const s = SECTIONS.find((x) => x.id === m[1]);
   return s ? tr(s.zh, s.en) : undefined;
 }
 
