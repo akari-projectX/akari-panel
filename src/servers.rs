@@ -387,7 +387,7 @@ fn nodes_json_sql() -> String {
         "coalesce((SELECT jsonb_agg(jsonb_build_object('id', nodes.id, 'name', nodes.name, \
          'display_name', nodes.display_name, 'enabled', nodes.enabled, \
          'visible', nodes.visible, 'sort', nodes.sort, 'region', nodes.region, \
-         'tags', nodes.tags, 'protocol', nodes.inbound->>'protocol', \
+         'protocol', nodes.inbound->>'protocol', \
          'port', nodes.inbound->'port', \
          'transport', nodes.inbound->'streamSettings'->>'network', \
          'security', nodes.inbound->'streamSettings'->>'security', \
