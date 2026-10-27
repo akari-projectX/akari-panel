@@ -945,8 +945,6 @@ pub async fn on_status(
 pub(crate) fn failure_hint(err: &str) -> &'static str {
     if err.contains("updater unit missing") || err.contains("did not pick up the request") {
         " — 节点缺少更新服务（akari-agent-update）：请在节点上重新运行一次安装命令（重装命令）"
-    } else if err.contains("permission denied") && err.contains("switch to") {
-        " — 旧版 agent 无法在 systemd 257 及以上（如 Debian 13）执行暂存的新版本：请在节点上重新运行一次安装命令（重装命令），之后即可自动更新"
     } else {
         ""
     }
@@ -962,7 +960,6 @@ mod tests {
         for e in [
             "updater unit missing (akari-agent-update.path): run the panel's install command (重装命令) once on this server",
             "switch to v0.4.0: the updater did not pick up the request (is akari-agent-update.path enabled? ...)",
-            "switch to v0.4.0: permission denied",
         ] {
             assert!(failure_hint(e).contains("重装命令"), "{e}");
         }
