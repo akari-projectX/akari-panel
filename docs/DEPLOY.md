@@ -1391,24 +1391,70 @@ def verify(secret: bytes, headers, body: bytes) -> bool:
 
 ### Several panel instances (optional)（多个面板实例，可选）
 
-一个实例即可承载 M2 目标（200 个节点 / 5 万用户，docs/PERF.md）。为了可用性或余量，可以运行两个或更多：
+一个实例即可承载 M2 目标（200 个节点 / 5 万用户，docs/PERF.md）。为了可用性或余量，可以运行两个或更多，全部由安装器完成（仅裸机；Docker 模式不参与）：
 
 ```
  admins, subscribers --> HTTPS reverse proxy (round-robin to the web ports)  --> panel A :8080, panel B :8080
  agents              --> L4 TCP balancer :8443 (TLS passthrough, no termination) --> panel A :8443, panel B :8443
- panel A, panel B    --> one PostgreSQL (direct connection), one Valkey
+ panel A, panel B    --> one PostgreSQL (direct connection, TLS), one Valkey (TLS), on a private network
 ```
 
-- 所有实例使用相同的 `database_url`、`valkey_url` 和完全相同的 `data_dir`（CA、`jwt.key`、`master.key`：共享该目录或逐字节复制）；
-  各自有自己的 web 和 gRPC 绑定地址。
-- gRPC 必须在 L4 做负载均衡。均衡器不能终止 TLS（agent 的客户端证书就是节点身份）。不需要会话保持：
-  agent 可以落到任何实例，在别处重连会取代旧的流（旧实例在下一次读数据库时发现，60 秒内）。
+**1. 实例 1 = 普通安装。** 然后把它的 PostgreSQL 与 Valkey 变成共享服务：
+
+```bash
+akari-ctl expose-data --allow 10.0.0.0/24            # 允许连接的内网网段，可逗号分隔多个
+```
+
+- 只接受**私有网段**（10/8、172.16/12、192.168/16、100.64/10，必须整段落在其中；`0.0.0.0/0`、`10.0.0.0/7`、公网地址一律拒绝并说明原因）。跨机房请先用 WireGuard 等建立私网。仅 IPv4。
+- 监听地址 = 本机在该网段内的私有地址（只有一个时自动选，否则 `--listen IP`）。PostgreSQL 与 Valkey 只监听回环和这个地址；PostgreSQL 仅 `hostssl`（`pg_hba` 限定给定网段），Valkey 只开 TLS 端口（明文端口关闭），密码沿用安装时生成的随机密码。
+- TLS：安装器生成一个只给这两个服务用的私有 CA（`/etc/akari/data-ca/ca.key`，root 0700，永不进加入包）与 5 年期服务器证书（SAN = 监听地址 + 127.0.0.1）；公开的 `ca.pem` 在 `/etc/akari/shared/`。PostgreSQL 连接用 `sslmode=verify-full`，Valkey 用 `rediss://`，面板经 `SSL_CERT_FILE` 校验该 CA。证书到期前重新运行 `expose-data` 即重签。
+- 防火墙：nftables 表 `inet akari_data`（`akari-data-firewall.service`，开机加载）只放行回环与给定网段访问这两个端口，ufw 启用时同步加规则；`--no-firewall` 可关闭（警告：请自己限制来源）。
+- 面板的 web（8080）与 ask（8082）端口改为监听同一私有地址，供负载均衡器访问（本机 Caddy 的上游同步改了）。已有的单机安装可单独运行 `akari-ctl expose-web --listen IP`。
+- 不想在实例 1 上自带数据库：安装时 `--database-url postgres://…?sslmode=verify-full&sslrootcert=/etc/akari/shared/ca.pem --valkey-url rediss://… [--data-ca CA.pem]` 使用你自己（或托管服务）的 PostgreSQL / Valkey，本机什么都不装。此时没有 `expose-data`，`akari-ctl backup` 也不可用（请用服务商的备份）。
+- 回退：`akari-ctl uninstall` 会撤销暴露（防火墙、PostgreSQL 监听与 TLS、单元 drop-in）；仍有其他实例在线时拒绝（`--force` 跳过检查）。
+
+**2. 加入包（没有网络上的秘密通道）。** 在实例 1 上：
+
+```bash
+akari-ctl join-bundle [--out FILE] [--passphrase-file F]
+```
+
+写出**一个**加密文件（默认 `/root/akari-join-<时间>.age`，0600，24 小时内有效）：数据目录里的秘密（`ca.pem`、`ca.key.pem`、`jwt.key`、`master.key`、`state.json`）、带密码的 PostgreSQL / Valkey 连接串与共享 CA、面板版本。**口令只显示一次**（不写日志；`--passphrase-file` 则写入文件而不打印）。口令是安装器用 `age-keygen` 生成的 256 位密钥（`AGE-SECRET-KEY-1…`），文件用 age 加密——age 的命令行不能从脚本里输入口令短语，且机器生成的高熵密钥不需要 scrypt 拉伸。用 `scp` 把文件拷到新机器，用**另一条渠道**交付口令。
+
+**3. 新实例。** 在全新的 Debian 12/13 或 Ubuntu 22.04/24.04 上：
+
+```bash
+install.sh --join /root/akari-join-….age [--listen IP] [--trusted-proxies LB_IP]
+```
+
+口令从提示（`/dev/tty`）、环境变量 `AKARI_JOIN_PASSPHRASE` 或 `--passphrase-file` 取。安装器：解密并检查加包（只允许约定的文件名、无链接；`created_at` 超过 24 小时或在未来 → 拒绝；版本必须与实例 1 相同）→ 检查到 PostgreSQL / Valkey 的连通与 TLS（用包里的 CA 验证）→ 按包里的版本下载并 cosign 验证 → 写数据目录、`panel.toml`（只含 R39 启动键；web/ask 绑定私有地址，gRPC `0.0.0.0:8443`）→ `config check` → 启动并等待 `/healthz`。**不**安装 PostgreSQL、Valkey、Caddy。成功后**删除本机的加入包**；请同时删除实例 1 上的原件、作废口令（包里有 CA 私钥和主密钥）。迁移已由实例 1 完成，各实例共享同一个 `jwt.key`（一个实例签发的会话在其他实例有效）。
+
+**4. 负载均衡器。**
+
+```bash
+akari-ctl lb-config caddy|haproxy|nginx --instances 10.0.0.5,10.0.0.6 --domain panel.example.com [--lb-address LB_IP]
+```
+
+打印一份可用配置：网页是 HTTPS 反向代理（`/healthz` 健康检查；HAProxy 主动检查，nginx 开源版被动检查）；gRPC 是 **L4 TCP 直通**（agent 的客户端证书就是节点身份，均衡器不能终止 TLS；原版 Caddy 没有 L4，输出里给了 caddy-l4 的注释块，更建议用 HAProxy / nginx stream）。实例写成 `地址[:web端口[:gRPC端口]]`。Caddy 按需证书的 `ask` 指向第一个实例的 `tls_ask`。节点通信域名要解析到均衡器的 gRPC 端口，且不能经过 Cloudflare 代理。
+
+**每个实例的 `web.trusted_proxies` 必须包含均衡器地址**，否则登录限速、审计里的客户端 IP 都是均衡器的地址。lb-config 会打印确切命令，在每个实例上执行：`akari-ctl set-trusted-proxies LB_IP`（替换整个列表；实例 1 的本机 Caddy `127.0.0.1/32` 自动保留；拒绝 `0.0.0.0/0` 等过宽范围）。
+
+**5. 升级：逐台。** 加入的实例（以及有其他实例在线的实例 1）上 `akari-ctl upgrade` 会拒绝，除非加 `--rolling`。顺序：先升级实例 1（拥有数据库），再逐台升级其他实例；迁移只能前进，在第一台升级的实例上运行。发布包里的 `deploy/release.meta`（随发布签名）有 `schema_compat_previous`：
+
+- `true`（本版本的迁移只是加法，旧版二进制仍可用）：其他实例升级期间可继续运行。
+- `false` 或没有该文件（默认）：必须先停止所有其他实例（`systemctl stop akari-panel`），升级第一台后，由它在共享 Valkey 里留下一周有效的标记，其余实例（此时可以在第一台运行时）逐台升级并启动。安装器用 Valkey 的实例心跳判断其他实例是否在线；读不到时拒绝（确认后 `--force`）。
+
+备份只在拥有数据库的实例 1 上做（加入的实例升级时不备份，`akari-ctl backup` 在其上拒绝）。
+
+**6. 状态。** `akari-ctl info` 显示角色（单机省略 / `primary` / `joined`）、共享服务的地址与允许网段、以及 Valkey 里看到的在线实例（id、版本、会话数；同一数据来自后台「系统状态」）。
+
+底层要求（安装器已满足，手工部署时自己保证）：
+
+- 所有实例使用相同的 `database_url`、`valkey_url` 和完全相同的 `data_dir`（CA、`jwt.key`、`master.key`）；各自有自己的 web 和 gRPC 绑定地址。
+- gRPC 必须在 L4 做负载均衡，不需要会话保持：agent 可以落到任何实例，在别处重连会取代旧的流（旧实例在下一次读数据库时发现，60 秒内）。
 - 必须直连 PostgreSQL：变更通知使用 `LISTEN`，事务或语句模式的 PgBouncer 会破坏它。
-- 系统设置 的更改经同一个通知到达每个实例；当 server-name 集合变化时，各实例各自重新签发 gRPC 证书（无需重启）。
-- 无需其他配置：变更通知、会话吊销、登录限流以及 flush/reaper/retention 循环都基于数据库/Valkey 且幂等，所以每个实例都运行它们。
-  指标按实例提供（逐个抓取）。
-- 一次升级一个实例，且在 agent 之后（第 5 节）；迁移在第一个启动的实例上运行，且只能前进。
-- 由 `akari-bench multi` 和经均衡器的 200 个 agent 的 swarm 验证（docs/PERF.md）。
+- 系统设置的更改经同一个通知到达每个实例；server-name 集合变化时各实例各自重新签发 gRPC 证书（无需重启）。变更通知、会话吊销、登录限流以及 flush/reaper/retention 循环都基于数据库/Valkey 且幂等，所以每个实例都运行它们。指标按实例提供（逐个抓取）。
+- 由 `akari-bench multi` 和经均衡器的 200 个 agent 的 swarm 验证（docs/PERF.md）；安装器路径由 CI 的 `installer (multi-instance)` 验证。
 
 ## 5. Upgrade (agents BEFORE the panel)（升级：agent 先于面板）
 
@@ -1686,6 +1732,7 @@ Caddy 会在新主机上获取新证书（主域名在启动时，其他的按�
 - `installer (host, docker + migration)`：`host-e2e.sh` 在 runner 上运行：Docker 安装最新发布版本（ghcr 镜像）→ 其到 PR 镜像的升级被原样拒绝 → purge →
   Docker 安装 PR 镜像（本地 registry，按 digest 固定）→ purge；裸机安装 PR 构建，注册一个真实 agent（`../akari-agent`），
   `migrate --to docker` 再 `--to bare` 回来：前缀相同，agent 无需重新注册即可重连，订阅仍能应答。
+- `installer (multi-instance)`：`multi-e2e.sh`：同一 docker 网络上的两个全新 systemd 容器 A、B。A 安装 → `expose-data` 对公网/过宽网段的拒绝 → 对不含 B 的网段暴露（B 被防火墙挡住）→ 对 B 的网段暴露（TLS only、只监听私有地址、明文被拒）→ `join-bundle`（口令只出现一次、不进日志）→ B 上错误口令与过期加入包被拒（什么都没装）→ `--join` 安装 B（无本机 PostgreSQL/Valkey/Caddy，加入包被删）→ A 的会话在 B 上有效 → 在 A 注册的真实 agent 经 B 的 gRPC 在线 → `lb-config` 三种输出分别通过 `caddy validate`、`haproxy -c`、`nginx -t` → `set-trusted-proxies` → `info` → 无 `--rolling` 的升级被拒 → 兼容版本逐台滚动升级 → 不兼容版本必须先停掉 B，A 升级后 B 才能跟上 → 其他实例在线时不能卸载 A。新的"更新"发布用 `make-release.sh --wrapper`（报告新版本号、执行真实二进制）和 `--schema-compat`。
 - `shellcheck`：`make shellcheck`（也是 `make check` 的一部分），它还运行 `scripts/installer-test/validators.sh`：
   安装器的输入校验函数（`valid_domain`、`valid_node_addr` 等，用 `AKARI_INSTALL_LIB=1` 引入）在 dash + GNU grep 下对已接受和已拒绝的值的测试；
   该 job 还会在 busybox sh + grep（alpine）下再运行一次。正则方言不同（WSL 的 grep 即 ugrep，在方括号里接受 `[\]]`；GNU grep 不接受），
