@@ -344,7 +344,6 @@ struct ShopPlanRow {
     reset_period: String,
     reset_days: Option<i32>,
     speed_limit_mbps: Option<i32>,
-    device_seats: Option<i32>,
     capacity: Option<i32>,
     renewal_only: bool,
     allow_switch_in: bool,
@@ -379,7 +378,7 @@ fn sale_plan_sql(user: &str) -> String {
     format!(
         "SELECT p.id AS plan_id, p.name, p.description, \
          p.traffic_quota_bytes, p.reset_period, p.reset_days, p.speed_limit_mbps, \
-         p.device_seats, p.capacity, p.renewal_only, p.allow_switch_in, p.recommended, \
+         p.capacity, p.renewal_only, p.allow_switch_in, p.recommended, \
          {} AS taken \
          FROM plans p WHERE p.enabled AND (p.on_sale OR (p.renew_off_sale AND EXISTS ( \
            SELECT 1 FROM user_plans up WHERE up.plan_id = p.id AND up.user_id = {user} \
@@ -414,7 +413,10 @@ pub async fn shop(
     Query(q): Query<ShopQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let live = state.payments();
-    let enabled = live.any_usable() && user.role == "user";
+    // 低-8: the shop is open without a payment method — what the balance or
+    // a credit covers needs none (offers say `payable` / `balance_only`).
+    let enabled = user.role == "user";
+    let gateway = live.any_usable();
     let methods: Vec<Value> = live
         .usable()
         .map(|m| json!({ "id": m.id, "kind": m.kind, "display_name": m.display_name, "icon": m.icon }))
@@ -543,6 +545,7 @@ pub async fn shop(
         let o = &mut plans[i].1[j];
         let avail = o.credit_available(credit);
         o.priced(s, avail);
+        o.payability(s, balance, use_balance, gateway);
         o.coupon_refusal = ch.as_ref().and_then(|c| c.refusal);
     }
     let plans: Vec<Value> = plans
@@ -557,7 +560,6 @@ pub async fn shop(
                 "traffic_quota_bytes": r.traffic_quota_bytes,
                 "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
                 "speed_limit_mbps": r.speed_limit_mbps,
-                "device_seats": r.device_seats,
                 "recommended": r.recommended,
                 "current": holder,
                 "remaining": remaining,
@@ -568,6 +570,9 @@ pub async fn shop(
         .collect();
     Ok(Json(json!({
         "enabled": enabled,
+        // 低-8: whether any payment method is usable (orders with an amount
+        // left after the balance need one).
+        "payments_available": gateway,
         // R40: the payment methods to choose from (in order).
         "methods": if enabled { methods } else { Vec::new() },
         "current": current.map(|(id, name, exp)| json!({ "plan_id": id, "name": name, "expires_at": exp })),
@@ -593,6 +598,11 @@ pub struct CreateOrderReq {
     /// R40: the payment method (required when more than one is enabled).
     #[serde(default)]
     pub method_id: Option<Uuid>,
+    /// 低-3: confirm that switching out of a subscription without expiry
+    /// forfeits what is left of it (the shop offer says
+    /// `forfeits_permanent`); required then, else 409.
+    #[serde(default)]
+    pub accept_forfeit: bool,
 }
 
 async fn my_order_view(state: &AppState, user: Uuid, id: Uuid) -> Result<MyOrderView, ApiError> {
@@ -611,6 +621,35 @@ pub(crate) fn new_out_trade_no() -> String {
     format!("AK{}{}", Utc::now().format("%Y%m%d"), hex::encode(r))
 }
 
+/// The payer's method (the only one when exactly one is enabled), R40.
+fn pick_method(
+    live: &super::methods::Live,
+    chosen: Option<Uuid>,
+) -> Result<(Uuid, Arc<dyn PaymentProvider>), ApiError> {
+    match chosen {
+        Some(id) => Ok((
+            id,
+            live.provider(id).ok_or_else(|| {
+                bad_request!(
+                    "order.method_unavailable",
+                    "this payment method is not available"
+                )
+            })?,
+        )),
+        None => {
+            let mut usable = live.usable();
+            match (usable.next(), usable.next()) {
+                (Some(m), None) => Ok((m.id, m.provider.clone().ok_or_else(payments_off)?)),
+                (None, _) => Err(payments_off()),
+                _ => Err(bad_request!(
+                    "order.method_required",
+                    "choose a payment method"
+                )),
+            }
+        }
+    }
+}
+
 /// POST /me/orders {plan_id, period}: create an order at the server's
 /// price for that period (minus the proration credit when switching
 /// plans, catalog.rs) and precreate its QR code. A previous pending order
@@ -624,45 +663,12 @@ pub async fn create_order(
     ApiJson(req): ApiJson<CreateOrderReq>,
 ) -> Result<(StatusCode, Json<MyOrderView>), ApiError> {
     let live = state.payments();
-    if !live.any_usable() {
-        return Err(payments_off());
-    }
     if user.role != "user" {
         return Err(bad_request!(
             "shop.admin_cannot_buy",
             "admin accounts cannot buy plans"
         ));
     }
-    // R40: the payer's method (the only one when exactly one is enabled).
-    let (method_id, provider): (Uuid, Arc<dyn PaymentProvider>) = match req.method_id {
-        Some(id) => (
-            id,
-            live.provider(id).ok_or_else(|| {
-                bad_request!(
-                    "order.method_unavailable",
-                    "this payment method is not available"
-                )
-            })?,
-        ),
-        None => {
-            let mut usable = live.usable();
-            match (usable.next(), usable.next()) {
-                (Some(m), None) => (m.id, m.provider.clone().ok_or_else(payments_off)?),
-                _ => {
-                    return Err(bad_request!(
-                        "order.method_required",
-                        "choose a payment method"
-                    ));
-                }
-            }
-        }
-    };
-    // Without a notify URL the provider could never tell us about a
-    // payment (polling would, but an order we cannot be notified about is a
-    // configuration error, not a degraded mode): an order that needs the
-    // provider is refused before its row exists (checked below, once the
-    // amount is known; fully covered orders never reach the provider).
-    let notify_url = super::methods::notify_url(&state, method_id);
     if !within_limit(
         &state,
         format!("akari:rl:order:{}", user.id),
@@ -735,6 +741,12 @@ pub async fn create_order(
         allow_switch_in: plan.allow_switch_in,
     };
     let action = catalog::decide(cur, &sale, kind).map_err(|r| r.error())?;
+    if action == catalog::Action::Switch && cur.is_some_and(|c| !c.expires) && !req.accept_forfeit {
+        return Err(conflict!(
+            "order.forfeit_unconfirmed",
+            "switching plans forfeits what is left of the current plan, which never expires: confirm it (accept_forfeit)"
+        ));
+    }
     let (credit, credit_order) = if action == catalog::Action::Switch {
         catalog::switch_credit(&mut tx, user.id).await?
     } else {
@@ -787,10 +799,21 @@ pub async fn create_order(
     .await?
     .pop()
     .ok_or_else(|| anyhow::anyhow!("akari_split returned no row"))?;
-    if split.amount_cents > 0 && notify_url.is_none() {
-        tracing::warn!("order refused: no main domain is set (系统设置 or install.public_url)");
-        return Err(payments_off());
-    }
+    // 低-8: only an order with an amount left needs a payment method (and
+    // a notify URL: without one the provider could never tell us about a
+    // payment — a configuration error, refused before the row exists).
+    // Fully covered orders (balance, credit, coupon) never reach a provider.
+    let paying = if split.amount_cents > 0 {
+        let (method_id, provider) = pick_method(&live, req.method_id)?;
+        let notify_url = super::methods::notify_url(&state, method_id);
+        if notify_url.is_none() {
+            tracing::warn!("order refused: no main domain is set (系统设置 or install.public_url)");
+            return Err(payments_off());
+        }
+        Some((method_id, provider, notify_url))
+    } else {
+        None
+    };
     let credit_order = credit_order.filter(|_| split.credit_cents > 0);
     // A coupon that discounts nothing here (1% of a few fen) is not used.
     let coupon = coupon.filter(|_| split.discount_cents > 0);
@@ -824,8 +847,12 @@ pub async fn create_order(
     .bind(coupon.as_ref().and_then(|c| c.code.clone()))
     .bind(split.balance_cents)
     .bind(&subject)
-    .bind(provider.order_timeout_minutes() as i32)
-    .bind((split.amount_cents > 0).then_some(method_id))
+    .bind(
+        paying
+            .as_ref()
+            .map_or(0, |(_, p, _)| p.order_timeout_minutes() as i32),
+    )
+    .bind(paying.as_ref().map(|(m, _, _)| *m))
     .bind(action.as_str())
     .fetch_one(&mut *tx)
     .await;
@@ -879,6 +906,9 @@ pub async fn create_order(
         ));
     }
     tx.commit().await?;
+    let Some((_, provider, notify_url)) = paying else {
+        return Err(anyhow::anyhow!("an order with an amount has a payment method").into());
+    };
 
     // The row exists before the provider knows the trade: a payment can
     // never arrive for an order we do not have.

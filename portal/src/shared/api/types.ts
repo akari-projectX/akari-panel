@@ -138,7 +138,6 @@ export type MyPlan = {
     traffic_quota_bytes: number | null;
     period: ResetPeriod;
     speed_limit_mbps: number | null;
-    device_seats: number | null;
     starts_at: string;
     expires_at: string | null;
     period_anchor: string;
@@ -260,6 +259,12 @@ export type Offer = {
   coupon_refusal: CouponRefusal | null;
   action: OfferAction | null;
   refusal: OfferRefusal | null;
+  /** 从不过期的套餐换出去：它剩下的权益作废（不折算、不转余额），下单要带 accept_forfeit */
+  forfeits_permanent: boolean;
+  /** 现在付得了：有可用的支付方式，或余额够全付 */
+  payable: boolean;
+  /** 付得了只因为余额够全付（没有可用的支付方式）：下单要用余额抵扣 */
+  balance_only: boolean;
 };
 
 export type ShopPlan = {
@@ -270,7 +275,6 @@ export type ShopPlan = {
   traffic_quota_bytes: number | null;
   period: ResetPeriod;
   speed_limit_mbps: number | null;
-  device_seats: number | null;
   current: boolean;
   /** 剩余名额（null = 不限） */
   remaining: number | null;
@@ -283,8 +287,10 @@ export type ShopPlan = {
 export type PayMethod = { id: string; kind: string; display_name: string; icon: string | null };
 
 export type Shop = {
-  /** 有没有可用的支付方式 */
+  /** 商店开着（普通用户；没有支付方式时也开着，全额由余额 / 折算 / 优惠付清的单不需要支付方式） */
   enabled: boolean;
+  /** 有没有可用的支付方式（还要付钱的订单需要） */
+  payments_available: boolean;
   methods: PayMethod[];
   current: { plan_id: string; name: string; expires_at: string | null } | null;
   credit_cents: number;
@@ -346,6 +352,8 @@ export type CreateOrder = {
   period: PeriodKind;
   coupon?: string;
   use_balance?: boolean;
+  /** 从不过期的套餐换出时必带：确认它剩下的权益作废 */
+  accept_forfeit?: boolean;
   method_id?: string;
 };
 

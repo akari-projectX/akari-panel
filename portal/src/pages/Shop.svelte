@@ -77,7 +77,7 @@
     buy = { planId: p.plan_id, key: offerKey(o), resetOnly };
   }
 
-  function submit(method: PayMethod | undefined) {
+  function submit(method: PayMethod | undefined, acceptForfeit: boolean) {
     void submitting.run(async () => {
       if (!buyPlan || !offer) return;
       try {
@@ -86,6 +86,7 @@
           period: offer.period,
           ...(coupon ? { coupon } : {}),
           ...(useBalance ? { use_balance: true } : {}),
+          ...(acceptForfeit ? { accept_forfeit: true } : {}),
           ...(method ? { method_id: method.id } : {}),
         });
         closeBuy();
