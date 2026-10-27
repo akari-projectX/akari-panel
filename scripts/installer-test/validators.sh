@@ -98,6 +98,24 @@ node_case ok orange.example '[2001:db8::1]:8443'
 node_case bad orange.example orange.example:8443
 node_case bad grey.example orange.example
 
+# Multi-instance (install.sh, "several panel instances"): the networks that
+# may be exposed to are private ones, whole (a /7 around 10/8 is public).
+for v in 10.0.0.0/24 10.0.0.0/8 172.16.0.0/12 172.31.255.0/24 192.168.1.0/24 100.64.0.0/10 10.1.2.3/32; do
+	check ok private_cidr4 "$v"
+done
+for v in '' 0.0.0.0/0 10.0.0.0/7 8.0.0.0/5 172.32.0.0/16 172.15.0.0/16 192.169.0.0/16 100.128.0.0/10 8.8.8.8/32 \
+	10.0.0.1/33 10.0.0.256/24 10.0.0.0 fd00::/8 x/8 '10.0.0.0/24
+10.0.0.0/8'; do
+	check bad private_cidr4 "$v"
+done
+for v in 10.0.0.5 172.18.0.2 192.168.0.1 100.64.0.9; do check ok private_ip4 "$v"; done
+for v in '' 8.8.8.8 127.0.0.1 172.32.0.1 fd00::1 10.0.0 x; do check bad private_ip4 "$v"; done
+# Trusted proxies: any address, a network of /8 or longer; never the internet.
+for v in 10.1.2.3 10.0.0.0/8 1.2.3.4/32 192.0.2.0/24 2001:db8::1 2001:db8::/32 fd00::/16; do check ok valid_proxy "$v"; done
+for v in '' 0.0.0.0/0 10.0.0.0/7 ::/0 ::/8 1.2.3.4/33 x 1.2.3 '[::1]' 'a,b'; do check bad valid_proxy "$v"; done
+for v in 10.0.0.5 a.example 10.0.0.5:8081 10.0.0.5:8081:9443 lb-1.int:80; do check ok valid_instance "$v"; done
+for v in '' a:1:2:3 'a b' a: :80 'a;b' '[::1]:80' 'a/b'; do check bad valid_instance "$v"; done
+
 grep_v=$({ grep --version 2>/dev/null || busybox 2>&1; } | sed -n 1p)
 if [ "$fails" -ne 0 ]; then
 	echo "validators: $fails failure(s) (grep: $grep_v)"

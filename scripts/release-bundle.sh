@@ -2,7 +2,10 @@
 # The installer's release assets (release.yml; the installer CI builds its
 # fake releases the same way):
 #
-#   scripts/release-bundle.sh TAG OUTDIR
+#   scripts/release-bundle.sh TAG OUTDIR [--schema-compat true|false]
+#
+#   --schema-compat   overrides schema_compat_previous of deploy/release.meta
+#                     (the installer tests build releases of both kinds)
 #
 #   OUTDIR/install.sh            scripts/install.sh stamped with TAG (the
 #                                installer of TAG installs TAG by default)
@@ -15,8 +18,13 @@
 #
 # Both are listed in the release's SHA256SUMS, which is cosign-signed.
 set -eu
-tag=${1:?usage: release-bundle.sh TAG OUTDIR}
-out=${2:?usage: release-bundle.sh TAG OUTDIR}
+tag=${1:?usage: release-bundle.sh TAG OUTDIR [--schema-compat true|false]}
+out=${2:?usage: release-bundle.sh TAG OUTDIR [--schema-compat true|false]}
+compat=''
+if [ "${3:-}" = --schema-compat ]; then
+	compat=${4:?--schema-compat needs true or false}
+	case "$compat" in true | false) ;; *) echo "release-bundle: --schema-compat true|false" >&2; exit 1 ;; esac
+fi
 case "$tag" in v[0-9]*) ;; *) echo "release-bundle: TAG must look like vX.Y.Z" >&2; exit 1 ;; esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$out"
@@ -31,6 +39,10 @@ mkdir -p "$work/b/deploy/caddy" "$work/b/deploy/systemd" "$work/b/deploy/env" "$
 cp "$root/deploy/docker-compose.yml" "$root/deploy/.env.example" "$root/deploy/panel.toml.example" \
 	"$root/deploy/panel.toml.compose.example" "$work/b/deploy/"
 cp "$root/deploy/caddy/Caddyfile" "$work/b/deploy/caddy/"
+cp "$root/deploy/release.meta" "$work/b/deploy/"
+[ -z "$compat" ] || sed -i "s/^schema_compat_previous=.*/schema_compat_previous=$compat/" "$work/b/deploy/release.meta"
+grep -qx 'schema_compat_previous=\(true\|false\)' "$work/b/deploy/release.meta" ||
+	{ echo "release-bundle: deploy/release.meta needs a schema_compat_previous=true|false line" >&2; exit 1; }
 cp "$root/deploy/nginx/akari.conf" "$work/b/deploy/nginx/"
 cp "$root/deploy/env/"*.example "$work/b/deploy/env/"
 cp "$root/deploy/systemd/akari-panel.service" "$root/deploy/systemd/akari.sysusers" \
