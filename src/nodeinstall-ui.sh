@@ -167,7 +167,8 @@ step() {
 	printf '\n%s%s%s %s%s%s\n' "$c_accent" "$_p" "$c_reset" "$c_bold" "$_m" "$c_reset"
 	ui_log "==> $_p $_m"
 	UI_OPEN=1 UI_T0=$(date +%s) UI_LABEL=$_m
-	UI_MARK=$( { wc -l <"${UI_LOG:-/dev/null}"; } 2>/dev/null || echo 0)
+	UI_MARK=0
+	if [ -n "${UI_LOG:-}" ] && [ -r "$UI_LOG" ]; then UI_MARK=$(wc -l <"$UI_LOG"); fi
 	UI_MARK=$((UI_MARK + 0))
 }
 step_end() {

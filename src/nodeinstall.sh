@@ -299,6 +299,7 @@ amd64) want=$SHA_amd64 ver=$VER_amd64 ;;
 esac
 # shellcheck disable=SC2034 # read by the UI block
 UI_LOG=$TMP/step.log
+: >"$UI_LOG"
 step downloading_agent
 if [ -n "$want" ]; then
 	note downloading_from_panel "$ver" "$ARCH"
