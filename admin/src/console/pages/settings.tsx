@@ -40,7 +40,7 @@ import { SubscriptionSection } from "./settings-sub";
 
 export { useSettings, type DomainEntry, type SettingsView } from "./settings-data";
 
-const BODIES: Record<Exclude<SectionId, "templates" | "routing">, ComponentType> = {
+const BODIES: Record<Exclude<SectionId, "templates" | "sub-templates">, ComponentType> = {
   site: SiteSection,
   brand: BrandSection,
   links: LinksSection,
@@ -291,7 +291,7 @@ function SectionPage({ s }: { s: Section }) {
   const tr = useTr();
   const wide = useWide();
   const owner = useOwner();
-  const Body = BODIES[s.id as Exclude<SectionId, "templates" | "routing">];
+  const Body = BODIES[s.id as Exclude<SectionId, "templates" | "sub-templates">];
   const last = useLastEdit(s.audit);
   useCrumb(tr(s.zh, s.en));
   return (

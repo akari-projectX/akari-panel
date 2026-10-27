@@ -155,9 +155,5 @@ test("SET-29: subscription templates — tabs, placeholders, error markers, prev
   await page.getByRole("button", { name: "预览", exact: true }).last().click();
   await expect(page.getByLabel("预览结果")).toContainText("#!MANAGED-CONFIG");
 
-  // The old section address leads to the editor.
-  await openConsole(page, "/settings/routing");
-  await expect(page).toHaveURL(/\/settings\/sub-templates/);
-  await expect(page.getByRole("heading", { name: "订阅模板" })).toBeVisible();
   await resetAll();
 });

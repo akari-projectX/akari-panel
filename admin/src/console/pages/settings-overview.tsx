@@ -203,7 +203,7 @@ export function useOverview() {
           ]),
       { k: tr("倍率", "Multiplier"), v: d.subscription.name_rate ? tr("显示", "Shown") : tr("不显示", "Hidden") },
     ];
-    sum.routing = [{ k: tr("客户端", "Clients"), v: "4" }];
+    sum["sub-templates"] = [{ k: tr("客户端", "Clients"), v: "4" }];
     const o = d.node_ops;
     sum.install = [
       { k: tr("钉扎", "Pin"), v: o.install_tls_pin ? tr("开", "On") : tr("关", "Off") },
