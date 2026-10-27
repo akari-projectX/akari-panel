@@ -123,6 +123,20 @@ function SignupForm({ s }: { s: Signup }) {
   return (
     <>
       <Warnings items={s.warnings} />
+      {!s.email_verify && (
+        <Callout tone="warning">
+          <strong>{tr("建议开启「注册需要验证邮箱」。", "We recommend turning on email verification for sign-ups.")}</strong>{" "}
+          {s.mail_enabled
+            ? tr(
+                "发信通道已就绪：开启后注册邮箱必须验证，才能收到找回密码与账号提醒邮件，也能挡住批量注册。",
+                "Mail delivery is ready: with it on, sign-up addresses are verified, so password reset and account notices reach the owner and bulk sign-ups are blocked.",
+              )
+            : tr(
+                "先在「发信」配置并测试发信通道，再开启。关闭时只靠工作量证明防刷，邮箱归属无法确认，用户也无法通过邮件找回密码。",
+                "Configure and test mail delivery first, then turn it on. While off, only a proof of work stops scripted sign-ups, addresses are not confirmed and users cannot recover passwords by mail.",
+              )}
+        </Callout>
+      )}
       <Group title={tr("注册", "Registration")}>
         <SwitchRow
           label={tr("开放注册", "Open registration")}
