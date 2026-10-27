@@ -238,11 +238,7 @@ fn subscription_formats_follow_the_manifest() {
         expect.push((tag, p, t, s));
     }
     for f in &m.format {
-        let (_, body) = crate::sub::render_for(
-            Some(&format!("format={}", f.id)),
-            "",
-            &rows,
-        );
+        let (_, body) = crate::sub::render_for(Some(&format!("format={}", f.id)), "", &rows);
         let text = if f.id == "links" {
             String::from_utf8(STANDARD.decode(body.trim_end()).unwrap()).unwrap()
         } else {
