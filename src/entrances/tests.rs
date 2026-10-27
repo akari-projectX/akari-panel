@@ -266,7 +266,10 @@ async fn node_form_entrance_patch_access_and_subscription() {
         !body.contains("节点级"),
         "1104: node-level tags name nothing"
     );
-    assert!(body.contains("server: 1.2.3.4\n    port: 443\n"), "{body}");
+    assert!(
+        body.contains("server: \"1.2.3.4\"\n    port: 443\n"),
+        "{body}"
+    );
 
     // PATCH: rename, another port, a multiplier — no bump.
     let before = db.versions(id).await;

@@ -1419,8 +1419,8 @@ mod tests {
             .unwrap_or(links);
         assert!(links.contains("@relay.example.net:30443"), "{links}");
         let (_, sb) = render("sing-box", &rows);
-        assert!(sb.contains("\"server\":\"relay.example.net\""), "{sb}");
-        assert!(sb.contains("\"server_port\":30443"), "{sb}");
+        assert!(sb.contains("\"server\": \"relay.example.net\""), "{sb}");
+        assert!(sb.contains("\"server_port\": 30443"), "{sb}");
     }
 
     fn plain_proxy(protocol: &'static str, server: &str, inbound: &Value) -> Proxy {
