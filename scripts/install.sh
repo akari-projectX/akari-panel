@@ -2166,6 +2166,7 @@ maybe_reexec() {
 	sed -i "s/^INSTALLER_VERSION='@@AKARI_INSTALLER_VERSION@@'/INSTALLER_VERSION='$1'/" "$TMP/next-install.sh"
 	set -- upgrade --version "$1"
 	[ "$FORCE" != 1 ] || set -- "$@" --force
+	[ "$ROLLING" != 1 ] || set -- "$@" --rolling
 	set -- "$@" --lang "$UI_LANG"
 	AKARI_NO_BANNER=1 AKARI_NO_REEXEC=1 sh "$TMP/next-install.sh" "$@"
 	exit $?
