@@ -2565,6 +2565,10 @@ ssl_key_file = '$_mx_d/server.key'
 ssl_min_protocol_version = 'TLSv1.2'
 EOF
 	chown postgres:postgres "$PG_CONF_DIR/conf.d/90-akari-expose.conf"
+	install -d -m 0755 /etc/systemd/system/postgresql@18-main.service.d
+	printf '# Written by akari-ctl expose-data: the private address must exist before PostgreSQL binds.\n[Unit]\nAfter=network-online.target\nWants=network-online.target\n' \
+		>/etc/systemd/system/postgresql@18-main.service.d/akari-expose.conf
+	run systemctl daemon-reload
 	sed -i '/^# BEGIN akari-expose-data/,/^# END akari-expose-data/d' "$PG_CONF_DIR/pg_hba.conf"
 	{
 		echo '# BEGIN akari-expose-data'
@@ -2604,7 +2608,12 @@ expose_valkey() {
 	install -m 0600 -o root -g root "$TMP/valkey.conf" "$ETC/valkey.conf"
 	install -d -m 0755 /etc/systemd/system/akari-valkey.service.d
 	cat >/etc/systemd/system/akari-valkey.service.d/expose.conf <<EOF
-# Written by akari-ctl expose-data: the TLS files for the DynamicUser service.
+# Written by akari-ctl expose-data: the TLS files for the DynamicUser service,
+# and the private address must exist before it binds.
+[Unit]
+After=network-online.target
+Wants=network-online.target
+
 [Service]
 LoadCredential=tls.crt:$DATA_CA_DIR/server.pem
 LoadCredential=tls.key:$DATA_CA_DIR/server.key
@@ -3334,7 +3343,7 @@ multi_unexpose() {
 	fi
 	if [ -f "$PG_CONF_DIR/conf.d/90-akari-expose.conf" ]; then
 		rm -f "$PG_CONF_DIR/conf.d/90-akari-expose.conf"
-		rm -rf "$PG_CONF_DIR/akari-tls"
+		rm -rf "$PG_CONF_DIR/akari-tls" /etc/systemd/system/postgresql@18-main.service.d/akari-expose.conf
 		sed -i '/^# BEGIN akari-expose-data/,/^# END akari-expose-data/d' "$PG_CONF_DIR/pg_hba.conf"
 		run systemctl restart postgresql@18-main || true
 	fi
