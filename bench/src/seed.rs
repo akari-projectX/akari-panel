@@ -52,6 +52,14 @@ pub struct SeedArgs {
     /// user; off by default to keep the historical numbers comparable).
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub plans: bool,
+    /// Paid orders over the last 400 days (the admin order list, search and
+    /// the dashboard revenue); 0 = none. With `--orders-only` they are
+    /// added to an existing seeded database.
+    #[arg(long, default_value_t = 0)]
+    pub orders: usize,
+    /// Only add `--orders` to the existing bench database.
+    #[arg(long)]
+    pub orders_only: bool,
     /// Drop and recreate the bench database first.
     #[arg(long)]
     pub reset: bool,
@@ -122,6 +130,15 @@ fn inbound(i: usize) -> serde_json::Value {
 }
 
 pub async fn run(args: SeedArgs) -> Result<()> {
+    if args.orders_only {
+        let pg = PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&args.database_url)
+            .await?;
+        seed_orders(&pg, args.orders).await?;
+        pg.execute("VACUUM ANALYZE orders").await?;
+        return Ok(());
+    }
     if args.per_node == 0
         || args.users == 0
         || args.nodes == 0
@@ -205,6 +222,9 @@ pub async fn run(args: SeedArgs) -> Result<()> {
         .await?
         .rows_affected();
         println!("audit_log: {n} rows in {:.1?}", t.elapsed());
+    }
+    if args.orders > 0 {
+        seed_orders(&pg, args.orders).await?;
     }
     pg.execute("VACUUM ANALYZE").await?;
     println!(
@@ -378,5 +398,38 @@ async fn seed_plans(pg: &PgPool) -> Result<()> {
     .execute(pg)
     .await?;
     println!("user_plans: {n} rows in {:.1?}", t.elapsed());
+    Ok(())
+}
+
+/// `--orders`: paid orders (fulfilled, Alipay notify) of random bench users
+/// spread over the last 400 days, 3% refunded. Bypasses `apply_mark_paid`
+/// like the rest of the seed (nothing to converge on a fresh install).
+async fn seed_orders(pg: &PgPool, count: usize) -> Result<()> {
+    let t = Instant::now();
+    let n = sqlx::query(
+        "INSERT INTO orders (id, out_trade_no, user_id, user_label, plan_name, amount_cents, \
+             subject, status, trade_no, paid_via, paid_amount_cents, fulfilled_at, created_at, \
+             expires_at, paid_at, period, list_price_cents, action, refunded_at, refund_cents, \
+             refund_balance_cents, refund_external_cents, refund_effect, refund_gateway_cents) \
+         SELECT gen_random_uuid(), 'BENCH' || g, u.id, 'user-' || left(u.id::text, 8), \
+                'bench-plan', 1000 + (g % 7) * 500, 'bench order', 'paid', 'T' || g, 'notify', \
+                1000 + (g % 7) * 500, d.at, d.at, d.at + interval '30 minutes', d.at, 'month', \
+                1000 + (g % 7) * 500, 'new', \
+                CASE WHEN g % 33 = 0 THEN d.at + interval '1 day' END, \
+                CASE WHEN g % 33 = 0 THEN 1000 + (g % 7) * 500 END, \
+                CASE WHEN g % 33 = 0 THEN 1000 + (g % 7) * 500 END, \
+                CASE WHEN g % 33 = 0 THEN 0 END, \
+                CASE WHEN g % 33 = 0 THEN '{\"kind\": \"none\"}'::jsonb END, \
+                CASE WHEN g % 33 = 0 THEN 0 END \
+         FROM generate_series(1, $1) g \
+         CROSS JOIN LATERAL (SELECT now() - make_interval(secs => g * 400.0 * 86400 / $1)) d(at) \
+         JOIN LATERAL (SELECT id FROM users WHERE email = \
+                'bench-user-' || lpad((g * 7919 % 50000)::text, 5, '0') || '@bench.invalid') u ON true",
+    )
+    .bind(count as i64)
+    .execute(pg)
+    .await?
+    .rows_affected();
+    println!("orders: {n} rows in {:.1?}", t.elapsed());
     Ok(())
 }

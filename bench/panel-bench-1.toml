@@ -1,7 +1,13 @@
 # Bench panel instance 1 (akari-bench; docs/PERF.md). Both instances share
 # data_dir (CA, jwt.key, route prefix), the database and Valkey, like a
-# production multi-instance deployment. Bench limits are lifted so the load
-# generator measures the code paths, not the rate limiters.
+# production multi-instance deployment.
+#
+# Rate limits are built in (W25); the load tools get around them instead of
+# the panel: the loopback peer is a trusted proxy and every request carries
+# its own X-Forwarded-For (login and subscription limits are per client
+# address), and `swarm` clears the enrollment keys in Valkey. The per-token
+# subscription cap (30 per 10 minutes) cannot be lifted: the tools spread
+# fetches over all 50k users, so a few minutes of load stay under it.
 data_dir = "bench/data"
 database_url = "postgres://akari:akari-dev@localhost:5433/akari_bench"
 valkey_url = "redis://127.0.0.1:6380/0"
@@ -9,18 +15,10 @@ valkey_url = "redis://127.0.0.1:6380/0"
 [web]
 bind = "127.0.0.1:18080"
 cookie_secure = false
+trusted_proxies = ["127.0.0.1/32"]
 
 [grpc]
 bind = "127.0.0.1:18443"
-advertise = "127.0.0.1:18443"
-
-[agent]
-enroll_rate_per_ip = 1000000
-enroll_rate_global = 1000000
-
-[sub]
-rate_per_ip = 1000000000
-rate_per_token = 1000000000
 
 [metrics]
 bind = "127.0.0.1:19100"
