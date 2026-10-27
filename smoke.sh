@@ -1459,13 +1459,9 @@ cat "$LOG/vless.out"
 wait_users 1 10 "user C deleted"
 echo "subscription reset: ok (old credential cut and refused)"
 
-echo "== W9: Shadowsocks 2022 removal/re-add = UserDelta (agent protocol >= 5), rotation too (>= 8), Snapshot before =="
-# SS2022 is a managed protocol from W8 on (agent protocol >= 4).
-# Agents of protocol 5..7 keep a removed SS2022 credential as a gate-refused
-# tombstone (indices never move), so the panel sends removals and re-adds
-# on a Shadowsocks node as deltas, rotations as Snapshots; protocol >= 8
-# agents remove natively, so rotations are deltas too; older agents get a
-# Snapshot for any removal (W8 rule).
+echo "== W9: Shadowsocks 2022 removal, re-add and rotation are UserDeltas (agent protocol 8) =="
+# SS2022 is a managed protocol; protocol-8 agents remove natively, so removal,
+# re-add and rotation all go as deltas, never a Snapshot.
 SS_PSK=$(python3 -c "import base64,os;print(base64.b64encode(os.urandom(16)).decode())")
 # One inbound per node (D2): the node switches to Shadowsocks; smoke-user's
 # vless credential is reissued as a Shadowsocks one (protocol change).
@@ -1479,48 +1475,37 @@ USER_SS=$(python3 -c "import json;print(json.load(open('/tmp/akari-smoke/last'))
 grant "$USER_SS"
 wait_users 2 15 "SS user added"
 for _ in $(seq 1 10); do [ "$(node_field last_error)" = "null" ] && break; sleep 1; done
-SS_PROTO=$(node_field agent_protocol)
 snaps() { grep -c '"msg":"applying config snapshot"' "$LOG/agent.log"; }
 last_via() { grep '"msg":"state applied"' "$LOG/agent.log" | tail -1 | python3 -c "import json,sys; print(json.loads(sys.stdin.read())['via'])"; }
 SS_SNAPS=$(snaps)
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/ban" -H 'Content-Type: application/json' \
     -d '{"reason": "smoke"}')" = "200" ] || { echo "FAIL: ban SS user"; exit 1; }
 wait_users 1 15 "SS user banned"
-if [ "$SS_PROTO" -ge 5 ]; then
-  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-    || { echo "FAIL: SS removal was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-  grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
-    || { echo "FAIL: unban SS user"; exit 1; }
-  wait_users 2 15 "SS user unbanned"
-  [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-    || { echo "FAIL: SS re-add (tombstone revival) was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-  echo "shadowsocks: removal and re-add applied as deltas (agent protocol $SS_PROTO, no rebuild)"
-  SS_APPLIED=$(grep -c '"msg":"state applied"' "$LOG/agent.log")
-  [ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
-    || { echo "FAIL: rotate SS user credentials"; exit 1; }
-  for _ in $(seq 1 30); do
-    [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] && break; sleep 0.5
-  done
-  [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] || { echo "FAIL: agent did not apply the rotated SS credential"; exit 1; }
-  if [ "$SS_PROTO" -ge 8 ]; then
-    [ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
-      || { echo "FAIL: SS rotation was not a delta on a protocol $SS_PROTO agent"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
-    echo "shadowsocks: rotation applied as a delta (agent protocol $SS_PROTO, native removal)"
-  else
-    [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS rotation on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
-    echo "shadowsocks: rotation is a Snapshot (agent protocol $SS_PROTO < 8)"
-  fi
-else
-  [ "$(snaps)" -gt "$SS_SNAPS" ] || { echo "FAIL: SS removal on a protocol $SS_PROTO agent was not a Snapshot"; exit 1; }
-  echo "shadowsocks: removal is a Snapshot (agent protocol $SS_PROTO < 5)"
+[ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+  || { echo "FAIL: SS removal was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+grep -q 'shadowsocks credential change' "$LOG/agent.log" && { echo "FAIL: agent refused an SS delta"; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/unban" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  || { echo "FAIL: unban SS user"; exit 1; }
+wait_users 2 15 "SS user unbanned"
+[ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+  || { echo "FAIL: SS re-add was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+echo "shadowsocks: removal and re-add applied as deltas (no rebuild)"
+SS_APPLIED=$(grep -c '"msg":"state applied"' "$LOG/agent.log")
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/users/$USER_SS/sub-token" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  || { echo "FAIL: rotate SS user credentials"; exit 1; }
+for _ in $(seq 1 30); do
+  [ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] && break; sleep 0.5
+done
+[ "$(grep -c '"msg":"state applied"' "$LOG/agent.log")" -gt "$SS_APPLIED" ] || { echo "FAIL: agent did not apply the rotated SS credential"; exit 1; }
+[ "$(snaps)" = "$SS_SNAPS" ] && [ "$(last_via)" = "delta" ] \
+  || { echo "FAIL: SS rotation was not a delta"; grep 'state applied' "$LOG/agent.log" | tail -2; exit 1; }
+echo "shadowsocks: rotation applied as a delta (native removal)"
 [ "$(node_field last_error)" = "null" ] || { echo "FAIL: last_error after SS changes: $(node_field last_error)"; exit 1; }
 [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/users/$USER_SS?confirm=true")" = "204" ] || { echo "FAIL: delete SS user"; exit 1; }
 [ "$(put_inbound "$GOOD_IB")" = "200" ] || { echo "FAIL: restore inbound after SS"; exit 1; }
 wait_users 1 15 "after SS inbound removed"
 wait_port open 10
 VLESS_A=$(account_of "$USER_ID")
-fi
 
 echo "== Sprint 3a: protocol + lease surfaced on the node =="
 [ "$(node_field agent_protocol)" -ge 3 ] || { echo "FAIL: agent_protocol $(node_field agent_protocol)"; exit 1; }
