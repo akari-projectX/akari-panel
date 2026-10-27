@@ -292,9 +292,10 @@ export const SETTINGS_IA: SectionGroup[] = [
         icon: Route,
         tint: "#d97706",
         desc: [
-          "各客户端的订阅模板（接口已就绪，编辑器随下一次更新上线）。",
-          "The per-client subscription templates (the API is ready, the editor ships with the next update).",
+          "Sing-box、Clash、Surge、Surfboard 各自的订阅模板：占位符、预览与恢复默认。",
+          "The subscription template of Sing-box, Clash, Surge and Surfboard: placeholders, preview and reset to default.",
         ],
+        href: "/settings/sub-templates",
         keywords:
           "订阅模板 模板 Clash sing-box Surge Surfboard 分流 规则 template routing proxies proxy_group subs_link",
       },

@@ -1,6 +1,6 @@
 # admin/ — 管理后台（W33-b）
 
-独立的 Vite 8 + React 19 + TypeScript + Tailwind 4 应用（2026-10 改版：Radix、lucide、sonner、cmdk、react-router 7、react-query、@tanstack/react-virtual、recharts、CodeMirror 6；视觉见 `design/admin-redesign-2026-10/`），与门户 `portal/` **不共享任何代码、路由或产物**。功能清单（验收基准）是 `INVENTORY.md`：每一行都有 Playwright 用例（测试标题里写清单编号）。
+独立的 Vite 8 + React 19 + TypeScript + Tailwind 4 应用（2026-10 改版：Radix、lucide、sonner、cmdk、react-router 7、react-query、@tanstack/react-virtual、recharts、CodeMirror 6（邮件模板与订阅模板两个编辑器各是自己的分包；订阅模板用 lang-json / lang-yaml + 一个小的 INI 解析器）；视觉见 `design/admin-redesign-2026-10/`），与门户 `portal/` **不共享任何代码、路由或产物**。功能清单（验收基准）是 `INVENTORY.md`：每一行都有 Playwright 用例（测试标题里写清单编号）。
 
 ## 两个包
 

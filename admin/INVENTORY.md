@@ -233,7 +233,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 
 ## 15. 系统设置
 
-> 2026-10 改版 v2（proposal-v2 §5）：8 组 22 个分区，每个分区一个地址 `/settings/<分区>`（`/settings` = 概览）。分组：通用（`site` 站点信息、`brand` 外观与品牌、`links` 条款与下载链接、`domains` 域名与证书）· 用户与登录（`signup` 注册与邀请、`login` 登录与人机验证、`cleanup` 账号清理）· 订阅（`subscription` 订阅链接与格式、`routing` 订阅模板（编辑器随 PR 2））· 节点（`install` 安装与证书、`probe` 测速与健康检查、`block` 出站拦截规则、`updates` 更新源与验签）· 收款与返利（`payments` 支付方式、`commission` 邀请返利）· 通知（`mail` 发信通道、`templates` 邮件模板 = 全宽编辑器 `/settings/templates`、`notices` 通知种类、`alerts` 告警通道与阈值）· 管理与安全（`access` 后台入口、`retention` 数据保留、`account` 我的账户与通行密钥 = 入口卡片，账户功能在 `/account`）。概览：顶部"需要注意"（每条 问题 + 原因 + 去修复：主域名证书将到期（系统状态的证书探测）、发信近 24 小时失败（打开发信诊断）、panel.toml 废弃键（可复制）、支付渠道不可用、域名提示），8 组卡片每个分区一行并显示关键值（异常标色），底部"最近修改"3 条（审计日志）。桌面：左侧分组导航（搜索分区名、说明、旧名称与**分区内的行**，结果写"行 ↳ 组 › 分区"并高亮，`?q=`；🔒 = 仅所有者；琥珀点 = 该分区有待处理项；"概览"旁为待处理数）；手机：大标题 + 搜索 → 需要注意 → 分组列表（副标题为关键值）→ 分区，左上角"‹ 系统设置"返回。分区页头：图标 + 标题 + 说明 + "上次修改 时间 · 人"（链接到审计）。每个分区只有一种保存方式：底部保存栏"N 项未保存的修改 · 放弃 · 保存（⌘S / Ctrl+S）"，改过的行左侧蓝条，有字段错误时不可保存并提示"N 处需要修正"；有未保存修改时切换分区或离开页面先弹"有未保存的修改"（放弃修改，去「X」/ 继续编辑）；危险的修改放在红框"危险操作"区并在保存时确认。旧地址重定向：`?section=<id>`、`security`→`access`、`branding`→`brand`、`nodes`→`install`、`block-rules`/`audit-rules`→`block`、`mail-template`→`templates`、`notify`→`notices`、`passkeys`→`account`；`/settings/mail-templates` 仍可打开编辑器；`/settings/mail?outbox=…` → `/status?mail=…`。
+> 2026-10 改版 v2（proposal-v2 §5）：8 组 22 个分区，每个分区一个地址 `/settings/<分区>`（`/settings` = 概览）。分组：通用（`site` 站点信息、`brand` 外观与品牌、`links` 条款与下载链接、`domains` 域名与证书）· 用户与登录（`signup` 注册与邀请、`login` 登录与人机验证、`cleanup` 账号清理）· 订阅（`subscription` 订阅链接与格式、`routing` 订阅模板 = 全宽编辑器 `/settings/sub-templates`）· 节点（`install` 安装与证书、`probe` 测速与健康检查、`block` 出站拦截规则、`updates` 更新源与验签）· 收款与返利（`payments` 支付方式、`commission` 邀请返利）· 通知（`mail` 发信通道、`templates` 邮件模板 = 全宽编辑器 `/settings/templates`、`notices` 通知种类、`alerts` 告警通道与阈值）· 管理与安全（`access` 后台入口、`retention` 数据保留、`account` 我的账户与通行密钥 = 入口卡片，账户功能在 `/account`）。概览：顶部"需要注意"（每条 问题 + 原因 + 去修复：主域名证书将到期（系统状态的证书探测）、发信近 24 小时失败（打开发信诊断）、panel.toml 废弃键（可复制）、支付渠道不可用、域名提示），8 组卡片每个分区一行并显示关键值（异常标色），底部"最近修改"3 条（审计日志）。桌面：左侧分组导航（搜索分区名、说明、旧名称与**分区内的行**，结果写"行 ↳ 组 › 分区"并高亮，`?q=`；🔒 = 仅所有者；琥珀点 = 该分区有待处理项；"概览"旁为待处理数）；手机：大标题 + 搜索 → 需要注意 → 分组列表（副标题为关键值）→ 分区，左上角"‹ 系统设置"返回。分区页头：图标 + 标题 + 说明 + "上次修改 时间 · 人"（链接到审计）。每个分区只有一种保存方式：底部保存栏"N 项未保存的修改 · 放弃 · 保存（⌘S / Ctrl+S）"，改过的行左侧蓝条，有字段错误时不可保存并提示"N 处需要修正"；有未保存修改时切换分区或离开页面先弹"有未保存的修改"（放弃修改，去「X」/ 继续编辑）；危险的修改放在红框"危险操作"区并在保存时确认。旧地址重定向：`?section=<id>`、`security`→`access`、`branding`→`brand`、`nodes`→`install`、`block-rules`/`audit-rules`→`block`、`mail-template`→`templates`、`notify`→`notices`、`passkeys`→`account`；`/settings/mail-templates` 仍可打开编辑器；`/settings/mail?outbox=…` → `/status?mail=…`。
 
 | 编号 | 功能 | 接口 | 来源 | 处理 |
 |---|---|---|---|---|
@@ -247,7 +247,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | SET-08 | 登录与人机验证 → 登录方式：密码登录后引导绑定、用户只用通行密钥；"管理员只用通行密钥"在危险操作区，保存时确认（你的通行密钥数、恢复办法 `akari admin reset-login`，输入"只用通行密钥"） | `GET/PUT /settings/auth` | D7 | 实现 |
 | SET-09 | 安全值分到各分区：Cloudflare 网段（域名与证书，弹窗编辑）、审计/流量明细保留天数（数据保留，范围即时校验，缩短时行内提示"保存后将删除更早的数据"、保存时确认并输入"删除旧数据"；另列"不受这里控制的数据"）、额外信任的发布公钥 + 内置官方公钥只读（更新源与验签，弹窗添加，增删在保存时确认） | `PUT /settings/security` | W25 | 实现 |
 | SET-10 | 订阅路径（订阅链接与格式 → 危险操作）：路径默认打码可显示；"轮换…"弹窗：随机或自定义、可选邮件通知所有用户（默认勾选）→ 确认"旧链接全部失效"（输入确认）→ 完成后显示新地址格式与通知任务进度（链接到用户 → 批量任务） | `PUT /settings/access/sub-path` | D11 + 裁决⑥ | 实现 |
-| SET-12 | 订阅格式开关（Clash/mihomo、sing-box、通用链接）与门户一键导入按钮（5 张小卡：Clash、Stash、Shadowrocket、sing-box、Hiddify；依赖的格式关闭时变灰写"格式已关闭"）；关闭格式与开启倍率合并为一次保存确认 | 同上 | PR② §5 | 实现 |
+| SET-12 | 订阅格式开关（Clash/mihomo、sing-box、通用链接）与门户一键导入按钮（7 张小卡：Clash、Stash、Shadowrocket、sing-box、Hiddify、Surge、Surfboard；依赖的格式关闭时变灰写"格式已关闭"）；关闭格式与开启倍率合并为一次保存确认 | 同上 | PR② §5 | 实现 |
 | SET-13 | 注册与邀请：开放注册、需要验证邮箱、允许用户邀请（`user_invites`，默认开；关闭时说明后果：用户没有邀请码、已发出的码不能注册、注册页不显示邀请码）、需要邀请码（独立开关；与关闭用户邀请同时开启 = 没人能注册，页面提示并拒绝保存，面板 400 `signup_admin.invites_needed`）、单次邀请码、邮箱域名白名单（内联胶囊输入：回车添加、× 删除，说明随数量变化）、试用套餐/天数、找回密码 | `GET/PUT /settings/signup` | D1/W15 | 实现 |
 | SET-14 | 登录与人机验证 → 人机验证：Turnstile 站点密钥 / 密钥（只写）、需要验证的表单是可勾选的块（登录（门户与后台）/注册/找回；勾了表单而站点密钥为空时报错）、蜜罐、最短提交时间（0–60 即时校验）；警告显示 | `GET/PUT /settings/auth` | W27 | 实现 |
 | SET-15 | 发信通道：顶部状态条（通道、近 24 小时发送数与失败数（链接到邮件队列）、"测试发信"）；SMTP / Resend 用单选卡片切换；SMTP（主机、端口 1–65535 校验、加密方式分段 隐式 TLS / STARTTLS / 不加密、账号、密码只写）或 Resend（API key 只写）、发件人；底部入口卡指向邮件模板与通知种类；通知种类（独立分区）：每种邮件一行，显示近 30 天发送数与"模板"链接：回执、到期前提醒（打开时缩进出现提前天数 1–30）、已到期、流量、退款；发信异常时顶部提示条附"诊断发信" | `GET/PUT /settings/mail`（`sent_24h`/`dead_24h`/`last_dead_*`/`sent_30d`） | W31 | 实现 |
@@ -263,6 +263,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | SET-26 | 订阅线路名显示倍率（默认关；开启时保存前确认"改倍率会改线路名、客户端可能切换线路"，开启时入口弹窗的倍率框也提示；只显示基础倍率，不显示时段倍率） | `PUT /settings/subscription` `{name_rate}` | next07 | 实现 |
 | SET-27 | 仅自研客户端（订阅链接与格式 → 「客户端」，默认关）：开启 = 订阅只回答 Akari 客户端（User-Agent `akari-client/`，软限制）、门户不显示订阅链接 / 二维码 / 导入按钮（导入区只给客户端下载），下面的格式开关与导入卡片变灰（存储的选择保留，关闭后恢复）；开启时保存前确认并列出影响（门户、第三方客户端更新失败、含 `{sub_url}` 的批量邮件跳过）；关闭不需要确认；概览显示「仅自研客户端」 | `PUT /settings/subscription` `{own_client_only}` | v1-next-1013 B1 | 实现 |
 | SET-27 | 通行密钥中心域名（域名与证书）：RP ID、关联来源与注册域数量、你的通行密钥数；更换在危险操作区（两步：弹窗输入（红色说明全部失效与恢复命令）→ 保存时确认：全部通行密钥失效、你自己的通行密钥数量、恢复办法，输入新域名确认） | `PUT /settings/passkey-domain` | 迁移 1105 | 实现 |
+| SET-29 | 订阅模板（独立全宽页 `/settings/sub-templates`，返回"系统设置 · 订阅"；旧分区地址 `/settings/routing` 跳转到它；订阅分区的格式开关下有入口）：标题「订阅模板 · 配置各个客户端的订阅模板」，标签页 Sing-box / Clash / Surge / Surfboard（`?format=`，有未保存修改的标签带琥珀点；各标签的草稿在页面打开期间保留），CodeMirror 6 编辑器（行号、JSON / YAML / 配置文本高亮、`$占位符` 与 `{all}` 标记，独立分包按需加载，CSP `'self'` 下可用）、占位符速查（取自接口，点一下插入到光标处；手机上折叠在「占位符说明」后）、预览（侧栏；示例数据或「真实用户」：搜索邮箱选一个，页面写明会用其真实线路与凭据渲染并记入审计）、恢复默认（已自定义时确认并删除；仍是默认且有未保存修改时只丢弃草稿）、保存（`version` 乐观并发，⌘S；别人先保存 = 409 / 列表出现新版本时提示「载入最新版本」或「保留我的草稿并覆盖」）、400 `sub_template.invalid` 的 `line/column` 在编辑器里标出（行底色 + 波浪线）并列在编辑器下（点击跳到该处）、状态（使用内置默认模板 / 已自定义 · 时间 · 人 / 未保存的修改）、离开页面先确认；手机编辑器占满宽度、侧栏在其下 | `GET /sub-templates`、`PUT`/`DELETE /sub-templates/{format}`、`POST …/preview` | 订阅模板 | 实现 |
 | SET-28 | 允许用通行密钥注册（注册与邀请；默认关；通行密钥不可用时提示） | `PUT /settings/signup` `{passkey_register}` | 迁移 1105 | 实现 |
 
 ## 16. 我的账户
@@ -348,6 +349,7 @@ e2e：`e2e/dns.spec.ts`（本地 Cloudflare 模拟 `e2e/fixtures/cloudflare-mock
 | `GET/PUT /settings/mail`、`POST …/test`、`/diagnose`、`GET /mail/outbox`、`POST …/retry`、`/settings/mail-templates*` | SET-15…18 |
 | `/settings/payments*` | SET-19 |
 | `/block-rules*` | SET-22 |
+| `GET /sub-templates`、`PUT`/`DELETE /sub-templates/{format}`、`POST …/preview` | SET-29 |
 | `GET/PUT /settings/cleanup` | SET-23 |
 | `/settings/branding*`、`GET /brand/{name}` | SET-24 |
 | `GET /healthz`、`/sub/{token}`、`/install/*`、`/pay/*`、`/me/*`（门户）、`/auth/register*`、`/auth/password-reset*` | 不属于后台（门户/公开路径） |
