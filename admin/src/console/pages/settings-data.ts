@@ -55,7 +55,6 @@ export type SettingsView = {
     labels: number;
     label_limit: number;
   };
-  obsolete_config_keys: string[];
   warnings: string[];
   probe: {
     interval_secs: { value: number | null; effective: number; default: number };

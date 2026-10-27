@@ -59,12 +59,10 @@ function sections(page: Page): Locator {
   return page.getByRole("navigation", { name: "设置分类" });
 }
 
-test("SET-25: overview (needs attention: obsolete keys), search by old names, old addresses redirect, unsaved changes guard, ⌘S", async ({
+test("SET-25: overview, search by old names, old addresses redirect, unsaved changes guard, ⌘S", async ({
   page,
 }, info: TestInfo) => {
   await openConsole(page, "/settings");
-  // SET-25: the e2e panel.toml carries obsolete keys on purpose.
-  await expect(page.getByRole("region", { name: "需要注意" })).toContainText("个已废弃的键");
   // Search finds a section by its old name.
   await page.getByLabel("搜索设置").fill("审计规则");
   await sections(page)
