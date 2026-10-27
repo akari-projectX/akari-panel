@@ -301,15 +301,11 @@ impl WireAgent {
     }
 
     pub async fn hello(&self, held: (u64, u64), hash: String) {
-        self.hello_v(held, hash, MIN_AGENT_PROTOCOL).await
-    }
-
-    pub async fn hello_v(&self, held: (u64, u64), hash: String, protocol: u32) {
         self.send(UpMsg::Hello(Hello {
             session_id: self.session_id.clone(),
             config_version: held.0,
             user_version: held.1,
-            protocol_version: protocol,
+            protocol_version: MIN_AGENT_PROTOCOL,
             state_hash: hash,
             ..Default::default()
         }))
@@ -317,12 +313,12 @@ impl WireAgent {
     }
 
     /// Hello with agent info (M6: version and platform drive updates).
-    pub async fn hello_as(&self, held: (u64, u64), hash: String, protocol: u32, version: &str) {
+    pub async fn hello_as(&self, held: (u64, u64), hash: String, version: &str) {
         self.send(UpMsg::Hello(Hello {
             session_id: self.session_id.clone(),
             config_version: held.0,
             user_version: held.1,
-            protocol_version: protocol,
+            protocol_version: MIN_AGENT_PROTOCOL,
             state_hash: hash,
             info: Some(crate::pb::AgentInfo {
                 agent_version: version.into(),

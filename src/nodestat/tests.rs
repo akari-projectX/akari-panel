@@ -127,46 +127,6 @@ fn heartbeat_sanitized() {
     );
 }
 
-/// W23: agents without "metrics-presence" send unread values as 0 and
-/// every 0 unset: for them unset is 0 (a zero memory total = unknown, as in
-/// W11). Agents with it keep unset = unknown.
-#[test]
-fn legacy_presence_means_zero() {
-    let mut hb = Heartbeat {
-        mem_total_bytes: Some(4096),
-        metrics: Some(NodeMetrics {
-            load5: Some(0.5),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    legacy_presence(&mut hb);
-    let m = hb.metrics.as_ref().unwrap();
-    assert_eq!(
-        (hb.cpu_percent, hb.mem_used_bytes, hb.mem_total_bytes),
-        (Some(0.0), Some(0), Some(4096))
-    );
-    assert_eq!(
-        (m.load1, m.load5, m.tcp_sockets),
-        (Some(0.0), Some(0.5), Some(0))
-    );
-    assert_eq!(
-        (m.disk_total_bytes, m.process_rss_bytes),
-        (Some(0), Some(0))
-    );
-    let s = Sample::from_heartbeat(&hb);
-    assert_eq!((s.cpu, s.rx_bps), (Some(0.0), Some(0)));
-
-    let mut old = Heartbeat::default();
-    legacy_presence(&mut old);
-    assert_eq!(
-        (old.mem_used_bytes, old.mem_total_bytes),
-        (None, None),
-        "total 0 = unknown"
-    );
-    assert!(old.metrics.is_none());
-}
-
 #[test]
 fn local_throttles_writes_and_sums_the_fleet() {
     let l = Local::default();
@@ -949,17 +909,17 @@ async fn session_probe_config_report_and_heartbeat() {
         .await
         .expect("heartbeat blob in valkey");
     assert_eq!(hb["metrics"]["online_users"], 2);
-    // W23: no "metrics-presence": unset values are 0, as before.
+    // An unset value is unknown, never 0.
     assert_eq!(hb["cpu_percent"], 33.0);
-    assert_eq!(hb["metrics"]["tcp_sockets"], 0);
+    assert_eq!(hb["metrics"]["tcp_sockets"], Value::Null);
     assert_eq!(panel.state.nodestat().fleet().online_users, 2);
     panel.stop().await;
     db.drop().await;
 }
 
-/// W23 over the real gRPC server: an agent with "metrics-presence" leaves
-/// what it could not read unset, and the node page gets null (shown as
-/// "—"), not 0; the history stores NULL.
+/// W23 over the real gRPC server: an agent leaves what it could not read
+/// unset, and the node page gets null (shown as "—"), not 0; the history
+/// stores NULL.
 #[tokio::test]
 async fn session_heartbeat_unknown_values() {
     use crate::testdb::fake_agent::PanelHarness;
@@ -970,9 +930,7 @@ async fn session_heartbeat_unknown_values() {
     let panel = PanelHarness::start(&db).await;
     let creds = panel.register(&db, n).await;
     let mut agent = panel.connect(&creds).await.unwrap();
-    agent
-        .hello_caps((0, 0), String::new(), &["metrics", "metrics-presence"])
-        .await;
+    agent.hello_caps((0, 0), String::new(), &["metrics"]).await;
     loop {
         match agent.next().await {
             Some(Ok(DownMsg::Snapshot(_))) => break,

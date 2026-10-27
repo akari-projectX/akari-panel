@@ -247,7 +247,6 @@ mail_template.placeholder_unknown
 mail_template.subject_length
 mail_template.subject_multiline
 mail_template.version_conflict
-node.acme_agent_too_old
 node.display_name_invalid
 node.max_rate_invalid
 node.name_empty

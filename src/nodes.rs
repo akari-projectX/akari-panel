@@ -875,7 +875,6 @@ pub(crate) async fn apply_set_inbound(
     .bind(server)
     .fetch_one(&mut *conn)
     .await?;
-    crate::servers::refuse_acme_for_old_agent(conn, server).await?;
     let plan = crate::entitle::apply_reconcile(conn, crate::entitle::Scope::Nodes(&[id])).await?;
     let mut after = json!({ "inbound": crate::audit::inbound_summary(inbound.as_ref()) });
     after["entitlement"] = plan.summary();

@@ -215,9 +215,9 @@ pub fn bootstrap_toml(
     )
 }
 
-/// Verified client certificate of a request: (normalized serial,
-/// not_after). Without one the call never reaches session code.
-pub fn peer_cert<T>(req: &Request<T>) -> Result<(String, DateTime<Utc>), Status> {
+/// Normalized serial of the verified client certificate of a request. Without
+/// one the call never reaches session code.
+pub fn peer_cert<T>(req: &Request<T>) -> Result<String, Status> {
     let certs = req
         .peer_certs()
         .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
@@ -226,9 +226,7 @@ pub fn peer_cert<T>(req: &Request<T>) -> Result<(String, DateTime<Utc>), Status>
         .ok_or_else(|| Status::unauthenticated("missing client certificate"))?;
     let (_, cert) = X509Certificate::from_der(der.as_ref())
         .map_err(|_| Status::unauthenticated("malformed certificate"))?;
-    let not_after = DateTime::from_timestamp(cert.validity().not_after.timestamp(), 0)
-        .ok_or_else(|| Status::unauthenticated("malformed certificate"))?;
-    Ok((install::normalize_serial(cert.raw_serial()), not_after))
+    Ok(install::normalize_serial(cert.raw_serial()))
 }
 
 /// Tombstone a superseded serial: refused from now on like an unknown
@@ -286,28 +284,6 @@ pub async fn promote_on_first_sight(
     tx.commit().await?;
     tracing::info!(server = %server, "agent switched to its renewed certificate; old one revoked");
     Ok(())
-}
-
-/// Record the expiry of a certificate issued before servers.cert_not_after
-/// existed (v1 bootstrap files), from the certificate the agent presents.
-pub async fn note_legacy_expiry(
-    pg: &sqlx::PgPool,
-    server: Uuid,
-    serial: &str,
-    not_after: DateTime<Utc>,
-) {
-    let r = sqlx::query(
-        "UPDATE servers SET cert_not_after = $3 \
-         WHERE id = $1 AND cert_serial = $2 AND cert_not_after IS NULL",
-    )
-    .bind(server)
-    .bind(serial)
-    .bind(not_after)
-    .execute(pg)
-    .await;
-    if let Err(e) = r {
-        tracing::warn!(server = %server, error = %e, "failed to record certificate expiry");
-    }
 }
 
 #[expect(clippy::needless_pass_by_value, reason = "used as a map_err callback")]
@@ -492,7 +468,7 @@ pub async fn renew(
     state: &AppState,
     request: Request<RenewRequest>,
 ) -> Result<IssuedCertificate, Status> {
-    let (serial, _) = peer_cert(&request)?;
+    let serial = peer_cert(&request)?;
     let ip = request.remote_addr().map(|a| a.ip());
     let req = request.into_inner();
     let key = install::check_csr(&req.csr_der).map_err(csr_status)?;
@@ -685,7 +661,7 @@ mod tests {
     /// Connect, Hello, get the first snapshot: the certificate is served.
     async fn served(panel: &PanelHarness, c: &AgentCreds) {
         let mut a = panel.connect(c).await.expect("served");
-        a.hello_v((0, 0), String::new(), 2).await;
+        a.hello((0, 0), String::new()).await;
         a.snapshot().await;
     }
 
@@ -1083,39 +1059,6 @@ mod tests {
                 Some("deleted")
             );
         }
-        panel.stop().await;
-        db.drop().await;
-    }
-
-    /// A v1 agent (panel-generated key in its bootstrap file, protocol 1)
-    /// keeps working; its certificate's expiry is learned on connect.
-    #[tokio::test]
-    async fn v1_certificate_and_protocol_1_agent_unaffected() {
-        let Some(db) = TestDb::new().await else {
-            return;
-        };
-        let (server, _u) = db.member().await;
-        let panel = PanelHarness::start(&db).await;
-        let v1 = panel.register(&db, server).await;
-        let mut a = panel.connect(&v1).await.unwrap();
-        a.hello_v((0, 0), String::new(), 1).await;
-        let snap = a.snapshot().await;
-        assert_eq!(snap.users.len(), 1, "protocol 1 is served normally");
-        let not_after: Option<chrono::DateTime<Utc>> =
-            sqlx::query_scalar("SELECT cert_not_after FROM servers WHERE id = $1")
-                .bind(server)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
-        assert!(not_after.is_some_and(|t| t > Utc::now() + chrono::Duration::days(700)));
-        // It may migrate onto a local key at any time (Renew works for v1
-        // certificates too).
-        let fresh = panel.renew(Some(&v1)).await.unwrap();
-        served(&panel, &fresh).await;
-        assert_eq!(
-            tombstone(&db, &serial_of(&v1)).await.as_deref(),
-            Some("rotated")
-        );
         panel.stop().await;
         db.drop().await;
     }

@@ -256,7 +256,6 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "mail_template.subject_length": ["主题须为 1–{max} 个字符", "Subject must be 1-{max} characters"],
   "mail_template.subject_multiline": ["主题只能是一行（第 {column} 个字符是换行或控制字符）", "Subject must be a single line (line break or control character at column {column})"],
   "mail_template.version_conflict": ["模板已被修改（可能是其他管理员），请刷新后重试", "The template was changed meanwhile (perhaps by another admin); reload and retry"],
-  "node.acme_agent_too_old": ["该服务器的 agent 版本过旧（协议 {p} < {need}），不支持自动证书：请先升级 agent（升级发布，或在服务器上重新运行一次安装命令），或清空服务器域名并手动放置证书", "This server's agent is too old (protocol {p} < {need}) for automatic certificates: upgrade the agent first, or clear the server domain and place the certificate by hand"],
   "node.display_name_invalid": ["显示名称最多 {max_display_chars} 个可打印字符", "Display_name must be at most {max_display_chars} printable characters"],
   "node.max_rate_invalid": ["计费速率上限必须大于 0", "Traffic_max_rate_bytes_per_sec must be > 0"],
   "node.name_empty": ["节点名称不能为空", "Name must not be empty"],

@@ -10,7 +10,7 @@
 //! -> updating (Hello with the target version) -> healthy (an ok Ack on that
 //! stream: `on_converged`). failed: the agent reported REJECTED / FAILED /
 //! ROLLED_BACK, or no health within `health_timeout_secs` of the first
-//! offer. skipped: never offerable (agent protocol < 3, no artifact for its
+//! offer. skipped: never offerable (no artifact for its
 //! platform, offline for the whole timeout after its wave started, server
 //! being deleted). A server already at/above the target is healthy at once.
 //!
@@ -42,7 +42,7 @@ use crate::api::ApiJson;
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser};
 use crate::state::AppState;
-use crate::updates::{MIN_UPDATE_PROTOCOL, compare_versions, parse_version};
+use crate::updates::{compare_versions, parse_version};
 
 pub const DEFAULT_HEALTH_TIMEOUT_SECS: i32 = 600;
 pub const DEFAULT_MAX_FAILURE_RATIO: f64 = 0.2;
@@ -152,7 +152,6 @@ pub enum PendingOutcome {
 pub struct PendingNode<'a> {
     pub online: bool,
     pub deleting: bool,
-    pub protocol: Option<i32>,
     pub agent_version: Option<&'a str>,
     pub platform: Option<(&'a str, &'a str)>,
     pub has_artifact: bool,
@@ -182,11 +181,6 @@ pub fn classify_pending(target: &str, n: &PendingNode) -> Option<PendingOutcome>
         return Some(PendingOutcome::Healthy(format!("already at {v}")));
     }
     if n.online {
-        if let Some(p) = n.protocol.filter(|p| *p < MIN_UPDATE_PROTOCOL as i32) {
-            return Some(PendingOutcome::Skipped(format!(
-                "agent protocol {p} < {MIN_UPDATE_PROTOCOL}: update this server by hand"
-            )));
-        }
         if let Some(v) = n.agent_version.filter(|v| parse_version(v).is_none()) {
             return Some(PendingOutcome::Skipped(format!(
                 "agent version {v:?} is not a release version (development build)"
@@ -614,7 +608,6 @@ struct PendingRow {
     server_id: Uuid,
     online: bool,
     deleting: bool,
-    agent_protocol: Option<i32>,
     agent_version: Option<String>,
     agent_os: Option<String>,
     agent_arch: Option<String>,
@@ -671,7 +664,7 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
     let pending: Vec<PendingRow> = sqlx::query_as(
         "SELECT rn.server_id, \
            (n.status = 'online' AND n.last_seen_at > now() - make_interval(secs => $4)) AS online, \
-           n.deleting_at IS NOT NULL AS deleting, n.agent_protocol, n.agent_version, \
+           n.deleting_at IS NOT NULL AS deleting, n.agent_version, \
            n.agent_os, n.agent_arch, \
            EXISTS (SELECT 1 FROM agent_releases a WHERE a.version = $2 AND a.os = n.agent_os \
                    AND a.arch = n.agent_arch AND a.complete_at IS NOT NULL) AS has_artifact, \
@@ -696,7 +689,6 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
             &PendingNode {
                 online: p.online,
                 deleting: p.deleting,
-                protocol: p.agent_protocol,
                 agent_version: p.agent_version.as_deref(),
                 platform,
                 has_artifact: p.has_artifact,
@@ -810,19 +802,14 @@ pub async fn tick_one(conn: &mut PgConnection, id: Uuid) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// The offer for this server, if its wave of a running rollout is active, it
-/// is pending/offered, its agent speaks protocol >= 3 and runs an older
-/// version, and a complete release exists for its platform. Marks the row
+/// is pending/offered, its agent runs an older version, and a complete release exists for its platform. Marks the row
 /// offered (the health timeout runs from the FIRST offer).
 pub async fn offer_for(
     pg: &sqlx::PgPool,
     server: Uuid,
-    protocol: u32,
     agent_version: &str,
     platform: (&str, &str),
 ) -> sqlx::Result<Option<crate::pb::UpdateOffer>> {
-    if protocol < MIN_UPDATE_PROTOCOL {
-        return Ok(None);
-    }
     type R = (Uuid, String, Vec<u8>, serde_json::Value, bool);
     let row: Option<R> = sqlx::query_as(
         "SELECT r.id, r.version, a.manifest, a.signatures, a.rollback \
@@ -1055,7 +1042,6 @@ mod tests {
         let base = PendingNode {
             online: true,
             deleting: false,
-            protocol: Some(3),
             agent_version: Some("v1.0.0"),
             platform: Some(("linux", "amd64")),
             has_artifact: true,
@@ -1108,15 +1094,10 @@ mod tests {
             Some(PendingOutcome::Healthy(_))
         ));
         let old = PendingNode {
-            protocol: Some(2),
             agent_version: Some("v1.0.0"),
             ..at
         };
-        assert!(
-            matches!(classify_pending("v1.1.0", &old), Some(PendingOutcome::Skipped(d)) if d.contains("protocol 2"))
-        );
         let noart = PendingNode {
-            protocol: Some(3),
             has_artifact: false,
             ..old
         };
@@ -1171,18 +1152,17 @@ mod db_tests {
         c
     }
 
-    /// An enrolled, online server running `version` at `protocol`.
-    async fn agent_server(db: &TestDb, version: &str, protocol: i32) -> Uuid {
+    /// An enrolled, online server running `version`.
+    async fn agent_server(db: &TestDb, version: &str) -> Uuid {
         let id = db.server().await;
         sqlx::query(
             "UPDATE servers SET cert_serial = $2, status = 'online', last_seen_at = now(), \
-             agent_version = $3, agent_protocol = $4, agent_os = 'linux', agent_arch = 'amd64' \
+             agent_version = $3, agent_os = 'linux', agent_arch = 'amd64' \
              WHERE id = $1",
         )
         .bind(id)
         .bind(format!("{:x}", id.as_u128()))
         .bind(version)
-        .bind(protocol)
         .execute(&db.pool)
         .await
         .unwrap();
@@ -1274,8 +1254,7 @@ mod db_tests {
     }
 
     /// Upload (verified, audited) -> rollout -> offer -> updating ->
-    /// healthy -> completed; protocol < 3 never offered; downloads refused
-    /// for wrong digests.
+    /// healthy -> completed; downloads refused for wrong digests.
     #[tokio::test]
     async fn release_rollout_happy_path() {
         let Some(db) = TestDb::new().await else {
@@ -1333,8 +1312,7 @@ mod db_tests {
         assert_eq!(audits(&db, "agent_release.create").await, 1);
         assert_eq!(audits(&db, "agent_release.upload").await, 1);
 
-        let n3 = agent_server(&db, "v1.0.0", 3).await;
-        let n2 = agent_server(&db, "v1.0.0", 2).await;
+        let n3 = agent_server(&db, "v1.0.0").await;
         let r = c
             .post(
                 "/test/api/v1/rollouts",
@@ -1358,21 +1336,14 @@ mod db_tests {
             .await;
         assert_eq!(r.status, StatusCode::CONFLICT);
 
-        // protocol 2: never offered, skipped by the tick.
-        assert!(
-            offer_for(&db.pool, n2, 2, "v1.0.0", ("linux", "amd64"))
-                .await
-                .unwrap()
-                .is_none()
-        );
         // Wrong platform: no artifact, no offer.
         assert!(
-            offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "arm64"))
+            offer_for(&db.pool, n3, "v1.0.0", ("linux", "arm64"))
                 .await
                 .unwrap()
                 .is_none()
         );
-        let o = offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
+        let o = offer_for(&db.pool, n3, "v1.0.0", ("linux", "amd64"))
             .await
             .unwrap()
             .unwrap();
@@ -1382,7 +1353,6 @@ mod db_tests {
         assert_eq!(m.version, "v1.1.0");
         assert_eq!(server_status(&db, id, n3).await, "offered");
         tick_db(&db, id).await;
-        assert_eq!(server_status(&db, id, n2).await, "skipped");
         assert_eq!(status(&db, id).await, "running");
 
         // Comes back with the new version, acks: healthy.
@@ -1396,7 +1366,7 @@ mod db_tests {
         assert_eq!(audits(&db, "rollout.complete").await, 1);
         // Completed: no more offers; the server view shows the outcome.
         assert!(
-            offer_for(&db.pool, n3, 3, "v1.0.0", ("linux", "amd64"))
+            offer_for(&db.pool, n3, "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_none()
@@ -1426,7 +1396,7 @@ mod db_tests {
         };
         let state = AppState::for_test(db.pool.clone()).await;
         let c = admin_client(&state, &db).await;
-        let n = agent_server(&db, "v1.0.0", 6).await;
+        let n = agent_server(&db, "v1.0.0").await;
         let r = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO rollouts (id, version, status, waves, percentage, explicit_servers, \
@@ -1579,22 +1549,22 @@ mod db_tests {
         assert_eq!(list[0]["rollback"], true);
         assert_eq!(list[0]["rollback_from"], "v999.0.0");
         assert!(list[0]["expires_at"].is_string(), "{list}");
-        let server = agent_server(&db, "v999.0.0", 3).await;
+        let server = agent_server(&db, "v999.0.0").await;
         create(&db, req("v1.1.0")).await.unwrap();
         let plat = ("linux", "amd64");
         assert!(
-            offer_for(&db.pool, server, 3, "v999.0.0", plat)
+            offer_for(&db.pool, server, "v999.0.0", plat)
                 .await
                 .unwrap()
                 .is_some(),
             "the version it replaces gets the offer"
         );
         assert!(
-            offer_for(&db.pool, server, 3, "v998.0.0", plat)
+            offer_for(&db.pool, server, "v998.0.0", plat)
                 .await
                 .unwrap()
                 .is_none()
-                && offer_for(&db.pool, server, 3, "v1000.0.0", plat)
+                && offer_for(&db.pool, server, "v1000.0.0", plat)
                     .await
                     .unwrap()
                     .is_none(),
@@ -1618,9 +1588,8 @@ mod db_tests {
         db.drop().await;
     }
 
-    /// The session sends the offer to a protocol-3 agent (and not to a
-    /// protocol-2 one), the reconnect with the new version + ok Ack makes
-    /// it healthy — over the real gRPC stream.
+    /// The session sends the offer to the agent, the reconnect with the new
+    /// version + ok Ack makes it healthy — over the real gRPC stream.
     #[tokio::test]
     async fn session_offers_and_health_gate() {
         let Some(db) = TestDb::new().await else {
@@ -1637,7 +1606,7 @@ mod db_tests {
         let server = db.server().await;
         let creds = h.register(&db, server).await;
         let mut a = h.connect(&creds).await.unwrap();
-        a.hello_as((0, 0), String::new(), 3, "v1.0.0").await;
+        a.hello_as((0, 0), String::new(), "v1.0.0").await;
         let snap = a.snapshot().await;
         a.ack_snapshot(&snap).await;
         // The rollout starts while the agent is connected: the wake brings
@@ -1655,7 +1624,7 @@ mod db_tests {
         drop(a);
         // The new binary connects.
         let mut b = h.connect(&creds).await.unwrap();
-        b.hello_as((0, 0), String::new(), 3, "v1.1.0").await;
+        b.hello_as((0, 0), String::new(), "v1.1.0").await;
         let snap = b.snapshot().await;
         b.ack_snapshot(&snap).await;
         let mut healthy = false;
@@ -1695,7 +1664,7 @@ mod db_tests {
         upload(&c, "test", &signer, "v1.1.0", b"agent").await;
         let mut servers = Vec::new();
         for _ in 0..4 {
-            servers.push(agent_server(&db, "v1.0.0", 3).await);
+            servers.push(agent_server(&db, "v1.0.0").await);
         }
         let id = create(
             &db,
@@ -1732,7 +1701,7 @@ mod db_tests {
         assert_eq!((first.len(), rest.len()), (1, 3));
         // Wave 1 is not offered yet.
         assert!(
-            offer_for(&db.pool, rest[0], 3, "v1.0.0", ("linux", "amd64"))
+            offer_for(&db.pool, rest[0], "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_none()
@@ -1744,7 +1713,7 @@ mod db_tests {
             .unwrap();
         tx.commit().await.unwrap();
         assert!(
-            offer_for(&db.pool, first[0], 3, "v1.0.0", ("linux", "amd64"))
+            offer_for(&db.pool, first[0], "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_none()
@@ -1764,7 +1733,7 @@ mod db_tests {
             .unwrap();
         tx.commit().await.unwrap();
         assert!(
-            offer_for(&db.pool, first[0], 3, "v1.0.0", ("linux", "amd64"))
+            offer_for(&db.pool, first[0], "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_some()
@@ -1777,7 +1746,7 @@ mod db_tests {
         // Wave 1: one times out, one rolls back -> 2 failed / 3 > 0.5: halt.
         for n in &rest {
             assert!(
-                offer_for(&db.pool, *n, 3, "v1.0.0", ("linux", "amd64"))
+                offer_for(&db.pool, *n, "v1.0.0", ("linux", "amd64"))
                     .await
                     .unwrap()
                     .is_some()
@@ -1815,7 +1784,7 @@ mod db_tests {
         assert_eq!(actor, crate::audit::SYSTEM);
         // Halted: no offers; resume refused; abort works.
         assert!(
-            offer_for(&db.pool, rest[2], 3, "v1.0.0", ("linux", "amd64"))
+            offer_for(&db.pool, rest[2], "v1.0.0", ("linux", "amd64"))
                 .await
                 .unwrap()
                 .is_none()

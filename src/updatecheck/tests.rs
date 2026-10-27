@@ -667,13 +667,13 @@ async fn api_status_settings_and_check() {
         .await;
     assert_eq!(r.status, StatusCode::BAD_REQUEST);
 
-    // An outdated node (protocol 3, linux/amd64, v1.0.0) and one that
-    // cannot update (protocol 2).
+    // An outdated node (linux/amd64, v1.0.0) and one on a platform the
+    // release does not cover.
     let n1 = db.node().await;
     let n2 = db.node().await;
     sqlx::query(
-        "UPDATE servers SET agent_version = 'v1.0.0', agent_os = 'linux', agent_arch = 'amd64', \
-         agent_protocol = CASE WHEN id = $1 THEN 3 ELSE 2 END WHERE id IN ($1, $2)",
+        "UPDATE servers SET agent_version = 'v1.0.0', agent_os = 'linux', \
+         agent_arch = CASE WHEN id = $1 THEN 'amd64' ELSE 'riscv64' END WHERE id IN ($1, $2)",
     )
     .bind(n1)
     .bind(n2)

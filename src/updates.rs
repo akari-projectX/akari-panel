@@ -38,8 +38,6 @@ use crate::state::AppState;
 /// The panel's control-protocol revision (UpdateOffer.panel_protocol;
 /// a release's min_panel_protocol must not exceed it).
 pub const PANEL_PROTOCOL: u32 = 3;
-/// Lowest agent protocol that is ever offered an update.
-pub const MIN_UPDATE_PROTOCOL: u32 = 3;
 /// Rows of agent_release_chunks / FetchArtifact chunks.
 pub const CHUNK: usize = 1 << 20;
 pub const MAX_ARTIFACT: i64 = 256 << 20;
