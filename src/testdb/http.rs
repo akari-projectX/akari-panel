@@ -110,11 +110,26 @@ impl Client {
 
     /// A POST with a raw body and content type (malformed/oversized JSON).
     pub async fn post_raw(&self, path: &str, content_type: &str, body: Vec<u8>) -> Resp {
+        self.post_raw_with(path, content_type, &axum::http::HeaderMap::new(), body)
+            .await
+    }
+
+    /// The same with extra request headers (signed webhooks).
+    pub async fn post_raw_with(
+        &self,
+        path: &str,
+        content_type: &str,
+        headers: &axum::http::HeaderMap,
+        body: Vec<u8>,
+    ) -> Resp {
         let mut b = Request::builder()
             .method(Method::POST)
             .uri(path)
             .header(header::HOST, DEFAULT_HOST)
             .header(header::CONTENT_TYPE, content_type);
+        for (k, v) in headers.iter().filter(|(k, _)| *k != header::CONTENT_TYPE) {
+            b = b.header(k, v);
+        }
         if let Some(c) = &self.cookie {
             b = b.header(header::COOKIE, format!("{}={c}", crate::auth::COOKIE_NAME));
         }

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use super::catalog::{self, Current, Offer, PeriodKind, PeriodKindText, Price, Sale};
 use super::orders::{self, Paid, Pending, Via, payment_actor};
-use super::provider::{self, NotifyCheck, PaymentProvider};
+use super::provider::{self, NotifyCheck, NotifyRequest, PaymentProvider};
 use super::{commission, coupons, ledger};
 use crate::api::ApiJson;
 use crate::audit::Actor;
@@ -1532,6 +1532,7 @@ pub async fn method_notify(
     State(state): State<AppState>,
     MaybeClientIp(ip): MaybeClientIp,
     Path((_, method)): Path<(String, String)>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     if !notify_rate_ok(&state, ip).await {
@@ -1543,7 +1544,9 @@ pub async fn method_notify(
     let Some(p) = state.payments().provider(id) else {
         return crate::reject::not_found();
     };
-    match handle_notify(&state, &*p, id, ip, &body).await {
+    let url = super::methods::notify_url(&state, id);
+    let req = NotifyRequest::new(&body, &headers, url.as_deref());
+    match handle_notify(&state, &*p, id, ip, &req).await {
         Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),
         Err(e) => {
@@ -1562,6 +1565,7 @@ pub async fn method_notify_get(
     State(state): State<AppState>,
     MaybeClientIp(ip): MaybeClientIp,
     Path((_, method)): Path<(String, String)>,
+    headers: HeaderMap,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     if !notify_rate_ok(&state, ip).await {
@@ -1574,7 +1578,9 @@ pub async fn method_notify_get(
         return crate::reject::not_found();
     };
     let body = query.unwrap_or_default();
-    match handle_notify(&state, &*p, id, ip, body.as_bytes()).await {
+    let url = super::methods::notify_url(&state, id);
+    let req = NotifyRequest::new(body.as_bytes(), &headers, url.as_deref());
+    match handle_notify(&state, &*p, id, ip, &req).await {
         Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),
         Err(e) => {
@@ -1592,6 +1598,7 @@ pub async fn method_notify_get(
 pub async fn legacy_notify(
     State(state): State<AppState>,
     MaybeClientIp(ip): MaybeClientIp,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     if !notify_rate_ok(&state, ip).await {
@@ -1628,7 +1635,9 @@ pub async fn legacy_notify(
     else {
         return crate::reject::not_found();
     };
-    match handle_notify(&state, &*p, id, ip, &body).await {
+    let url = super::methods::notify_url(&state, id);
+    let req = NotifyRequest::new(&body, &headers, url.as_deref());
+    match handle_notify(&state, &*p, id, ip, &req).await {
         Ok(true) => ack(p.notify_ack()),
         Ok(false) => crate::reject::not_found(),
         Err(e) => {
@@ -1646,10 +1655,10 @@ pub async fn handle_notify(
     provider: &dyn PaymentProvider,
     method_id: Uuid,
     ip: Option<std::net::IpAddr>,
-    body: &[u8],
+    req: &NotifyRequest<'_>,
 ) -> Result<bool, ApiError> {
     let mut c = state.pg().acquire().await?;
-    if body.len() > MAX_NOTIFY_BODY {
+    if req.body.len() > MAX_NOTIFY_BODY {
         orders::record_event(
             &mut c,
             None,
@@ -1664,7 +1673,7 @@ pub async fn handle_notify(
         .await?;
         return Ok(false);
     }
-    let ev = match provider.verify_notify(body) {
+    let ev = match provider.verify_notify(req) {
         NotifyCheck::Verified(ev) => ev,
         NotifyCheck::Rejected {
             verified,

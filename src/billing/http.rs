@@ -87,6 +87,22 @@ pub async fn get(url: &str, timeout: Duration) -> Result<(u16, Bytes), String> {
     .map_err(|_| "timed out".to_string())?
 }
 
+/// GET `url` with extra request headers (the crypto gateways sign their
+/// reads in headers). Same rules as `get`; the headers can carry
+/// credentials, so errors never include them.
+pub async fn get_with(
+    url: &str,
+    headers: &[(&str, String)],
+    timeout: Duration,
+) -> Result<(u16, Bytes), String> {
+    tokio::time::timeout(
+        timeout,
+        request(hyper::Method::GET, url, None, headers, Vec::new()),
+    )
+    .await
+    .map_err(|_| "timed out".to_string())?
+}
+
 async fn request(
     method: hyper::Method,
     url: &str,
