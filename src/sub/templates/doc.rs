@@ -223,6 +223,11 @@ impl Serialize for Doc {
             Doc::Null => s.serialize_unit(),
             Doc::Bool(b) => s.serialize_bool(*b),
             Doc::Num(n) => n.serialize(s),
+            // An IPv6 literal stays quoted: plain, it is a scalar some YAML
+            // 1.1 readers take for a number (audit batch 4 P2-2).
+            Doc::Str(v) if v.parse::<std::net::Ipv6Addr>().is_ok() => {
+                serde_saphyr::DoubleQuoted(v.as_str()).serialize(s)
+            }
             Doc::Str(v) => s.serialize_str(v),
             Doc::Seq(v) => {
                 let mut q = s.serialize_seq(Some(v.len()))?;
