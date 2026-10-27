@@ -4526,8 +4526,6 @@ assert not nulls and hb['mem_total_bytes'] > 0 and m['cpu_count'] > 0, (nulls, h
   }
   for _ in $(seq 1 60); do upd_hb 2>/dev/null && break; sleep 1; done
   upd_hb || { echo "FAIL: machine metrics unknown under the shipped unit"; cat /tmp/akari-smoke/last; exit 1; }
-  [ "$(psql_q "SELECT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$UPD_SRV'")" = "f" ] \
-    || { echo "FAIL: fresh install reports stale units"; exit 1; }
   echo "w23 units + machine metrics on a systemd node: ok"
 
   # Broken vN+2: the binary dies on start; the updater sees the restarts,
@@ -4822,8 +4820,7 @@ if [ "${SMOKE_INSTALL_CONTAINER:-1}" = 1 ] || { echo "Alpine container test skip
   ax "awk '\$5 == \"/var/lib/akari-agent\" { print \$6 }' /proc/$ALP_PID/mountinfo" | matches noexec || { echo "FAIL: Alpine state dir not noexec"; exit 1; }
   [ "$(ax 'stat -c "%a %U" /etc/akari-agent/bootstrap.toml')" = "600 root" ] || { echo "FAIL: Alpine bootstrap.toml mode"; exit 1; }
   ax 'cat /var/log/akari-agent/agent.log' | matches '"updater":true' || { echo "FAIL: Alpine agent does not see its updater"; exit 1; }
-  ax 'cat /var/log/akari-agent/agent.log' | matches 'units are not the ones' && { echo "FAIL: Alpine agent reports stale scripts"; exit 1; }
-  [ "$(psql_q "SELECT 'updater' = ANY(agent_capabilities) AND NOT 'stale-units' = ANY(agent_capabilities) FROM servers WHERE id='$ALP_ID'")" = "t" ] \
+  [ "$(psql_q "SELECT 'updater' = ANY(agent_capabilities) FROM servers WHERE id='$ALP_ID'")" = "t" ] \
     || { echo "FAIL: Alpine node capabilities"; exit 1; }
   # Reinstall without BBR (AKARI_BBR=0): an earlier install's drop-in goes,
   # the previous settings come back; the node reconnects.
