@@ -1,0 +1,1 @@
+{"id": null, "type": "InvoicePending", "invoice": {"invoiceId": "AK1", "id": "inv-1", "amount": {"currencyId": 5057, "total": "1.38"}, "customData": {"akari_cents": "990"}, "state": "Pending", "payments": [{"state": "Completed"}]}}

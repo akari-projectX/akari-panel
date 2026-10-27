@@ -1,0 +1,1 @@
+{"id": null, "type": "InvoiceCompleted", "invoice": {"invoiceId": "AK1", "id": "inv-1", "amount": {"currencyId": 5057, "total": "138"}, "customData": {"akari_cents": "990"}, "state": "Completed", "payments": [{"state": "Completed"}]}}
