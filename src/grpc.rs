@@ -37,7 +37,7 @@ impl AgentChannel for AgentChannelService {
     ) -> Result<Response<Self::FetchArtifactStream>, Status> {
         // Same identity rules as the channel: a verified certificate of a
         // live server (a deleted server's tombstoned one gets nothing).
-        let (serial, _) = crate::enroll::peer_cert(&request)?;
+        let serial = crate::enroll::peer_cert(&request)?;
         let ip = request.remote_addr().map(|a| a.ip());
         let server = match server_for_serial_from(self.state.pg(), &serial, ip).await? {
             AgentIdentity::Server(n) => n,
@@ -110,13 +110,9 @@ async fn identify_server(
     state: &AppState,
     req: &Request<Streaming<AgentUp>>,
 ) -> Result<AgentIdentity, Status> {
-    let (serial, not_after) = crate::enroll::peer_cert(req)?;
+    let serial = crate::enroll::peer_cert(req)?;
     let ip = req.remote_addr().map(|a| a.ip());
-    let who = server_for_serial_from(state.pg(), &serial, ip).await?;
-    if let AgentIdentity::Server(server) = who {
-        crate::enroll::note_legacy_expiry(state.pg(), server, &serial, not_after).await;
-    }
-    Ok(who)
+    server_for_serial_from(state.pg(), &serial, ip).await
 }
 
 /// Who a certificate serial belongs to.
@@ -194,40 +190,12 @@ async fn server_for_serial_from(
 
 /// Lowest `Hello.protocol_version` the panel converges. Older agents are
 /// served the empty desired state (no inbounds, no users) and their
-/// Hello/Ack are never trusted for convergence (N5). Rollout: agents first.
-pub const MIN_AGENT_PROTOCOL: u32 = 1;
-
-/// Agents from this protocol on enforce `UserOp.speed_limit_bytes_per_sec`
-/// (older ones ignore the field: NodeView warns).
-pub const SPEED_LIMIT_PROTOCOL: u32 = 4;
-
-/// W9: agents from this protocol on remove Shadowsocks 2022 users in place
-/// (the credential stays in xray's table as a gate-refused tombstone), so a
-/// removal on a Shadowsocks server is a delta. A rotation still needs a
-/// Snapshot (xray's table holds one entry per user), and the agent answers
-/// BASE_MISMATCH for what it cannot apply in place (a re-add with a new key
-/// over a tombstone, too many tombstones): the panel then sends a Snapshot,
-/// which also compacts. Older agents get a Snapshot for any removal there.
-/// Superseded by `SS_NATIVE_REMOVE_PROTOCOL`; this is the rule for agents
-/// 5..=7 only.
-pub const SS_TOMBSTONE_PROTOCOL: u32 = 5;
-
-/// Agents from this protocol on run an xray whose multi-user Shadowsocks 2022
-/// server looks users up by hash/email, so RemoveUser is safe against
-/// in-flight handshakes: removal and rotation on a Shadowsocks server are
-/// ordinary deltas, like on every other protocol.
-pub const SS_NATIVE_REMOVE_PROTOCOL: u32 = 8;
-
-/// W10: agents from this protocol on obtain and renew the server certificate
-/// for `servers.tls_domain` themselves (ConfigSnapshot.acme) and report it
-/// (Heartbeat.cert). Older ones ignore both and keep reading the files the
-/// admin installs (NodeView warns).
-pub const ACME_PROTOCOL: i32 = 6;
-
-/// W28-a: agents of this protocol share a user's speed limit and online
-/// count across the user's entrances on a server (UserOp.user_id
-/// "<user>#<n>"); older ones count each entrance on its own.
-pub const ACCOUNT_KEY_PROTOCOL: i32 = 7;
+/// Hello/Ack are never trusted for convergence (N5). Protocol 8 is the first
+/// whose xray removes Shadowsocks 2022 users in place, so every removal and
+/// rotation is an ordinary delta; the capabilities the panel reads
+/// (`metrics`, `latency`, `updater`, `metrics-presence`, `block-rules`,
+/// `source-filter`) are all present from it on.
+pub const MIN_AGENT_PROTOCOL: u32 = 8;
 
 /// A server's user set as the agent must run it: user id -> inbound tag ->
 /// (protocol, account_json). Users without any inbound are absent. Built
@@ -449,13 +417,6 @@ pub struct SetDigest {
     users: BTreeMap<UserKey, [u8; 16]>,
     /// W7: non-zero speed limits (bytes/s) of the users, by user.
     limits: BTreeMap<UserKey, u64>,
-    /// W8: the inbounds include a Shadowsocks one. Agents below
-    /// `SS_NATIVE_REMOVE_PROTOCOL` refuse deltas that rotate users there
-    /// (their xray's multi-user SS2022 inbound cannot safely shrink while
-    /// running) — and, below `SS_TOMBSTONE_PROTOCOL`, removals too — so
-    /// such changes go out as a Snapshot right away instead of a delta the
-    /// agent answers BASE_MISMATCH.
-    shrink_unsafe: bool,
 }
 
 impl SetDigest {
@@ -464,7 +425,6 @@ impl SetDigest {
         SetDigest {
             hash: state_hash(config_version, state),
             inbounds: Sha256::digest(state.inbounds.as_bytes()).into(),
-            shrink_unsafe: has_shadowsocks(&state.inbounds),
             users: state
                 .users
                 .iter()
@@ -547,27 +507,6 @@ pub fn diff_from_digest(
     adds
 }
 
-/// Does this inbounds JSON hold a shadowsocks inbound? Cheap substring
-/// test first (the digest is computed for every desired-state read); no
-/// copies of the JSON or of the parsed tree (review 2026-10-02 W5).
-fn has_shadowsocks(inbounds: &str) -> bool {
-    inbounds
-        .as_bytes()
-        .windows(b"shadowsocks".len())
-        .any(|w| w.eq_ignore_ascii_case(b"shadowsocks"))
-        && serde_json::from_str::<serde_json::Value>(inbounds)
-            .ok()
-            .as_ref()
-            .and_then(|v| v.as_array())
-            .is_some_and(|a| {
-                a.iter().any(|i| {
-                    i.get("protocol")
-                        .and_then(|p| p.as_str())
-                        .is_some_and(|p| p.eq_ignore_ascii_case("shadowsocks"))
-                })
-            })
-}
-
 /// `drops_credential` on digests, conservatively: any base user whose
 /// credentials changed at all (or who is gone) counts, so a user that only
 /// GAINS an inbound also counts. Only consulted with remove_mode=rebuild,
@@ -576,17 +515,6 @@ fn drops_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
     base.users
         .iter()
         .any(|(user, d)| want.users.get(user) != Some(d))
-}
-
-/// Like `drops_credential_digest`, but only users that stay with changed
-/// credentials count (a user that is gone does not): on a Shadowsocks server
-/// of a `SS_TOMBSTONE_PROTOCOL`..`SS_NATIVE_REMOVE_PROTOCOL` agent, removals
-/// are deltas and rotations Snapshots. Conservative: any change of a staying user's
-/// credentials counts, on any inbound.
-fn rotates_credential_digest(base: &SetDigest, want: &SetDigest) -> bool {
-    base.users
-        .iter()
-        .any(|(user, d)| want.users.get(user).is_some_and(|w| w != d))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -780,16 +708,6 @@ impl SyncState {
         }
         if self.remove_rebuild && drops_credential_digest(&bset, want) {
             return None;
-        }
-        if bset.shrink_unsafe && self.protocol < SS_NATIVE_REMOVE_PROTOCOL {
-            let unsafe_change = if self.protocol >= SS_TOMBSTONE_PROTOCOL {
-                rotates_credential_digest(&bset, want)
-            } else {
-                drops_credential_digest(&bset, want)
-            };
-            if unsafe_change {
-                return None;
-            }
         }
         Some((bv, bset))
     }
@@ -1082,9 +1000,6 @@ struct Session {
     retire_ack: Notify,
     /// W11: the agent listed the "latency" capability in its Hello.
     latency_capable: AtomicBool,
-    /// W23: the agent listed "metrics-presence": an unset heartbeat value
-    /// means unknown (else it means 0, `nodestat::legacy_presence`).
-    metrics_presence: AtomicBool,
     /// The LatencyProbeConfig last sent on this stream (None = none sent
     /// yet; re-sent when the token or, W12, the 系统设置 values change).
     probe_sent: Mutex<Option<crate::pb::LatencyProbeConfig>>,
@@ -1123,7 +1038,6 @@ impl Session {
             hello: Notify::new(),
             retire_ack: Notify::new(),
             latency_capable: AtomicBool::new(false),
-            metrics_presence: AtomicBool::new(false),
             probe_sent: Mutex::new(None),
             block_capable: AtomicBool::new(false),
             block_sent: Mutex::new(None),
@@ -1393,10 +1307,6 @@ async fn session<S>(
                         "failed to sync after hello",
                     );
                     on_hello_update(&sess, &hello).await;
-                    sess.metrics_presence.store(
-                        hello.capabilities.iter().any(|c| c == "metrics-presence"),
-                        Ordering::SeqCst,
-                    );
                     // W11: latency tests for agents that support them.
                     let capable = hello.capabilities.iter().any(|c| c == "latency");
                     if sess.latency_capable.swap(capable, Ordering::SeqCst) != capable || !capable {
@@ -1428,10 +1338,7 @@ async fn session<S>(
                         tracing::warn!(server = %server_id, error = %e, "failed to record update status");
                     }
                 }
-                Some(UpMsg::Heartbeat(mut hb)) => {
-                    if !sess.metrics_presence.load(Ordering::SeqCst) {
-                        crate::nodestat::legacy_presence(&mut hb);
-                    }
+                Some(UpMsg::Heartbeat(hb)) => {
                     store_heartbeat(&state, server_id, &hb).await;
                     if let Some(b) = hb.block.as_ref()
                         && sess.block_capable.load(Ordering::SeqCst)
@@ -1754,9 +1661,7 @@ async fn on_hello_update(sess: &Session, hello: &crate::pb::Hello) {
         os: info.os,
         arch: info.arch,
     };
-    if hello.protocol_version >= crate::updates::MIN_UPDATE_PROTOCOL
-        && !info.agent_version.is_empty()
-    {
+    if !info.agent_version.is_empty() {
         match crate::rollout::on_hello(sess.state.pg(), sess.server_id, &info.agent_version).await {
             Ok(true) => sess.update_watch.store(true, Ordering::SeqCst),
             Ok(false) => {}
@@ -1783,11 +1688,10 @@ async fn note_update_health(sess: &Session) {
     }
 }
 
-/// Sends the server's due UpdateOffer (protocol >= 3 only), at most once per
-/// stream and rollout.
+/// Sends the server's due UpdateOffer, at most once per stream and rollout.
 async fn maybe_offer_update(sess: &Session) {
     let info = lock_or_recover(&sess.agent).clone();
-    if info.protocol < crate::updates::MIN_UPDATE_PROTOCOL || sess.retiring() || sess.terminated() {
+    if sess.retiring() || sess.terminated() {
         return;
     }
     let offer = match crate::rollout::offer_for(
@@ -3581,14 +3485,11 @@ mod tests {
         }
     }
 
-    /// W8: on a node with a Shadowsocks inbound, removals/rotations are
-    /// Snapshots whatever the remove mode (the agent would refuse the
-    /// delta); additions stay deltas. W9: from SS_TOMBSTONE_PROTOCOL on,
-    /// removals (and re-adds) are deltas too; rotations stay Snapshots, as
-    /// does everything that drops a credential in remove_mode=rebuild.
-    /// From SS_NATIVE_REMOVE_PROTOCOL on, rotations are deltas as well.
+    /// On a node with a Shadowsocks inbound, additions, removals, re-adds and
+    /// rotations are all deltas (agent protocol 8), except what drops a
+    /// credential in remove_mode=rebuild.
     #[test]
-    fn shadowsocks_node_shrinks_by_snapshot() {
+    fn shadowsocks_node_changes_are_deltas() {
         let t0 = Instant::now();
         let ss = r#"[{"tag":"t","protocol":"shadowsocks"}]"#;
         let with = |ops: &[UserOp]| Arc::new(NodeState::of_snapshot(ss.into(), ops));
@@ -3601,43 +3502,27 @@ mod tests {
         let remove = with(&[op("a", &[("t", "1")])]);
         let rotate = with(&[op("a", &[("t", "1")]), op("b", &[("t", "9")])]);
         let readd = s1.clone();
-        for (protocol, rebuild, from, want, delta) in [
-            (MIN_AGENT_PROTOCOL, false, &s1, &add, true),
-            (MIN_AGENT_PROTOCOL, false, &s1, &remove, false),
-            (MIN_AGENT_PROTOCOL, false, &s1, &rotate, false),
-            (SS_TOMBSTONE_PROTOCOL - 1, false, &s1, &remove, false),
-            (SS_TOMBSTONE_PROTOCOL, false, &s1, &add, true),
-            (SS_TOMBSTONE_PROTOCOL, false, &s1, &remove, true),
-            (SS_TOMBSTONE_PROTOCOL, false, &remove, &readd, true),
-            (SS_TOMBSTONE_PROTOCOL, false, &s1, &rotate, false),
-            (SS_TOMBSTONE_PROTOCOL, true, &s1, &remove, false),
-            (SS_TOMBSTONE_PROTOCOL, true, &s1, &rotate, false),
-            (SS_NATIVE_REMOVE_PROTOCOL - 1, false, &s1, &rotate, false),
-            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &add, true),
-            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &remove, true),
-            (SS_NATIVE_REMOVE_PROTOCOL, false, &remove, &readd, true),
-            (SS_NATIVE_REMOVE_PROTOCOL, false, &s1, &rotate, true),
-            (SS_NATIVE_REMOVE_PROTOCOL, true, &s1, &remove, false),
-            (SS_NATIVE_REMOVE_PROTOCOL, true, &s1, &rotate, false),
+        for (rebuild, from, want, delta) in [
+            (false, &s1, &add, true),
+            (false, &s1, &remove, true),
+            (false, &remove, &readd, true),
+            (false, &s1, &rotate, true),
+            (true, &s1, &remove, false),
+            (true, &s1, &rotate, false),
         ] {
             let mut s = SyncState {
                 remove_rebuild: rebuild,
                 ..Default::default()
             };
-            s.on_hello((0, 0), protocol, "");
+            s.on_hello((0, 0), MIN_AGENT_PROTOCOL, "");
             converge(&mut s, (2, 5), from, t0);
             let plan = d_set(&mut s, (2, 6), want);
             assert_eq!(
                 matches!(plan, Some(Plan::Delta { .. })),
                 delta,
-                "protocol={protocol} rebuild={rebuild} {plan:?}"
+                "rebuild={rebuild} {plan:?}"
             );
         }
-        assert!(has_shadowsocks(r#"[{"protocol":"Shadowsocks"}]"#));
-        assert!(!has_shadowsocks(
-            r#"[{"tag":"shadowsocks","protocol":"vless"}]"#
-        ));
-        assert!(!has_shadowsocks("not json shadowsocks"));
     }
 
     #[test]

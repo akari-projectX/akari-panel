@@ -111,45 +111,6 @@ fn int(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
-/// W23: agents without the "metrics-presence" capability send a value
-/// they could not read as 0 and every 0 as unset (implicit presence): for
-/// them unset means 0, as before. Applied at ingest (grpc.rs), so
-/// everything downstream reads None as "unknown".
-pub fn legacy_presence(hb: &mut Heartbeat) {
-    let z = |v: &mut Option<u64>| {
-        v.get_or_insert(0);
-    };
-    hb.cpu_percent.get_or_insert(0.0);
-    z(&mut hb.mem_used_bytes);
-    z(&mut hb.mem_total_bytes);
-    if let Some(m) = &mut hb.metrics {
-        for v in [&mut m.load1, &mut m.load5, &mut m.load15] {
-            v.get_or_insert(0.0);
-        }
-        m.cpu_count.get_or_insert(0);
-        for v in [
-            &mut m.swap_used_bytes,
-            &mut m.swap_total_bytes,
-            &mut m.disk_used_bytes,
-            &mut m.disk_total_bytes,
-            &mut m.net_rx_bytes_per_sec,
-            &mut m.net_tx_bytes_per_sec,
-            &mut m.net_rx_bytes_total,
-            &mut m.net_tx_bytes_total,
-            &mut m.process_rss_bytes,
-        ] {
-            z(v);
-        }
-        m.tcp_sockets.get_or_insert(0);
-        m.udp_sockets.get_or_insert(0);
-    }
-    // A W11 agent sent "total 0" for a total it could not read.
-    if hb.mem_total_bytes == Some(0) {
-        hb.mem_total_bytes = None;
-        hb.mem_used_bytes = None;
-    }
-}
-
 impl Sample {
     pub fn from_heartbeat(hb: &Heartbeat) -> Self {
         let m = hb.metrics.clone().unwrap_or_default();

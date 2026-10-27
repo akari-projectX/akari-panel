@@ -816,7 +816,7 @@ pub struct StatusView {
     pub last_check: Option<LastCheck>,
     /// The newest complete (non-rollback) stored release.
     pub latest: Option<Latest>,
-    /// Enrolled nodes (protocol ≥ 3, platform covered by `latest`) running
+    /// Enrolled nodes (platform covered by `latest`) running
     /// an older version than `latest`.
     pub outdated_servers: i64,
     /// `latest.version` when `outdated_servers > 0` (the "有新版本" badge).
@@ -854,9 +854,8 @@ pub async fn status(state: &AppState) -> Result<StatusView, ApiError> {
         let nodes: Vec<(String, String)> = sqlx::query_as(
             "SELECT agent_version, agent_os || '/' || agent_arch FROM servers \
              WHERE deleting_at IS NULL AND agent_version IS NOT NULL AND agent_os IS NOT NULL \
-             AND agent_arch IS NOT NULL AND agent_protocol >= $1",
+             AND agent_arch IS NOT NULL",
         )
-        .bind(updates::MIN_UPDATE_PROTOCOL as i32)
         .fetch_all(&mut *conn)
         .await?;
         outdated = nodes
