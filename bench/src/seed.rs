@@ -305,8 +305,8 @@ async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
         .map(|i| akari_panel::enroll::hash_token(&common::enroll_token(i)))
         .collect();
     sqlx::query(
-        "INSERT INTO server_enrollments (server_id, token_hash, expires_at) \
-         SELECT id, h, now() + interval '30 days' FROM unnest($1::uuid[], $2::bytea[]) AS t(id, h)",
+        "INSERT INTO server_enrollments (server_id, token_hash, expires_at, panel_addr, server_name) \
+         SELECT id, h, now() + interval '30 days', 'bench.invalid:8443', 'bench.invalid' FROM unnest($1::uuid[], $2::bytea[]) AS t(id, h)",
     )
     .bind(&ids)
     .bind(&hashes)

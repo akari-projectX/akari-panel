@@ -110,7 +110,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - `.env`（0600）把 `AKARI_IMAGE` 固定为该发布版本的 `tag@digest`；
   - 执行 `docker compose up -d`。
 - **裸机**：
-  - 从 PGDG 仓库安装 PostgreSQL 18（5432 上已有的集群不动：18 集群使用下一个端口）；
+  - 从 PGDG 仓库安装 PostgreSQL 18（订单搜索需要扩展 `pg_trgm`，迁移 0004 自动 `CREATE EXTENSION`：PGDG 的 `postgresql-18` 包与官方 `postgres:18` 镜像都自带；外部/托管 PostgreSQL 须允许该受信任扩展，库所有者即可创建）（5432 上已有的集群不动：18 集群使用下一个端口）；
   - Valkey 9（`akari-valkey.service`，仅回环、带密码、不持久化；见下）；
   - Caddy：本机已有（例如 Debian 包）就沿用；否则从 GitHub 安装 Caddy 官方发布构建（见下文 **Caddy**），使用仓库自带的 Caddyfile（`/etc/caddy/Caddyfile`；其环境变量放在 `/etc/akari/caddy.env`，0600，经 drop-in 去掉 `--environ` 和 admin API，使 journal 和本地用户都看不到它）；
   - `akari` 系统用户（sysusers）、`/var/lib/akari`（0700）、`/etc/akari/panel.toml`（0640 root:akari，只含 R39 启动键）、加固过的 `akari-panel.service`；

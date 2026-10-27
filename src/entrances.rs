@@ -162,26 +162,43 @@ pub async fn port_clash(
     }
 }
 
-/// SQL expression (one row per node aliased `nodes`): the node's entrances
-/// as a JSON array, direct first, then by sort. Each element is the shape
-/// of `EntranceView` (what the admin API returns).
-pub const ENTRANCES_JSON_SQL: &str = "coalesce((SELECT jsonb_agg(jsonb_build_object( \
+/// SQL expression for the entrances of a node aliased `nodes`: the node's
+/// entrances as a JSON array, direct first, then by sort. Each element is
+/// the shape of `EntranceView` (what the admin API returns). Needs
+/// [`ENTRANCES_JOIN`] in the FROM clause.
+pub const ENTRANCES_JSON_SQL: &str = "coalesce(ent.entrances, '[]'::jsonb)";
+
+/// The join that provides `ent.entrances` for a node aliased `nodes`: one
+/// grouped pass over the entrances with their rate rules and group members
+/// joined in (a node-id restriction on the outer query is pushed into it),
+/// instead of a probe per node and entrance. `rate_now` calls the
+/// plpgsql `akari_entrance_rate` (about 35 µs a call, most of the list's
+/// time) only for entrances with time rules or a rate change still ahead
+/// of the statement clock; every other entrance's rate in effect is its
+/// base rate, which is what the function returns for them.
+pub const ENTRANCES_JOIN: &str = "LEFT JOIN (SELECT e.node_id, jsonb_agg(jsonb_build_object( \
      'id', e.id, 'kind', e.kind, 'name', e.name, \
      'connect_host', e.connect_host, 'connect_port', e.connect_port, \
      'rate_permille', e.rate_permille, 'rate', e.rate_permille::float8 / 1000, \
-     'rate_now', akari_entrance_rate(e.id, statement_timestamp())::float8 / 1000, \
-     'rate_rules', (SELECT coalesce(jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
-        'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
-        ORDER BY r.ord), '[]'::jsonb) FROM entrance_rate_rules r WHERE r.entrance_id = e.id), \
+     'rate_now', CASE WHEN rr.rules IS NULL \
+        AND (e.rate_changed_at IS NULL OR e.rate_changed_at <= statement_timestamp()) \
+        THEN e.rate_permille ELSE akari_entrance_rate(e.id, statement_timestamp()) END::float8 / 1000, \
+     'rate_rules', coalesce(rr.rules, '[]'::jsonb), \
      'enabled', e.enabled, 'sort', e.sort, 'tags', to_jsonb(e.tags), \
      'wire_no', e.wire_no, 'version', e.version, \
      'listen_port', e.listen_port, 'source_cidrs', to_jsonb(e.source_cidrs::text[]), \
      'health_ok', e.health_ok, 'health_at', e.health_at, 'health_failures', e.health_failures, \
      'health_error', e.health_error, 'hidden_since', e.hidden_since, \
-     'group_ids', coalesce((SELECT jsonb_agg(m.group_id ORDER BY m.group_id) \
-        FROM entrance_group_members m WHERE m.entrance_id = e.id), '[]'::jsonb)) \
-     ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) \
-     FROM entrances e WHERE e.node_id = nodes.id), '[]'::jsonb)";
+     'group_ids', coalesce(gm.group_ids, '[]'::jsonb)) \
+     ORDER BY e.kind <> 'direct', e.sort, e.created_at, e.id) AS entrances \
+     FROM entrances e \
+     LEFT JOIN (SELECT r.entrance_id, jsonb_agg(jsonb_build_object('weekdays', r.weekdays, \
+        'start', r.start_minute, 'end', r.end_minute, 'rate', r.rate_permille::float8 / 1000) \
+        ORDER BY r.ord) AS rules FROM entrance_rate_rules r GROUP BY r.entrance_id) rr \
+        ON rr.entrance_id = e.id \
+     LEFT JOIN (SELECT m.entrance_id, jsonb_agg(m.group_id ORDER BY m.group_id) AS group_ids \
+        FROM entrance_group_members m GROUP BY m.entrance_id) gm ON gm.entrance_id = e.id \
+     GROUP BY e.node_id) ent ON ent.node_id = nodes.id";
 
 /// One entrance as the admin API returns it (also embedded in NodeView via
 /// `ENTRANCES_JSON_SQL`, same fields).

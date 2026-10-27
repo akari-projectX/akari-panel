@@ -471,7 +471,23 @@ Bench-only accommodations (all flags of the real subcommands, none touch the pan
 
 Changes: (1) `login` answers 503 `request.busy` before any Valkey or database work when the hash line is full (`auth::argon2_line_full`); busy is still a function of load only and costs no rate-limit slot. (2) Serving pool connections run `SET jit = off`: JIT compiled the node list and filtered user lists (estimated cost > 100000) for 80-100 ms per request and database CPU although the statements run in milliseconds.
 
-Not changed, and why: `orders?q=` (substring `ILIKE` on `out_trade_no`/`trade_no`, ~90 ms single, seconds at 16-way on 200k orders) needs a `pg_trgm` index, i.e. an extension and a migration for an admin search box - left as an operator decision; `nodes` list cost is the correlated subqueries (about 100 ms of SQL per request, ETag does not save the query); `traffic_node` (732 ms at 16-way, 4.9 M daily rows) is already an index-only scan; the user list and desired-state read (68 ms for 10 000 users) are bounded by the 8 read permits and are the floor of a 200-agent cold reconnect; AuthUser stays uncached (invariant). Reconnect storm of 200 agents x 10 000 users: all back with a lease in 13-17 s (warm and cold, load generator on the same 4 vCPUs; the first convergence took 9.5-19 s), change to agent p50 1.8-2.6 s under that load - CPU-bound on the shared box, not measured on separate hardware. Flush 1.5 s vs 0.58 s: `FLUSH_SQL` was not touched; the box is slower than the earlier hardware and shares the CPU with PostgreSQL's checkpointer; re-run on the reference hardware before drawing a conclusion.
+Not changed, and why: (`orders?q=` and the node list were addressed afterwards, see "Node list joins and order-search trigram index"); `traffic_node` (732 ms at 16-way, 4.9 M daily rows) is already an index-only scan; the user list and desired-state read (68 ms for 10 000 users) are bounded by the 8 read permits and are the floor of a 200-agent cold reconnect; AuthUser stays uncached (invariant). Reconnect storm of 200 agents x 10 000 users: all back with a lease in 13-17 s (warm and cold, load generator on the same 4 vCPUs; the first convergence took 9.5-19 s), change to agent p50 1.8-2.6 s under that load - CPU-bound on the shared box, not measured on separate hardware. Flush 1.5 s vs 0.58 s: `FLUSH_SQL` was not touched; the box is slower than the earlier hardware and shares the CPU with PostgreSQL's checkpointer; re-run on the reference hardware before drawing a conclusion.
+
+## Node list joins and order-search trigram index (2026-10-27)（节点列表改为连接、订单搜索 trigram 索引）
+
+Bench seed (200 nodes, 50 000 users, 200 000 orders; PostgreSQL 18, one shared box, `akari-bench explain` / `psql EXPLAIN ANALYZE`, 25 and 20 runs; the seeder needed `panel_addr`/`server_name` on `server_enrollments` to run at all - fixed).
+
+| Query | Before p50 / p95 | After p50 / p95 |
+|---|---|---|
+| `GET /nodes` (full) SQL | 11.1 / 17.0 ms | 7.7 / 11.7 ms |
+| `GET /nodes?view=summary` SQL | 8.8 / 13.0 ms | 5.5 / 8.7 ms |
+| orders `q=163538` (rare term) | 78 / 87 ms | 0.55 / 0.70 ms |
+| orders `q=zzzzzz` (no match) | 76 / 89 ms | 0.19 / 0.28 ms |
+| orders `q=@example` (e-mail, 50 000 users) | 45 / 58 ms | 0.24 / 0.33 ms |
+
+Node list: the per-node correlated subqueries (entrances with their rate rules and group members, the server's inbounds) became one grouped join (`entrances::ENTRANCES_JOIN`) and a lateral aggregate; the output is unchanged. The larger part of the gain is `akari_entrance_rate()` (plpgsql, about 35 us a call, 200 calls = 7 ms) which is now only called for entrances with time rules or a rate change ahead of the statement clock - for all others it returns the base rate anyway. What remains is mostly building the JSON.
+
+Order search: unloaded p95 was 87 ms (> 50 ms), so migration 0004 adds `pg_trgm` (in `public`) and GIN trigram indexes on `orders.out_trade_no`, `orders.trade_no` and `users.email`. Terms shorter than three characters still scan.
 
 ## Limits and honest caveats（局限与坦率的注意事项）
 

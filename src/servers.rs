@@ -121,11 +121,11 @@ pub struct WarnFacts {
     pub traffic_quota_next_reset_at: Option<DateTime<Utc>>,
 }
 
-/// The `WarnFacts` columns for a server aliased `s`.
+/// The `WarnFacts` columns for a server aliased `s` (needs
+/// [`SERVER_EXTRAS_FROM`], which joins `si`).
 pub fn server_warn_cols() -> String {
     "s.tls_domain, s.agent_protocol, s.agent_capabilities, s.cert_not_after, \
-     coalesce((SELECT jsonb_agg(n.inbound ORDER BY n.id) FROM nodes n \
-        WHERE n.server_id = s.id AND n.inbound IS NOT NULL), '[]'::jsonb) AS inbounds, \
+     coalesce(si.inbounds, '[]'::jsonb) AS inbounds, \
      s.traffic_quota_exceeded_at, s.traffic_quota_next_reset_at"
         .to_string()
 }
@@ -254,9 +254,12 @@ fn cert_warning(not_after: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<
 
 /// The per-server extras joined into server and node views (alias `s` =
 /// the server): the live enrollment token (`enr`), the latency results
-/// (`lat`), firing alerts (`al`) and the latest rollout entry (`ro`) — one
-/// pass over each table instead of a probe per row (W14).
+/// (`lat`), firing alerts (`al`), the latest rollout entry (`ro`) and the
+/// server's inbounds (`si`, a lateral aggregate: a single-node read probes
+/// one server) — one pass over each table instead of a probe per row (W14).
 pub const SERVER_EXTRAS_FROM: &str = "\
+     LEFT JOIN LATERAL (SELECT jsonb_agg(sn.inbound ORDER BY sn.id) AS inbounds FROM nodes sn \
+        WHERE sn.server_id = s.id AND sn.inbound IS NOT NULL) si ON true \
      LEFT JOIN server_enrollments enr ON enr.server_id = s.id \
         AND enr.used_at IS NULL AND enr.expires_at > now() \
      LEFT JOIN (SELECT server_id, jsonb_agg(jsonb_build_object('source', l.source, \
@@ -380,11 +383,12 @@ pub struct ServerView {
     pub warnings: Vec<String>,
 }
 
-/// The server's nodes as JSON (alias `s` = the server; inner alias `nodes`
-/// is what `entrances::ENTRANCES_JSON_SQL` expects).
-fn nodes_json_sql() -> String {
+/// The servers' nodes as JSON, one row per server (`nj`), with the nodes'
+/// entrances from [`crate::entrances::ENTRANCES_JOIN`].
+fn nodes_json_join() -> String {
     format!(
-        "coalesce((SELECT jsonb_agg(jsonb_build_object('id', nodes.id, 'name', nodes.name, \
+        "LEFT JOIN (SELECT nodes.server_id, jsonb_agg(jsonb_build_object('id', nodes.id, \
+         'name', nodes.name, \
          'display_name', nodes.display_name, 'enabled', nodes.enabled, \
          'visible', nodes.visible, 'sort', nodes.sort, 'region', nodes.region, \
          'protocol', nodes.inbound->>'protocol', \
@@ -392,18 +396,19 @@ fn nodes_json_sql() -> String {
          'transport', nodes.inbound->'streamSettings'->>'network', \
          'security', nodes.inbound->'streamSettings'->>'security', \
          'block_rules_enabled', nodes.block_rules_enabled, \
-         'entrances', {}) ORDER BY nodes.sort, nodes.created_at, nodes.id) \
-         FROM nodes WHERE nodes.server_id = s.id), '[]'::jsonb)",
-        crate::entrances::ENTRANCES_JSON_SQL
+         'entrances', {}) ORDER BY nodes.sort, nodes.created_at, nodes.id) AS nodes \
+         FROM nodes {} GROUP BY nodes.server_id) nj ON nj.server_id = s.id",
+        crate::entrances::ENTRANCES_JSON_SQL,
+        crate::entrances::ENTRANCES_JOIN
     )
 }
 
 fn server_view_sql(filter: &str) -> String {
     format!(
-        "SELECT s.id, s.name, s.created_at, {}, {} AS nodes FROM servers s {SERVER_EXTRAS_FROM} \
-         {filter} ORDER BY s.name, s.id",
+        "SELECT s.id, s.name, s.created_at, {}, coalesce(nj.nodes, '[]'::jsonb) AS nodes \
+         FROM servers s {SERVER_EXTRAS_FROM} {} {filter} ORDER BY s.name, s.id",
         server_cols(),
-        nodes_json_sql()
+        nodes_json_join()
     )
 }
 
