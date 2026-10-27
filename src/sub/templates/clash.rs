@@ -165,7 +165,7 @@ pub(super) fn render(
         }
         *rules = out;
     }
-    serde_saphyr::to_string(&doc).map_err(|e| TemplateError::new(format!("YAML output: {e}")))
+    super::doc::to_yaml(&doc).map_err(|e| TemplateError::new(format!("YAML output: {e}")))
 }
 
 /// mihomo refuses groups that (indirectly) contain themselves.

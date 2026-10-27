@@ -17,7 +17,6 @@
 //! same-transaction audit, never the body).
 
 mod clash;
-mod convert;
 pub(crate) mod doc;
 mod ini;
 mod proxies;
@@ -42,8 +41,6 @@ use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::state::AppState;
 use doc::Doc;
-
-pub use convert::import_legacy;
 
 /// Longest template body.
 pub const MAX_BODY: usize = 256 * 1024;
@@ -281,7 +278,7 @@ pub(crate) fn sample_rows() -> Vec<super::NodeRow> {
             "香港",
             "hk.example.com",
             json!({"port": 443, "streamSettings": {"network": "tcp", "security": "reality",
-                "realitySettings": {"serverNames": ["www.apple.com"], "publicKey": "SAMPLEPUBLICKEY", "shortId": "ab12"}}}),
+                "realitySettings": {"serverNames": ["www.apple.com"], "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "shortId": "ab12"}}}),
             "vless",
             json!({"id": "11111111-1111-4111-8111-111111111111", "flow": "xtls-rprx-vision"}),
         ),
