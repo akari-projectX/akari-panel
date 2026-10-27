@@ -1079,7 +1079,7 @@ function SubLinkCard({ id, onReset }: { id: string; onReset: () => void }) {
   const q = useQuery({
     queryKey: ["user", id, "sub-link"],
     queryFn: () =>
-      get<{ sub_token: string | null; sub_url: string | null; legacy: boolean }>(`/users/${id}/subscription`),
+      get<{ sub_token: string | null; sub_url: string | null; unreadable: boolean }>(`/users/${id}/subscription`),
     enabled: shown,
     gcTime: 0,
     staleTime: Infinity,
@@ -1117,11 +1117,11 @@ function SubLinkCard({ id, onReset }: { id: string; onReset: () => void }) {
         </div>
       ) : q.error ? (
         <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />
-      ) : q.data?.legacy ? (
+      ) : q.data?.unreadable ? (
         <Banner tone="warning">
           {tr(
-            "该链接是旧版本生成的，只存了哈希，无法显示；重置订阅后可查看新链接。",
-            "This link predates storable links; reset the subscription to get a showable one.",
+            "保存的链接密文打不开（data/master.key 已更换），无法显示；重置订阅后可查看新链接。",
+            "The stored link ciphertext does not open (data/master.key was replaced); reset the subscription to get a showable one.",
           )}
         </Banner>
       ) : url ? (

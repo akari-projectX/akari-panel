@@ -98,7 +98,7 @@ async fn erase_deletes_or_anonymizes() {
         "INSERT INTO invite_codes (code, user_id) VALUES ('abcdefgh', $1)",
         "INSERT INTO tickets (id, user_id, subject, category, priority) \
          VALUES (gen_random_uuid(), $1, 'help', 'general', 'normal')",
-        "UPDATE users SET sub_token_hash = '\\x01', email_verified_at = now() WHERE id = $1",
+        "UPDATE users SET sub_token_hash = '\\x01', sub_token_enc = '\\x01', email_verified_at = now() WHERE id = $1",
     ] {
         sqlx::query(sql).bind(u).execute(&db.pool).await.unwrap();
     }

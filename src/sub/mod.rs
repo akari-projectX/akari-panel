@@ -631,10 +631,10 @@ pub async fn apply_reset(
 pub enum Stored {
     /// The working token (decrypted, and its hash matches the lookup hash).
     Ready(String),
-    /// A token works but cannot be shown: issued before 0120 (hash only),
-    /// or the ciphertext does not open (data/master.key changed). Only a
-    /// reset gives a showable link; it is never rotated implicitly.
-    Legacy,
+    /// A token works but cannot be shown: the ciphertext does not open or
+    /// does not match the lookup hash (data/master.key was replaced). Only
+    /// a reset gives a showable link; it is never rotated implicitly.
+    Unreadable,
 }
 
 #[derive(FromRow)]
@@ -665,20 +665,21 @@ pub async fn ensure_token(
         else {
             return Ok(None);
         };
-        match (row.sub_token_hash, row.sub_token_enc) {
-            (Some(hash), Some(enc)) => {
+        // The hash and the ciphertext exist together (CHECK
+        // `users_sub_token_pair`).
+        match row.sub_token_hash.zip(row.sub_token_enc) {
+            Some((hash, enc)) => {
                 return Ok(Some(match keys.open_sub_token(user_id, &enc) {
                     Some(t) if hash_token(&t) == hash => Stored::Ready(t),
                     _ => {
                         tracing::error!(user = %user_id,
                             "stored subscription token does not open (data/master.key changed?); \
                              the user must reset the link to see it");
-                        Stored::Legacy
+                        Stored::Unreadable
                     }
                 }));
             }
-            (Some(_), None) => return Ok(Some(Stored::Legacy)),
-            (None, _) => {
+            None => {
                 let token = generate_token();
                 let enc = keys.seal_sub_token(user_id, &token)?;
                 let n = sqlx::query(
@@ -708,7 +709,7 @@ pub async fn ensure_token(
             }
         }
     }
-    Ok(Some(Stored::Legacy))
+    Ok(Some(Stored::Unreadable))
 }
 
 #[cfg(test)]
@@ -1566,12 +1567,7 @@ mod tests {
     async fn user_with_token(db: &TestDb) -> (Uuid, String) {
         let u = db.user().await;
         let token = generate_token();
-        sqlx::query("UPDATE users SET sub_token_hash = $2 WHERE id = $1")
-            .bind(u)
-            .bind(hash_token(&token))
-            .execute(&db.pool)
-            .await
-            .unwrap();
+        db.set_sub_token(u, &token).await;
         (u, token)
     }
 

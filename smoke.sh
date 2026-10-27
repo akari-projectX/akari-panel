@@ -997,7 +997,7 @@ SUB="$SUBBASE/$NEW_TOKEN"
 # admin can read it (audited, no token material in the audit row).
 [ "$(code -D "$LOG/me.h" -b "$UJAR" "$BASE/api/v1/me")" = "200" ] \
   && last_json "d['sub_token']" | matches "^$NEW_TOKEN\$" \
-  && last_json "d['sub_legacy']" | matches '^False$' \
+  && last_json "d['sub_unreadable']" | matches '^False$' \
   && last_json "d['timezone']" | matches '^Asia/Shanghai$' \
   && tr -d '\r' <"$LOG/me.h" | matches -i '^cache-control: no-store$' \
   || { echo "FAIL: /me does not return the stored subscription link"; cat /tmp/akari-smoke/last; exit 1; }

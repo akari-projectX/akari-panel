@@ -53,7 +53,7 @@ export function importLinks(url: string, name: string, ids: readonly string[]): 
 }
 
 /**
- * 账户的订阅地址；没有可显示的（管理员、续费范围、旧格式链接）为 null。
+ * 账户的订阅地址；没有可显示的（管理员、续费范围、读不出来的链接）为 null。
  * 没配订阅域名 / 主域名时面板给的是相对地址（`/<订阅路径>/<令牌>`），补上本站的 origin。
  * 订阅路径是随机的（D11），前端从不自己拼。
  */
