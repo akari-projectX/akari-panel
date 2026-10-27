@@ -110,7 +110,6 @@ pub enum Template {
         subject: String,
         user_email: String,
         category: String,
-        console_url: Option<String>,
     },
     /// W17: a node alert (to the alert recipients; text rendered by
     /// `alerts::channels::Message`, Chinese like the console).
@@ -347,7 +346,6 @@ impl Template {
                 subject: "节点连不上".into(),
                 user_email: "alice@example.com".into(),
                 category: "technical".into(),
-                console_url: Some("https://panel.example/prefix/admin".into()),
             },
             "node_alert" => Template::NodeAlert {
                 title: "[告警] hk-1：节点离线".into(),
@@ -479,11 +477,10 @@ const TICKET_REPLY_PH: [Placeholder; 2] = [
     ph("ticket_subject", "工单标题"),
     ph("portal_url", "用户门户链接（按钮；未配置主域名时为空）"),
 ];
-const TICKET_NEW_PH: [Placeholder; 4] = [
+const TICKET_NEW_PH: [Placeholder; 3] = [
     ph("ticket_subject", "工单标题"),
     ph("user_email", "用户邮箱"),
     ph("category", "工单分类"),
-    ph("console_url", "管理后台链接（按钮；未配置主域名时为空）"),
 ];
 const ALERT_PH: [Placeholder; 2] = [ph("title", "告警标题"), ph("text", "告警正文（多行）")];
 const ADMIN_NOTICE_PH: [Placeholder; 2] = [
@@ -733,12 +730,10 @@ impl Template {
                 subject,
                 user_email,
                 category,
-                console_url,
             } => vec![
                 text("ticket_subject", subject.clone()),
                 text("user_email", user_email.clone()),
                 text("category", category.clone()),
-                link("console_url", console_url.as_ref(), "前往工单管理"),
             ],
             // Node names are admin-controlled (not customer text); control
             // characters are dropped all the same.
@@ -1027,7 +1022,7 @@ pub fn defaults(kind: &str, locale: Locale) -> Option<(&'static str, &'static st
         ),
         ("ticket_new", _) => (
             "{site}：新工单",
-            "用户 {user_email} 提交了新工单（{category}）：\n\n{ticket_subject}\n\n{console_url}",
+            "用户 {user_email} 提交了新工单（{category}）：\n\n{ticket_subject}\n\n请登录管理后台处理。",
         ),
         ("node_alert", _) => ("{site}：{title}", "{text}"),
         ("admin_notice", _) => ("{subject}", "{body}"),
@@ -1928,7 +1923,6 @@ mod tests {
                 subject: "<i>x</i>".into(),
                 user_email: "alice@example.com".into(),
                 category: "technical".into(),
-                console_url: None,
             },
             Locale::Zh,
             "Akari",
@@ -1954,6 +1948,30 @@ mod tests {
             .outbox_kind(),
             "node_alert"
         );
+    }
+
+    /// Mail to staff never carries a console link: the admin prefix is the
+    /// site's one secret and mail leaves the panel (relays, mailboxes,
+    /// dead-letter bodies). Every kind's sample renders without one.
+    #[test]
+    fn no_mail_carries_a_console_link() {
+        for kind in KINDS {
+            let tpl = Template::sample(kind).expect("every kind has a sample");
+            for locale in [Locale::Zh, Locale::En] {
+                let r = render(&tpl, locale, "Akari");
+                for body in [&r.text, &r.html] {
+                    assert!(
+                        !body.contains("/admin") && !body.contains("console_url"),
+                        "{kind} {locale:?} links to the console"
+                    );
+                }
+            }
+            let (placeholders, _) = spec(kind).expect("every kind has a spec");
+            assert!(
+                placeholders.iter().all(|p| p.name != "console_url"),
+                "{kind} offers a console placeholder"
+            );
+        }
     }
 
     /// Ops: the announcement body is sanitized Markdown in the HTML part

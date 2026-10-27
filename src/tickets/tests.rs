@@ -643,7 +643,7 @@ async fn limits() {
         };
         set.spawn(async move {
             let mut tx = pool.begin().await.unwrap();
-            match apply_create(&mut tx, &Actor::test(), &me, &req, None).await {
+            match apply_create(&mut tx, &Actor::test(), &me, &req).await {
                 Ok(_) => {
                     tx.commit().await.unwrap();
                     true

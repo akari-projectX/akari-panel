@@ -193,7 +193,6 @@ pub async fn apply_create(
     actor: &Actor,
     user: &Author,
     req: &CreateReq,
-    links: Option<&crate::mailhook::Links>,
 ) -> Result<Uuid, ApiError> {
     let subject = clean_subject(&req.subject)?;
     let body = clean_body(&req.message)?;
@@ -276,7 +275,7 @@ pub async fn apply_create(
         })),
     )
     .await?;
-    crate::mailhook::ticket_created(conn, id, links).await?;
+    crate::mailhook::ticket_created(conn, id).await?;
     Ok(id)
 }
 
@@ -789,8 +788,7 @@ pub async fn create_my_ticket(
         return Err(ApiError::too_many());
     }
     let mut tx = state.pg().begin().await?;
-    let links = crate::mailhook::Links::of(&state);
-    let id = apply_create(&mut tx, &Actor::of(&u.user), &me, &req, Some(&links)).await?;
+    let id = apply_create(&mut tx, &Actor::of(&u.user), &me, &req).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
