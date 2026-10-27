@@ -19,7 +19,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | 安装方式 | `1` Docker Compose | `2` = 裸机（systemd：PostgreSQL 18 + Valkey 9 + Caddy） |
 | 主域名 | 留空 = 仅 IP | 填域名前先把 DNS A 记录指向本机，并放行 80/443 |
 | 证书通知邮箱 | 留空 | 仅用于 Let's Encrypt 通知 |
-| 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（v0.4：所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
+| 管理员邮箱 / 密码 | 证书通知邮箱，否则 `admin@<主域名>`（仅 IP：`admin@akari.invalid`）/ 自动生成 | 邮箱就是登录名（所有人都用邮箱登录）；自动生成的密码**只在结束时显示一次** |
 | 自定义端口 | 否（80/443/8443） | 8443 是节点 agent 连接面板的 gRPC 端口 |
 | 节点通信地址 | 主域名（仅 IP 安装 = 本机 IP） | **只在主域名解析到 Cloudflare（橙色云）时询问**：agent 经 8443 端口与面板做双向 TLS，必须直连，不能经过 Cloudflare 或其他反向代理。填一个**仅 DNS（灰色云）**、指向本机的域名或本机公网 IP；`--yes` 时用 `--node-address` 指定，否则安装器停下并说明原因 |
 
@@ -91,7 +91,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
 | `--domain NAME` | `AKARI_DOMAIN` | 空 = 仅 IP（Caddy 内部 CA；浏览器会警告） |
 | `--ip ADDR` | `AKARI_PUBLIC_IP` | 默认路由的源地址 |
 | `--email ADDR` | `AKARI_EMAIL` | 无（ACME 账号邮箱） |
-| `--admin LOGIN` | `AKARI_ADMIN` | `admin` |
+| `--admin EMAIL` | `AKARI_ADMIN` | `--email`，否则 `admin@<域名>`（仅 IP：`admin@akari.invalid`） |
 | `--admin-password-file F` | `AKARI_ADMIN_PASSWORD` | 自动生成（20 个字符），只显示一次 |
 | `--node-address HOST[:PORT]` | `AKARI_NODE_ADDRESS` | 域名（或 IP）：系统设置 → 节点通信域名。可为主机名、IPv4 或 `[IPv6]`，可带 `:port`。当域名（或该地址）解析到 Cloudflare 的地址段时，安装器会改为询问一个仅 DNS 的名称或 IP（`--yes` 时：停止并提示传入此选项）：agent 需要直连 gRPC 端口做双向 TLS |
 | `--http-port/--https-port/--grpc-port` | | 80 / 443 / 8443 |
@@ -127,7 +127,7 @@ PGDG 和 Docker 的 apt 密钥均按指纹固定。**Valkey**：Debian/Ubuntu �
 而 Valkey 没有 apt 仓库，所以安装器使用上游发布构建（`download.valkey.io`；Debian 12/Ubuntu 22.04 用 `jammy` 构建，Debian 13/Ubuntu 24.04 用 `noble` 构建），
 版本与 SHA-256 在脚本中固定，安装到 `/opt/akari-valkey`，以 `DynamicUser` 运行，配置作为 systemd credential 传入。
 升级 Valkey = 发布新的安装器版本（更新 `VALKEY_VERSION` 和四个校验和）。
-**Caddy**：不再使用 Caddy 的 Cloudsmith apt 仓库（`dl.cloudsmith.io` 自 2026-10-09 起因流量配额耗尽返回 402 Payment Required，上游无恢复时间）。
+**Caddy**：
 本机没有 `caddy` 时，安装器从 GitHub 下载官方发布 `caddy_<版本>_linux_<amd64|arm64>.tar.gz`（版本 `CADDY_VERSION` 与两个 SHA-256 固定在脚本中），
 装到 `/usr/bin/caddy`，按 Caddy 官方 Debian 包的做法创建 `caddy` 系统用户（家目录 `/var/lib/caddy`，证书存这里）、`/etc/caddy` 和
 `/etc/systemd/system/caddy.service`（与官方包的单元相同），并在 `/etc/caddy/.installed-by-akari` 记 `source=release`。
@@ -293,7 +293,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 # bare metal: sudo -u akari env AKARI_ADMIN_PASSWORD='...' akari -c /etc/akari/panel.toml admin add you@example.com
 ```
 
-省略该变量则会提示输入。邮箱地址就是登录名（v0.4：包括管理员在内，所有人都用邮箱登录；它视为已验证）。
+省略该变量则会提示输入。邮箱地址就是登录名（包括管理员在内，所有人都用邮箱登录；它视为已验证）。
 管理员打开 `https://panel.example.com/<admin prefix>/app`（`akari info` / `akari-ctl info`），用邮箱和密码登录；
 随后进入 `https://panel.example.com/<admin prefix>/admin` 的控制台
 （只对管理员会话提供；没有会话时与任何未知路径一样是空 404，所以请收藏 `/app` 而不是 `/admin`）。
@@ -370,11 +370,6 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 
 **流量明细的存储**：`traffic_daily` 按月分区（`traffic_daily_YYYYMM`）。面板启动时和每 10 分钟检查一次，保证上个月到后两个月的分区存在；超过「流量明细保留天数」（系统设置 → 安全，默认 400 天）的**整月**汇总进月表后直接删除整个分区，不产生数据库膨胀。因此日明细至少保留设定的天数，最多再多保留不到一个月。
 
-### 用户门户（v2.0.0 起为新版，中文）
-
-v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），地址、功能、接口都不变，不需要任何配置。
-测试过预览版、给面板加过环境变量 `AKARI_PORTAL_V2` 的，可以删掉它（已不再读取）。
-
 ## 2c. Mail, registration and password reset (optional, W15)（邮件、注册与找回密码，可选）
 
 这里的一切在你打开之前都是关闭的；panel.toml 中没有对应项。
@@ -389,9 +384,9 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
    只发给仍在生效的订阅；被取消或退款撤销的订阅不再收到「即将到期 / 已到期」（运营审查低-1）。
    「订单退款通知」（默认开）：管理员退款时告诉用户退了多少、退到哪里、套餐怎样处理。
 3. **系统设置 → 注册**：**开放注册**（登录页显示 注册；邮箱地址就是登录名）。
-   **注册需要邮箱验证**（v0.4：开/关开关，默认关，与 必须使用邀请码 相互独立；开启需要 邮件发送）。
+   **注册需要邮箱验证**（开/关开关，默认关，与 必须使用邀请码 相互独立；开启需要 邮件发送）。
    注册可以**不配置 SMTP** 开放：此时用户只用邮箱 + 密码注册；地址以**未验证**状态保存
-   （不会给它发邮件、不能找回密码、不要求唯一、不能用于登录的邮箱形式；登录名就是该地址，不区分大小写，所以他们用它登录）。
+   （不会给它发邮件、不能找回密码；该地址全站唯一，就是登录名，不区分大小写，所以他们用它登录）。
    邮件可用后，用户可在 账户 下验证；管理员也可以将其标记为已验证（用户 → 管理 → 标记邮箱已验证）。
    无验证时的防滥用措施：
    - 内置工作量证明，由浏览器无感求解（约 2^18 次 SHA-256，不使用第三方验证码）；
@@ -410,7 +405,7 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
    指标：`akari_mail_deliveries_total{kind,result}`。
 5. 滥用限制（Valkey，所有实例共享）：每个客户端地址每小时 10 封邮件，每个目标地址每小时 5 封、每天 20 封，
    每个客户端地址每 15 分钟完成 30 次验证码/链接；验证码输错 5 次即作废。启用验证时，应答绝不暴露某个地址是否有账号。
-6. **机器人防护（W27，`PUT /api/v1/settings/auth`；控制台页面在 W36-b）**，用于 登录、注册、找回密码：
+6. **机器人防护（W27，`PUT /api/v1/settings/auth`，后台：系统设置 → 注册与人机验证）**，用于 登录、注册、找回密码：
    - **蜜罐 + 最短提交时间**（默认开启：2 秒）：页面从 `/auth/options` 取一个签名的表单令牌，并且不早于最短时间才提交；
      隐藏字段被填、令牌缺失/伪造/过期或提交过快，都只会得到该表单的普通失败（不给机器人任何提示），
      并且只增加 `akari_bot_trap_total{form,reason}`，不写日志。用 curl 登录的脚本必须照做
@@ -418,7 +413,8 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
      改了这些设置（或下面的 Turnstile 开关）不需要用户刷新：已经打开的门户页面和后台登录页在表单挂着时每 30 秒、
      窗口回到前台时、每次提交之后都会重新取 `/auth/options`（表单令牌不是一次性的：设置没变、令牌还新鲜时沿用手上的，
      重新取设置不会让最短提交时间重新计时）；页面打开之后才开启的 Turnstile 会让页面自动重新加载一次
-     （打开时的 CSP 不放行 Cloudflare 的脚本）。   - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
+     （打开时的 CSP 不放行 Cloudflare 的脚本）。
+   - **Cloudflare Turnstile**（按表单，默认关闭）：站点密钥 + 密钥（密钥只写不读，用 `data/master.key` 加密），在服务端验证；
      门户与后台登录页以 `interaction-only` 渲染组件（平时看不见，只有需要人工确认时出现，与输入框同宽，明暗与语言跟随页面），
      建议在 Cloudflare 把组件模式设为「托管」（Managed）或「隐形」（Invisible）；
      开启后**失败即关闭**：
@@ -487,7 +483,8 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
 支付方式只在控制台里配置（存数据库；不在 panel.toml 中，所有实例同时生效）：
 **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**，选择环境（正式/沙箱），填 APPID、可选的 商户 PID，
 粘贴应用私钥（用 `data/master.key` 加密，之后不再显示）和支付宝公钥，把显示的 **应用公钥** 上传到支付宝开放平台，启用，然后 **测试连接**。
-回调 URL 按支付方式由主域名（§2b）生成：支付宝侧无需配置。可以配置多种支付方式（付款人在结账时选择）。
+可添加的类型：支付宝当面付、易支付、CoinPayments、Coinbase（后两者是加密货币托管收银台，见 docs/PAYMENTS.md）。
+回调 URL 按支付方式由主域名（§2b）生成：网关侧无需配置（易支付、CoinPayments、Coinbase 的差异见 docs/PAYMENTS.md）。可以配置多种支付方式（付款人在结账时选择）。
 详情和密钥轮换见 docs/PAYMENTS.md。
 
 ## 2e. DNS 管理（Cloudflare，中文）
@@ -521,12 +518,12 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
 - **节点** = 服务器上的**一个入站**（一个协议/端口），带它自己的入口（直连 + 中转）、倍率与节点组。
   同一台机器要跑第二个协议 = 在同一服务器上再建一个节点，**不需要再装一个 agent**。
 - 后台节点页按 服务器 → 节点 → 入口 分组显示（`GET /api/v1/servers`）。
-- **新建节点**：不选服务器 = 同时新建一台同名服务器并给出一键安装命令（与以前一样）；选择已有服务器
+- **新建节点**：不选服务器 = 同时新建一台同名服务器并给出一键安装命令；选择已有服务器
   （`POST /api/v1/nodes {"server_id": …}`）= 只加一个入站，agent 几秒内收到新配置，无需安装。
   端口不能与该服务器上已有的入站或中转入口冲突（`entrance.port_clash`）。
 - **删除节点**：立即删除该节点、它的入口与用户凭据，服务器和其他节点照常运行（删除后才上报的尾部
   流量不再计费）。**删除服务器**：先让 agent 收敛到空配置，再吊销证书并删除服务器及其全部节点
-  （两阶段，与以前删除节点相同）。
+  （两阶段）。
 - **服务器流量额度（D5）**：`PATCH /api/v1/servers/{id}` 的 `traffic_quota_bytes`（字节，null = 不限）、
   `traffic_quota_mode`（`both` 双向 / `up` 仅上行 = 服务器发出的流量（多数服务商的"出站流量"）/
   `down` 仅下行 = 服务器收到的流量）、`traffic_quota_reset_day`（每月几号 00:00（站点时区）开始新周期，
@@ -538,8 +535,7 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
   （或取消额度）立即自动恢复。服务器列表里 `traffic_quota` 给出本期上下行、已用量与下次重置时间。
   每次修改写审计 `server.update`，周期重置写 `server.traffic_quota.reset`（操作人 system）。
 - 命令行：`akari server add <名称>`（新服务器 + bootstrap 文件）、`akari server enroll-token <id>`、
-  `akari server list`、`akari server delete <id>`。升级时已有的每个节点成为一台同 id 的服务器，
-  已安装的 agent 不需要任何操作。
+  `akari server list`、`akari server delete <id>`。
 
 **界面操作：节点 → 新建节点（In the UI: Nodes → 新建节点）。** 填写名称、用户看到的地区、客户端拨入的 连接地址（IP 或域名），
 可选填节点的 **节点域名**（TLS 域名：agent 会自行获取证书，§3f），并从协议模板中选择节点的入站
@@ -589,8 +585,7 @@ v2.0.0 起面板下发的用户门户是新版（Svelte 重写 + 新设计），
 **agent 本身没有 `CAP_NET_ADMIN`（R44）**：它把白名单写入状态目录中的请求文件（`update/source-filter-request.json`），
 已负责安装自更新的 root 更新器（systemd：`akari-agent-update.path` + `.service`；Alpine：`akari-agent-update` 服务循环）
 重新校验它，约一秒内用 `nft -f -` 应用，并把结果交还；agent 在心跳中上报结果。
-这需要节点上有 `nft`（缺少时安装器会安装 `nftables` 包）以及最新的更新器 unit
-（在本版本之前安装的节点，会随 agent 自更新获得，或重新运行安装命令）。
+这需要节点上有 `nft`（缺少时安装器会安装 `nftables` 包）以及与 agent 同版本的更新器 unit（随 agent 自更新安装，或重新运行安装命令）。
 在更新器应答之前，以及它失败的任何时候，中转入口仍可工作，只是仅有凭据隔离；失败或缺少更新器时，节点页显示“来源 IP 过滤未生效”。
 
 **中转入口健康检查。** 面板每分钟对每个已启用的中转入口的地址（其 连接地址:连接端口，即中转机本身）发起一次 TCP 连接。
@@ -618,7 +613,7 @@ apk add curl                                   # Alpine
 在节点上运行它（带 systemd >= 250 的 Linux，amd64 或 arm64；Debian 12/13、Ubuntu 22.04+ 均可；
 W32：也支持带 OpenRC >= 0.45 的 Alpine Linux，已在 3.22 上测试，见 §3h），以 root 或 sudo 用户身份执行：
 命令末尾直接以 root 运行脚本（没有 `sudo` 的镜像也能用），否则经 `sudo` 运行
-（W10；之前签发的命令末尾是 `| sudo sh`，即使是 root 也需要 `sudo`）。既不是 root 也没有 `sudo` 时，它会停在 `sudo` 处，什么都不执行。
+。既不是 root 也没有 `sudo` 时，它会停在 `sudo` 处，什么都不执行。
 它会：
 
 1. 从面板下载 agent（在 **Updates** 下上传的最新完整发布版本，§5b）并校验其 SHA-256；
@@ -822,7 +817,7 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 {"name_rate": true}`，默认关）。开启后只显示入口的**基础倍率**（1x 不显示），**不显示时段倍率**；代价是每次改基础倍率
 都会改名，客户端刷新后可能切换线路（开启时后台会确认，入口抽屉的倍率框也会提示）。倍率请在门户的线路列表里看。
 
-**订阅模板（2026-10-27，取代分流页）**（系统设置 → 订阅模板；接口 `GET /api/v1/sub-templates`、
+**订阅模板**（系统设置 → 订阅模板；接口 `GET /api/v1/sub-templates`、
 `PUT|DELETE /api/v1/sub-templates/{sing-box|clash|surge|surfboard}`、`POST …/{format}/preview`）：
 每种客户端一份完整的配置模板，运营者直接改。没有保存过的格式用内置默认（拦截 → 直连 → 服务分组 → 🚀 默认代理，
 地区自动选择组，推荐 DNS）；「恢复默认」删除自定义内容。模板最大 256 KiB，保存要带当前 `version`（别人先改过
@@ -852,7 +847,7 @@ Clash 与 sing-box 是**结构化**处理（解析模板、注入、再输出）
 出错时 400 `sub_template.*`，参数带 `field`、`line`、`column`。「预览」`POST …/preview {body, user_id?}` 用示例数据或所选
 用户的入口渲染，不含该用户的真实订阅链接（用占位链接）。
 
-**Surge 与 Surfboard**（新格式，User-Agent 含 `Surge` / `Surfboard`，或 `?format=surge|surfboard`）：只输出客户端
+**Surge 与 Surfboard**（User-Agent 含 `Surge` / `Surfboard`，或 `?format=surge|surfboard`）：只输出客户端
 文档里有的代理：Surge 支持 `ss`（含 2022）、`vmess`（tcp/ws，TLS）、`trojan`、`hysteria2`、`tuic`
 （https://manual.nssurge.com/policies/shadowsocks.html 及同目录各页）；Surfboard 支持 `ss`、`vmess`、`trojan`、`hysteria2`
 （https://getsurfboard.com/docs/profile-format/proxy/）。文档没有的组合（VLESS、REALITY、xhttp、httpupgrade、gRPC 等）
@@ -898,7 +893,7 @@ v2rayN —— 导入链接按各客户端公开文档的格式生成，上线前
 
 REALITY 入站借用真实站点（`dest`）的 TLS 握手，并放行知道你公钥的客户端。实践中有三件事容易出错。
 
-**选一个当前 xray-core 接受的 `dest`。** 并非每个站点都适用于每个 xray 版本。2026-10-01 在 xray 26.3.27 上，
+**选一个当前 xray-core 接受的 `dest`。** 并非每个站点都适用于每个 xray 版本。例如在旧版 xray 26.3.27 上，
 `www.microsoft.com:443` 失败了（agent 日志显示 `REALITY:
 processed invalid connection ... handshake did not complete`），而 `www.apple.com`、
 `dl.google.com`、`www.cloudflare.com` 和 `addons.mozilla.org` 可用。xray 升级后请重新检查。目标需要支持 TLS 1.3 和 H2；
@@ -1013,11 +1008,7 @@ End-to-end scenarios (agent `TestRT_ProtocolMatrix`: real client, billing, speed
 REALITY 用于 VLESS over 原始 TCP/XHTTP/gRPC 之外的组合；Vision 用在带 TLS/REALITY 的原始 TCP 之外的传输上；
 VLESS `decryption` 不是 `none`（订阅中不含 VLESS Encryption）；非法的 path（必须以 `/` 开头，不含空格/引号/`#`）、Host 值、
 XHTTP mode（`auto`、`packet-up`、`stream-up`、`stream-one`）或 gRPC service name；非数字端口；入站数组（每个节点一个入站，W28-a）。
-在这些检查加入之前保存的入站继续可用；节点列表在 `warnings` 下显示它们。
-
-**gRPC（R26）。** 当 agent 的 grpc-go 受 GO-2026-6443 影响时，gRPC 曾被拒绝。agent 现在把 grpc-go 固定到上游已修复的 commit
-（`v1.85.0-dev.0.20260825072537-93e31b48545e`；v1.85.0 发布后会移到该 tag），VLESS/VMess/Trojan 的 gRPC 已恢复。
-（该公告涉及 grpc-go 的 xDS 服务端路径；xray 的普通 gRPC 服务端不在受影响路径上，但固定版本使 `govulncheck` 无需 allow-list 即可保持干净。）
+不符合这些检查的入站在节点列表的 `warnings` 下显示。
 
 **内嵌内核不支持：** TUIC（xray-core 没有 TUIC）。不会添加其他内核。
 Hysteria 2 之所以受支持，是因为 xray-core v26.10.21 把它实现为多用户入站。
@@ -1156,32 +1147,6 @@ agent 的做法（详见 akari-agent 的 `acme.go`）：
 
 一次真实部署在 1 vCPU 级别、920 MB 内存的 VPS 上（Debian 13，compose，仅 IP），空闲时的常驻内存：
 panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套服务加一个 agent 可以装进 1 GB 的机器并有富余。
-按本指南完成的第一次完整部署（含排错）用了约 23 分钟。
-
-**Timed fresh-deploy drill（计时的全新部署演练，2026-10-02，W14）。** 干净的 Debian 13 机器（systemd 容器：
-一台用 Debian 软件包安装 Docker 的面板主机、一个节点、一个客户端），逐字照着 §A → §2 → §2b → §3 → §3g 操作，
-镜像通过 digest 从 registry 拉取（首个发布之前用来代替 ghcr.io），使用 `myapp.test` 与 `AKARI_CADDY_OPTIONS=local_certs`。
-“机器”列是每步的机器耗时；“阅读与输入”是估计的人手工在控制台操作的耗时。
-
-| Step | Machine | Reading and typing |
-|---|---|---|
-| 0. 安装 Docker + git（`apt-get`） | 22 s | 2 min |
-| 1–3. 克隆、env 文件、密码、域名、镜像行 | 2 s | 6 min |
-| 4. `config check`（拉取 panel、PostgreSQL、Valkey 镜像） | 39 s | 1 min |
-| 4. `up -d`、`akari info` | 4 s | 1 min |
-| 4. `up -d`（拉取 Caddy + 证书），`/healthz` 200 | 49 s | 2 min |
-| §2 第一个管理员，登录 | 1 s | 2 min |
-| §2b 主域名 | 1 s | 1 min |
-| §3 新建节点（REALITY 模板）→ 带钉扎的安装命令 | 1 s | 3 min |
-| §3 在节点上运行安装命令 → SUCCESS，节点在线 | 7 s | 2 min |
-| §3g 节点组、套餐、用户、分配套餐 | 1 s | 4 min |
-| §3g 把订阅导入客户端（xray 26.3.27），连接，用量被计费 | 5 s + 15 s | 3 min |
-| **Total** | **~2.5 min** | **~27 min** |
-
-客户端通过节点获取了 `https://www.gstatic.com/generate_204`（204）和 5 MB，15 秒内在用户上显示为 5.02 MB。
-演练发现的缺口已在本节修复（Docker 安装、密码/域名/前缀命令、空数据库上的 `config check` 提示、没有公共 DNS 的名称、§2b、§3g），
-并在 compose 文件中修复（Debian 的 compose 2.26 拒绝嵌套的 `${VAR:?}`）。
-
 ## 4. Observability (optional)（可观测性，可选）
 
 设置 `[metrics] bind = "127.0.0.1:9100"` 并抓取它（`deploy/prometheus/`）。告警规则：
@@ -1365,12 +1330,12 @@ akari-ctl upgrade                    # the newest release; --version vX.Y.Z for 
 1. 阅读发布说明中的协议变更。做一次备份（docs/BACKUP.md）。
 2. 升级每个 agent（替换二进制，`systemctl restart akari-agent`；xray 重建会让现有连接断开一次）。
 3. 升级面板：compose：验证新发布，并在 `.env` 中设置其 `AKARI_IMAGE=ghcr.io/akari-projectx/akari-panel:X.Y.Z@sha256:…` 行（“Verify a release” 第 3 步），
-   然后 `docker compose pull panel && docker compose up -d panel`（0.2 之前、只有 `AKARI_VERSION=` 的 `.env` 仍可用，但未固定：请换成 `AKARI_IMAGE`）；
+   然后 `docker compose pull panel && docker compose up -d panel`；
    裸机：替换二进制，`systemctl restart akari-panel`。迁移在启动时自动运行。
 4. `akari config check`、`/healthz`，确认节点为 `online`。
 
 **Compose 部署：deploy 文件也会变。** `deploy/` 下的检出（compose 文件、Caddyfile）是发布的一部分。
-panel.toml 只保留启动键（W25）；其余一切都在 系统设置 中，所以新版本从不需要新的 panel.toml 段落（多余的键会被 `deny_unknown_fields` 拒绝，`config check` 报出）。每次升级：
+panel.toml 只保留启动键；其余一切都在 系统设置 中，所以新版本从不需要新的 panel.toml 段落（多余的键会被 `deny_unknown_fields` 拒绝，`config check` 报出）。每次升级：
 
 ```bash
 cd /opt/akari-panel && git status --short       # local edits to tracked files (e.g. the Caddyfile)?
@@ -1380,13 +1345,6 @@ cd deploy && docker compose run --rm panel config check
 docker compose up -d --force-recreate           # Caddyfile is a single-file bind mount (§A)
 ```
 
-自 系统设置 版本（R22）起，compose 栈需要 panel.toml 中有 `[tls_ask]`（`bind =
-"0.0.0.0:8082"`、`allow_non_loopback = true`，见 `panel.toml.compose.example`），以及新 compose 文件传给 Caddy 的 `AKARI_ASK` 变量；
-缺少该段时，面板永远不会应答 Caddy 的 `ask`，所以在 系统设置 中保存的域名拿不到证书（AKARI_DOMAIN 本身不受影响）。
-在新版本首次启动之前运行 `config check`，可能以
-`# 系统设置: database not readable (… relation "panel_settings" does not exist …)` 结尾，升级时则是
-`(… column "<name>" does not exist …)`（0.2 → 0.3：`probe_interval_secs`）：迁移尚未运行；这无害，首次启动后即消失。
-真正有意义的是它上面的结论行（`configuration OK (0 warnings)`）。
 
 为什么是这个顺序：新面板会丢弃没有 `session_id` 的流量上报，并对低于 `MIN_AGENT_PROTOCOL`（8）的 agent 返回空状态。
 
@@ -1409,7 +1367,7 @@ agent 发布工作流只有在仓库 secret `AKARI_RELEASE_SIGNING_KEY` 持有�
 **Panel side（面板侧）。** `release-keys.txt` 中的官方密钥也编译进了面板（副本在 `src/release-keys.txt`；与 akari-agent main 不同时 CI 会失败），
 因此无需任何配置，上传就会被提前检查。你用来给自己构建签名的密钥放到 系统设置 → 安全 → 额外信任的发布公钥
 （每行一个 `<base64> [label]`，最多 16 个）：agent 仍然只运行其自身编译进去的密钥所接受的内容。
-W25：当 `[updates] release_keys` 与官方集合不同时，会被导入该列表一次；`max_concurrent_downloads` 是内置的（每实例 8 个 FetchArtifact 流）。
+每个实例同时服务的 FetchArtifact 下载流是内置的（8 个）。
 
 **Check for updates（一键检查更新）。** Updates 视图 → 「检查更新」：面板从 GitHub API 获取 `akari-projectX/akari-agent` 的最新 release，
 为**每个 linux 平台（amd64、arm64）**下载二进制、其 `.manifest.json` 和 `.manifest.sig`，外加 `SHA256SUMS`，
@@ -1450,7 +1408,7 @@ halted 的灰度只能被中止。暂停会停止发出新的提议（进行中�
 版本），安装卡片给出警告；同一版本之后有一次未失败的灰度（例如修好节点后重新灰度并完成）即恢复使用它。
 确认是坏版本后在「更新」页删除该发布。
 
-**On the node（在节点上）**（W18；安装器会设置好它，§3；更早安装的节点：对其执行一次 **重装命令**，§5）。
+**On the node（在节点上）**（W18；安装器会设置好它，§3）。
 agent 以一次性用户运行，其 StateDirectory 被 systemd 以 `noexec` 挂载；这一点保持不变（agent 能写入的任何东西都不会被执行）。
 更新通过一个单独的 root unit 进行，它只运行**已安装的**二进制：
 - agent 下载到 `$STATE_DIRECTORY/update/staged`（0600，永不可执行），检查大小、SHA-256、签名和版本策略，停止 xray
@@ -1469,7 +1427,7 @@ agent 以一次性用户运行，其 StateDirectory 被 systemd 以 `noexec` 挂
   并替换 `/etc/systemd/system` 中的 `akari-agent.service`、`akari-agent-update.service` 和 `akari-agent-update.path`
   （只有这些名字、只在它们存在时、只在不同的时候），原子地（root，0644），被替换的保存在 `/var/lib/akari-agent-update/units.prev/`，然后 `systemctl daemon-reload`。
   回滚会把它们放回去（并重新加载）。drop-in（`akari-agent.service.d/`，例如安装器的 TLS credential drop-in）从不被改动：本地改动请放在那里。
-  unit 无法读取的发布会被拒绝。W23 之前的 updater unit 无法写该目录：见 §5 “Nodes whose units predate W23”；
+  unit 无法读取的发布会被拒绝；
 - `journalctl -u akari-agent-update` 显示 updater 做了什么；手动安装更新的 agent（或 重装命令）优先于 updater 记录的一切；
 - **Alpine / OpenRC（W32）**：同样的交接，只是用 `akari-agent-update` 服务（一个每秒检查一次请求的 root 循环）代替 path unit，
   用两个 init 脚本代替三个 unit，用 supervise-daemon 的重启计数代替 `NRestarts`；差异与缺口（没有 updater 沙箱）见 §3h；日志 `/var/log/akari-agent-update.log`；
@@ -1603,7 +1561,7 @@ Caddy 会在新主机上获取新证书（主域名在启动时，其他的按�
 发布工作流在发布之前，会对刚签名的内容运行同样的命令。
 
 ```bash
-TAG=v0.4.1
+TAG=v2.1.0
 ID="https://github.com/akari-projectX/akari-panel/.github/workflows/release.yml@refs/tags/$TAG"
 ISS=https://token.actions.githubusercontent.com
 REL="https://github.com/akari-projectX/akari-panel/releases/download/$TAG"
@@ -1655,7 +1613,7 @@ musl 自带的分配器会使这种分配密集的多线程负载串行化，所
 
 安装器在 Docker 模式下做的事情，逐步展开（适用于其他发行版、已有的 Docker 主机，或想看每一步的情况）。
 
-以下命令在面板主机上以 root 运行。本节、§2、§2b、§3 和 §3g 把一台干净的 Debian 13 机器带到用户通过新节点完成代理连接（计时演练：§3c）。
+以下命令在面板主机上以 root 运行。本节、§2、§2b、§3 和 §3g 把一台干净的 Debian 13 机器带到用户通过新节点完成代理连接。
 
 ```bash
 # 0. Docker Engine + compose v2 (Debian 13 packages; Docker's own apt repository works the same)
@@ -1707,7 +1665,7 @@ DNS 记录必须已指向该主机，80/443 端口必须开放）；之后在 �
 Caddyfile 把 `default_sni` 设为 `AKARI_DOMAIN`，因为客户端访问 IP 地址时不发送 SNI。
 agent 的 gRPC 通道不受影响：它固定的是面板 CA，而不是 web 证书，而一行节点安装器固定的是 web 证书的密钥（§3）。
 
-**把仅 IP 的部署迁到域名**（2026-10-02 验证；W25：panel.toml 无需改动）：添加 A 记录（不要使用代理型 CDN；80/443 端口开放），
+**把仅 IP 的部署迁到域名**（panel.toml 无需改动）：添加 A 记录（不要使用代理型 CDN；80/443 端口开放），
 在 `.env` 中设置 `AKARI_DOMAIN`，`docker compose up -d`（Caddy 几秒内获取证书；`docker compose logs caddy` 显示 “certificate obtained successfully”），
 然后在 系统设置 中把 **主域名** 设为该名称（安装命令变成普通 `curl`，不再钉扎），如果希望 agent 从现在起拨该名称，再设置 **节点通信域名**。
 之前注册的 agent 继续拨 IP，并以该 IP 作为 gRPC server name（其 bootstrap 文件如此写明）：该 IP 会一直留在证书的名称列表中（节点通信证书域名），直到你在那里移除它，
