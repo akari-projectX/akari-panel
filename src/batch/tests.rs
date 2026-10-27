@@ -1199,3 +1199,66 @@ async fn http_surface() {
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     db.drop().await;
 }
+
+/// Batch ban / unban / plan actions mail each verified customer once (the
+/// same hooks as the single-user endpoints); an unverified address gets
+/// nothing and the batch is unaffected.
+#[tokio::test]
+async fn admin_action_mails() {
+    let Some((db, st)) = setup().await else {
+        return;
+    };
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let node = db.node().await;
+    let plan = plan_with(&db, node).await;
+    let us = users(&db, 2).await;
+    sqlx::query("UPDATE users SET email_verified_at = now() WHERE id = $1")
+        .bind(us[0])
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let count = |kind: &'static str| {
+        let pool = db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mail_outbox WHERE kind = $1")
+                .bind(kind)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let month = || serde_json::from_value(json!("month")).unwrap();
+    for (action, kind, total) in [
+        (
+            Action::Ban {
+                reason: "abuse".into(),
+            },
+            "account_banned",
+            1,
+        ),
+        (Action::Unban {}, "account_unbanned", 1),
+        (
+            Action::SetPlan {
+                plan_id: plan,
+                period: month(),
+                days: None,
+            },
+            "plan_changed",
+            1,
+        ),
+        (Action::ExtendExpiry { days: 3 }, "plan_changed", 2),
+        (Action::ResetTraffic {}, "plan_changed", 3),
+        (Action::CancelPlan {}, "plan_changed", 4),
+    ] {
+        create(&db, ids(&us), action).await.unwrap();
+        finish(&st).await;
+        assert_eq!(count(kind).await, total, "{kind}");
+    }
+    db.drop().await;
+}

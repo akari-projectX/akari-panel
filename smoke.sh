@@ -2488,7 +2488,7 @@ done
 SIGNUP_ON='"register_enabled":true,"invite_required":false,"invite_single_use":false,"email_domains":[],"trial_plan_id":null,"trial_days":3,"reset_enabled":true,"email_verify":true'
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/signup" -H "$J" -d "{\"version\":0,$SIGNUP_ON}")" = "409" ] \
   || { echo "FAIL: registration enabled without mail"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/mail" -H "$J" -d '{"version":0,"enabled":true,"host":"127.0.0.1","port":11025,"security":"none","username":null,"from_addr":"noreply@akari.test","from_name":"Akari Smoke","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true}')" = "200" ] \
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/mail" -H "$J" -d '{"version":0,"enabled":true,"host":"127.0.0.1","port":11025,"security":"none","username":null,"from_addr":"noreply@akari.test","from_name":"Akari Smoke","notify_order_paid":true,"notify_expiry_days":3,"notify_expired":true,"notify_quota":true,"notify_refund":true,"notify_ban":true,"notify_plan_change":true,"notify_withdrawal":true,"notify_commission":true}')" = "200" ] \
   || { echo "FAIL: save SMTP settings"; cat /tmp/akari-smoke/last; exit 1; }
 [ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/mail/test" -H "$J" -d '{"to":"admin@akari.test"}')" = "200" ] \
   || { echo "FAIL: test mail"; cat /tmp/akari-smoke/last; exit 1; }
@@ -4313,7 +4313,7 @@ done <<'OWNER_ONLY'
 PUT|settings|{"version":0,"main_domains":[],"sub_domains":[],"node_domains":[]}
 PUT|settings/passkey-domain|{"version":0,"domain":null}
 PUT|settings/security|{"version":0}
-PUT|settings/mail|{"version":0,"enabled":false,"port":587,"security":"starttls","notify_order_paid":false,"notify_expiry_days":0,"notify_expired":false,"notify_quota":false}
+PUT|settings/mail|{"version":0,"enabled":false,"port":587,"security":"starttls","notify_order_paid":false,"notify_expiry_days":0,"notify_expired":false,"notify_quota":false,"notify_refund":false,"notify_ban":false,"notify_plan_change":false,"notify_withdrawal":false,"notify_commission":false}
 PUT|settings/auth|{"version":0,"turnstile_site_key":null,"turnstile_login":false,"turnstile_register":false,"turnstile_reset":false,"honeypot":true,"min_submit_secs":2,"passkey_only_admins":false,"passkey_only_users":false,"passkey_prompt":false}
 POST|settings/server-names/remove|{"name":"x.example.com","confirm":true}
 OWNER_ONLY

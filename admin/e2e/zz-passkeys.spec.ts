@@ -73,6 +73,10 @@ async function smtpToMailpit() {
     notify_expired: m.notify_expired,
     notify_quota: m.notify_quota,
     notify_refund: m.notify_refund,
+    notify_ban: m.notify_ban,
+    notify_plan_change: m.notify_plan_change,
+    notify_withdrawal: m.notify_withdrawal,
+    notify_commission: m.notify_commission,
   });
 }
 

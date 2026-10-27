@@ -166,9 +166,12 @@ async fn run_pass(state: &crate::state::AppState, pass: Pass) -> anyhow::Result<
         // W16: invite commissions past their hold become balance (ledger),
         // exactly once (SKIP LOCKED + conditional on pending).
         Pass::Commissions => {
-            crate::billing::commission::credit_due(&mut tx)
-                .await
-                .map_err(|e| anyhow::anyhow!("commission pass: {}", e.message()))?;
+            crate::billing::commission::credit_due(
+                &mut tx,
+                crate::mail::portal_url(state).as_deref(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("commission pass: {}", e.message()))?;
             Vec::new()
         }
         // D5: a new quota period restores servers that ran out.

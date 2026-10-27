@@ -71,13 +71,22 @@ pub struct MailSettings {
     pub notify_quota: bool,
     /// Phase A PR ①: mail the customer when an order is refunded.
     pub notify_refund: bool,
+    /// Mail the customer when an administrator bans / unbans the account.
+    pub notify_ban: bool,
+    /// Mail the customer when an administrator changes their plan.
+    pub notify_plan_change: bool,
+    /// Mail the customer when a withdrawal is approved / rejected.
+    pub notify_withdrawal: bool,
+    /// Mail the inviter when a commission is credited.
+    pub notify_commission: bool,
     /// W21: 系统设置 → 站点名称 (panel_settings.site_name).
     pub site_name: Option<String>,
 }
 
 const MAIL_COLS: &str = "version, enabled, provider, api_key_enc, host, port, security, username, password_enc, \
      from_addr, from_name, notify_order_paid, notify_expiry_days, notify_expired, notify_quota, \
-     notify_refund, (SELECT site_name FROM panel_settings WHERE id = 1) AS site_name";
+     notify_refund, notify_ban, notify_plan_change, notify_withdrawal, notify_commission, \
+     (SELECT site_name FROM panel_settings WHERE id = 1) AS site_name";
 
 fn non_empty(s: &Option<String>) -> Option<&str> {
     s.as_deref().filter(|s| !s.is_empty())
@@ -176,6 +185,10 @@ pub struct MailView {
     notify_expired: bool,
     notify_quota: bool,
     notify_refund: bool,
+    notify_ban: bool,
+    notify_plan_change: bool,
+    notify_withdrawal: bool,
+    notify_commission: bool,
     /// Dead letters (for the card's badge).
     dead_letters: i64,
     pending: i64,
@@ -247,6 +260,10 @@ async fn view(conn: &mut PgConnection) -> Result<MailView, ApiError> {
         notify_expired: s.notify_expired,
         notify_quota: s.notify_quota,
         notify_refund: s.notify_refund,
+        notify_ban: s.notify_ban,
+        notify_plan_change: s.notify_plan_change,
+        notify_withdrawal: s.notify_withdrawal,
+        notify_commission: s.notify_commission,
         dead_letters: dead,
         pending,
         sent_24h,
@@ -293,9 +310,11 @@ pub struct MailReq {
     pub notify_expiry_days: i32,
     pub notify_expired: bool,
     pub notify_quota: bool,
-    /// The refund notice (absent = unchanged).
-    #[serde(default)]
-    pub notify_refund: Option<bool>,
+    pub notify_refund: bool,
+    pub notify_ban: bool,
+    pub notify_plan_change: bool,
+    pub notify_withdrawal: bool,
+    pub notify_commission: bool,
 }
 
 /// Validated values of a `MailReq` (provider/password/api_key: None = keep).
@@ -315,8 +334,11 @@ pub struct MailValues {
     pub notify_expiry_days: i32,
     pub notify_expired: bool,
     pub notify_quota: bool,
-    /// None = keep the stored value.
-    pub notify_refund: Option<bool>,
+    pub notify_refund: bool,
+    pub notify_ban: bool,
+    pub notify_plan_change: bool,
+    pub notify_withdrawal: bool,
+    pub notify_commission: bool,
 }
 
 fn printable(s: &str) -> bool {
@@ -452,6 +474,10 @@ pub fn mail_values(req: &MailReq) -> Result<MailValues, ApiError> {
         notify_expired: req.notify_expired,
         notify_quota: req.notify_quota,
         notify_refund: req.notify_refund,
+        notify_ban: req.notify_ban,
+        notify_plan_change: req.notify_plan_change,
+        notify_withdrawal: req.notify_withdrawal,
+        notify_commission: req.notify_commission,
     })
 }
 
@@ -519,7 +545,9 @@ pub async fn apply_update_mail(
             "from_addr": s.from_addr, "from_name": s.from_name,
             "notify_order_paid": s.notify_order_paid, "notify_expiry_days": s.notify_expiry_days,
             "notify_expired": s.notify_expired, "notify_quota": s.notify_quota,
-            "notify_refund": s.notify_refund,
+            "notify_refund": s.notify_refund, "notify_ban": s.notify_ban,
+            "notify_plan_change": s.notify_plan_change, "notify_withdrawal": s.notify_withdrawal,
+            "notify_commission": s.notify_commission,
         })
     };
     let before = json!({
@@ -528,13 +556,16 @@ pub async fn apply_update_mail(
         "from_name": cur.from_name, "notify_order_paid": cur.notify_order_paid,
         "notify_expiry_days": cur.notify_expiry_days, "notify_expired": cur.notify_expired,
         "notify_quota": cur.notify_quota, "notify_refund": cur.notify_refund,
+        "notify_ban": cur.notify_ban, "notify_plan_change": cur.notify_plan_change,
+        "notify_withdrawal": cur.notify_withdrawal, "notify_commission": cur.notify_commission,
     });
     sqlx::query(
         "UPDATE mail_settings SET version = version + 1, enabled = $1, host = $2, port = $3, \
          security = $4, username = $5, password_enc = $6, from_addr = $7, from_name = $8, \
          notify_order_paid = $9, notify_expiry_days = $10, notify_expired = $11, \
          notify_quota = $12, provider = $13, api_key_enc = $14, \
-         notify_refund = COALESCE($15, notify_refund), updated_at = now() WHERE id = 1",
+         notify_refund = $15, notify_ban = $16, notify_plan_change = $17, \
+         notify_withdrawal = $18, notify_commission = $19, updated_at = now() WHERE id = 1",
     )
     .bind(v.enabled)
     .bind(&v.host)
@@ -551,6 +582,10 @@ pub async fn apply_update_mail(
     .bind(&provider)
     .bind(&api_key_enc)
     .bind(v.notify_refund)
+    .bind(v.notify_ban)
+    .bind(v.notify_plan_change)
+    .bind(v.notify_withdrawal)
+    .bind(v.notify_commission)
     .execute(&mut *conn)
     .await?;
     crate::audit::record(

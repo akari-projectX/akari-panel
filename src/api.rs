@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::audit::Actor;
 use crate::auth::{self, ApiError, AuthUser, COOKIE_NAME, PortalUser};
+use crate::mailhook;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------
@@ -1576,6 +1577,7 @@ pub async fn ban_user(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_ban_user(&mut tx, &Actor::of(&user), id, &req.reason).await?;
+    mailhook::account_banned(&mut tx, id, crate::mail::portal_url(&state).as_deref()).await;
     let view = user_detail_in(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))
@@ -1590,6 +1592,7 @@ pub async fn unban_user(
     user.require_admin()?;
     let mut tx = state.pg().begin().await?;
     apply_unban_user(&mut tx, &Actor::of(&user), id).await?;
+    mailhook::account_unbanned(&mut tx, id, crate::mail::portal_url(&state).as_deref()).await;
     let view = user_detail_in(&mut tx, id).await?;
     tx.commit().await?;
     Ok(Json(view))

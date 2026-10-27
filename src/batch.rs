@@ -39,7 +39,8 @@ use crate::api::{self, UserListQuery};
 use crate::audit::Actor;
 use crate::auth::{ApiError, AuthUser, bad_request, conflict};
 use crate::billing::ledger;
-use crate::mail::templates::{Locale, Template};
+use crate::mail::templates::{Locale, PlanAction, Template};
+use crate::mailhook;
 use crate::plans;
 use crate::state::AppState;
 
@@ -802,6 +803,8 @@ async fn apply_one(
         return Ok(Step::Skipped("管理员账户".into()));
     }
     let has_plan = term_kind.is_some();
+    let portal = crate::mail::portal_url(state);
+    let portal = portal.as_deref();
     let banned = disabled_reason.as_deref() == Some("admin");
     match action {
         Action::ExtendExpiry { days } => {
@@ -814,22 +817,27 @@ async fn apply_one(
             if !has_expiry {
                 return Ok(Step::Skipped("无到期时间".into()));
             }
-            plans::apply_renew_user_plan(conn, actor, user, plans::Renewal::extend(*days)?).await?;
+            let renewal = plans::Renewal::extend(*days)?;
+            plans::apply_renew_user_plan(conn, actor, user, renewal).await?;
+            mailhook::plan_changed(conn, user, renewal.plan_action(), portal).await;
         }
         Action::ResetTraffic {} => {
             if !has_plan {
                 return Ok(Step::Skipped("无生效套餐".into()));
             }
             plans::apply_admin_reset_traffic(conn, actor, user).await?;
+            mailhook::plan_changed(conn, user, PlanAction::TrafficReset, portal).await;
         }
         Action::Ban { reason } => {
             api::apply_ban_user(conn, actor, user, reason).await?;
+            mailhook::account_banned(conn, user, portal).await;
         }
         Action::Unban {} => {
             if !banned {
                 return Ok(Step::Skipped("未封禁".into()));
             }
             api::apply_unban_user(conn, actor, user).await?;
+            mailhook::account_unbanned(conn, user, portal).await;
         }
         Action::SetPlan {
             plan_id,
@@ -843,12 +851,14 @@ async fn apply_one(
             }
             .assignment()?;
             plans::apply_set_user_plan(conn, actor, user, &assign).await?;
+            mailhook::plan_changed(conn, user, PlanAction::Assigned, portal).await;
         }
         Action::CancelPlan {} => {
             if !has_plan {
                 return Ok(Step::Skipped("无生效套餐".into()));
             }
             plans::apply_cancel_user_plan(conn, actor, user).await?;
+            mailhook::plan_changed(conn, user, PlanAction::Cancelled, portal).await;
         }
         Action::AddBalance {
             amount_cents,

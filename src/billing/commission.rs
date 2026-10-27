@@ -241,7 +241,7 @@ pub async fn on_paid(
 /// Enforce pass (any instance, concurrently safe): credit due commissions
 /// to their inviters' balances. A commission whose inviter was deleted is
 /// reversed. Returns how many were settled.
-pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
+pub async fn credit_due(conn: &mut PgConnection, portal: Option<&str>) -> Result<usize, ApiError> {
     // 低-6: a banned inviter's commissions stay pending until unbanned.
     let due: Vec<(Uuid, Option<Uuid>, i64, Uuid)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT c.id, c.inviter_id, c.amount_cents - COALESCE(c.clawback_cents, 0), c.order_id \
@@ -286,6 +286,7 @@ pub async fn credit_due(conn: &mut PgConnection) -> Result<usize, ApiError> {
         .bind(ledger_id)
         .execute(&mut *conn)
         .await?;
+        crate::mailhook::commission_credited(conn, *inviter, *amount, *order, portal).await;
         for (debt, owed) in debts {
             if recover(conn, &actor, *inviter, debt, owed).await? < owed {
                 break;
@@ -1175,6 +1176,8 @@ pub async fn approve_withdrawal(
         note.as_deref(),
     )
     .await?;
+    crate::mailhook::withdrawal_decided(&mut tx, id, crate::mail::portal_url(&state).as_deref())
+        .await;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1198,6 +1201,8 @@ pub async fn reject_withdrawal(
         reason.as_deref(),
     )
     .await?;
+    crate::mailhook::withdrawal_decided(&mut tx, id, crate::mail::portal_url(&state).as_deref())
+        .await;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

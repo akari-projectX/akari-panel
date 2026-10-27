@@ -12,8 +12,8 @@ use sqlx::{Connection, PgConnection};
 use uuid::Uuid;
 
 use crate::alerts::channels::SendError;
-use crate::mail::templates::SecurityEvent;
-use crate::mail::{self, Locale, Template};
+use crate::mail::templates::{PlanAction, SecurityEvent};
+use crate::mail::{self, Locale, MailSettings, Template};
 use crate::state::AppState;
 
 /// At most this many admins are mailed about one new ticket.
@@ -145,6 +145,227 @@ pub async fn alert(
     Ok(())
 }
 
+/// Queue a mail in a savepoint of the caller's transaction: `queue` runs
+/// inside it; an error is logged (`what` names the mail, never an address)
+/// and rolled back alone, so a mail problem can never fail the change it
+/// reports. Returns whether a mail was queued.
+async fn in_savepoint(
+    conn: &mut PgConnection,
+    what: &str,
+    queue: impl AsyncFnOnce(&mut PgConnection) -> sqlx::Result<bool>,
+) -> bool {
+    let mut sp = match conn.begin().await {
+        Ok(sp) => sp,
+        Err(e) => {
+            tracing::warn!(error = %e, "{what} not queued");
+            return false;
+        }
+    };
+    match queue(&mut sp).await {
+        Ok(queued) => match sp.commit().await {
+            Ok(()) => queued,
+            Err(e) => {
+                tracing::warn!(error = %e, "{what} not queued");
+                false
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "{what} not queued");
+            if let Err(e) = sp.rollback().await {
+                tracing::warn!(error = %e, "{what}: savepoint rollback failed");
+            }
+            false
+        }
+    }
+}
+
+/// The account's address and locale, only when the address is verified
+/// (and not a passkey registration's placeholder).
+async fn verified_recipient(
+    conn: &mut PgConnection,
+    user: Uuid,
+) -> sqlx::Result<Option<(String, String)>> {
+    sqlx::query_as(
+        "SELECT email, locale FROM users WHERE id = $1 AND email_verified_at IS NOT NULL \
+         AND NOT email_pending",
+    )
+    .bind(user)
+    .fetch_optional(&mut *conn)
+    .await
+}
+
+/// Queue `tpl` for the account when mail is on, `wanted` (the settings
+/// toggle of the kind) is set and the account has a verified address.
+async fn notify_account(
+    conn: &mut PgConnection,
+    user: Uuid,
+    wanted: fn(&MailSettings) -> bool,
+    tpl: &Template,
+) -> sqlx::Result<bool> {
+    let Some(s) = smtp(conn).await?.filter(wanted) else {
+        return Ok(false);
+    };
+    let Some((to, locale)) = verified_recipient(conn, user).await? else {
+        return Ok(false);
+    };
+    mail::enqueue(conn, &s, tpl, Locale::parse(&locale), &to, Some(user), None).await?;
+    Ok(true)
+}
+
+/// An administrator banned the account (call it after `apply_ban_user`):
+/// the mail carries the stored ban reason, the text the portal shows the
+/// user too. Queued in the caller's transaction (savepoint), switch
+/// `notify_ban`. Returns whether a mail was queued.
+pub async fn account_banned(conn: &mut PgConnection, user: Uuid, portal: Option<&str>) -> bool {
+    in_savepoint(conn, "ban notice", async |c| {
+        let reason: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT disabled_note FROM users WHERE id = $1 AND disabled_reason = 'admin'",
+        )
+        .bind(user)
+        .fetch_optional(&mut *c)
+        .await?;
+        let Some(Some(reason)) = reason else {
+            return Ok(false);
+        };
+        let tpl = Template::AccountBanned {
+            reason,
+            portal_url: portal.map(str::to_string),
+        };
+        notify_account(c, user, |s| s.notify_ban, &tpl).await
+    })
+    .await
+}
+
+/// An administrator lifted the ban (switch `notify_ban`).
+pub async fn account_unbanned(conn: &mut PgConnection, user: Uuid, portal: Option<&str>) -> bool {
+    in_savepoint(conn, "unban notice", async |c| {
+        let tpl = Template::AccountUnbanned {
+            portal_url: portal.map(str::to_string),
+        };
+        notify_account(c, user, |s| s.notify_ban, &tpl).await
+    })
+    .await
+}
+
+/// An administrator changed the account's plan (assign / switch, renew,
+/// extend, cancel, reset traffic; switch `notify_plan_change`). Call it
+/// after the mutator: the mail names the subscription as it now is (for a
+/// cancellation the one that just ended). The user's own purchases do not
+/// come through here — they get the payment receipt.
+pub async fn plan_changed(
+    conn: &mut PgConnection,
+    user: Uuid,
+    action: PlanAction,
+    portal: Option<&str>,
+) -> bool {
+    in_savepoint(conn, "plan change notice", async |c| {
+        let sub: Option<(String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
+            "SELECT p.name, up.expires_at FROM user_plans up JOIN plans p ON p.id = up.plan_id \
+             WHERE up.user_id = $1 \
+             ORDER BY (up.status = 'active') DESC, up.ended_at DESC NULLS FIRST, up.created_at DESC \
+             LIMIT 1",
+        )
+        .bind(user)
+        .fetch_optional(&mut *c)
+        .await?;
+        let Some((plan_name, expires_at)) = sub else {
+            return Ok(false);
+        };
+        let tpl = Template::PlanChanged {
+            action,
+            plan_name,
+            expires_at: expires_at.filter(|_| action != PlanAction::Cancelled),
+            portal_url: portal.map(str::to_string),
+        };
+        notify_account(c, user, |s| s.notify_plan_change, &tpl).await
+    })
+    .await
+}
+
+/// An administrator decided a withdrawal (`commission::apply_decide`, status
+/// approved or rejected; switch `notify_withdrawal`): the payout (USDT
+/// amount, network, transaction hash) or the reason. Other statuses (the
+/// user's own cancellation) send nothing.
+pub async fn withdrawal_decided(
+    conn: &mut PgConnection,
+    withdrawal: Uuid,
+    portal: Option<&str>,
+) -> bool {
+    in_savepoint(conn, "withdrawal notice", async |c| {
+        type Row = (
+            Option<Uuid>,
+            i64,
+            String,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT user_id, amount_cents, status, chain, usdt_micros, txid, note \
+             FROM withdrawals WHERE id = $1",
+        )
+        .bind(withdrawal)
+        .fetch_optional(&mut *c)
+        .await?;
+        let Some((Some(user), amount_cents, status, chain, usdt_micros, txid, note)) = row else {
+            return Ok(false);
+        };
+        let portal_url = portal.map(str::to_string);
+        let tpl = match (status.as_str(), usdt_micros, txid) {
+            ("approved", Some(usdt_micros), Some(txid)) => Template::WithdrawalApproved {
+                amount_cents,
+                usdt_micros,
+                network: crate::billing::usdt::CHAINS
+                    .iter()
+                    .find(|(id, _)| *id == chain)
+                    .map_or(chain.clone(), |(_, name)| (*name).to_string()),
+                txid,
+                portal_url,
+            },
+            ("rejected", ..) => Template::WithdrawalRejected {
+                amount_cents,
+                reason: note.unwrap_or_default(),
+                portal_url,
+            },
+            _ => return Ok(false),
+        };
+        notify_account(c, user, |s| s.notify_withdrawal, &tpl).await
+    })
+    .await
+}
+
+/// A commission was credited to the inviter's balance (`amount_cents` > 0;
+/// switch `notify_commission`). The mail names the order, never the invitee.
+pub async fn commission_credited(
+    conn: &mut PgConnection,
+    inviter: Uuid,
+    amount_cents: i64,
+    order: Uuid,
+    portal: Option<&str>,
+) -> bool {
+    if amount_cents <= 0 {
+        return false;
+    }
+    in_savepoint(conn, "commission notice", async |c| {
+        let order_no: Option<String> =
+            sqlx::query_scalar("SELECT out_trade_no FROM orders WHERE id = $1")
+                .bind(order)
+                .fetch_optional(&mut *c)
+                .await?;
+        let Some(order_no) = order_no else {
+            return Ok(false);
+        };
+        let tpl = Template::CommissionCredited {
+            amount_cents,
+            order_no,
+            portal_url: portal.map(str::to_string),
+        };
+        notify_account(c, inviter, |s| s.notify_commission, &tpl).await
+    })
+    .await
+}
+
 /// Audit batch 2, P2-1: tell an account that its sign-in security changed
 /// (passkey added / removed, password sign-in switched, email or password
 /// changed). Goes to the account's VERIFIED address — or, for an email
@@ -161,70 +382,35 @@ pub async fn security_notice(
     portal: Option<&str>,
     old_address: Option<&str>,
 ) -> bool {
-    let mut sp = match conn.begin().await {
-        Ok(sp) => sp,
-        Err(e) => {
-            tracing::warn!(error = %e, "security notice not queued");
-            return false;
-        }
-    };
-    match queue_security_notice(&mut sp, user, event, ip, portal, old_address).await {
-        Ok(queued) => sp.commit().await.is_ok() && queued,
-        Err(e) => {
-            tracing::warn!(error = %e, "security notice not queued");
-            let _ = sp.rollback().await;
-            false
-        }
-    }
+    in_savepoint(conn, "security notice", async |c| {
+        let Some(s) = smtp(c).await? else {
+            return Ok(false);
+        };
+        let (to, locale) = match old_address {
+            Some(old) => {
+                let locale: Option<String> =
+                    sqlx::query_scalar("SELECT locale FROM users WHERE id = $1")
+                        .bind(user)
+                        .fetch_optional(&mut *c)
+                        .await?;
+                (old.to_string(), locale.unwrap_or_default())
+            }
+            None => match verified_recipient(c, user).await? {
+                Some(recipient) => recipient,
+                None => return Ok(false),
+            },
+        };
+        let tpl = Template::SecurityNotice {
+            event,
+            at: chrono::Utc::now(),
+            ip: ip.map(|a| a.to_string()),
+            portal_url: portal.map(str::to_string),
+        };
+        mail::enqueue(c, &s, &tpl, Locale::parse(&locale), &to, Some(user), None).await?;
+        Ok(true)
+    })
+    .await
 }
 
-async fn queue_security_notice(
-    conn: &mut PgConnection,
-    user: Uuid,
-    event: SecurityEvent,
-    ip: Option<std::net::IpAddr>,
-    portal: Option<&str>,
-    old_address: Option<&str>,
-) -> sqlx::Result<bool> {
-    let Some(s) = smtp(conn).await? else {
-        return Ok(false);
-    };
-    // The current address, only when verified (and not a passkey
-    // registration's placeholder).
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT email, locale FROM users WHERE id = $1 AND email_verified_at IS NOT NULL \
-         AND NOT email_pending",
-    )
-    .bind(user)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let (to, locale) = match (old_address, row) {
-        (Some(old), _) => {
-            let locale: Option<String> =
-                sqlx::query_scalar("SELECT locale FROM users WHERE id = $1")
-                    .bind(user)
-                    .fetch_optional(&mut *conn)
-                    .await?;
-            (old.to_string(), locale.unwrap_or_default())
-        }
-        (None, Some((email, locale))) => (email, locale),
-        (None, None) => return Ok(false),
-    };
-    let tpl = Template::SecurityNotice {
-        event,
-        at: chrono::Utc::now(),
-        ip: ip.map(|a| a.to_string()),
-        portal_url: portal.map(str::to_string),
-    };
-    mail::enqueue(
-        conn,
-        &s,
-        &tpl,
-        Locale::parse(&locale),
-        &to,
-        Some(user),
-        None,
-    )
-    .await?;
-    Ok(true)
-}
+#[cfg(test)]
+mod tests;

@@ -427,6 +427,17 @@ async fn refund_notice_mail() {
     for want in ["¥6.00", "原路退回", "已取消", ORIGIN] {
         assert!(m[0].1.contains(want), "{want}: {}", m[0].1);
     }
+    // A partial refund through the provider keeps the plan and says so.
+    let op = bought(&db, &c, plan, "month").await;
+    let r = refund(&admin, op, json!({"reason": "r", "external_cents": 300})).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let m = mails().await;
+    assert_eq!(m.len(), 2);
+    assert!(
+        m[1].1.contains("¥3.00") && m[1].1.contains("不受影响"),
+        "{}",
+        m[1].1
+    );
     // Switched off: no mail; on again, but the address is unverified.
     sqlx::query("UPDATE mail_settings SET notify_refund = false")
         .execute(&db.pool)
@@ -445,7 +456,7 @@ async fn refund_notice_mail() {
         .unwrap();
     let o3 = bought(&db, &c, plan, "month").await;
     refund(&admin, o3, json!({"reason": "r", "to_balance": true})).await;
-    assert_eq!(mails().await.len(), 1);
+    assert_eq!(mails().await.len(), 2);
     drop(state);
     db.drop().await;
 }

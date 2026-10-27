@@ -104,7 +104,11 @@ fn smtp_values_rules() {
         notify_expiry_days: 3,
         notify_expired: true,
         notify_quota: true,
-        notify_refund: None,
+        notify_refund: true,
+        notify_ban: true,
+        notify_plan_change: true,
+        notify_withdrawal: true,
+        notify_commission: true,
     };
     let v = mail_values(&base).unwrap();
     assert_eq!(v.host.as_deref(), Some("smtp.example.com"));
@@ -192,6 +196,10 @@ fn clone_req(r: &MailReq) -> MailReq {
         notify_expired: r.notify_expired,
         notify_quota: r.notify_quota,
         notify_refund: r.notify_refund,
+        notify_ban: r.notify_ban,
+        notify_plan_change: r.notify_plan_change,
+        notify_withdrawal: r.notify_withdrawal,
+        notify_commission: r.notify_commission,
     }
 }
 
@@ -728,7 +736,7 @@ fn put_body(version: i64, extra: &serde_json::Value) -> serde_json::Value {
         "version": version, "enabled": false, "host": null, "port": 587,
         "security": "starttls", "username": null, "from_addr": "noreply@example.com",
         "from_name": null, "notify_order_paid": true, "notify_expiry_days": 3,
-        "notify_expired": true, "notify_quota": true,
+        "notify_expired": true, "notify_quota": true, "notify_refund": true, "notify_ban": true, "notify_plan_change": true, "notify_withdrawal": true, "notify_commission": true,
     });
     for (k, v) in extra.as_object().unwrap() {
         b[k] = v.clone();

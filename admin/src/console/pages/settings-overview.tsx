@@ -46,6 +46,10 @@ export type MailS = {
   notify_expired: boolean;
   notify_quota: boolean;
   notify_refund: boolean;
+  notify_ban: boolean;
+  notify_plan_change: boolean;
+  notify_withdrawal: boolean;
+  notify_commission: boolean;
   warnings: string[];
   /** Settled in the last 24 hours (sent / given up). */
   sent_24h?: number;
@@ -381,6 +385,10 @@ export function useOverview() {
       mail.notify_expired,
       mail.notify_quota,
       mail.notify_refund,
+      mail.notify_ban,
+      mail.notify_plan_change,
+      mail.notify_withdrawal,
+      mail.notify_commission,
     ];
     sum.notices = [{ k: tr("开启", "On"), v: `${on.filter(Boolean).length} / ${on.length}` }];
   }

@@ -1612,6 +1612,18 @@ async fn commission_lifecycle() {
         want
     );
     let inviter = db.user().await;
+    sqlx::query(
+        "UPDATE mail_settings SET enabled = true, host = '127.0.0.1', security = 'none', \
+         from_addr = 'noreply@example.com'",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE users SET email_verified_at = now() WHERE id = $1")
+        .bind(inviter)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     let ic = user_client(&state, inviter).await;
     assert_eq!(
         ic.get("/test/api/v1/commission-settings").await.status,
@@ -1646,7 +1658,7 @@ async fn commission_lifecycle() {
     assert!(inv.get("invite_codes").is_none());
     // Not before the hold.
     let mut c = db.pool.acquire().await.unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 0);
     // Time travel past the hold: credited once, through the enforce pass.
     sqlx::query("UPDATE commissions SET available_at = now() - interval '1 second'")
         .execute(&db.pool)
@@ -1654,8 +1666,23 @@ async fn commission_lifecycle() {
         .unwrap();
     crate::enforce::run_all(&state).await.unwrap();
     assert_eq!(balance(&db, inviter).await, 100);
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 0);
     assert_eq!(balance(&db, inviter).await, 100);
+    // One credit notice, naming the order and never the invitee.
+    let credited: Vec<(String, String)> = sqlx::query_as(
+        "SELECT to_addr, body_text FROM mail_outbox WHERE kind = 'commission_credited'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(credited.len(), 1);
+    assert!(credited[0].1.contains(&otn1) && credited[0].1.contains("¥1.00"));
+    let invitee_email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(invitee)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(!credited[0].1.contains(&invitee_email));
     let (st, ledger_id): (String, Option<i64>) =
         sqlx::query_as("SELECT status, ledger_id FROM commissions WHERE id = $1")
             .bind(cid)
@@ -1696,7 +1723,7 @@ async fn commission_lifecycle() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 0);
     assert_eq!(balance(&db, inviter).await, 100);
     // 中-4: a refund after the credit claws it back (the balance covers it).
     let r = admin
@@ -1802,7 +1829,7 @@ async fn commission_lifecycle() {
     .execute(&db.pool)
     .await
     .unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 1);
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT status FROM commissions WHERE order_id = $1")
             .bind(o8)
@@ -1975,7 +2002,7 @@ async fn commission_exactly_once_under_duplicates() {
         let pool = db.pool.clone();
         tasks.push(tokio::spawn(async move {
             let mut tx = pool.begin().await.unwrap();
-            let n = commission::credit_due(&mut tx).await.ok().unwrap();
+            let n = commission::credit_due(&mut tx, None).await.ok().unwrap();
             tx.commit().await.unwrap();
             n
         }));
@@ -2347,7 +2374,7 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
     });
     step!("commission credited", 1, {
         let mut c = db.pool.acquire().await.unwrap();
-        assert!(commission::credit_due(&mut c).await.ok().unwrap() >= 1);
+        assert!(commission::credit_due(&mut c, None).await.ok().unwrap() >= 1);
     });
     // 中-4: the credited commission is clawed back with the refund (one
     // more ledger row, on the inviter's balance).
@@ -2369,7 +2396,7 @@ async fn every_money_movement_writes_one_ledger_row_and_audit() {
     });
     step!("its commission credited", 1, {
         let mut c = db.pool.acquire().await.unwrap();
-        assert!(commission::credit_due(&mut c).await.ok().unwrap() >= 1);
+        assert!(commission::credit_due(&mut c, None).await.ok().unwrap() >= 1);
     });
     let w = std::cell::Cell::new(Uuid::nil());
     step!("withdrawal request", 1, {
@@ -2608,7 +2635,7 @@ async fn partial_refund_is_proportional() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 1);
     assert_eq!(balance(&db, inviter).await, 60, "only the rest is credited");
     let (st, claw, rec): (String, Option<i64>, i64) = sqlx::query_as(
         "SELECT status, clawback_cents, clawback_recovered_cents FROM commissions WHERE order_id = $1",
@@ -2627,7 +2654,7 @@ async fn partial_refund_is_proportional() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 1);
     assert_eq!(balance(&db, inviter).await, 160);
     let r = refund(o2, json!({"reason": "r", "external_cents": 250})).await;
     assert_eq!(r.json()["commission"], "clawed_back");
@@ -2698,14 +2725,14 @@ async fn banned_inviters_commission_waits() {
     .await
     .unwrap();
     let mut c = db.pool.acquire().await.unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 0);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 0);
     assert_eq!(balance(&db, inviter).await, 0);
     sqlx::query("UPDATE users SET enabled = true WHERE id = $1")
         .bind(inviter)
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(commission::credit_due(&mut c).await.ok().unwrap(), 1);
+    assert_eq!(commission::credit_due(&mut c, None).await.ok().unwrap(), 1);
     assert_eq!(balance(&db, inviter).await, 100);
     drop(c);
     drop(state);

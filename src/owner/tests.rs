@@ -408,7 +408,7 @@ async fn trust_settings_are_owner_only() {
             "/test/api/v1/settings/mail",
             json!({"version": v_mail, "enabled": false, "port": 587, "security": "starttls",
                    "notify_order_paid": false, "notify_expiry_days": 0,
-                   "notify_expired": false, "notify_quota": false}),
+                   "notify_expired": false, "notify_quota": false, "notify_refund": false, "notify_ban": false, "notify_plan_change": false, "notify_withdrawal": false, "notify_commission": false}),
         ),
         (
             Method::PUT,

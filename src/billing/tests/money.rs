@@ -111,7 +111,7 @@ async fn credit_now(db: &TestDb) {
     .await
     .unwrap();
     let mut c = db.pool.acquire().await.unwrap();
-    super::super::commission::credit_due(&mut c)
+    super::super::commission::credit_due(&mut c, None)
         .await
         .ok()
         .unwrap();
