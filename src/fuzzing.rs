@@ -22,10 +22,67 @@ pub fn normalize_inbound(inbound: &Value) -> Result<Value, String> {
     crate::api::normalize_inbound(inbound).map_err(|e| e.message().to_string())
 }
 
-/// Routing PR 2: whether the outbound SSRF policy (`outbound`, used by the
-/// rule-set fetch; without the loopback test switch) accepts `url`.
-pub fn rule_set_target_ok(url: &str) -> bool {
-    crate::outbound::target(url, Default::default()).is_ok()
+/// Subscription templates: a template body for the format `sel` (0 sing-box,
+/// 1 Clash, 2 Surge, 3 Surfboard) rendered for the sample user; an accepted
+/// one yields a document of its kind.
+pub fn sub_template_body(sel: u8, body: &str) -> Result<(), String> {
+    use crate::sub::templates::{TemplateFormat, render_sample};
+    let f = TemplateFormat::ALL[usize::from(sel) % TemplateFormat::ALL.len()];
+    let Ok(out) = render_sample(f, body) else {
+        return Ok(());
+    };
+    match f {
+        TemplateFormat::SingBox => serde_json::from_str::<Value>(&out)
+            .map(drop)
+            .map_err(|e| format!("sing-box output: {e}")),
+        TemplateFormat::Clash => serde_saphyr::from_str::<Value>(&out)
+            .map(drop)
+            .map_err(|e| format!("Clash output: {e}")),
+        TemplateFormat::Surge | TemplateFormat::Surfboard => {
+            if out.ends_with('\n') && out.contains("[Proxy]") {
+                Ok(())
+            } else {
+                Err(format!("{f:?} output lost its sections:\n{out}"))
+            }
+        }
+    }
+}
+
+/// Subscription templates: a line (`name`, `secret` as the credential)
+/// rendered through the built-in templates of every format; the violation
+/// of an invariant as text. A name or secret is data: it never adds a
+/// line, section or key to a profile.
+pub fn sub_template_values(name: &str, secret: &str) -> Result<(), String> {
+    use crate::sub::templates::{TemplateFormat, render_sample_for};
+    let mut rows = crate::sub::templates::sample_rows();
+    for r in &mut rows {
+        r.entrance = name.to_string();
+        r.account = match r.protocol.as_str() {
+            "vless" | "vmess" => serde_json::json!({"id": secret}),
+            "hysteria" => serde_json::json!({"auth": secret}),
+            _ => serde_json::json!({"password": secret}),
+        };
+    }
+    let proxies = crate::sub::proxy::collect_proxies(&rows);
+    for f in TemplateFormat::ALL {
+        let out = render_sample_for(f, f.default_body(), &proxies)
+            .map_err(|e| format!("{f:?}: the built-in template failed: {}", e.message))?;
+        match f {
+            TemplateFormat::SingBox => {
+                serde_json::from_str::<Value>(&out).map_err(|e| format!("sing-box output: {e}"))?;
+            }
+            TemplateFormat::Clash => {
+                serde_saphyr::from_str::<Value>(&out).map_err(|e| format!("clash output: {e}"))?;
+            }
+            TemplateFormat::Surge | TemplateFormat::Surfboard => {
+                let sections = out.lines().filter(|l| l.starts_with('[')).count();
+                if sections != 5 && sections != 6 {
+                    return Err(format!("{f:?}: {sections} sections:\n{out}"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `sub::plausible_token` (subscription path segment).
