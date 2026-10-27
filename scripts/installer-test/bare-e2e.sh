@@ -82,7 +82,7 @@ cx() { docker exec -e LANG=C.UTF-8 "$c" "$@"; }
 # installs zh_CN.UTF-8 for itself and speaks Chinese.
 log "locale: zh_CN.UTF-8 cannot be installed -> English"
 cx sh -c '! locale -a | grep -i "^zh_cn\.utf-\?8$"' || fail "the image already has zh_CN.UTF-8"
-default_locale() { cx sh -c 'ls -l /etc/default/locale /etc/locale.conf 2>&1; cat /etc/default/locale /etc/locale.conf 2>&1; cat /etc/environment 2>&1'; }
+default_locale() { cx sh -c 'ls /etc/default/locale /etc/locale.conf 2>&1; cat /etc/default/locale /etc/locale.conf 2>&1; cat /etc/environment 2>&1'; }
 locale_before=$(default_locale)
 cx sh -c 'mkdir -p /fakebin && printf "%s\n" "#!/bin/sh" "case \"\$*\" in *locales*) exit 100 ;; esac" "exec /usr/bin/apt-get \"\$@\"" >/fakebin/apt-get && chmod +x /fakebin/apt-get'
 docker exec -e LANG=C.UTF-8 -e PATH=/fakebin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "$c" \
