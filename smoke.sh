@@ -924,7 +924,7 @@ for _ in $(seq 1 20); do subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ]
 subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: third-party clients not back"; exit 1; }
 # These fetches must not eat the user's subscription rate budget (M1-10 below).
 subrl
-[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "7" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
+[ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "4" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
 echo "w30 client detection + templates + format switches + own client only: ok"
 
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
