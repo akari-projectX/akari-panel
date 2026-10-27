@@ -88,20 +88,20 @@ ipa=$(ip_of "$ca")
 ipb=$(ip_of "$cb")
 echo "A $ipa  B $ipb"
 
-# in CONTAINER CMD...: with the installer's environment; secrets by name.
-in() {
+# inc CONTAINER CMD...: with the installer's environment; secrets by name.
+inc() {
 	local c=$1
 	shift
 	docker exec -e LANG=C.UTF-8 -e AKARI_LANG=en -e AKARI_ADMIN_PASSWORD="$pw" -e AKARI_SOURCE_DIR=/src \
 		-e AKARI_RELEASES_URL=file:///rel -e AKARI_COSIGN_KEY=/rel/cosign.pub "$c" "$@"
 }
-ina() { in "$ca" "$@"; }
-inb() { in "$cb" "$@"; }
+ina() { inc "$ca" "$@"; }
+inb() { inc "$cb" "$@"; }
 # tcp_open CONTAINER HOST PORT: a TCP connection succeeds within 3 s.
 tcp_open() { docker exec "$1" timeout 3 bash -c "exec 3<>/dev/tcp/$2/$3" 2>/dev/null; }
 prefix_of() { ina akari-ctl info | sed -n '1s#.*://[^/]*/\([^/]*\)/app$#\1#p'; }
 version_of() { docker exec "$1" sed -n 's/^VERSION=//p' /etc/akari/install.env; }
-status_ok() { in "$1" akari-ctl status >/dev/null; }
+status_ok() { inc "$1" akari-ctl status >/dev/null; }
 
 # --- 1. instance A ------------------------------------------------------------------------------
 log "install $new on A (IP only)"
