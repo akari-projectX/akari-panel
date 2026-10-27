@@ -115,12 +115,9 @@ telegram_api_url = "https://tg.example.com"
 TOML
 # W25: the timers smoke shortens are built-in constants now; this TEST-ONLY
 # variable (logged at startup) shortens them: 8 subscription fetches per
-# token and window, a 5 s "立即测速" cooldown, node alerts every 5 s, rule-set
-# downloads from the loopback list host.
-# rule_set_fetch_loopback=1: remote rule-sets may come from the local list
-# host below (plain http to 127.0.0.1; refused in production).
+# token and window, a 5 s "立即测速" cooldown, node alerts every 5 s.
 # cloudflare_mock_port=18206: the DNS management talks to the local mock API.
-SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,rule_set_fetch_loopback=1,cloudflare_mock_port=18206"
+SMOKE_LIMITS="sub_rate_per_token=8,probe_manual_cooldown_secs=5,alerts_eval_interval_secs=5,entrance_health_interval_secs=2,cloudflare_mock_port=18206"
 # Helper servers (payment mock, latency target) must die with this script
 # on EVERY exit path, a crash or kill -9 included: they inherit the caller's
 # file descriptors, so a leftover one would keep holding `flock smoke.lock`
@@ -854,7 +851,7 @@ curl -s --noproxy '*' -D - -o /dev/null "$SUBBASE/not-a-real-token" | matches -i
   && { echo "FAIL: quota header leaked on rejection"; exit 1; }
 echo "subscription: ok ($SIZE-byte padded body)"
 
-echo "== W30: client detection, routing template =="
+echo "== W30: client detection, subscription templates, format switches =="
 # The subscription rate limit (8 per user per window under AKARI_TEST_LIMITS)
 # would answer these checks with the rejection: a clean limiter before each.
 subrl() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call('DEL', k) end return 1" 0 'akari:rl:sub:*' >/dev/null; }
@@ -862,56 +859,92 @@ subrl() { vk EVAL "for _,k in ipairs(redis.call('KEYS', ARGV[1])) do redis.call(
 for pair in "clash-verge/v2.2.3=text/yaml" "Stash/2.7.5 Clash/1.11.0=text/yaml" "mihomo.party/v1.7.3=text/yaml" \
             "SFA/1.12.0 (Android 14; sing-box 1.12.0)=application/json" "SFI/1.12.0 (Apple iOS 18.1; sing-box 1.12.0)=application/json" \
             "HiddifyNext/2.5.7 (android) like ClashMeta v2ray sing-box=text/plain" "Shadowrocket/2070 CFNetwork/1410=text/plain" \
-            "v2rayN/7.4.2=text/plain"; do
+            "v2rayN/7.4.2=text/plain" "Surge iOS/3000=text/plain" "Surfboard/2.30.0=text/plain"; do
   ua=${pair%=*}; want=${pair##*=}
   subrl
   curl -s --noproxy '*' -A "$ua" -D - -o /dev/null "$SUB" | matches -i "^content-type: $want" \
     || { echo "FAIL: $ua does not get $want"; exit 1; }
 done
-# The built-in (recommended) routing: DNS, service groups, rule-providers
-# (Clash); rule sets, groups + TUN profile (sing-box).
+# The built-in templates: DNS, service groups, rule-providers (Clash);
+# rule sets, groups + TUN profile (sing-box); sections and lines (Surge).
 subrl
 W30_CODE=$(curl -s --noproxy '*' -o "$LOG/w30-clash.yaml" -w "%{http_code}" -A "clash-verge/v2" "$SUB")
 for want in "^dns:" "^  respect-rules: true" "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
-            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - RULE-SET,geosite-netflix,🎬 Netflix" "^  - name: \"🎬 Netflix\"" \
+            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - RULE-SET,geosite-netflix,🎬 Netflix" "^  - name: .?🎬 Netflix" \
             "^  - MATCH,🚀 默认代理"; do
   matches "$want" <"$LOG/w30-clash.yaml" \
-    || { echo "FAIL: clash routing lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
+    || { echo "FAIL: clash template lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
 done
 subrl
 curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); r=d['route']; assert r['final']=='🚀 默认代理' and {s['tag'] for s in r['rule_set']}>={'geosite-cn','geoip-cn','geosite-category-ads-all','geosite-netflix'} and d['inbounds'][0]['type']=='tun' and d['outbounds'][0]['type']=='selector' and d['outbounds'][0]['tag']=='🚀 默认代理' and r['default_domain_resolver']=='local' and d['dns']['final']=='remote', r" \
   || { echo "FAIL: sing-box profile"; exit 1; }
-# The routing editor's catalog: categories, common services, the entrances.
-W30_ENT=$(psql_q "SELECT id FROM entrances WHERE node_id = '$NODE_ID' AND kind = 'direct'")
-[ "$(code -b "$JAR" "$BASE/api/v1/settings/subscription/catalog")" = "200" ] \
-  && last_json "len(d['categories']) >= 17 and d['services'][0]['key'] == 'netflix' and any(e['id'] == '$W30_ENT' for e in d['entrances'])" | matches -x 'True' \
-  || { echo "FAIL: subscription catalog"; cat /tmp/akari-smoke/last; exit 1; }
-# The routing is editable (audited); a pinned line becomes the service's
-# failover group; an unknown line is refused; null restores the default.
-[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (W30)"; exit 1; }
-W30_VER=$(last_json "d['version']")
+# Surge and Surfboard: their own profiles (the smoke node is VLESS, which
+# neither documents: no proxy line, the groups fall back to DIRECT).
+for ua in "Surge iOS/3000" "Surfboard/2.30.0"; do
+  subrl; curl -s --noproxy '*' -A "$ua" "$SUB" >"$LOG/w30-ini.conf"
+  for want in "^#!MANAGED-CONFIG http.*$SUBP/.*[?]format=" "^\[Proxy\]" "^\[Proxy Group\]" "^\[Rule\]" "^FINAL,🚀 默认代理"; do
+    matches "$want" <"$LOG/w30-ini.conf" || { echo "FAIL: $ua profile lacks $want"; head -c 2500 "$LOG/w30-ini.conf"; exit 1; }
+  done
+  matches "vless" <"$LOG/w30-ini.conf" && { echo "FAIL: a VLESS line in a $ua profile"; exit 1; }
+done
+subrl; [ "$(code -A "curl/8" "$SUB?format=surge")" = "200" ] || { echo "FAIL: ?format=surge"; exit 1; }
+subrl; curl -s --noproxy '*' -A "Surge iOS/3000" "$SUB" | matches "^Subscription = title=\"Akari\",content=\"upload=0, download=0, total=107374182400, expire=" \
+  || { echo "FAIL: Surge [Panel] subscribe_info"; exit 1; }
+# The template editor's API: all four, defaults first; admin only.
+[ "$(code -b "$JAR" "$BASE/api/v1/sub-templates")" = "200" ] \
+  && last_json "[(t['format'], t['is_default'], t['version']) for t in d['templates']]" | matches -x "\[('sing-box', True, 0), ('clash', True, 0), ('surge', True, 0), ('surfboard', True, 0)\]" \
+  || { echo "FAIL: GET sub-templates"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code "$BASE/api/v1/sub-templates")" != "200" ] || { echo "FAIL: sub-templates readable without a session"; exit 1; }
+# A bad template is refused with its position; a good one is served at once.
+W30_BAD='{"version":0,"body":"proxy-groups:\n  - {name: G, type: select, proxies: [Ghost]}\n"}'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/sub-templates/clash" -H 'Content-Type: application/json' -d "$W30_BAD")" = "400" ] \
+  && [ "$(last_json "(d['code'], d['params']['field'], d['params']['line'])")" = "('sub_template.invalid', 'body', 2)" ] \
+  || { echo "FAIL: bad template accepted"; cat /tmp/akari-smoke/last; exit 1; }
+W30_TPL='{"version":0,"body":"mixed-port: 7891\ndns: {enable: true}\nproxy-groups:\n  - {name: Mine, type: select, proxies: [$proxies, DIRECT]}\nrules:\n  - MATCH,Mine\n"}'
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/sub-templates/clash" -H 'Content-Type: application/json' -d "$W30_TPL")" = "200" ] \
+  && [ "$(last_json "(d['version'], d['is_default'])")" = "(1, False)" ] || { echo "FAIL: PUT clash template"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/sub-templates/clash" -H 'Content-Type: application/json' -d "$W30_TPL")" = "409" ] \
+  || { echo "FAIL: stale template version accepted"; exit 1; }
+subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" >"$LOG/w30-custom.yaml"
+matches "^mixed-port: 7891" <"$LOG/w30-custom.yaml" && matches "^  - name: Mine" <"$LOG/w30-custom.yaml" && matches "^    type: vless" <"$LOG/w30-custom.yaml" \
+  || { echo "FAIL: the stored Clash template is not served"; head -c 2000 "$LOG/w30-custom.yaml"; exit 1; }
+# The line's data is injected, never substituted: the preview shows it too,
+# with a placeholder link, and a real user's preview is audited.
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/sub-templates/clash/preview" -H 'Content-Type: application/json' -d '{}')" = "200" ] \
+  && last_json "'mixed-port: 7891' in d['body'] and '香港 01' in d['body'] and d['content_type'].startswith('text/yaml')" | matches -x 'True' \
+  || { echo "FAIL: template preview"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$JAR" -X POST "$BASE/api/v1/sub-templates/clash/preview" -H 'Content-Type: application/json' -d "{\"user_id\":\"$USER_ID\"}")" = "200" ] \
+  && last_json "'node1.example.test' in d['body'] and 'format=' not in d['body']" | matches -x 'True' \
+  && [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='sub_template.preview'")" = "1" ] \
+  || { echo "FAIL: template preview of a user"; cat /tmp/akari-smoke/last; exit 1; }
+# The real clients accept the rendered built-in templates (when installed).
+if [ -n "${MIHOMO_BIN:-}" ] || [ -x ../akari-client/bin/mihomo ]; then
+  W30_MIHOMO=${MIHOMO_BIN:-../akari-client/bin/mihomo}
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/sub-templates/clash")" = "200" ] || { echo "FAIL: reset Clash template"; exit 1; }
+  subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" >"$LOG/w30-clash.yaml"
+  mkdir -p "$LOG/w30-mihomo"
+  "$W30_MIHOMO" -t -d "$LOG/w30-mihomo" -f "$LOG/w30-clash.yaml" 2>&1 | matches "successful" || { echo "FAIL: mihomo -t on the default Clash template"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
+else
+  echo "SKIP: mihomo -t on the default Clash template (no MIHOMO_BIN)"
+  [ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/sub-templates/clash")" = "200" ] || { echo "FAIL: reset Clash template"; exit 1; }
+fi
+if [ -n "${SINGBOX_BIN:-}" ]; then
+  subrl; curl -s --noproxy '*' -A "SFA/1.12.0" "$SUB" >"$LOG/w30-sb.json"
+  "$SINGBOX_BIN" check -c "$LOG/w30-sb.json" || { echo "FAIL: sing-box check on the default template"; exit 1; }
+fi
+[ "$(psql_q "SELECT count(*) FROM sub_templates")" = "0" ] || { echo "FAIL: reset left a template row"; exit 1; }
+# The retired routing API and hosted lists are gone (a PUT with `routing` is
+# an unknown field; the catalog and the lists are not routes).
+W30_VER=$(code -b "$JAR" "$BASE/api/v1/settings" >/dev/null; last_json "d['version']")
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$W30_VER,\"routing\":{\"direct\":[{\"type\":\"domain_suffix\",\"value\":\"corp.example\"}]}}")" = "200" ] \
-  || { echo "FAIL: PUT subscription settings"; cat /tmp/akari-smoke/last; exit 1; }
-for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" && break; sleep 0.25; done
-subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^  - DOMAIN-SUFFIX,corp.example,DIRECT" || { echo "FAIL: edited routing not served"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 1)),\"routing\":{\"services\":[{\"key\":\"netflix\",\"name\":\"Netflix\",\"emoji\":\"🎬\",\"items\":[{\"type\":\"category\",\"value\":\"netflix\"}],\"primary\":\"$W30_ENT\"}]}}")" = "200" ] \
-  || { echo "FAIL: pin a line"; cat /tmp/akari-smoke/last; exit 1; }
-for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches '^  - name: "♻️ Netflix 推荐"' && break; sleep 0.25; done
-subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" >"$LOG/w30-pinned.yaml"
-python3 -c "import sys; t=open(sys.argv[1]).read(); assert '  - name: \"♻️ Netflix 推荐\"\n    type: fallback\n' in t" "$LOG/w30-pinned.yaml" \
-  || { echo "FAIL: pinned line not served as a failover group"; head -c 4000 "$LOG/w30-pinned.yaml"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 2)),\"routing\":{\"services\":[{\"key\":\"x\",\"name\":\"X\",\"primary\":\"00000000-0000-0000-0000-000000000000\"}]}}")" = "400" ] \
-  && [ "$(last_json "d['code']")" = "settings.sub_entrance_unknown" ] || { echo "FAIL: unknown line accepted"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 2)),\"routing\":null}")" = "200" ] || { echo "FAIL: reset routing"; exit 1; }
+    -d "{\"version\":$W30_VER,\"routing\":null}")" = "400" ] || { echo "FAIL: routing field still accepted"; exit 1; }
+[ "$(code -b "$JAR" "$BASE/api/v1/settings/subscription/catalog")" = "404" ] || { echo "FAIL: routing catalog still routed"; exit 1; }
+subrl; [ "$(fp "$SUBBASE/rules/0123456789abcdef0123456789abcdef.json")" = "$REJ" ] || { echo "FAIL: hosted rule-set route still answers"; exit 1; }
 # Section 5: a format that is off is the uniform rejection; the portal hides
 # its import buttons.
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 3)),\"formats\":[\"clash\"],\"import_clients\":[\"clash\",\"shadowrocket\"]}")" = "200" ] \
+    -d "{\"version\":$((W30_VER)),\"formats\":[\"clash\"],\"import_clients\":[\"clash\",\"shadowrocket\"]}")" = "200" ] \
   && [ "$(last_json "d['subscription']['import_clients_shown']")" = "['clash']" ] \
   || { echo "FAIL: format switches"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] && break; sleep 0.25; done
@@ -919,14 +952,14 @@ subrl; [ "$(fp -A "v2rayN/7.4.2" "$SUB")" = "$REJ" ] || { echo "FAIL: a disabled
 subrl; [ "$(fp "$SUB?format=sing-box")" = "$REJ" ] || { echo "FAIL: ?format of a disabled format answers"; exit 1; }
 subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: the enabled format stopped"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 4)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
+    -d "{\"version\":$((W30_VER + 1)),\"formats\":null,\"import_clients\":null}")" = "200" ] || { echo "FAIL: switches back on"; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] && break; sleep 0.25; done
 subrl; [ "$(code -A "v2rayN/7.4.2" "$SUB")" = "200" ] || { echo "FAIL: links not back"; exit 1; }
 # B1 仅自研客户端: only the Akari client's User-Agent is answered (Clash);
 # every other client and explicit format is the canonical rejection; the
 # stored format list is kept.
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 5)),\"own_client_only\":true}")" = "200" ] \
+    -d "{\"version\":$((W30_VER + 2)),\"own_client_only\":true}")" = "200" ] \
   && [ "$(last_json "(d['subscription']['own_client_only'], d['subscription']['import_clients_shown'])")" = "(True, [])" ] \
   || { echo "FAIL: own client only switch"; cat /tmp/akari-smoke/last; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(fp -A "clash-verge/v2" "$SUB")" = "$REJ" ] && break; sleep 0.25; done
@@ -938,13 +971,13 @@ subrl; [ "$(fp -A "clash-verge/v2" "$SUB?format=clash")" = "$REJ" ] || { echo "F
 subrl; curl -s --noproxy '*' -A "akari-client/0.1.0 mihomo" -D - -o /dev/null "$SUB" | matches -i "^content-type: text/yaml" \
   || { echo "FAIL: the Akari client is not answered with Clash"; exit 1; }
 [ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$((W30_VER + 6)),\"own_client_only\":false}")" = "200" ] || { echo "FAIL: own client only off"; exit 1; }
+    -d "{\"version\":$((W30_VER + 3)),\"own_client_only\":false}")" = "200" ] || { echo "FAIL: own client only off"; exit 1; }
 for _ in $(seq 1 20); do subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] && break; sleep 0.25; done
 subrl; [ "$(code -A "clash-verge/v2" "$SUB")" = "200" ] || { echo "FAIL: third-party clients not back"; exit 1; }
 # These fetches must not eat the user's subscription rate budget (M1-10 below).
 subrl
 [ "$(psql_q "SELECT count(*) FROM audit_log WHERE action='settings.subscription.update'")" = "7" ] || { echo "FAIL: subscription settings not audited"; exit 1; }
-echo "w30 client detection + routing + format switches + own client only: ok"
+echo "w30 client detection + templates + format switches + own client only: ok"
 
 echo "== subscription: REALITY inbound carries a uTLS fingerprint (default + admin hint) =="
 # Throwaway REALITY inbound + user; the panel only reads publicKey/fingerprint
@@ -1040,74 +1073,6 @@ done
 [ "$(fp "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit subscription is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
 [ "$(fp -A "clash-meta/1.19" "$SUB")" = "$REJ" ] || { echo "FAIL: over-limit (clash UA) differs"; exit 1; }
 echo "sub token + rate limit: ok"
-
-echo "== routing PR 2: remote rule-sets (downloaded on save, hosted for sing-box, check endpoint) =="
-# A local list host on 127.0.0.1:18205 (the panel may fetch plain http from
-# loopback only under AKARI_TEST_LIMITS rule_set_fetch_loopback=1; production
-# refuses loopback/private addresses and anything but https).
-RS_DIR="$LOG/rule-sets"; mkdir -p "$RS_DIR"
-printf 'payload:\n  - DOMAIN-SUFFIX,claude.ai\n  - DOMAIN-KEYWORD,claude\n  - IP-CIDR,160.79.104.0/23,no-resolve\n  - PROCESS-NAME,Claude.exe\n' >"$RS_DIR/Claude.yaml"
-printf '<html><body>Not Found</body></html>\n' >"$RS_DIR/page.list"
-python3 -c "$TIE_PY"'
-import functools, http.server, sys
-H = functools.partial(http.server.SimpleHTTPRequestHandler, directory=sys.argv[1])
-H.func.log_message = lambda *a: None
-http.server.ThreadingHTTPServer(("127.0.0.1", 18205), H).serve_forever()
-' "$RS_DIR" >/dev/null 2>&1 &
-RS_PID=$!
-for _ in $(seq 1 50); do (exec 3<>/dev/tcp/127.0.0.1/18205) 2>/dev/null && break; sleep 0.1; done
-RS_URL="http://127.0.0.1:18205/Claude.yaml"
-RS_ID=$(python3 -c "import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:32])" "$RS_URL")
-rs_put() { # $1 = the AI service's items (JSON)
-  [ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings (rule-sets)"; exit 1; }
-  code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$(last_json "d['version']"),\"routing\":{\"services\":[{\"key\":\"ai\",\"name\":\"AI\",\"items\":$1}]}}"
-}
-# The check endpoint: admin only, counts + samples, nothing stored.
-[ "$(code -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "401" ] \
-  && [ "$(code -b "$UJAR" -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "403" ] \
-  || { echo "FAIL: rule-set check is not admin-only"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(code -b "$JAR" -X POST "$BASE/api/v1/settings/subscription/rule-set/check" -H 'Content-Type: application/json' -d "{\"url\":\"$RS_URL\"}")" = "200" ] \
-  && [ "$(last_json "(d['id'], d['kept'], d['counts']['unsupported'], d['clash_format'], d['sample'][0]['value'])")" = "('$RS_ID', 3, 1, 'yaml', 'claude.ai')" ] \
-  && [ "$(psql_q "SELECT count(*) FROM sub_rule_sets")" = "0" ] \
-  || { echo "FAIL: rule-set check"; cat /tmp/akari-smoke/last; exit 1; }
-# A bad first add refuses the save (nothing saved): not a list, a private
-# address.
-[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"http://127.0.0.1:18205/page.list\"}]")" = "422" ] \
-  && [ "$(last_json "d['code']")" = "settings.sub_rule_set_invalid" ] \
-  || { echo "FAIL: an HTML page saved as a rule-set"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"https://169.254.169.254/latest/meta-data\"}]")" = "422" ] \
-  && [ "$(last_json "d['code']")" = "settings.sub_rule_set_blocked" ] \
-  || { echo "FAIL: SSRF guard (metadata address)"; cat /tmp/akari-smoke/last; exit 1; }
-# A good one: downloaded, stored, hosted publicly on the subscription path.
-[ "$(rs_put "[{\"type\":\"rule_set\",\"value\":\"$RS_URL\"}]")" = "200" ] \
-  || { echo "FAIL: save a rule-set"; cat /tmp/akari-smoke/last; exit 1; }
-[ "$(psql_q "SELECT kept FROM sub_rule_sets WHERE id = '$RS_ID'")" = "3" ] || { echo "FAIL: rule-set not stored"; exit 1; }
-[ "$(code -D "$LOG/rs.h" "$SUBBASE/rules/$RS_ID.json")" = "200" ] \
-  && [ "$(last_json "(d['version'], d['rules'][0]['domain_suffix'], d['rules'][1]['ip_cidr'])")" = "(3, ['claude.ai'], ['160.79.104.0/23'])" ] \
-  && tr -d '\r' <"$LOG/rs.h" | matches -i '^cache-control: public, max-age=3600$' \
-  || { echo "FAIL: hosted rule-set"; cat "$LOG/rs.h" /tmp/akari-smoke/last; exit 1; }
-RS_ETAG=$(tr -d '\r' <"$LOG/rs.h" | sed -n 's/^[Ee][Tt][Aa][Gg]: //p')
-[ "$(code -H "If-None-Match: $RS_ETAG" "$SUBBASE/rules/$RS_ID.json")" = "304" ] || { echo "FAIL: hosted rule-set ETag"; exit 1; }
-# Unknown / malformed ids, the admin prefix, the internal name: the
-# canonical rejection, byte for byte.
-for p in "$SUBBASE/rules/00000000000000000000000000000000.json" "$SUBBASE/rules/$RS_ID" "$SUBBASE/rules/" \
-         "$BASE/sub-rules/$RS_ID.json" "$BASE/$SUBP/rules/$RS_ID.json" "$ROOT/_/sub-rules/$RS_ID.json"; do
-  [ "$(fp "$p")" = "$REJ" ] || { echo "FAIL: $p is not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
-done
-# Clash keeps the original link (a classical rule-provider).
-for _ in $(seq 1 20); do subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^    url: \"$RS_URL\"" && break; sleep 0.25; done
-subrl; curl -s --noproxy '*' -A "clash-verge/v2" "$SUB" | matches "^    url: \"$RS_URL\"" || { echo "FAIL: clash rule-provider"; exit 1; }
-# Back to the built-in routing: the copy is dropped with the link.
-[ "$(code -b "$JAR" "$BASE/api/v1/settings")" = "200" ] || { echo "FAIL: GET settings"; exit 1; }
-[ "$(code -b "$JAR" -X PUT "$BASE/api/v1/settings/subscription" -H 'Content-Type: application/json' \
-    -d "{\"version\":$(last_json "d['version']"),\"routing\":null}")" = "200" ] \
-  && [ "$(psql_q "SELECT count(*) FROM sub_rule_sets")" = "0" ] \
-  && [ "$(fp "$SUBBASE/rules/$RS_ID.json")" = "$REJ" ] \
-  || { echo "FAIL: dropped rule-set still hosted"; exit 1; }
-kill "$RS_PID" 2>/dev/null || true
-subrl
-echo "remote rule-sets: ok"
 
 echo "== DNS management: Cloudflare tokens (owner), zones and records against a mock API =="
 # The panel talks to a local Cloudflare mock (AKARI_TEST_LIMITS

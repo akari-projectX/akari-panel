@@ -49,6 +49,16 @@ KEY_FILE = "/run/credentials/akari-agent.service/tls_privkey.pem"
 DOMAIN = "w8.test"
 
 
+
+def yaml_name(v):
+    """A proxy name as the panel's YAML writes it: plain, 'single' or "double" quoted."""
+    v = v.strip()
+    if v.startswith('"'):
+        return json.loads(v)
+    if v.startswith("'"):
+        return v[1:-1].replace("''", "'")
+    return v
+
 def fail(msg):
     print(f"FAIL: {msg}")
     sys.exit(1)
@@ -352,7 +362,7 @@ def mihomo_run(binary, clash, label):
     # Only the proxies (not the subscription's DNS block or routing groups).
     cfg = "\n".join(lines)
     cfg = cfg[cfg.find("proxies:\n"):].split("proxy-groups:")[0]
-    names = [json.loads(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
+    names = [yaml_name(l[len("  - name: "):]) for l in cfg.splitlines() if l.startswith("  - name: ")]
     ports = {}
     cfg = "log-level: warning\nallow-lan: false\nipv6: false\n" + cfg + "listeners:\n"
     for n in names:

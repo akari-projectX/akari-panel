@@ -9,14 +9,14 @@
 // (N 项未保存的修改 · 放弃 · 保存 ⌘S; "N 处需要修正" blocks saving); leaving
 // with unsaved changes asks "有未保存的修改" (放弃修改，去「X」/ 继续编辑).
 import { ChevronLeft, CornerDownRight, ExternalLink, History, Info, Lock } from "lucide-react";
-import { Suspense, lazy, type ComponentType } from "react";
+import type { ComponentType } from "react";
 import { Link, Navigate, useSearchParams } from "react-router";
 import { cn } from "../../shared/cn";
 import { dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Card, Tile } from "../../shared/ui/card";
-import { LoadingBlock } from "../../shared/ui/states";
+import { Banner } from "../../shared/ui/layout";
 import { SearchField } from "../components/kit";
 import { SectionForm, useOwner, useWide } from "../components/settings-kit";
 import { useRoute } from "../router";
@@ -44,19 +44,16 @@ import { SubscriptionSection } from "./settings-sub";
 
 export { useSettings, type DomainEntry, type SettingsView } from "./settings-data";
 
-// The routing editor (SET-11) is the biggest section: its own chunk, fetched when opened.
-const RoutingEditor = lazy(() => import("./settings-routing"));
+// The template editor ships with the next update; the API (GET /sub-templates) is live.
 function RoutingSection() {
+  const tr = useTr();
   return (
-    <Suspense
-      fallback={
-        <div className="rounded-xl bg-card px-4 py-2 shadow-card">
-          <LoadingBlock rows={6} />
-        </div>
-      }
-    >
-      <RoutingEditor />
-    </Suspense>
+    <Banner tone="info">
+      {tr(
+        "订阅模板的编辑页随下一次更新上线；在此之前四种客户端都使用内置模板。",
+        "The subscription template editor ships with the next update; until then all four clients use the built-in templates.",
+      )}
+    </Banner>
   );
 }
 

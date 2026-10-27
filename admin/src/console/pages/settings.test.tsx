@@ -13,15 +13,6 @@ import { invalidateOnWrite, makeQueryClient } from "../data";
 import { MeContext } from "../session";
 import { SettingsPage } from "./settings";
 
-const ROUTING = {
-  mode: "rules" as const,
-  block: [],
-  direct: [{ type: "geosite", value: "cn" }],
-  services: [],
-  rest: null,
-  tag_groups: [],
-  dns: { mode: "recommended" as const, fakeip: true, cn: [], intl: [] },
-};
 const S = {
   version: 7,
   main: {
@@ -79,9 +70,6 @@ const S = {
     release_keys: [{ id: "abc", label: "official", official: true }],
   },
   subscription: {
-    routing: { value: null, effective: ROUTING, default: ROUTING },
-    rule_set_clash_url: { value: null, effective: "https://r/{kind}/{name}", default: "https://r/{kind}/{name}" },
-    rule_set_singbox_url: { value: null, effective: "https://s/{kind}/{name}", default: "https://s/{kind}/{name}" },
     formats: { value: null, effective: ["clash", "sing-box", "links"] },
     import_clients: { value: null, effective: ["clash", "hiddify"] },
     name_rate: false,
@@ -99,17 +87,6 @@ const FIX: Record<string, unknown> = {
     tos_url: null,
     privacy_url: null,
     client_downloads: [],
-  },
-  "/settings/subscription/catalog": {
-    categories: [
-      { id: "ads", name: "广告与跟踪", geosite: ["category-ads-all"], geoip: [] },
-      { id: "netflix", name: "Netflix", geosite: ["netflix"], geoip: [] },
-    ],
-    services: [{ key: "netflix", name: "Netflix", emoji: "🎬", categories: ["netflix"] }],
-    entrances: [{ id: "e1", name: "直连", node: "东京 01", region: "JP", tags: [], enabled: true }],
-    regions: ["JP"],
-    tags: [],
-    rule_sets: [],
   },
   "/settings/access": {
     version: 1,
@@ -614,42 +591,4 @@ test("payments edit + mail save", async () => {
   expect(b.port).toBe(587);
   expect(b.notify_expiry_days).toBe(3);
   expect("password" in b).toBe(false);
-});
-
-test("routing: add by typing, a service with a pinned line, the test box, one save", async () => {
-  mount("/settings/routing");
-  const add = await screen.findByRole("combobox", { name: "添加到「拦截」" });
-  fireEvent.change(add, { target: { value: "www.example.org" } });
-  const list = await screen.findByRole("listbox", { name: "建议" });
-  expect(within(list).getAllByRole("option")[0].textContent).toContain("example.org 及子域名");
-  fireEvent.keyDown(add, { key: "ArrowDown" });
-  fireEvent.keyDown(add, { key: "ArrowUp" });
-  fireEvent.keyDown(add, { key: "Enter" });
-  const blocked = screen.getByRole("region", { name: "拦截" });
-  await within(blocked).findByText("example.org 及子域名");
-  // A common service from the catalog, its primary line picked.
-  fireEvent.click(await screen.findByRole("button", { name: "🎬 Netflix" }));
-  fireEvent.change(await screen.findByRole("combobox", { name: "Netflix 的首选线路" }), { target: { value: "e:e1" } });
-  // The test box follows the draft.
-  fireEvent.change(screen.getByRole("textbox", { name: "测试网址" }), { target: { value: "a.example.org" } });
-  await waitFor(() => expect(screen.getByTestId("routing-test-result").textContent).toContain("拦截"));
-  const bar = await screen.findByRole("region", { name: "保存栏" });
-  await waitFor(() => expect(bar.textContent).toContain("2 项未保存的修改"));
-  await act(async () => {
-    fireEvent.click(within(bar).getByRole("button", { name: "保存" }));
-  });
-  await waitFor(() => expect(calls.some((c) => c.method === "PUT" && c.path === "/settings/subscription")).toBe(true));
-  const b = calls.find((c) => c.method === "PUT")!.body as { routing: { block: unknown[]; services: unknown[] } };
-  expect(b.routing.block).toEqual([{ type: "domain_suffix", value: "example.org" }]);
-  expect(b.routing.services).toEqual([
-    {
-      key: "netflix",
-      name: "Netflix",
-      emoji: "🎬",
-      items: [{ type: "category", value: "netflix" }],
-      primary: "e1",
-      backups: [],
-    },
-  ]);
-  expect("rule_set_clash_url" in b).toBe(false);
 });
