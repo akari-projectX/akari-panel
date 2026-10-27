@@ -757,8 +757,12 @@ pub fn sans(history: &[ServerName], node_server_name: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
-/// Chrome ignores related origins beyond this many distinct registrable
-/// labels (Firefox the same, `kMaxLabels`).
+/// Browsers ignore related origins beyond this many distinct registrable
+/// labels. Measured in Chromium (portal e2e `passkeys.spec.ts`, 6 main
+/// domains with distinct labels, an RP with a label of its own): the first
+/// five are accepted, the sixth gets a `SecurityError`, so the RP's own label
+/// is not counted. Firefox (`kMaxLabels`, RP not counted per its source) is
+/// untested.
 pub const PASSKEY_LABEL_LIMIT: usize = 5;
 
 /// The browsers' "label" of a host for the related-origins cap: the part of
