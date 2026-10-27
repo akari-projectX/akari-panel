@@ -2384,7 +2384,8 @@ uninstall_bare() {
 	rm -f "$ETC/caddy.env"
 	if [ "$PURGE" = 1 ]; then
 		PG_PORT=${PG_PORT:-$(pg_lsclusters -h 2>/dev/null | awk '$1 == "18" && $2 == "main" { print $3; exit }')}
-		if [ -n "$PG_PORT" ]; then
+		# A joined instance uses the primary's database: nothing local to drop.
+		if [ -n "$PG_PORT" ] && [ "$(multi_role)" != joined ]; then
 			printf 'DROP DATABASE IF EXISTS akari;\nDROP ROLE IF EXISTS akari;\n' | psql_pg -d postgres -f - >>"$LOG" 2>&1 ||
 				warn could_not_drop_database
 		fi
