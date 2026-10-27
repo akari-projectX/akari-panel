@@ -2432,7 +2432,9 @@ vk_cmd() {
 # peers_list: "id version alive sessions" per instance known to Valkey.
 # Fails when Valkey cannot be read.
 peers_list() {
-	_mx_raw=$(vk_cmd "HGETALL $PEERS_KEY") || return 1
+	# s_client's exit status after the server closes is not a result: the
+	# reply is (AUTH answered +OK).
+	_mx_raw=$(vk_cmd "HGETALL $PEERS_KEY" || true)
 	printf '%s' "$_mx_raw" | matches '^+OK' || return 1
 	_mx_now=$(date +%s)
 	printf '%s\n' "$_mx_raw" | tr -d '\r' | awk 'NR > 1 && !/^[*$:+-]/ { print }' | while IFS= read -r _mx_l; do
@@ -3267,7 +3269,7 @@ multi_rolling_check() {
 		mnote roll_compat
 		return 0
 	fi
-	_mx_rolled=$(vk_cmd "GET $ROLLED_KEY" | tr -d '\r' | sed -n 3p)
+	_mx_rolled=$( (vk_cmd "GET $ROLLED_KEY" || true) | tr -d '\r' | sed -n 3p)
 	if [ "$_mx_rolled" = "$TAG" ]; then
 		return 0
 	fi
@@ -3283,7 +3285,8 @@ multi_after_upgrade() {
 	[ "$ROLLING" = 1 ] || return 0
 	[ "$(multi_role)" != single ] || return 0
 	[ "$(kv_get "$BUNDLE/deploy/release.meta" schema_compat_previous)" != true ] || return 0
-	vk_cmd "SET $ROLLED_KEY $TAG EX 604800" >/dev/null || return 0
+	# two +OK: the AUTH and the SET
+	(vk_cmd "SET $ROLLED_KEY $TAG EX 604800" || true) | awk '/^\+OK/ { n++ } END { exit n < 2 }' || return 0
 	mnote roll_done_marker "$TAG"
 }
 
