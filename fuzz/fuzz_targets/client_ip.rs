@@ -115,7 +115,7 @@ fuzz_target!(|data: &[u8]| {
             peer,
             &no_cf,
             &Trust {
-                proxies: trust.proxies.clone(),
+                proxies: trust.proxies,
                 cloudflare: Vec::new(),
             }
         ),

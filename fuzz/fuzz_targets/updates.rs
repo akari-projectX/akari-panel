@@ -99,7 +99,7 @@ fuzz_target!(|data: &[u8]| {
             // A signature for another key id is ignored.
             let wrong = Signature {
                 key_id: "0000000000000000".into(),
-                sig: sig.sig.clone(),
+                sig: sig.sig,
             };
             assert!(verify(rest, &[wrong], &keys).is_err());
             let _ = parse_manifest(rest);

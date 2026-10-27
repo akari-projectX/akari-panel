@@ -76,7 +76,10 @@ fuzz_target!(|data: &[u8]| {
     let Some((&sel, body)) = data.split_first() else {
         return;
     };
-    use akari_panel::*;
+    use akari_panel::{
+        account, api, billing, entrances, fuzzing, nodes, nodetpl, plans, rates, rollout, servers,
+        settings, signup, updates,
+    };
     let sel = sel % 34;
     match sel {
         0 => strict::<api::LoginReq>(body),

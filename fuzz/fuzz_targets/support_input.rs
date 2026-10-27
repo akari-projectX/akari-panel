@@ -107,8 +107,8 @@ fn evaluator(data: &[u8]) {
         return;
     }
     let b = |i: usize| data[i];
-    let n = |i: usize| i64::from_le_bytes(data[i..i + 8].try_into().unwrap());
-    let f64_of = |i: usize| f64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+    let n = |i: usize| i64::from_le_bytes(data[i..i + 8].try_into().expect("an 8-byte slice"));
+    let f64_of = |i: usize| f64::from_le_bytes(data[i..i + 8].try_into().expect("an 8-byte slice"));
     let now = Utc.with_ymd_and_hms(2026, 10, 2, 12, 0, 0).unwrap();
     let opt = |flag: u8, v: i64| (flag & 1 == 1).then_some(v);
     let rules = Rules {

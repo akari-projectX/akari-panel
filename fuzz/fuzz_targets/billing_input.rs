@@ -61,7 +61,8 @@ fn money(data: &[u8]) {
     if data.len() < 32 {
         return;
     }
-    let n = |i: usize| i64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap());
+    let n =
+        |i: usize| i64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().expect("an 8-byte slice"));
     // Prices are 1..=1e8 fen (CHECK), coupon values likewise.
     let list = n(0).rem_euclid(100_000_000) + 1;
     let percent = n(1) & 1 == 0;
@@ -86,7 +87,7 @@ fuzz_target!(|data: &[u8]| {
     let Some((&sel, body)) = data.split_first() else {
         return;
     };
-    use akari_panel::billing::*;
+    use akari_panel::billing::{api, commission, coupons, ledger};
     match sel % 12 {
         0 => code(&String::from_utf8_lossy(body)),
         1 => {
