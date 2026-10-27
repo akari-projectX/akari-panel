@@ -24,16 +24,16 @@ fuzz_target!(|data: &[u8]| {
         1 => Params::Top,
         _ => Params::Me,
     };
-    let today =
-        NaiveDate::from_ymd_opt(2026, 10, 2).unwrap() + Duration::days((sel / 3) as i64 * 97);
+    let today = NaiveDate::from_ymd_opt(2026, 10, 2).expect("a valid date")
+        + Duration::days((sel / 3) as i64 * 97);
     let raw = String::from_utf8_lossy(rest);
     let got = trafficlog::parse_query(Some(&raw), today, params);
     assert_eq!(got, trafficlog::parse_query(Some(&raw), today, params));
     let Ok(r) = got else {
         return;
     };
-    let lo = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
-    let hi = NaiveDate::from_ymd_opt(2999, 12, 31).unwrap();
+    let lo = NaiveDate::from_ymd_opt(2000, 1, 1).expect("a valid date");
+    let hi = NaiveDate::from_ymd_opt(2999, 12, 31).expect("a valid date");
     assert!(
         lo <= r.from && r.from <= r.to && r.to <= hi.max(today),
         "{r:?}"
