@@ -6,8 +6,8 @@
 // the multiplier change are confirmed together on save; SET-10 the path in
 // the danger zone: rotate to a random or custom path, optional mail to every
 // user, typed confirmation, then the new address and the mail job's
-// progress). The client files themselves are subscription templates
-// (PR 2 brings their editor; until then this tab only switches formats).
+// progress). The client files themselves are subscription templates, edited
+// at /settings/sub-templates (linked under the format switches).
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, Code2, Eye, EyeOff, Mail, RefreshCw, Shuffle } from "lucide-react";
 import { useState } from "react";
@@ -251,6 +251,19 @@ function SubscriptionForm({ d }: { d: SettingsView }) {
           />
         ))}
       </Group>
+      <Banner
+        tone="info"
+        action={
+          <Link to="/settings/sub-templates" className="text-body font-medium text-primary hover:underline">
+            {tr("编辑订阅模板", "Edit the templates")}
+          </Link>
+        }
+      >
+        {tr(
+          "各客户端收到的配置文件由订阅模板生成：占位符、分流规则、DNS 都在模板里改。",
+          "The file each client receives is built from its subscription template: placeholders, routing rules and DNS are edited there.",
+        )}
+      </Banner>
       <Panel
         title={tr("门户一键导入按钮", "Portal one-click import buttons")}
         footer={tr(

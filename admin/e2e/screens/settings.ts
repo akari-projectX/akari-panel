@@ -42,7 +42,6 @@ export const shots: Shot[] = [
       ["settings-login", "login"],
       ["settings-cleanup", "cleanup"],
       ["settings-subscription", "subscription"],
-      ["settings-routing", "routing"],
       ["settings-install", "install"],
       ["settings-probe", "probe"],
       ["settings-block", "block"],
@@ -343,6 +342,39 @@ export const shots: Shot[] = [
         .first()
         .click();
       await expect(page.getByRole("dialog")).toBeVisible();
+    },
+  },
+  // The subscription template editor (full width; the old "routing" section leads here).
+  { name: "settings-routing", open: go("/settings/sub-templates") },
+  { name: "settings-routing-clash", open: go("/settings/sub-templates?format=clash") },
+  { name: "settings-routing-surge", open: go("/settings/sub-templates?format=surge") },
+  {
+    name: "settings-routing-preview",
+    open: async (page) => {
+      await goto(page, "/settings/sub-templates?format=clash");
+      await page.getByRole("button", { name: "预览", exact: true }).last().click();
+      await expect(page.getByLabel("预览结果")).toContainText("proxies:");
+    },
+  },
+  {
+    name: "settings-routing-error",
+    open: async (page) => {
+      await goto(page, "/settings/sub-templates?format=clash");
+      const editor = page.getByRole("textbox", { name: "Clash 订阅模板" });
+      await editor.focus();
+      await editor.press("ControlOrMeta+a");
+      await page.keyboard.insertText("proxy-groups:\n  - {name: G, type: select, proxies: [Ghost]}\n");
+      await page.getByRole("button", { name: /^保存/ }).click();
+      await expect(page.getByRole("alert", { name: "模板错误" })).toBeVisible();
+    },
+  },
+  {
+    name: "settings-routing-phone-vars",
+    devices: ["mobile"],
+    open: async (page) => {
+      await goto(page, "/settings/sub-templates");
+      await page.getByRole("button", { name: /^占位符说明/ }).click();
+      await expect(page.getByText("selector / urltest 的 outbounds 里")).toBeVisible();
     },
   },
 ];

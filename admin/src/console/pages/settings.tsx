@@ -15,7 +15,6 @@ import { dateTime } from "../../shared/format";
 import { useTr } from "../../shared/i18n";
 import { Badge } from "../../shared/ui/badge";
 import { Card, Tile } from "../../shared/ui/card";
-import { Banner } from "../../shared/ui/layout";
 import { SearchField } from "../components/kit";
 import { SectionForm, useOwner, useWide } from "../components/settings-kit";
 import { useRoute } from "../router";
@@ -41,20 +40,7 @@ import { SubscriptionSection } from "./settings-sub";
 
 export { useSettings, type DomainEntry, type SettingsView } from "./settings-data";
 
-// The template editor ships with the next update; the API (GET /sub-templates) is live.
-function RoutingSection() {
-  const tr = useTr();
-  return (
-    <Banner tone="info">
-      {tr(
-        "订阅模板的编辑页随下一次更新上线；在此之前四种客户端都使用内置模板。",
-        "The subscription template editor ships with the next update; until then all four clients use the built-in templates.",
-      )}
-    </Banner>
-  );
-}
-
-const BODIES: Record<Exclude<SectionId, "templates">, ComponentType> = {
+const BODIES: Record<Exclude<SectionId, "templates" | "routing">, ComponentType> = {
   site: SiteSection,
   brand: BrandSection,
   links: LinksSection,
@@ -63,7 +49,6 @@ const BODIES: Record<Exclude<SectionId, "templates">, ComponentType> = {
   login: LoginSection,
   cleanup: CleanupSection,
   subscription: SubscriptionSection,
-  routing: RoutingSection,
   install: InstallSection,
   probe: ProbeSection,
   block: BlockSection,
@@ -306,7 +291,7 @@ function SectionPage({ s }: { s: Section }) {
   const tr = useTr();
   const wide = useWide();
   const owner = useOwner();
-  const Body = BODIES[s.id as Exclude<SectionId, "templates">];
+  const Body = BODIES[s.id as Exclude<SectionId, "templates" | "routing">];
   const last = useLastEdit(s.audit);
   useCrumb(tr(s.zh, s.en));
   return (

@@ -355,7 +355,6 @@ const IDS = [
   "login",
   "cleanup",
   "subscription",
-  "routing",
   "install",
   "probe",
   "block",
