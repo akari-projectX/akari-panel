@@ -284,6 +284,7 @@ pub static KINDS: &[&dyn ProviderKind] = &[
     &super::alipay::AlipayKind,
     &super::epay::EpayKind,
     &super::coinpayments::CoinPaymentsKind,
+    &super::coinbase::CoinbaseKind,
 ];
 
 pub fn kind(id: &str) -> Option<&'static dyn ProviderKind> {
@@ -428,7 +429,7 @@ pub mod mock {
         assert_eq!(m.notify_ack(), "ok");
         assert!(!m.notify_get());
         // The registry knows every kind, and nothing unknown.
-        for id in ["alipay_f2f", "epay", "coinpayments"] {
+        for id in ["alipay_f2f", "epay", "coinpayments", "coinbase"] {
             assert_eq!(kind(id).map(|k| k.id()), Some(id));
         }
         assert!(kind("usdt_chain").is_none());
