@@ -816,7 +816,7 @@ done
 subrl
 W30_CODE=$(curl -s --noproxy '*' -o "$LOG/w30-clash.yaml" -w "%{http_code}" -A "clash-verge/v2" "$SUB")
 for want in "^dns:" "^  respect-rules: true" "^rule-providers:" "^  - RULE-SET,geosite-category-ads-all,REJECT" "^  - RULE-SET,geosite-cn,DIRECT" \
-            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - RULE-SET,geosite-netflix,🎬 Netflix" "^  - name: .?🎬 Netflix" \
+            "^  - RULE-SET,geoip-cn,DIRECT,no-resolve" "^  - RULE-SET,geosite-netflix,🎬 Netflix" "^  - name: 🎬 Netflix" \
             "^  - MATCH,🚀 默认代理"; do
   matches "$want" <"$LOG/w30-clash.yaml" \
     || { echo "FAIL: clash template lacks $want (HTTP $W30_CODE)"; head -c 3000 "$LOG/w30-clash.yaml"; exit 1; }
