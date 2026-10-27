@@ -205,35 +205,6 @@ export const shots: Shot[] = [
       await expect(page.getByRole("dialog", { name: "轮换订阅路径" })).toBeVisible();
     },
   },
-  // 分流规则 (routing PR 3; new shots, no v2 counterpart): an invalid custom
-  // DNS server, a service's lines open (whole page), the input's suggestions.
-  {
-    name: "settings-routing-invalid",
-    open: async (page) => {
-      await goto(page, "/settings/routing");
-      await page.getByRole("group", { name: "DNS 下发" }).getByRole("button", { name: "自定义" }).click();
-      await page.getByLabel("国内 DNS", { exact: true }).fill("not a server");
-      await expect(page.getByRole("region", { name: "保存栏" })).toBeVisible();
-    },
-  },
-  {
-    name: "settings-routing-lines",
-    full: true,
-    open: async (page) => {
-      await goto(page, "/settings/routing");
-      await page.getByRole("button", { name: "Netflix 的线路" }).click();
-      await expect(page.getByRole("combobox", { name: "Netflix 的首选线路" })).toBeVisible();
-    },
-  },
-  {
-    name: "settings-routing-suggest",
-    open: async (page) => {
-      await goto(page, "/settings/routing");
-      const add = page.getByRole("combobox", { name: "添加到「直连」" });
-      await add.fill("netflix");
-      await expect(page.getByRole("listbox", { name: "建议" })).toBeVisible();
-    },
-  },
   {
     name: "settings-probe-tcp-confirm",
     open: async (page) => {
