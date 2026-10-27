@@ -299,7 +299,7 @@ impl TrafficBuffer {
 
     fn update_at(&self, server_id: Uuid, session_id: &str, report: &TrafficReport, now: Instant) {
         if session_id.is_empty() {
-            tracing::warn!(server = %server_id, "traffic report without session_id dropped (agent predates the field; upgrade it)");
+            tracing::warn!(server = %server_id, "traffic report without session_id dropped");
             return;
         }
         if !valid_session_id(session_id) {

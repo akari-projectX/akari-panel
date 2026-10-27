@@ -2915,7 +2915,7 @@ mod tests {
             reset(start, "days", "2026-03-01T00:00:00Z").await,
             some("2026-03-30T19:00:00+00:00")
         );
-        // UTC: the old (v0.3) boundaries.
+        // UTC.
         set_tz(Some("UTC")).await.unwrap();
         assert_eq!(
             reset(start, "monthly", "2026-03-02T00:00:00Z").await,

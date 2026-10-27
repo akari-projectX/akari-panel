@@ -148,7 +148,7 @@ test("ST-04 SET-17: dead letters — the notice runs the test mail; the mail que
 
 test("ST-05: exited instances are folded away; hidden /proc is explained", async ({ page }) => {
   // The live answer, plus an exited instance and this instance's /proc hidden
-  // (the pre-v0.4.1 unit's ProcSubset=pid).
+  // (a sandbox with ProcSubset=pid).
   await page.route(/\/api\/v1\/system\/status$/, async (route) => {
     const res = await route.fetch();
     const j = await res.json();

@@ -796,7 +796,7 @@ function CleanupForm({ c }: { c: Cleanup }) {
           </div>
           {before && (
             <Button asChild variant="outline">
-              <Link to={`/users?never_used=1&registered_before=${before}&last_login_before=${before}`}>
+              <Link to={`/users?never=1&reg=${before}&login=${before}`}>
                 {tr("在用户列表中查看", "Show in the user list")}
                 <ArrowRight aria-hidden="true" />
               </Link>

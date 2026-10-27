@@ -589,8 +589,8 @@ function InstanceCard({ i }: { i: Instance }) {
             </div>
             <div className="mt-0.5 text-muted-foreground">
               {tr(
-                "旧版面板 systemd 单元的 ProcSubset=pid 隐藏了 /proc/stat、/proc/meminfo、/proc/loadavg，所以这些显示为未知。运行 akari-ctl upgrade 安装新单元即可。",
-                "ProcSubset=pid in an older panel systemd unit hides /proc/stat, /proc/meminfo and /proc/loadavg, so these are unknown. Run akari-ctl upgrade to install the new unit.",
+                "服务沙箱（systemd 的 ProcSubset=pid）隐藏了 /proc/stat、/proc/meminfo、/proc/loadavg，所以这些显示为未知。",
+                "The service sandbox (systemd ProcSubset=pid) hides /proc/stat, /proc/meminfo and /proc/loadavg, so these are unknown.",
               )}
               {disk != null && tr(` 磁盘已用 ${disk}%。`, ` Disk ${disk}% used.`)}
             </div>
