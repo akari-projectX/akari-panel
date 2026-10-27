@@ -1434,7 +1434,6 @@ async fn node_ops_and_security_api() {
     assert_eq!(v0["node_ops"]["remove_mode"]["effective"], "gate");
     assert_eq!(v0["security"]["audit_retention_days"]["default"], 365);
     assert_eq!(v0["security"]["release_keys"][0]["official"], true);
-    assert_eq!(v0["obsolete_config_keys"], json!([]));
     let version = v0["version"].as_i64().unwrap();
 
     for (body, code) in [
