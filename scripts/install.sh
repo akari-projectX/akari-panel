@@ -2947,7 +2947,14 @@ EOF
 
 # lb_instances: INSTANCES as "host web grpc" lines (ports default 8080 / 8443).
 lb_instances() {
-	for _mx_i in $(printf '%s' "$INSTANCES_OPT" | tr ',' ' '); do
+	_mx_ifs=$IFS
+	IFS=,
+	set -f
+	# shellcheck disable=SC2086 # split on the commas only
+	set -- $INSTANCES_OPT
+	set +f
+	IFS=$_mx_ifs
+	for _mx_i in "$@"; do
 		valid_instance "$_mx_i" || mdie lb_inst_bad "$_mx_i"
 		printf '%s\n' "$_mx_i" | awk -F: '{ printf "%s %s %s\n", $1, ($2 == "" ? 8080 : $2), ($3 == "" ? 8443 : $3) }'
 	done
