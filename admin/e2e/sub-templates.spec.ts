@@ -147,7 +147,9 @@ test("SET-29: subscription templates — tabs, placeholders, error markers, prev
   // The two text formats open with their own placeholders.
   await tab(page, "Surge").click();
   await expect(page.getByRole("textbox", { name: "Surge 订阅模板" })).toContainText("[General]");
-  if (isMobile(info)) await page.getByRole("button", { name: /^占位符说明/ }).click();
+  await side(page, "占位符").click();
+  const help = page.getByRole("button", { name: /^占位符说明/ });
+  if (isMobile(info) && (await help.getAttribute("aria-expanded")) === "false") await help.click();
   await expect(page.getByRole("button", { name: "插入 $subscribe_info", exact: true })).toBeVisible();
   await side(page, "预览").click();
   await page.getByRole("button", { name: "预览", exact: true }).last().click();
