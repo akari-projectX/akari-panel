@@ -53,6 +53,7 @@ struct Metrics {
     alert_rounds: IntCounterVec,
     sync_bytes: HistogramVec,
     handshakes_dropped: IntCounter,
+    db_connections_discarded: IntCounter,
     local_limits: IntCounterVec,
     bot_traps: IntCounterVec,
     turnstile_verify: IntCounterVec,
@@ -220,6 +221,11 @@ impl Metrics {
                 "gRPC connections dropped before the TLS handshake because the in-progress \
                  handshake limit was reached",
             )?,
+            db_connections_discarded: c(
+                "akari_db_connections_discarded_total",
+                "Idle database connections closed instead of handed out because they were \
+                 inside a transaction (an interrupted BEGIN)",
+            )?,
             // W9: decisions made by the in-process fallback limiter while
             // Valkey was unreachable (limiter=enroll|sub, result=allowed|limited).
             local_limits: cv(
@@ -262,6 +268,8 @@ impl Metrics {
         m.registry.register(Box::new(m.sync_bytes.clone()))?;
         m.registry
             .register(Box::new(m.handshakes_dropped.clone()))?;
+        m.registry
+            .register(Box::new(m.db_connections_discarded.clone()))?;
         m.registry.register(Box::new(m.local_limits.clone()))?;
         m.registry.register(Box::new(m.bot_traps.clone()))?;
         for f in crate::botguard::FORMS {
@@ -349,6 +357,14 @@ pub fn sync_bytes(kind: &'static str, bytes: usize) {
         m.sync_bytes
             .with_label_values(&[kind])
             .observe(bytes as f64);
+    }
+}
+
+/// An idle database connection found inside a transaction was closed
+/// instead of handed out.
+pub fn db_connection_discarded() {
+    if let Some(m) = m() {
+        m.db_connections_discarded.inc();
     }
 }
 
@@ -633,6 +649,7 @@ mod tests {
             "akari_fleet",
             "akari_fleet_cpu_percent_max",
             "akari_grpc_handshakes_dropped_total",
+            "akari_db_connections_discarded_total",
             "akari_rate_limit_local_fallback_total",
         ] {
             assert!(text.contains(name), "missing {name}\n{text}");
