@@ -121,6 +121,7 @@ export type ServerView = {
   config_version: number;
   user_version: number;
   tls_domain: string | null;
+  allow_private_destinations: boolean;
   agent_addr: string | null;
   last_error: string | null;
   last_error_at: string | null;

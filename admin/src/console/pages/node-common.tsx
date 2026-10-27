@@ -21,6 +21,10 @@ const WARNINGS: [RegExp, [string, string]][] = [
   ],
   [/多个入口上的限速/, ["agent 过旧：多入口的限速分别计算", "Old agent: limits are counted per entrance"]],
   [/不支持限速/, ["agent 过旧：套餐限速不生效", "Old agent: plan speed limits are not enforced"]],
+  [
+    /允许用户访问本机内网/,
+    ["agent 过旧：“访问本机内网/回环地址”设置不生效", "Old agent: the private-destinations setting is not applied"],
+  ],
   [/流量额度已用完/, ["流量额度已用完", "Traffic quota used up"]],
   [/不会自动申请/, ["agent 过旧：不会自动申请证书", "Old agent: no automatic certificate"]],
   [/serverName/, ["入站的 SNI 与服务器域名不一致", "The inbound's SNI differs from the server domain"]],

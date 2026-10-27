@@ -1775,6 +1775,74 @@ function CheckResult({ res }: { res: ReturnType<typeof useDomainCheck>["res"] })
 
 export { useDomainCheck };
 
+/** The operator switch for what users may reach through this machine (off = xray's default rule). */
+function PrivateDestinations({ s }: { s: ServerView }) {
+  const tr = useTr();
+  const confirm = useConfirm();
+  const [run, busy] = useAction();
+  const set = async (on: boolean) => {
+    if (on) {
+      const ok = await confirm({
+        title: tr("允许用户访问本机内网/回环地址？", "Let users reach this machine's private addresses?"),
+        tone: "warning",
+        details: (
+          <ul className="grid list-disc gap-1 pl-5 text-foreground/85">
+            <li>
+              {tr(
+                "任何持有该服务器节点的用户都能经代理连到云厂商元数据服务（169.254.169.254，可能取得实例凭据）、本机上只监听回环的服务，以及这台机器所在的内网（含其他租户的机器）。",
+                "Any user with a node on this server can reach the cloud metadata service (169.254.169.254, which may yield instance credentials), services listening only on loopback, and the private network the machine sits in (other tenants' hosts included).",
+              )}
+            </li>
+            <li>{tr("只在你清楚后果、且确实需要时开启。", "Turn it on only if you understand this and need it.")}</li>
+            <li>
+              {tr(
+                `保存后重建这台服务器上的 ${s.nodes.length} 个节点的入站，在线用户自动重连。`,
+                `The inbounds of its ${s.nodes.length} nodes are rebuilt; online users reconnect.`,
+              )}
+            </li>
+          </ul>
+        ),
+        confirmLabel: tr("允许并重建", "Allow and rebuild"),
+      });
+      if (!ok) return;
+    }
+    await run(() => patch(`/servers/${s.id}`, { allow_private_destinations: on }), {
+      ok: on ? tr("已允许", "Allowed") : tr("已关闭", "Turned off"),
+    });
+  };
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title={tr("访问范围", "Reachable addresses")}
+        description={tr(
+          "默认用户不能经代理访问这台机器的内网、回环和链路本地地址。",
+          "By default users cannot reach this machine's private, loopback and link-local addresses through the proxy.",
+        )}
+      />
+      <div className="grid gap-3 px-4 pt-1 pb-5">
+        <SwitchField
+          checked={s.allow_private_destinations}
+          disabled={busy}
+          onChange={(on) => void set(on)}
+          label={tr("允许用户访问本机内网/回环地址", "Allow users to reach this machine's private/loopback addresses")}
+          description={tr(
+            "风险：云元数据（169.254.169.254）、本机服务、同一内网的其他机器都可能被用户访问。开关改变会重建入站。",
+            "Risk: cloud metadata (169.254.169.254), local services and other hosts on the same private network become reachable by users. Changing it rebuilds the inbounds.",
+          )}
+        />
+        {s.allow_private_destinations && (
+          <Banner tone="warning">
+            {tr(
+              "已开启：用户可以访问这台机器能到达的内网地址。",
+              "On: users can reach the private addresses this machine can reach.",
+            )}
+          </Banner>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function SettingsTab({ s }: { s: ServerView }) {
   const tr = useTr();
   const [, patchQs] = useQS();
@@ -1939,6 +2007,8 @@ function SettingsTab({ s }: { s: ServerView }) {
           />
         </form>
       </Card>
+
+      <PrivateDestinations s={s} />
 
       <ServerDns id={s.id} />
 

@@ -195,6 +195,7 @@ pub fn server_snapshot_sql(alias: &str) -> String {
          'traffic_max_rate_bytes_per_sec', {a}.traffic_max_rate_bytes_per_sec, \
          'traffic_quota_bytes', {a}.traffic_quota_bytes, 'traffic_quota_mode', {a}.traffic_quota_mode, \
          'traffic_quota_reset_day', {a}.traffic_quota_reset_day, \
+         'allow_private_destinations', {a}.allow_private_destinations, \
          'deleting', {a}.deleting_at IS NOT NULL)",
         a = alias
     )
