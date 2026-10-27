@@ -694,9 +694,9 @@ async fn subscription_uses_templates_and_new_formats() {
     let (_, token) = {
         let u = db.user().await;
         let token = crate::sub::generate_token();
-        sqlx::query("UPDATE users SET sub_token_hash = $2, traffic_limit_bytes = 1000, expires_at = '2030-01-01T00:00:00Z' WHERE id = $1")
+        db.set_sub_token(u, &token).await;
+        sqlx::query("UPDATE users SET traffic_limit_bytes = 1000, expires_at = '2030-01-01T00:00:00Z' WHERE id = $1")
             .bind(u)
-            .bind(crate::sub::hash_token(&token))
             .execute(&db.pool)
             .await
             .unwrap();

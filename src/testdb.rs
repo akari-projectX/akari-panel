@@ -167,6 +167,18 @@ impl TestDb {
         id
     }
 
+    /// Gives `user` the subscription link `token`: the lookup hash plus a
+    /// placeholder ciphertext (the two exist together; a test that views the
+    /// link goes through `sub::rotate_token` instead).
+    pub async fn set_sub_token(&self, user: Uuid, token: &str) {
+        sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = '\\x01' WHERE id = $1")
+            .bind(user)
+            .bind(crate::sub::hash_token(token))
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+
     /// An enabled admin account (email `<id>@test.invalid`).
     pub async fn admin(&self) -> Uuid {
         let id = Uuid::new_v4();

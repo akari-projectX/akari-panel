@@ -332,8 +332,8 @@ async fn seed_users(pg: &PgPool, count: usize) -> Result<()> {
         .map(|i| (i % 5 == 2).then(|| chrono::Utc::now() + chrono::Duration::days(30)))
         .collect();
     sqlx::query(
-        "INSERT INTO users (id, email, sub_token_hash, traffic_limit_bytes, expires_at, created_at) \
-         SELECT id, email, h, l, e, now() - make_interval(secs => ord) \
+        "INSERT INTO users (id, email, sub_token_hash, sub_token_enc, traffic_limit_bytes, expires_at, created_at) \
+         SELECT id, email, h, '\\x01'::bytea, l, e, now() - make_interval(secs => ord) \
          FROM unnest($1::uuid[], $2::text[], $3::text[], $4::bigint[], $5::timestamptz[]) \
               WITH ORDINALITY AS t(id, email, h, l, e, ord)",
     )

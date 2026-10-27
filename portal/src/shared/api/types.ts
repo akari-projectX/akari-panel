@@ -108,13 +108,13 @@ export type Me = {
   /** 邮件语言 */
   locale: 'zh' | 'en';
   /**
-   * 订阅链接（D11 随机订阅路径；D8 可能在订阅域名上）；管理员、续费范围、旧链接（sub_legacy）都是 null。
+   * 订阅链接（D11 随机订阅路径；D8 可能在订阅域名上）；管理员、续费范围、读不出来的链接（sub_unreadable）都是 null。
    * 没配域名时是相对地址 `/<订阅路径>/<令牌>`（lib/sub-links 的 mySubUrl 补 origin）。
    */
   sub_token: string | null;
   sub_url: string | null;
-  /** 旧格式链接：还能用，但重置之前显示不出来 */
-  sub_legacy: boolean;
+  /** 链接还能用，但保存的密文打不开（主密钥已更换），重置之前显示不出来 */
+  sub_unreadable: boolean;
   /** 系统设置里开着的订阅格式（clash / sing-box / links） */
   sub_formats: string[];
   /** 要显示的一键导入按钮（客户端 id，已按开着的格式筛过；顺序即显示顺序） */

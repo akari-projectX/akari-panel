@@ -20,7 +20,7 @@
    * 设置：
    *   #account       账户：邮箱（验证 / 更换）、套餐一行摘要
    *   #security      登录与安全：密码、通行密钥、只用通行密钥、退出所有设备（components/settings/Security）
-   *   #subscription  订阅链接：状态 + 重置（旧格式链接也能重置；续费范围说明续费后可用）
+   *   #subscription  订阅链接：状态 + 重置（读不出来的链接也能重置；续费范围说明续费后可用）
    *   #preferences   偏好：界面语言（= 邮件语言，主动切换时才同步）、明暗（含跟随系统）
    *   #danger        危险操作：注销账户
    * 旧链接 /account?tab=security 换成 #security。分区导航：宽屏左侧吸顶竖排，窄屏页头下吸顶横排（可横滑）；滚动时高亮当前分区。
@@ -41,7 +41,7 @@
 
   /* ── 订阅链接的状态 ── */
   const subState = $derived(
-    sc !== 'full' ? 'paused' : me?.sub_own_client ? 'own' : mySubUrl(me) ? 'ok' : me?.sub_legacy ? 'legacy' : 'none',
+    sc !== 'full' ? 'paused' : me?.sub_own_client ? 'own' : mySubUrl(me) ? 'ok' : me?.sub_unreadable ? 'unreadable' : 'none',
   );
 
   /* ── 对话框（第一次打开时才下载） ── */
@@ -162,12 +162,12 @@
           <span class="val" class:muted={subState === 'paused' || subState === 'none'}>
             {subState === 'ok' ? t('正常')
               : subState === 'own' ? t('仅限 Akari 客户端（登录账户获取）')
-              : subState === 'legacy' ? t('旧格式链接，重置后可查看')
+              : subState === 'unreadable' ? t('无法显示，重置后可查看')
               : subState === 'paused' ? t('续费后可用')
               : t('购买套餐后可用')}
           </span>
           <span class="btns">
-            {#if subState === 'ok' || subState === 'legacy' || subState === 'own'}<ResetSubscription look="button" />{/if}
+            {#if subState === 'ok' || subState === 'unreadable' || subState === 'own'}<ResetSubscription look="button" />{/if}
             {#if subState === 'ok' || subState === 'own'}
               <a class="btn" href="{R.dashboard}#subscribe">{subState === 'own' ? t('下载客户端') : t('去导入')}</a>
             {/if}

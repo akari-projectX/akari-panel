@@ -17,7 +17,7 @@
    *   · 仅自研客户端（me.sub_own_client，有套餐）：不给链接、复制、二维码与一键导入，只给 Akari 客户端的下载
    *     （后台「外观与品牌」的客户端下载链接；站长没配就一句中性的说明）——components/own-client.tsx；
    *   · 有订阅链接：Subscribe；
-   *   · 续费范围：订阅已暂停；旧格式链接：重置后才显示；没有套餐：去选套餐。
+   *   · 续费范围：订阅已暂停；链接读不出来：重置后才显示；没有套餐：去选套餐。
    * 没有套餐时面板照样给令牌，但链接里没有节点：不显示，引导去商店。
    */
   let { full }: { full: boolean } = $props();
@@ -56,8 +56,8 @@
     <Empty title={t('订阅已暂停')} desc={t('续费或购买流量重置包后，订阅链接会恢复。')}>
       {#snippet action()}<a class="btn sm pri" href={R.shop}>{t('去商店')}</a>{/snippet}
     </Empty>
-  {:else if me?.sub_legacy}
-    <Empty title={t('旧格式的订阅链接')} desc={t('你现在用的订阅链接还能用，但这里显示不出来。重置一次就会换成新的链接（旧链接随即失效）。')}>
+  {:else if me?.sub_unreadable}
+    <Empty title={t('订阅链接无法显示')} desc={t('保存的订阅链接读不出来了（站点主密钥已更换）。重置一次就会换成新的链接（旧链接随即失效）。')}>
       {#snippet action()}<ResetSubscription look="button" />{/snippet}
     </Empty>
   {:else}

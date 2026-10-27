@@ -144,9 +144,9 @@ make third-party   # target/THIRD_PARTY_LICENSES.txt：链接的 crate + 门户�
   - `subscription.next_reset_at` 以站点时区呈现（Q3：RFC 3339 带站点时区偏移，如 `+08:00`，同一时刻；另给 `subscription.timezone`；`/me/plan` 同样）。
 - **审计（M1-7）**：每个 `apply_*` 自带 `&Actor` 参数并在**同一事务**内写 `audit::record`（回滚 = 无审计行）；新增 mutator 必须同样写审计，`every_access_change_bumps_affected_nodes` 断言每个操作恰好一行。快照只走 `audit::user_snapshot_sql`/`node_snapshot_sql`/`entrance_snapshot_sql`/`inbound_summary`（白名单），秘密只记 `"changed"`。登录失败审计在请求路径之外写（spawn），只记已存在账户。
 - **请求路径即秘密**：前缀与订阅 token 不得出现在任何日志/trace/指标标签中，记录路径一律用 `web::redacted_path`（或匹配到的路由模板）。
-- **订阅 token 存储（W20，迁移 0120）**：`users.sub_token_hash`（SHA-256）仍是**唯一**查找键（订阅端点只按哈希查）；另存 `users.sub_token_enc` = `0x01‖nonce‖AES-256-GCM(token)`，AAD = user id，密钥由 `data/master.key` 以独立标签 `akari/sub-token-aead/v1` 派生（`masterkey::Keys::seal_sub_token`/`open_sub_token`，与 SMTP 等通用密文互不可开）。
-  - 写 token 只走 `sub::rotate_token`（哈希 + 密文同一 UPDATE，审计 `user.sub_token.rotate`）、`sub::ensure_token`（**仅当** `sub_token_hash IS NULL` 的条件 UPDATE 签发，审计 `user.sub_token.issue`）与管理员建用户；**任何路径都不得隐式轮换已有 token**——0120 之前只有哈希的账户（`Stored::Legacy`）链接照常可用，门户只提示「重置后可查看」。
-  - 0120 触发器：只改哈希不改密文 → 密文置 NULL（手写 SQL 也不会显示失效链接）；CHECK 密文必须伴随哈希；`ensure_token` 解密后再比对哈希，不符/打不开（master.key 换了）= Legacy。
+- **订阅 token 存储（W20）**：`users.sub_token_hash`（SHA-256）仍是**唯一**查找键（订阅端点只按哈希查）；另存 `users.sub_token_enc` = `0x01‖nonce‖AES-256-GCM(token)`，AAD = user id，密钥由 `data/master.key` 以独立标签 `akari/sub-token-aead/v1` 派生（`masterkey::Keys::seal_sub_token`/`open_sub_token`，与 SMTP 等通用密文互不可开）。
+  - 写 token 只走 `sub::rotate_token`（哈希 + 密文同一 UPDATE，审计 `user.sub_token.rotate`）、`sub::ensure_token`（**仅当** `sub_token_hash IS NULL` 的条件 UPDATE 签发，审计 `user.sub_token.issue`）与管理员建用户；**任何路径都不得隐式轮换已有 token**——保存的密文打不开的账户（`Stored::Unreadable`：`data/master.key` 换过）链接照常可用，门户与后台只提示无法显示、重置后可查看（`/me` 的 `sub_unreadable`、管理员读取的 `unreadable`，日志 ERROR）。
+  - CHECK `users_sub_token_pair`：哈希与密文同有同无；`ensure_token` 解密后再比对哈希，不符/打不开（master.key 换了）= `Unreadable`。
   - 读取：`GET /me`（role=user 且非续费范围，响应 `Cache-Control: no-store`）与管理员 `GET /users/{id}/subscription`（同事务审计 `user.sub_token.read`，审计行不含 token）。
   - token、密文、哈希都不进日志/审计（`w20_tests` 用捕获的 tracing 输出断言）。
   - 拒绝同构不变：订阅失败照旧 `reject::not_found()`；`?format=clash|sing-box|links` 只选格式，其余查询串回落到 UA 识别，绝不产生新拒绝分支。成功响应带 `Cache-Control: private, no-store`（正文含节点凭据，审计 auth P3-18）；`/{sub_path}/rules/…json` 的 304 只读 etag、不取正文。
