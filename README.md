@@ -36,7 +36,7 @@ A self-hosted control plane for proxy services: one Rust binary for the panel, o
 - **管理后台**（独立应用，位于机密前缀之下）：用户、套餐与节点组、服务器 / 节点 / 入口、订单与退款、优惠券、提现、工单、告警、审计日志、系统设置、批量操作与 CSV 导出。
 - **节点与入口**：一台服务器 = 一个 agent 身份，其上可有多个节点（xray 入站）；每个节点有「直连」入口，可再加**中转入口**（独立凭据、来源 IP 白名单、健康检查、分时段倍率）。
 - **套餐与计费**：按周期定价、库存、换套餐折算、周期重置、限速；订单、优惠券、余额、邀请返利、提现（USDT）、退款（含原路退款）；支付渠道为可插拔结构，目前接入支付宝当面付。
-- **订阅**：按真实客户端 UA 输出 Clash / sing-box / 通用链接，分流模板可编辑，各格式可由后台开关。
+- **订阅**：按真实客户端 UA 输出 Clash / sing-box / Surge / Surfboard / 通用链接，每种客户端的订阅模板可编辑，各格式可由后台开关。
 - **协议**：VLESS（REALITY / TLS / WS / gRPC / XHTTP）、VMess、Trojan、Shadowsocks 2022（多用户）、Hysteria 2；协议能力清单是单一数据源（`proto/protocols.toml`）。
 - **审计规则**：按节点开关的域名 / IP / 协议拦截（不记录用户或目标，只记每规则次数）。
 - **运营**：告警中心（Telegram / webhook / 邮件）、系统状态页、Prometheus 指标（独立监听）、邮件模板与站点品牌、从未使用账号的自动清理。

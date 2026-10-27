@@ -1,5 +1,0 @@
-# ACL4SSR
-DOMAIN-SUFFIX,Example.COM
-IP-CIDR6,2001:DB8::1/32,no-resolve
-USER-AGENT,Instagram*
-AND,((DOMAIN,x.com),(NETWORK,UDP))
