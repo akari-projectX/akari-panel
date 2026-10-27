@@ -12,7 +12,12 @@ use crate::sub::proxy::Proxy;
 /// Built-in policies a group member or rule target may name.
 const BUILTIN: [&str; 5] = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"];
 /// Group keys that pull in proxies by themselves.
-const SELF_FILLING: [&str; 4] = ["use", "include-all", "include-all-proxies", "include-all-providers"];
+const SELF_FILLING: [&str; 4] = [
+    "use",
+    "include-all",
+    "include-all-proxies",
+    "include-all-providers",
+];
 
 pub(super) fn parse(body: &str) -> Result<Doc, TemplateError> {
     match serde_saphyr::from_str::<Doc>(body) {
@@ -50,7 +55,11 @@ pub(super) fn render(
             match g.get("name").and_then(Doc::as_str) {
                 Some(n) => {
                     if groups.iter().any(|x| x == n) {
-                        return Err(TemplateError::at(body, n, format!("two proxy groups are named {n:?}")));
+                        return Err(TemplateError::at(
+                            body,
+                            n,
+                            format!("two proxy groups are named {n:?}"),
+                        ));
                     }
                     groups.push(n.to_string());
                 }
@@ -61,7 +70,10 @@ pub(super) fn render(
     }
     match doc.get("proxies") {
         Some(Doc::Seq(ps)) => {
-            static_proxies.extend(ps.iter().filter_map(|p| p.get("name")?.as_str().map(String::from)));
+            static_proxies.extend(
+                ps.iter()
+                    .filter_map(|p| p.get("name")?.as_str().map(String::from)),
+            );
         }
         Some(Doc::Null) | None => {}
         Some(_) => return Err(TemplateError::new("`proxies` must be a list")),
@@ -92,11 +104,19 @@ pub(super) fn render(
 
     if let Some(Doc::Seq(gs)) = doc.get_mut("proxy-groups") {
         for g in gs.iter_mut() {
-            let gname = g.get("name").and_then(Doc::as_str).unwrap_or_default().to_string();
+            let gname = g
+                .get("name")
+                .and_then(Doc::as_str)
+                .unwrap_or_default()
+                .to_string();
             let self_filling = SELF_FILLING.iter().any(|k| g.get(k).is_some());
             let Some(Doc::Seq(items)) = g.get_mut("proxies") else {
                 if g.get("proxies").is_none() && !self_filling && strict {
-                    return Err(TemplateError::at(body, &gname, format!("group {gname:?} has no proxies")));
+                    return Err(TemplateError::at(
+                        body,
+                        &gname,
+                        format!("group {gname:?} has no proxies"),
+                    ));
                 }
                 continue;
             };
@@ -104,7 +124,11 @@ pub(super) fn render(
             let mut seen: HashSet<String> = HashSet::new();
             for item in items.drain(..) {
                 let Doc::Str(s) = item else {
-                    return Err(TemplateError::at(body, &gname, format!("group {gname:?}: members are names")));
+                    return Err(TemplateError::at(
+                        body,
+                        &gname,
+                        format!("group {gname:?}: members are names"),
+                    ));
                 };
                 if s == "$proxies" {
                     for n in &all {
@@ -120,7 +144,9 @@ pub(super) fn render(
                     return Err(TemplateError::at(
                         body,
                         &s,
-                        format!("group {gname:?} refers to {s:?}, which is neither a proxy nor a group"),
+                        format!(
+                            "group {gname:?} refers to {s:?}, which is neither a proxy nor a group"
+                        ),
                     ));
                 } else {
                     tracing::debug!(group = %gname, member = %s, "dangling group member left out");
@@ -177,7 +203,12 @@ fn check_cycles(body: &str, doc: &Doc) -> Result<(), TemplateError> {
         .iter()
         .filter_map(|g| {
             let name = g.get("name")?.as_str()?;
-            let members = g.get("proxies")?.as_seq()?.iter().filter_map(Doc::as_str).collect();
+            let members = g
+                .get("proxies")?
+                .as_seq()?
+                .iter()
+                .filter_map(Doc::as_str)
+                .collect();
             Some((name, members))
         })
         .collect();
@@ -190,7 +221,11 @@ fn check_cycles(body: &str, doc: &Doc) -> Result<(), TemplateError> {
             };
             for m in members {
                 if m == start {
-                    return Err(TemplateError::at(body, start, format!("group {start:?} contains itself through {n:?}")));
+                    return Err(TemplateError::at(
+                        body,
+                        start,
+                        format!("group {start:?} contains itself through {n:?}"),
+                    ));
                 }
                 if seen.insert(m) {
                     stack.push(m);
