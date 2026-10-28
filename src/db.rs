@@ -194,16 +194,71 @@ mod tests {
         cleanup(t, pool, schema).await;
     }
 
-    /// Poll `fut` once, then drop it: the request is cancelled with its first
-    /// statement on the wire (the socket write completes on the first poll,
-    /// the server's answer never does).
-    async fn poll_once_and_drop<F: std::future::Future>(fut: F) {
-        let mut fut = std::pin::pin!(fut);
+    /// How long the statement that keeps the server busy runs.
+    const SERVER_BUSY: &str = "SELECT pg_sleep(1)";
+
+    /// Start `begin` on `conn` and drop it before the server's answer is
+    /// read. A bare "poll once, then drop" is not that on a loaded machine:
+    /// the client can be descheduled between its write and its read, the
+    /// server answers meanwhile, and the same poll then reads the answer and
+    /// completes the `BEGIN` (nothing is cancelled, and the connection is
+    /// rightly reused). So the server is kept busy first: a statement that
+    /// runs for a second is on the wire when the `BEGIN` is queued behind
+    /// it, and the `BEGIN`'s answer cannot be read by the first poll.
+    async fn begin_and_cancel(
+        admin: &PgPool,
+        conn: &mut sqlx::PgConnection,
+        begin: Option<&'static str>,
+    ) {
+        use sqlx::SqlSafeStr;
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        poll_until_server_is_busy(admin, conn, pid).await;
+        let mut begin = std::pin::pin!(sqlx::Transaction::<sqlx::Postgres>::begin(
+            &mut *conn,
+            begin.map(SqlSafeStr::into_sql_str),
+        ));
         std::future::poll_fn(|cx| {
-            let _ = fut.as_mut().poll(cx);
+            assert!(
+                begin.as_mut().poll(cx).is_pending(),
+                "the BEGIN completed behind a one-second statement"
+            );
             std::task::Poll::Ready(())
         })
         .await;
+    }
+
+    /// Send [`SERVER_BUSY`] on `conn` and drop it as soon as the server
+    /// reports the statement running (`pid`'s session is `active`). The
+    /// future is polled again only while the server has not started: a
+    /// poll that returned before writing anything.
+    async fn poll_until_server_is_busy(admin: &PgPool, conn: &mut sqlx::PgConnection, pid: i32) {
+        let mut busy = std::pin::pin!(sqlx::raw_sql(SERVER_BUSY).execute(&mut *conn));
+        for _ in 0..50 {
+            std::future::poll_fn(|cx| {
+                assert!(
+                    busy.as_mut().poll(cx).is_pending(),
+                    "a one-second statement finished in one poll"
+                );
+                std::task::Poll::Ready(())
+            })
+            .await;
+            for _ in 0..20 {
+                let state: Option<String> =
+                    sqlx::query_scalar("SELECT state FROM pg_stat_activity WHERE pid = $1")
+                        .bind(pid)
+                        .fetch_optional(admin)
+                        .await
+                        .unwrap();
+                if state.as_deref() == Some("active") {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        panic!("the server never started {SERVER_BUSY:?}");
     }
 
     /// A one-connection pool on the test schema (so a leaked transaction is
@@ -243,7 +298,6 @@ mod tests {
     /// a plain one: a write that nothing ever commits).
     #[tokio::test]
     async fn interrupted_begin_does_not_poison_the_pool() {
-        use sqlx::SqlSafeStr;
         let Some(t) = crate::testdb::TestDb::new().await else {
             return;
         };
@@ -255,11 +309,7 @@ mod tests {
             None,
         ] {
             let mut conn = pool.acquire().await.unwrap();
-            poll_once_and_drop(sqlx::Transaction::<sqlx::Postgres>::begin(
-                &mut *conn,
-                begin.map(SqlSafeStr::into_sql_str),
-            ))
-            .await;
+            begin_and_cancel(&t.admin, &mut conn, begin).await;
             drop(conn);
             assert_write_is_durable(&t, &pool, 1).await;
             sqlx::query("DELETE FROM pool_probe")
