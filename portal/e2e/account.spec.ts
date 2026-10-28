@@ -249,7 +249,7 @@ test('settings: an unreadable link (stored copy does not open) can still be rese
   await expect(sub.getByRole('link', { name: '去导入' })).toHaveCount(0);
   await sub.getByRole('button', { name: '重置', exact: true }).click();
   const confirm = page.getByRole('alertdialog', { name: '重置订阅？' });
-  await expect(confirm.getByText('链接泄露时重置。所有设备都会断开，需要重新导入。')).toBeVisible();
+  await expect(confirm.getByText('用于订阅链接泄露的情况。')).toBeVisible();
   await confirm.getByRole('button', { name: '确认重置' }).click();
   await expect(confirm).toHaveCount(0);
   await expect(page.getByText('订阅已重置').first()).toBeVisible();

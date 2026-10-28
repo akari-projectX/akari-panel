@@ -107,8 +107,8 @@
   ] : []);
 </script>
 
-<Dialog bind:open onOpenChange={change} title={t('注销账户')} description={t('这是不可恢复的操作，请先看清会失去什么。')}>
-  {#snippet icon()}<TriangleAlert class="dlg-icon bad-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
+<Dialog bind:open onOpenChange={change} tone="danger" title={t('注销账户')} description={t('这是不可恢复的操作，请先看清会失去什么。')}>
+  {#snippet icon()}<TriangleAlert class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   {#if impact.loading && !d}
     <Loading rows={3} />
   {:else if impact.error && !d}
@@ -169,7 +169,6 @@
 </Dialog>
 
 <style>
-  :global(.dlg .bad-icon) { color: var(--danger); }
   .form { display: flex; flex-direction: column; gap: 18px; }
   .lose { padding: 12px 14px; border-radius: 8px; background: var(--secondary); }
   .lose b { font-size: 13.5px; font-weight: var(--fw-strong); color: var(--fg); }
