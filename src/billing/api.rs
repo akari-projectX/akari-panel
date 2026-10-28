@@ -10,7 +10,7 @@
 use crate::auth::{api_error, bad_request, conflict};
 use std::collections::BTreeMap;
 
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -1569,11 +1569,18 @@ pub async fn method_notify(
     MaybeClientIp(ip): MaybeClientIp,
     Path((_, method)): Path<(String, String)>,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> Response {
     if !notify_rate_ok(&state, ip).await {
         return crate::reject::not_found();
     }
+    // The body is read here, not by an extractor: an extractor's own
+    // limit answers 413, which is not the canonical rejection. One byte
+    // more than allowed is enough for `handle_notify` to see "oversized".
+    let Ok(body) = axum::body::to_bytes(body, MAX_NOTIFY_BODY + 1).await else {
+        record_unread(&state, ip).await;
+        return crate::reject::not_found();
+    };
     let Some(id) = Uuid::try_parse(&method).ok() else {
         return crate::reject::not_found();
     };
@@ -1589,6 +1596,29 @@ pub async fn method_notify(
             tracing::warn!(error = e.message(), "payment notify failed");
             crate::reject::not_found()
         }
+    }
+}
+
+/// A notify body that is longer than the limit allows (or breaks off):
+/// the same event an oversized one leaves, without reading the rest.
+async fn record_unread(state: &AppState, ip: Option<std::net::IpAddr>) {
+    let recorded = async {
+        let mut c = state.pg().acquire().await?;
+        orders::record_event(
+            &mut c,
+            &orders::PaymentEvent {
+                source: "notify",
+                verified: false,
+                outcome: "oversized",
+                ip,
+                ..orders::PaymentEvent::default()
+            },
+        )
+        .await
+    }
+    .await;
+    if let Err(e) = recorded {
+        tracing::warn!(error = %e, "payment notify event not recorded");
     }
 }
 

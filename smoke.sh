@@ -2811,6 +2811,11 @@ NOTIFY="$ROOT/pay/$METHOD/notify"
 [ "$(fp -X POST "$NOTIFY" --data-binary "$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.02 TRADE_SUCCESS)")" = "$REJ" ] \
   || { echo "FAIL: wrong-amount notify not the canonical rejection"; exit 1; }
 [ "$(fp "$NOTIFY")" = "$REJ" ] || { echo "FAIL: GET notify not the canonical rejection"; exit 1; }
+# Above the 16 KiB cap: the same rejection (the route reads the body itself,
+# so no framework answer such as 413 shows through; 3 MiB is in the unit test).
+head -c 65536 /dev/zero >/tmp/akari-smoke/bignotify
+[ "$(fp -X POST "$NOTIFY" --data-binary @/tmp/akari-smoke/bignotify)" = "$REJ" ] \
+  || { echo "FAIL: oversized notify not the canonical rejection"; cat /tmp/akari-smoke/fphead; exit 1; }
 [ "$(psql_q "SELECT status FROM orders WHERE id='$ORDER'")" = "pending" ] || { echo "FAIL: rejected notify changed the order"; exit 1; }
 GOOD_NOTIFY=$(python3 "$PAY/notify.py" "$PAY" "$OTN" 0.01 TRADE_SUCCESS)
 [ "$(curl -s --noproxy '*' -X POST "$NOTIFY" --data-binary "$GOOD_NOTIFY")" = "success" ] \

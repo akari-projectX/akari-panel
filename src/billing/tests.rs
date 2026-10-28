@@ -2917,6 +2917,7 @@ mod epay;
 mod lifecycle;
 mod money;
 mod ops;
+mod redteam;
 mod refund;
 mod w16;
 mod w24;
