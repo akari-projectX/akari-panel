@@ -114,7 +114,6 @@
 .rate.rate-lo { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .rate.rate-hi { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }
 .rate.rate-mid { background: var(--brand-soft); color: var(--brand-ink); }
-.rate.off { background: var(--hover); color: var(--muted); }
 
 /* 使用文档（v1.4.0：featured 大卡 + 其他分类三列格） */
 .feat { display: block; width: 100%; padding: 16px; border: 0; border-radius: calc(var(--radius) * 1.8); background: color-mix(in srgb, var(--hover) 60%, transparent); color: inherit; font: inherit; text-align: left; transition: background-color var(--dur-hover); }

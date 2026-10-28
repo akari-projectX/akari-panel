@@ -5,10 +5,11 @@
   import { meApi, type MyNode } from '@/api';
   import { K } from '@/lib/cache';
   import { formatRate, fromNow } from '@/lib/format';
-  import { LOAD_TEXT, NODES_REFRESH_MS, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
+  import { LOAD_TEXT, NODES_REFRESH_MS, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, sortTags, stripFlag } from '@/lib/node';
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
   import Flag from '../components/Flag.svelte';
+  import RateChip from '../components/RateChip.svelte';
   import Loading from '../components/Loading.svelte';
   import NodeLegend from '../components/NodeLegend.svelte';
   import PageTitle from '../components/flat/PageTitle.svelte';
@@ -62,10 +63,6 @@
 
 {#snippet load(n: MyNode)}
   {#if nodeUp(n) && n.load}<span class={['nload', n.load]} data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span>{/if}
-{/snippet}
-
-{#snippet rate(n: MyNode)}
-  <span class={['rate', rateTone(n.rate)]}>×{formatRate(n.rate)}</span>
 {/snippet}
 
 <PageTitle title={t('节点状态')} sub={t('订阅内所有线路的实时状态。倍率越低，同样的流量能用得越久。')}>
@@ -122,7 +119,7 @@
               {#if ok}{@render load(n)}{/if}
             </span>
           {/snippet}
-          {#snippet extra()}{@render rate(n)}{/snippet}
+          {#snippet extra()}<RateChip rate={n.rate} />{/snippet}
         </Row>
       {/each}
     </div>
@@ -156,7 +153,7 @@
                 {#if n.tags.length}<span class="tags">{#each sortTags(n.tags) as tg (tg)}<span>{tg}</span>{/each}</span>{:else}<span style="font-size: 13px; color: var(--muted)">—</span>{/if}
               </td>
               <td class="tnum" style="font-size: 14px">{#if latency(n)}{latency(n)}{:else}<span style="color: var(--muted)">{n.latency_status === 'timeout' ? t('超时') : '—'}</span>{/if}</td>
-              <td>{@render rate(n)}</td>
+              <td><RateChip rate={n.rate} /></td>
               <td>
                 <span style="display: flex; flex-direction: column; gap: 2px">
                   {@render state(n)}
