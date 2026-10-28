@@ -168,7 +168,7 @@ impl AppState {
             .0
             .fetch_active
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .expect("fetch slot set poisoned: a holder panicked");
         if active.contains(&server) {
             return None;
         }
@@ -337,9 +337,10 @@ pub struct FetchSlot {
 
 impl Drop for FetchSlot {
     fn drop(&mut self) {
-        self.active
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.server);
+        // No panic in drop: a poisoned set (a holder panicked) keeps the
+        // server's slot taken, which only blocks that server's downloads.
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.server);
+        }
     }
 }
