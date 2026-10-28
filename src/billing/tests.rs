@@ -314,7 +314,6 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
         },
     )
     .await
-    .ok()
     .unwrap();
     let p = crate::plans::apply_create_plan(
         &mut tx,
@@ -331,7 +330,6 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
         },
     )
     .await
-    .ok()
     .unwrap();
     super::catalog::apply_set_prices(
         &mut tx,
@@ -347,7 +345,6 @@ async fn priced_plan(db: &TestDb, name: &str, cents: i64, days: i32) -> (Uuid, U
         },
     )
     .await
-    .ok()
     .unwrap();
     tx.commit().await.unwrap();
     (node, p)
