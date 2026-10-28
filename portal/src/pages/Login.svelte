@@ -82,12 +82,14 @@
     })) return;
     void sending.run(async () => {
       try {
-        await authApi.loginFallbackCode(email.trim(), password);
+        await authApi.loginFallbackCode(email.trim(), password, await guard.build());
         codeSent = true;
         code = '';
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) f.set('password', t('邮箱或密码错误'));
         else toast.error(errorText(err));
+      } finally {
+        guard.after();
       }
     });
   }

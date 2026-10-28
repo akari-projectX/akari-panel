@@ -354,7 +354,9 @@ async fn fallback_code_request_is_guarded_like_the_login() {
     };
     let st = AppState::for_test(db.pool.clone()).await;
     set(&db, "min_submit_secs = 2, honeypot = true").await;
-    let (_, email) = account(&db, "right-password").await;
+    // Generated, not a literal: a fixture, but code scanning cannot tell.
+    let right_pw = format!("pw-{}", uuid::Uuid::new_v4());
+    let (_, email) = account(&db, &right_pw).await;
     let c = Client::new(&st, rand_ip());
     let aged = issue_token(
         st.master_key(),
@@ -375,9 +377,7 @@ async fn fallback_code_request_is_guarded_like_the_login() {
             json!({ "form_token": aged, "website": "http://spam.example" }),
         ),
     ] {
-        let r = c
-            .post(path, login_body(&email, "right-password", &gd))
-            .await;
+        let r = c.post(path, login_body(&email, &right_pw, &gd)).await;
         assert_eq!(seen(&r), seen(&wrong), "{what}");
     }
     // A clean form reaches the account-specific answer (this account can
@@ -385,7 +385,7 @@ async fn fallback_code_request_is_guarded_like_the_login() {
     let r = c
         .post(
             path,
-            login_body(&email, "right-password", &json!({ "form_token": aged })),
+            login_body(&email, &right_pw, &json!({ "form_token": aged })),
         )
         .await;
     assert_eq!(r.json()["code"], "auth.fallback_unneeded");
