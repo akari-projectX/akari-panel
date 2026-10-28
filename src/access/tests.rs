@@ -270,6 +270,54 @@ async fn portal_at_the_root() {
     db.drop().await;
 }
 
+/// An admin's right password at the root must cost a rate-limit slot like a
+/// wrong one: if it were given back (it is not a credential failure), the
+/// limiter itself would tell, after 20 tries, that the password was right
+/// (red team 2026-10, area A). Same for the fallback's code request.
+#[tokio::test]
+async fn admin_password_at_the_root_is_counted_like_a_wrong_one() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    let (_, right_email) = account(&db, "admin", "admin-password-1").await;
+    let (_, other_email) = account(&db, "admin", "admin-password-2").await;
+    for path in ["/auth/login", "/auth/login/fallback/code"] {
+        let right = Client::new(&st, rand_ip());
+        let wrong = Client::new(&st, rand_ip());
+        for n in 1..=25 {
+            let a = right
+                .post(
+                    path,
+                    json!({ "email": right_email, "password": "admin-password-1" }),
+                )
+                .await;
+            let b = wrong
+                .post(
+                    path,
+                    json!({ "email": other_email, "password": "nope-nope-1" }),
+                )
+                .await;
+            assert_eq!(a.status, b.status, "{path}: attempt {n}");
+        }
+        let last = right
+            .post(
+                path,
+                json!({ "email": right_email, "password": "admin-password-1" }),
+            )
+            .await;
+        assert_eq!(last.status, StatusCode::TOO_MANY_REQUESTS, "{path}");
+        let keys = [(&right, &right_email), (&wrong, &other_email)]
+            .into_iter()
+            .flat_map(|(c, e)| crate::login_limit::keys(Some(c.ip), e))
+            .collect::<Vec<_>>();
+        let _: i64 = fred::prelude::KeysInterface::del(st.valkey(), keys)
+            .await
+            .unwrap();
+    }
+    db.drop().await;
+}
+
 /// First start: the prefix is imported from data/state.json and the
 /// subscription path drawn, once each, audited.
 #[tokio::test]
