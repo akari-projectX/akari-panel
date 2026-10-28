@@ -285,6 +285,15 @@ mod tests {
         assert_eq!(seen, total, "the write is not visible to other sessions");
     }
 
+    /// A test database, its one-connection pool and that connection's
+    /// backend pid (to tell a reused connection from a replaced one).
+    async fn single_with_pid() -> Option<(crate::testdb::TestDb, PgPool, i32)> {
+        let t = crate::testdb::TestDb::new().await?;
+        let pool = single(&t).await;
+        let pid = backend_pid(&pool).await;
+        Some((t, pool, pid))
+    }
+
     async fn backend_pid(pool: &PgPool) -> i32 {
         sqlx::query_scalar("SELECT pg_backend_pid()")
             .fetch_one(pool)
@@ -298,11 +307,9 @@ mod tests {
     /// a plain one: a write that nothing ever commits).
     #[tokio::test]
     async fn interrupted_begin_does_not_poison_the_pool() {
-        let Some(t) = crate::testdb::TestDb::new().await else {
+        let Some((t, pool, before)) = single_with_pid().await else {
             return;
         };
-        let pool = single(&t).await;
-        let before = backend_pid(&pool).await;
         for begin in [
             Some("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
             Some("BEGIN"),
@@ -367,11 +374,9 @@ mod tests {
     /// healthy release is not a reconnect).
     #[tokio::test]
     async fn cancelled_statement_in_a_transaction_is_rolled_back() {
-        let Some(t) = crate::testdb::TestDb::new().await else {
+        let Some((t, pool, before)) = single_with_pid().await else {
             return;
         };
-        let pool = single(&t).await;
-        let before = backend_pid(&pool).await;
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("INSERT INTO pool_probe VALUES (7)")
             .execute(&mut *tx)
@@ -395,11 +400,9 @@ mod tests {
     /// healthy connection is not replaced.
     #[tokio::test]
     async fn untracked_transaction_is_discarded_before_reuse() {
-        let Some(t) = crate::testdb::TestDb::new().await else {
+        let Some((t, pool, before)) = single_with_pid().await else {
             return;
         };
-        let pool = single(&t).await;
-        let before = backend_pid(&pool).await;
         let mut conn = pool.acquire().await.unwrap();
         sqlx::raw_sql("BEGIN").execute(&mut *conn).await.unwrap();
         drop(conn);
