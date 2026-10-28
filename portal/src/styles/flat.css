@@ -32,4 +32,6 @@
   .btn.link-btn { height: 28px; padding: 0 10px; border: 0; background: none; box-shadow: none; color: var(--brand); font-size: 12.8px; font-weight: var(--fw-strong); }
   .btn.link-btn.warn-link { color: var(--warn); }
   .btn.link-btn:hover { background: none; text-decoration: underline; text-underline-offset: 4px; }
+  /* 区块头右侧的文字按钮：左右内边距只是点击区域（悬停是下划线、没有底色），文字与区块右边线对齐 */
+  .sec-head > .btn.link-btn:last-child { margin-right: -10px; }
 }

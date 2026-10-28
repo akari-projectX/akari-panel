@@ -12,7 +12,7 @@
 .settings-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 56px; margin-top: 8px; }
 @media (min-width: 1024px) { .settings-page { grid-template-columns: 184px minmax(0, 760px); }
 }
-.settings-nav { position: sticky; top: 64px; z-index: 10; min-width: 0; margin-inline: -16px; padding: 10px 16px; background: color-mix(in srgb, var(--bg) 95%, transparent); border-bottom: 1px solid var(--line); }
+.settings-nav { position: sticky; top: 64px; z-index: 10; min-width: 0; margin-inline: calc(-1 * var(--gutter)); padding: 10px var(--gutter); background: color-mix(in srgb, var(--bg) 95%, transparent); border-bottom: 1px solid var(--line); }
 .settings-nav ul { display: flex; gap: 4px; list-style: none; overflow-x: auto; scrollbar-width: none; }
 .settings-nav-link { display: block; white-space: nowrap; border-radius: 9999px; padding: 6px 12px; font-size: 13px; color: var(--muted); transition: color var(--dur-hover), background-color var(--dur-hover); }
 @media (min-width: 1024px) {
