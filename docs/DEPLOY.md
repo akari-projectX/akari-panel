@@ -343,7 +343,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 
 - 管理其他管理员：设为管理员、降级、改密码、封禁、删除、踢下线、重置登录方式；
 - 修改后台前缀与 IP 白名单、支付渠道的密钥与账号；
-- 修改决定「信任谁、通知发往哪里」的设置（其他管理员在后台只读，API 返回 403 `user.owner_only`）：**发信设置**（SMTP / Resend、通知开关）、**域名**（主 / 订阅 / 节点通信域名、移除域名与 gRPC 证书名称、通行密钥中心域名）、**安全**（审计与流量明细保留期、Cloudflare 网段、额外发布公钥）、**登录方式策略与人机验证**（Turnstile、蜜罐、仅通行密钥策略）。原因：把发信服务器或主域名指向别处，就能把所有者的重置链接送给攻击者；Cloudflare 网段过宽则任何客户端都能伪造来源地址、绕过 IP 白名单与限速。Cloudflare 网段只接受公网地址（拒绝 `0.0.0.0/0`、私有 / 回环 / 链路本地 / ULA / 保留地址；IPv4 前缀至少 /8，IPv6 至少 /16），否则 400 `settings.cloudflare_range_not_public`；
+- 修改决定「信任谁、通知发往哪里」的设置（其他管理员在后台只读，API 返回 403 `user.owner_only`）：**发信设置**（SMTP / Resend、通知开关）、**域名**（主 / 订阅 / 节点通信域名、移除域名与 gRPC 证书名称、通行密钥中心域名）、**安全**（审计与流量明细保留期、Cloudflare 网段、额外发布公钥）、**登录方式策略与人机验证**（Turnstile、蜜罐、仅通行密钥策略）。**DNS**：Cloudflare 令牌，以及写入面板自己依赖的记录（主 / 订阅 / 节点通信域名、通行密钥中心域名、服务器证书域名、入口连接地址：新建、改动、删除、批量）与「指向本面板 / 服务器」；其他记录任何管理员都能改（§2e）。原因：把发信服务器或主域名指向别处，就能把所有者的重置链接送给攻击者；Cloudflare 网段过宽则任何客户端都能伪造来源地址、绕过 IP 白名单与限速。Cloudflare 网段只接受公网地址（拒绝 `0.0.0.0/0`、私有 / 回环 / 链路本地 / ULA / 保留地址；IPv4 前缀至少 /8，IPv6 至少 /16），否则 400 `settings.cloudflare_range_not_public`；
 - 把所有者转让给另一位已启用的管理员（后台二次确认，写入审计 `user.owner.transfer`）。
 
 所有者不能被降级、封禁或删除（数据库同样拒绝）；普通管理员负责日常运营（用户、套餐、节点、订单、工单等）。
@@ -515,7 +515,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 - 面板只访问 `https://api.cloudflare.com/client/v4`（经 `src/outbound.rs` 的出站防护：只 https、只公网地址、不跟随重定向）；令牌只放在那一次请求的 `Authorization` 头里。
 - 每次写入都记审计（`dns.record.create` / `update` / `delete`，含记录前后值，不含令牌）。Cloudflare 接受写入后才写审计行（网络调用不放在数据库事务里）。
 - Cloudflare 限速（HTTP 429）：等待不超过 3 秒时自动重试两次，否则提示稍后重试；批量操作遇到限速会停下，已完成的不回滚，结果逐条列出。
-- 只有管理员能用；添加 / 修改 / 删除令牌只有所有者可以（与支付密钥一致）。
+- 只有管理员能用；添加 / 修改 / 删除令牌只有所有者可以（与支付密钥一致）。面板自己依赖的记录（第 5 条列出的名字）的新建、改动、删除与批量操作，以及「指向本面板 / 服务器」，也只有所有者可以（其他管理员 403 `user.owner_only`，后台对他们只读）：把主域名指到别处就能截走重置链接与订阅；其他记录任何管理员都能改。
 - 主密钥丢失（或更换）后已保存的令牌打不开：页面提示重新粘贴令牌。
 
 ## 3. Add a node and install the agent（添加节点并安装 agent）
@@ -781,6 +781,8 @@ CI 在 Alpine 3.22 / OpenRC 0.62 上测试；amd64/arm64）。agent 是无 cgo �
 CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 init）覆盖 安装 → 更新 →
 坏版本回滚（重启计数与 supervise-daemon 放弃两种）→ 恶意请求拒绝；面板 smoke 的 W32 段用一键安装
 命令在 Alpine 容器里装节点、验证 BBR 开关、重装与卸载。
+
+**首次安装的信任起点。** 第一次安装信任的是提供安装脚本的那个面板：安装链接（一次性 token，经 https，源站证书不受公共 CA 信任时由命令里的 `--pinnedpubkey` 固定公钥）就是信任锚，脚本、agent 二进制与 bootstrap 里的 CA 都来自它；之后的 agent 自更新只接受编进 agent 的发布公钥签名，面板只是中继。另外，gRPC 的消息大小上限在检查第一条消息之前就生效：`AgentChannel` 为 64 MiB（大快照需要），未认证的注册接口 `AgentEnrollment` 只收 64 KiB，并按来源 /64 与全局限速。两者都是设计上固有的（红队 2026-10 C 区裁决），没有更多防护。
 
 ## 3g. First user: node group, plan, subscription（第一个用户：节点组、套餐、订阅）
 
