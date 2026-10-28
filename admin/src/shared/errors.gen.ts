@@ -249,6 +249,7 @@ export const ERRORS: Record<string, [zh: string, en: string]> = {
   "mail_template.html_control": ["HTML 源码第 {line} 行第 {column} 列有控制字符，请删除", "HTML source has a control character at line {line}, column {column}"],
   "mail_template.html_forbidden": ["HTML 源码第 {line} 行第 {column} 列：不能包含 {what}", "HTML source line {line}, column {column}: must not contain {what}"],
   "mail_template.html_length": ["HTML 源码须为 1–{max} 个字符", "HTML source must be 1-{max} characters"],
+  "mail_template.html_secret_placement": ["HTML 源码第 {line} 行第 {column} 列：{{name}} 只能放在正文文字或 <a href> 里（放在图片、样式等属性中会被邮件客户端自动请求，泄露验证码或链接）", "HTML source line {line}, column {column}: {{name}} may stand only in text or in an <a href> (in an image, a style or another attribute the mail client would fetch it and leak the code or link)"],
   "mail_template.kind_unknown": ["未知的邮件种类：{kind}", "Unknown template kind: {kind}"],
   "mail_template.locale_invalid": ["语言只能是中文或英文", "Locale must be zh or en"],
   "mail_template.placeholder_missing": ["模板必须包含占位符 {name}", "The template must contain {{name}}"],
