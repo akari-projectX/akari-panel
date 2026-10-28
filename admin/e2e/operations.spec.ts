@@ -115,7 +115,9 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
     min_withdrawal_cents: 100,
     usdt_rate_cents: 720,
   });
-  // An inviter earns a commission from the invitee's paid (manual) order.
+  // An inviter earns a commission from the invitee's paid order. A manual
+  // order earns none (red team B-6), so the test writes the row the
+  // settlement would have written for a gateway payment of that order.
   const inviter = `${tag}-inviter@e2e.test`;
   const a = await apiJson<{ id: string }>("POST", "/users", { email: inviter, password: "inviter-pass-1" });
   const b = await apiJson<{ id: string }>("POST", "/users", {
@@ -129,6 +131,13 @@ test("FIN-01 FIN-02 FIN-03 FIN-04: commissions, withdrawals (USDT), balances", a
     pricing: { on_sale: false, prices: [{ period: "month", price_cents: 10000 }] },
   });
   await apiJson("POST", "/orders/manual", { user_id: b.id, plan_id: plan.id, period: "month", reason: "commission" });
+  sql(
+    `INSERT INTO commissions (id, order_id, inviter_id, inviter_label, invitee_id, invitee_label,
+       base_cents, rate_percent, amount_cents, available_at)
+     SELECT gen_random_uuid(), o.id, u.inviter_id, 'u-' || left(replace(u.inviter_id::text, '-', ''), 8),
+       u.id, 'u-' || left(replace(u.id::text, '-', ''), 8), 10000, 10, 1000, now()
+     FROM orders o JOIN users u ON u.id = o.user_id WHERE o.user_id = '${b.id}'`,
+  );
   // FIN-04: the commission ledger (day groups; credited by the next settlement pass);
   // the rules banner links to the settings; filters are in the URL.
   await openConsole(page, "/finance/commissions");
