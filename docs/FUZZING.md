@@ -21,7 +21,7 @@ AddressSanitizer 同样开启。
 | `coinpayments_notify` | CoinPayments Webhook（头签名 + 原始请求体）与网关应答（创建 / 发票列表） | 不 panic；没有客户端密钥（无头、另一把密钥的签名、签名后改一个字节、旧时间戳）就无法通过验签；真实密钥签过名的新鲜 Webhook 不会因签名被拒；Verified 事件只有 `InvoiceCompleted` + 状态 `Completed` 且币种 ID 与总额（必须带小数点）和带回的订单分经 `Pricing` 精确相等才`paid`（其他事件只带回订单分）；创建应答的链接一定是 http(s) 且 ≤ 2048；列表里选出的发票 ID 可安全放进请求路径 |
 | `coinbase_notify` | Coinbase Webhook（`X-Webhook-Signature`）、签名头解析、API 密钥解析与网关应答（创建 / 收银台列表 / 错误体） | 不 panic；没有 Webhook 密钥就无法通过验签（同上四种篡改）；真实密钥签过名的新鲜 Webhook 不会因签名被拒；Verified 事件只有 `checkout.payment.success` + `COMPLETED` 才 `paid`，付款事件只有回显的 `fiatCurrency`/`fiatAmount` 与带回的订单分经 `Pricing` 精确相等才带金额（其他事件只带回订单分）；选出的收银台 ID 是 24 位十六进制；错误体只被归为固定词 |
 | `alipay_response` | 网关响应字节 | 未签名或伪造的正文绝不会被接受；对原始 `<method>_response` 文本签名的正文，当且仅当 `code` = 10000 时被接受，并得到解析后的该文本；已签名文本内的任何改动 → `BadSignature` |
-| `inbounds` | 管理员提交的 inbound JSON（W28-a：每个节点一个对象） | 判定是确定且幂等的；被接受 ⇒ 没有 tag（由面板命名）、通过 `check_inbound`、任意深度都没有键在 Go 的大小写折叠下相等的对象（W14）；可签发的 inbound 得到无需再调整的账号；三种订阅格式都能渲染（sing-box 为合法 JSON） |
+| `inbounds` | 管理员提交的 inbound JSON（W28-a：每个节点一个对象） | 判定是确定且幂等的；被接受 ⇒ 序列化后再解析仍得到同一个值（serde_json 保留键 `$serde_json::private::*` 一律拒绝）、没有 tag（由面板命名）、通过 `check_inbound`、任意深度都没有键在 Go 的大小写折叠下相等的对象（W14）；可签发的 inbound 得到无需再调整的账号；三种订阅格式都能渲染（sing-box 为合法 JSON） |
 | `node_templates` | 模板请求（管理员，单个模板） | 凡是渲染出的结果都能通过 `validate_inbound` 且没有 tag；渲染出的受管 inbound 可签发；绝不使用已被占用的端口 |
 | `protocols_manifest` | W26：`proto/protocols.toml`（仓库内文件；由 build.rs 和 `protocols::manifest_def` 解析） | 解析是确定的；被接受的清单可再次通过校验，每个场景都是合法组合（其协议接受该传输/安全层，未违反任何规则）；生成的文档矩阵能渲染并列出每个协议 |
 | `inbound_model` | W26：inbound JSON（管理员提供或已存储的），经 xray 适配器与内核无关模型处理 | 不 panic；每个错误都有解释；渲染一次即规范化（render∘parse 经一轮后幂等）；按任一受管协议解析都能渲染；被接受 inbound 签发的账号无需再调整，其规范化形式同样被接受 |

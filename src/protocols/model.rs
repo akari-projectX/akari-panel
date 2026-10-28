@@ -223,6 +223,8 @@ pub struct Reality {
 pub enum Fault {
     /// Two keys equal under the kernel's key matching.
     DuplicateKey(String),
+    /// A key serde_json reserves for its own value encodings.
+    ReservedKey(String),
     /// A protocol's own transport used by another protocol.
     ForeignNativeTransport,
     Port,

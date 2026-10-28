@@ -8,8 +8,9 @@
 //! two keys equal under Go's case folding (xray decodes keys
 //! case-insensitively, W14); normalizing is idempotent; a freshly generated
 //! account needs no refit; subscriptions render, the sing-box one is valid
-//! JSON, and validation is deterministic (re-validating the re-serialized
-//! value gives the same verdict).
+//! JSON, an accepted value survives serialize + parse, and validation is
+//! deterministic (re-validating the re-serialized value gives the same
+//! verdict).
 #![no_main]
 
 use akari_panel::fuzzing::normalize_inbound;
@@ -23,7 +24,16 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     let verdict = normalize_inbound(&v);
-    let again: Value = serde_json::from_str(&v.to_string()).expect("re-parse");
+    // serde_json's own value encodings (`$serde_json::private::RawValue`
+    // keys) do not survive `to_string` + parse; such values must be refused,
+    // because the database stores them as text and reads them back.
+    let Ok(again) = serde_json::from_str::<Value>(&v.to_string()) else {
+        assert!(
+            verdict.is_err(),
+            "accepted a value that does not round-trip"
+        );
+        return;
+    };
     assert_eq!(normalize_inbound(&again).is_ok(), verdict.is_ok());
     let Ok(ib) = verdict else {
         // Still must not panic on rejected shapes.
