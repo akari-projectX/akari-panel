@@ -1,5 +1,12 @@
 {
   "blocking": true,
+  "host": {
+    "reference_cpu_ms": {
+      "desktop": 0,
+      "phone": 0
+    },
+    "max_factor": 3
+  },
   "desktop": {
     "first_screen_ready_ms": 330,
     "lcp_ms": 470,
