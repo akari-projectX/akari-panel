@@ -16,7 +16,7 @@
 .oth-g > button { display: flex; min-width: 0; flex-direction: column; align-items: center; gap: 8px; padding: 14px 8px; border: 0; border-radius: calc(var(--radius) * 1.4); background: none; color: inherit; font: inherit; transition: background-color var(--dur-hover), translate var(--dur-hover); }
 .oth-g > button:hover { translate: 0 -2px; background: color-mix(in srgb, var(--hover) 70%, transparent); }
 .oth-g > button > svg { color: var(--muted); }
-.oth-g > button > span { width: 100%; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: var(--fw-strong); }
+.oth-g > button > span { display: -webkit-box; width: 100%; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; text-align: center; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.4; font-weight: var(--fw-strong); }
 .sub-cl > span { display: flex; align-items: center; }
 .sub-imp:hover::after { transform: scaleX(1); }
 .sub-fb > p { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12.5px; color: var(--muted); }
