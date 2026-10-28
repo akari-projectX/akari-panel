@@ -4,7 +4,10 @@
 usage: scripts/perf-budget.py perf-budget.json perf1.json [perf2.json ...]
 (perf*.json = the `admin-perf` artifact's perf.json of each run)
 
-Each budget becomes min(plan target, ceil10(max median over the runs x 1.3)).
+Each budget becomes min(plan target, ceil10(max median over the runs x 1.3)),
+where the median is the host-adjusted one ("adjusted": the median divided by
+the runner's speed factor, see zz-perf.spec.ts); the runs must therefore be
+measured with "host.reference_cpu_ms" already set.
 The plan targets live under "targets" (copied from the budgets the first
 time); the budgets the spec reads are "desktop" / "phone". Sets
 "blocking": true.
@@ -23,7 +26,7 @@ for p in runs_paths:
 targets = budget.setdefault("targets", {"desktop": dict(budget["desktop"]), "phone": dict(budget["phone"])})
 for env in ("desktop", "phone"):
     for metric, target in targets[env].items():
-        medians = [r["median"] for run in runs for r in run if r["env"] == env and r["metric"] == metric]
+        medians = [r["adjusted"] for run in runs for r in run if r["env"] == env and r["metric"] == metric]
         if not medians:
             continue
         new = min(target, int(math.ceil(max(medians) * 1.3 / 10) * 10))
