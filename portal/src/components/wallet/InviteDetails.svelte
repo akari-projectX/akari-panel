@@ -1,6 +1,7 @@
 <script lang="ts">
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
+  import Link from '@lucide/svelte/icons/link';
   import type { InviteCodes, MyInvite } from '@/api';
   import { formatDate, formatMoney } from '@/lib/format';
   import Empty from '../Empty.svelte';
@@ -71,12 +72,12 @@
           <span class="u">{tp('已用 {n} 次', { n: mine.uses })}</span>
         </span>
         <span>
-          <button type="button" class="btn ghost" aria-label={t('复制邀请码')} onclick={() => copy(mine.code, 'code')}>
+          <button type="button" class="btn ghost" aria-label={t('复制邀请码')} title={t('复制邀请码')} onclick={() => copy(mine.code, 'code')}>
             {#if copied.which === 'code'}<Check size={14} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
             <span class="hide-sm">{t('复制邀请码')}</span>
           </button>
-          <button type="button" class="btn ghost" aria-label={t('复制链接')} onclick={() => copy(inviteLink(mine.code, c.link_base), 'link')}>
-            {#if copied.which === 'link'}<Check size={14} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
+          <button type="button" class="btn ghost" aria-label={t('复制链接')} title={t('复制链接')} onclick={() => copy(inviteLink(mine.code, c.link_base), 'link')}>
+            {#if copied.which === 'link'}<Check size={14} strokeWidth={2} aria-hidden="true" />{:else}<Link size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
             <span class="hide-sm">{t('复制链接')}</span>
           </button>
         </span>

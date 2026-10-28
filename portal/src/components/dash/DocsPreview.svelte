@@ -45,7 +45,7 @@
       <div class="feat-m">
         <div class="feat-t"><span>{featured.name}</span>{#if featured.mine}<i class="cur">{t('当前设备')}</i>{/if}</div>
         <div class="feat-s">
-          {featured.articles.length === 1 ? t('1 篇') : tp('{n} 篇', { n: featured.articles.length })}{#if featured.mine && featured.platform} · {t(featured.platform.client)}{/if}
+          {featured.articles.length === 1 ? t('1 篇') : tp('{n} 篇', { n: featured.articles.length })}{#if featured.mine && featured.platform}{' · '}{t(featured.platform.client)}{/if}
         </div>
       </div>
       <span class="feat-go">{t('查看教程')}<ChevronRight size={14} strokeWidth={1.75} aria-hidden="true" /></span>

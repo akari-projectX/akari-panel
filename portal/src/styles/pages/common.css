@@ -308,7 +308,7 @@
 .od-dot.failed { background: var(--hover); color: var(--muted); }
 .od-dot.todo { border: 1px solid var(--line); color: var(--muted); }
 .od-lb.todo { color: var(--muted); }
-.notice.od-refund { margin-top: 24px; }
+.notice.od-refund { margin-block: 24px; }
 .od-bh > span:first-child { font-size: 13px; font-weight: var(--fw-strong); }
 .od-tot > span:first-child { font-size: 13px; color: var(--muted); }
 .od-tot > span:last-child { font-size: 28px; line-height: 1; font-weight: var(--fw-strong); letter-spacing: -.03em; color: var(--brand); }

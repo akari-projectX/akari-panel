@@ -605,7 +605,7 @@ export const EN: Record<string, string> = {
   "{d} 入账": "credited {d}",
   "{d} 天的每日上下行流量": "Daily upload and download over {d} days",
   "{d} 重置流量，剩余 {g} GB": "Resets on {d}, {g} GB left",
-  "{d} 重置，计费 {b} GB": "Resets on {d}, {b} GB billed",
+  "{d} 重置，计费 {b}": "Resets on {d}, {b} billed",
   "{n} 天": "{n} days",
   "{on} 条可用，共 {n} 条": "{on} available of {n}",
   "{t} 前未支付将自动关闭": "closes automatically if unpaid by {t}",

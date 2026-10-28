@@ -42,7 +42,8 @@
 
   /* 提示条：一张浅卡（v1.4.0：卡片底、细边、很淡的投影；深色是 muted 底无边） */
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-notice); font-size: 14.5px; }
-  .notice > svg { flex: none; }
+  /* 图标对齐第一行（标题），不随换行后的整块居中 */
+  .notice > svg { flex: none; align-self: flex-start; margin-top: 3px; }
   .notice > .grow ~ :last-child { margin-left: auto; }
   .ic-warn { color: var(--warn); } .ic-brand { color: var(--brand); } .ic-ok { color: var(--ok); } .ic-danger { color: var(--danger); }
 

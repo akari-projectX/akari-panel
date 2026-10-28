@@ -60,7 +60,7 @@
     { k: t('下行'), v: totalDown.toFixed(1), unit: 'GB', arrow: 'down', x: t('占总流量'), x2: `${sum > 0 ? ((totalDown / sum) * 100).toFixed(0) : 0}%` },
     { k: t('上行'), v: totalUp.toFixed(1), unit: 'GB', arrow: 'up', x: t('日均'), x2: `${(totalUp / Math.max(1, days.length)).toFixed(1)} GB` },
     resetIn !== null
-      ? { k: t('距离重置'), v: String(resetIn), unit: t('天'), x: tp('{d} 重置，计费 {b} GB', { d: formatDate(nextReset), b: billed.toFixed(1) }) }
+      ? { k: t('距离重置'), v: String(resetIn), unit: t('天'), x: tp('{d} 重置，计费 {b}', { d: formatDate(nextReset), b: `${billed.toFixed(1)}\u00a0GB` }) }
       : { k: t('计费流量'), v: billed.toFixed(1), unit: 'GB', x: t('（上行 + 下行）× 倍率') },
   ]);
 
