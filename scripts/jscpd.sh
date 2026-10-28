@@ -6,7 +6,7 @@
 # duplication (never raise one: extract the shared code instead).
 #
 # Baseline (2026-10-28, jscpd 5.4.2, default min tokens/lines):
-#   src        rust        2.67 % (2700 of ~101000 lines)
+#   src        rust        2.67 % (2700 of ~101000 lines); 2.65 % after the deferred audit items (2026-10-28)
 #   portal/src svelte + ts 0.71 % (144 of 20385 lines)
 #   admin/src  ts + css    1.27 % (rounded up: 1.28) (754 of 59339 lines)
 #
