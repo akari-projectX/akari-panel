@@ -2,8 +2,8 @@
   "blocking": true,
   "host": {
     "reference_cpu_ms": {
-      "desktop": 0,
-      "phone": 0
+      "desktop": 6.7,
+      "phone": 27.3
     },
     "max_factor": 3
   },
