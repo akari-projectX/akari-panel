@@ -596,6 +596,8 @@ async fn link_hosts(
     ApiJson(req): ApiJson<LinkReq>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
+    // Red team A-3: pointing names at an address is the owner's.
+    crate::owner::require_user(&state, &user).await?;
     if req.hosts.is_empty() || req.hosts.len() > HOSTS_MAX {
         return Err(bad_request!(
             "dns.batch_size",
@@ -732,6 +734,7 @@ async fn server_link(
     ApiJson(req): ApiJson<ServerLinkReq>,
 ) -> Result<Json<Value>, ApiError> {
     user.require_admin()?;
+    crate::owner::require_user(&state, &user).await?;
     let names = server_names(&state, id).await?;
     let address = match req
         .address

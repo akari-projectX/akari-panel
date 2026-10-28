@@ -129,6 +129,10 @@ export function RecordDialog({
   defaults?: Partial<Draft>;
 }) {
   const tr = useTr();
+  const owner = useOwner();
+  // A record the panel depends on is the owner's to change (red team A-3).
+  const ownerOnly = !!record && record.uses.length > 0 && !owner;
+  const canEdit = editable && !ownerOnly;
   const toast = useToast();
   const guarded = useGuarded();
   const [run, busy] = useAction();
@@ -202,7 +206,7 @@ export function RecordDialog({
       onSubmit={() => void save()}
       footer={
         <>
-          {record && editable ? (
+          {record && canEdit ? (
             <Button variant="destructive-soft" icon={Trash2} onClick={() => void askRemove()}>
               {tr("删除", "Delete")}
             </Button>
@@ -212,13 +216,13 @@ export function RecordDialog({
             </Button>
           )}
           <div className="ml-auto flex items-center gap-2">
-            {record && editable && (
+            {record && canEdit && (
               <Button variant="ghost" onClick={onClose}>
                 {tr("取消", "Cancel")}
               </Button>
             )}
             {tried && <FixCount n={count} />}
-            {editable && (
+            {canEdit && (
               <Button type="submit" variant="primary" loading={busy}>
                 {record ? tr("保存", "Save") : tr("创建记录", "Create record")}
               </Button>
@@ -227,7 +231,8 @@ export function RecordDialog({
         </>
       }
     >
-      <fieldset disabled={!editable} className="grid min-w-0 gap-4">
+      <fieldset disabled={!canEdit} className="grid min-w-0 gap-4">
+        {ownerOnly && <OwnerNotice what={tr("面板使用中的记录", "a record the panel uses")} />}
         {record && <UsesBanner record={record} />}
         <div className="grid gap-3 sm:grid-cols-[120px_minmax(0,1fr)]">
           <Field label={tr("类型", "Type")}>

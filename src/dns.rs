@@ -87,6 +87,47 @@ async fn managed(state: &AppState) -> Result<Managed, ApiError> {
     Ok(records::managed(&mut conn).await?)
 }
 
+/// The name Cloudflare stores for `name` in the zone `zone`: it qualifies a
+/// relative name with the zone and reads `@` as the apex.
+fn qualified(name: &str, zone: &str) -> String {
+    let n = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let zone = zone.trim_end_matches('.').to_ascii_lowercase();
+    if n == "@" {
+        zone
+    } else if n == zone || n.ends_with(&format!(".{zone}")) {
+        n
+    } else {
+        format!("{n}.{zone}")
+    }
+}
+
+/// The zone's name: from a record of it when Cloudflare gave one, else asked.
+async fn zone_name(client: &Client, zone: &str, known: Option<&str>) -> Result<String, ApiError> {
+    match known {
+        Some(name) => Ok(name.to_string()),
+        None => Ok(client.zone(zone).await?.name),
+    }
+}
+
+/// Red team A-3: a write to a record the panel depends on (`records::managed`)
+/// is the owner's, like the tokens (R47: where the panel's names point is a
+/// trust setting); every other record stays open to any admin. Checked before
+/// any write and before the confirmation.
+async fn owner_for_panel_names(
+    state: &AppState,
+    user: &AuthUser,
+    managed: &Managed,
+    names: &[&str],
+) -> Result<(), ApiError> {
+    if names
+        .iter()
+        .any(|n| !records::uses_of(managed, n).is_empty())
+    {
+        crate::owner::require_user(state, user).await?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tokens
 // ---------------------------------------------------------------------------
@@ -403,6 +444,9 @@ async fn create_record(
     let zone = cf_id(&zone)?;
     let checked = records::check(&req)?;
     let (row, client) = client_of(&state, account).await?;
+    let managed = managed(&state).await?;
+    let name = qualified(&checked.name, &zone_name(&client, zone, None).await?);
+    owner_for_panel_names(&state, &user, &managed, &[&name]).await?;
     let created = client.create(zone, &checked.body).await?;
     let written = Written {
         action: "dns.record.create",
@@ -413,15 +457,15 @@ async fn create_record(
         after: Some(&created),
     };
     audit_record(&state, &user, written).await?;
-    let managed = managed(&state).await?;
     Ok((StatusCode::CREATED, Json(view_of(&managed, created))))
 }
 
-/// Whether `after` changes what a dependent panel feature sees.
-fn changes_target(before: &Record, after: &records::Checked) -> bool {
+/// Whether `after` (named `name` once qualified) changes what a dependent
+/// panel feature sees.
+fn changes_target(before: &Record, after: &records::Checked, name: &str) -> bool {
     let body = &after.body;
     before.kind != after.kind
-        || !before.name.eq_ignore_ascii_case(&after.name)
+        || !before.name.eq_ignore_ascii_case(name)
         || body
             .get("content")
             .and_then(Value::as_str)
@@ -445,9 +489,14 @@ async fn update_record(
     let (row, client) = client_of(&state, account).await?;
     let before = client.record(zone, id).await?;
     let managed = managed(&state).await?;
-    if !req.confirm && changes_target(&before, &checked) {
+    let name = qualified(
+        &checked.name,
+        &zone_name(&client, zone, before.zone_name.as_deref()).await?,
+    );
+    owner_for_panel_names(&state, &user, &managed, &[&before.name, &name]).await?;
+    if !req.confirm && changes_target(&before, &checked, &name) {
         let mut hit: Vec<(String, Vec<Use>)> = Vec::new();
-        for name in [before.name.as_str(), checked.name.as_str()] {
+        for name in [before.name.as_str(), name.as_str()] {
             let uses = records::uses_of(&managed, name);
             if !uses.is_empty() && !hit.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
                 hit.push((name.to_string(), uses.to_vec()));
@@ -488,6 +537,7 @@ async fn delete_record(
     let (row, client) = client_of(&state, account).await?;
     let before = client.record(zone, id).await?;
     let managed = managed(&state).await?;
+    owner_for_panel_names(&state, &user, &managed, &[&before.name]).await?;
     let uses = records::uses_of(&managed, &before.name);
     if !q.confirm && !uses.is_empty() {
         return Err(confirm_required(&[(before.name.clone(), uses.to_vec())]));
@@ -617,6 +667,8 @@ async fn batch(
             }
         }
     }
+    let touched: Vec<&str> = hit.iter().map(|(n, _)| n.as_str()).collect();
+    owner_for_panel_names(&state, &user, &managed, &touched).await?;
     if !hit.is_empty() && !req.confirm {
         return Err(confirm_required(&hit));
     }

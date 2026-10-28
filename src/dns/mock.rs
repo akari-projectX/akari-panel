@@ -78,6 +78,7 @@ impl Mock {
     pub async fn serve(&self) -> String {
         let app = axum::Router::new()
             .route("/client/v4/zones", get(zones))
+            .route("/client/v4/zones/{zone}", get(zone))
             .route(
                 "/client/v4/zones/{zone}/dns_records",
                 get(list).post(create),
@@ -187,6 +188,35 @@ async fn zones(
     page_of(items, page, per_page)
 }
 
+async fn zone(State(m): State<Mock>, headers: HeaderMap, Path(zone): Path<String>) -> Response {
+    if let Some(r) = gate(&m, &headers, "zone") {
+        return r;
+    }
+    match zone_name(&m, &zone) {
+        Some(name) => envelope(
+            &json!({ "id": zone, "name": name, "status": "active", "paused": false }),
+            None,
+        ),
+        None => failure(StatusCode::NOT_FOUND, 7003, "no such zone"),
+    }
+}
+
+/// Like Cloudflare: a relative record name is qualified with the zone, `@`
+/// is the apex.
+fn qualify(body: &mut Value, zone: &str) {
+    if let Some(n) = body["name"].as_str() {
+        let n = n.trim_end_matches('.');
+        let full = if n == "@" {
+            zone.to_string()
+        } else if n == zone || n.ends_with(&format!(".{zone}")) {
+            n.to_string()
+        } else {
+            format!("{n}.{zone}")
+        };
+        body["name"] = json!(full);
+    }
+}
+
 fn zone_name(m: &Mock, zone: &str) -> Option<String> {
     m.0.lock()
         .unwrap()
@@ -260,6 +290,8 @@ async fn create(
     if name == READONLY_ZONE {
         return failure(StatusCode::FORBIDDEN, 10000, "Authentication error");
     }
+    let mut body = body;
+    qualify(&mut body, &name);
     let dup = m.records().iter().any(|r| {
         r["zone_name"] == name
             && r["type"] == body["type"]
@@ -293,8 +325,13 @@ async fn patch(
     if let Some(r) = gate(&m, &headers, "patch") {
         return r;
     }
-    if zone_name(&m, &zone).as_deref() == Some(READONLY_ZONE) {
+    let zname = zone_name(&m, &zone);
+    if zname.as_deref() == Some(READONLY_ZONE) {
         return failure(StatusCode::FORBIDDEN, 10000, "Authentication error");
+    }
+    let mut body = body;
+    if let Some(name) = &zname {
+        qualify(&mut body, name);
     }
     let mut g = m.0.lock().unwrap();
     match g

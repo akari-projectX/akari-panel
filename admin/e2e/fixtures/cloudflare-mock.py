@@ -66,6 +66,9 @@ class H(BaseHTTPRequestHandler):
         if u.path == "/client/v4/zones":
             rows = [{"id": i, "name": n, "status": "active", "paused": False, "permissions": p} for i, (n, p) in ZONES.items()]
             return self.out(200, rows, info={"page": 1, "per_page": 50, "total_count": len(rows), "total_pages": 1})
+        z = re.fullmatch(r"/client/v4/zones/([0-9a-f]{32})", u.path)
+        if z and z.group(1) in ZONES:
+            return self.out(200, {"id": z.group(1), "name": ZONES[z.group(1)][0], "status": "active", "paused": False})
         m = re.fullmatch(r"/client/v4/zones/([0-9a-f]{32})/dns_records(?:/([0-9a-f]{32}))?", u.path)
         if not m or m.group(1) not in ZONES:
             return self.out(404, errors=[{"code": 7003, "message": "no route"}])

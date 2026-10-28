@@ -87,6 +87,8 @@ export function DnsPage() {
   const [ipOpen, setIpOpen] = useState(false);
   const editing = records.find((r) => r.id === query.get("edit")) ?? null;
   const creating = query.get("new") === "1";
+  // Records the panel depends on are the owner's (red team A-3).
+  const lockedSelected = !owner && records.some((r) => selected.has(r.id) && r.uses.length > 0);
   const base = zone ? recordsPath(zone.account_id, zone.id) : "";
 
   const batch = async (body: Record<string, unknown>, verb: string) => {
@@ -123,7 +125,7 @@ export function DnsPage() {
     PROXIABLE.includes(r.type) ? (
       <button
         type="button"
-        disabled={!editable}
+        disabled={!editable || (!owner && r.uses.length > 0)}
         aria-label={
           r.proxied
             ? tr("橙云：点击改为灰云", "Proxied: switch to DNS only")
@@ -317,7 +319,13 @@ export function DnsPage() {
         }
         bulkActions={() => (
           <>
+            {lockedSelected && (
+              <span className="text-footnote text-muted-foreground" data-testid="dns-bulk-owner-only">
+                {tr("选中了面板使用中的记录：仅所有者可修改", "A record the panel uses is selected: owner only")}
+              </span>
+            )}
             <Button
+              disabled={lockedSelected}
               size="sm"
               variant="outline"
               onClick={() => void batch({ action: "proxied", proxied: true }, tr("仍然切换", "Switch anyway"))}
@@ -325,16 +333,17 @@ export function DnsPage() {
               {tr("设为橙云", "Proxy")}
             </Button>
             <Button
+              disabled={lockedSelected}
               size="sm"
               variant="outline"
               onClick={() => void batch({ action: "proxied", proxied: false }, tr("仍然切换", "Switch anyway"))}
             >
               {tr("设为灰云", "DNS only")}
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setIpOpen(true)}>
+            <Button disabled={lockedSelected} size="sm" variant="outline" onClick={() => setIpOpen(true)}>
               {tr("更换 IP", "Change IP")}
             </Button>
-            <Button size="sm" variant="destructive-soft" onClick={() => void batchDelete()}>
+            <Button disabled={lockedSelected} size="sm" variant="destructive-soft" onClick={() => void batchDelete()}>
               {tr("删除", "Delete")}
             </Button>
           </>
