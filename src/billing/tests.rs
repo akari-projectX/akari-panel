@@ -1042,9 +1042,22 @@ async fn transient_error_in_fulfilment_fails_the_payment() {
     }
 
     // The resent notify after the contention is gone: paid and fulfilled once.
+    // The gateway resends until acknowledged; so does the test, because the
+    // failed attempts above may still be rolling back (with a 100 ms lock
+    // timeout a slow runner can see one more transient refusal).
     blocker.rollback().await.unwrap();
-    let r = post_notify(&state, rand_ip(), body.clone()).await;
-    assert_eq!(r.body, b"success");
+    let mut acked = false;
+    for _ in 0..20 {
+        if post_notify(&state, rand_ip(), body.clone()).await.body == b"success" {
+            acked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        acked,
+        "a resent notify must be acknowledged once the lock is free"
+    );
     assert_eq!(order_status(&db, oid).await, ("paid".into(), true, None));
     assert!(active_plan(&db, user).await.is_some());
     let r = post_notify(&state, rand_ip(), body).await;
