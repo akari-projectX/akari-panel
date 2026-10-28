@@ -493,7 +493,7 @@ fn draw_and_shape() {
         "coupon_batch.count_range"
     );
     let mut r = batch_req(1);
-    r.length = Some(5);
+    r.length = Some(9);
     assert_eq!(
         cb::check_shape(&r).unwrap_err().code(),
         "coupon_batch.length_range"
