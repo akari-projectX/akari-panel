@@ -264,10 +264,26 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
           FLAGS: ${{ steps.name.outputs.cosign_flags }}
         run: |
+          # Rekor sometimes answers a transparency-log upload late (5xx or a
+          # timeout) and cosign retries it: the first upload had already
+          # landed, so the retry is refused with "[409] an equivalent entry
+          # already exists" and no signature is written (release run
+          # 38621010387). Signing again makes a fresh ephemeral key and
+          # certificate, hence a new entry; the verify step that follows
+          # checks what was actually written.
+          retry() {
+            n=1
+            until "$@"; do
+              [ "$n" -ge 3 ] && return 1
+              echo "attempt $n failed: $*; retrying" >&2
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
           # shellcheck disable=SC2086 # FLAGS is empty or one flag
-          cosign sign --yes $FLAGS "${IMAGE}@${DIGEST}"
+          retry cosign sign --yes $FLAGS "${IMAGE}@${DIGEST}"
           # shellcheck disable=SC2086
-          cosign attest --yes $FLAGS --type cyclonedx \
+          retry cosign attest --yes $FLAGS --type cyclonedx \
             --predicate "sbom/akari-panel-${TAG}.cdx.json" "${IMAGE}@${DIGEST}"
       # docs/DEPLOY.md "Verify a release", with this run's identity (the
       # tag's workflow ref; refs/pull/N/merge on a dry run).
@@ -339,8 +355,18 @@ jobs:
           sha256sum $files > SHA256SUMS
           # Keyless: the certificate binds the signature to this workflow
           # run (identity = this workflow at this tag, issuer = GitHub OIDC).
+          # Same retry as the image signing step (Rekor 409 on a repeated upload).
+          retry() {
+            n=1
+            until "$@"; do
+              [ "$n" -ge 3 ] && return 1
+              echo "attempt $n failed: $*; retrying" >&2
+              sleep $((n * 15))
+              n=$((n + 1))
+            done
+          }
           for f in $files SHA256SUMS; do
-            cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
+            retry cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
           ls -l
       # docs/DEPLOY.md "Verify a release", with this run's identity.
