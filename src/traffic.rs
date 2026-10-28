@@ -122,7 +122,7 @@ impl Entry {
     }
 }
 
-fn valid_session_id(s: &str) -> bool {
+pub(crate) fn valid_session_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_SESSION_LEN && !s.contains('\0')
 }
 

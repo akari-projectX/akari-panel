@@ -897,6 +897,11 @@ pub async fn on_status(
     let Ok(rollout) = Uuid::parse_str(&s.rollout_id) else {
         return Ok(());
     };
+    // A version is at most 128 bytes (`parse_version`); anything longer is
+    // not one and must not be logged or stored.
+    if s.version.len() > 128 {
+        return Ok(());
+    }
     let state = State::try_from(s.state).unwrap_or(State::Unspecified);
     let err: String = s.error.chars().take(512).collect();
     let (terminal, label, from): (bool, &str, &str) = match state {

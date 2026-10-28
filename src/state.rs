@@ -41,6 +41,8 @@ struct Inner {
     read_permits: tokio::sync::Semaphore,
     /// Bounds concurrent artifact downloads (M6, `updates::fetch_artifact`).
     fetch_permits: Arc<tokio::sync::Semaphore>,
+    /// Servers with a download running on this instance (one each).
+    fetch_active: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
     generation: AtomicU64,
     /// Per-node wakeups for this instance's agent sessions, fed by the
     /// PostgreSQL LISTEN task (`crate::notify`). There is no in-process
@@ -99,6 +101,7 @@ impl AppState {
             agents: DashMap::new(),
             read_permits: tokio::sync::Semaphore::new(READ_PERMITS),
             fetch_permits: Arc::new(tokio::sync::Semaphore::new(fetch_permits)),
+            fetch_active: Arc::default(),
             generation: AtomicU64::new(1),
             wakeups: crate::notify::Wakeups::default(),
             traffic,
@@ -156,8 +159,26 @@ impl AppState {
     pub fn agents(&self) -> &DashMap<Uuid, AgentEntry> {
         &self.0.agents
     }
-    pub fn fetch_permits(&self) -> &Arc<tokio::sync::Semaphore> {
-        &self.0.fetch_permits
+    /// A download slot for `server`: one of the instance's shared permits,
+    /// and at most one per server, so a node that stops reading its stream
+    /// cannot starve every other node's self-update (red team 2026-10 C-2).
+    /// None = busy; the slot is released when dropped.
+    pub fn try_fetch_slot(&self, server: Uuid) -> Option<FetchSlot> {
+        let mut active = self
+            .0
+            .fetch_active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.contains(&server) {
+            return None;
+        }
+        let permit = self.0.fetch_permits.clone().try_acquire_owned().ok()?;
+        active.insert(server);
+        Some(FetchSlot {
+            _permit: permit,
+            server,
+            active: self.0.fetch_active.clone(),
+        })
     }
     pub fn read_permits(&self) -> &tokio::sync::Semaphore {
         &self.0.read_permits
@@ -305,4 +326,20 @@ pub async fn connect_valkey(cfg: &PanelConfig) -> anyhow::Result<fred::clients::
     let pool = Builder::from_config(config).build_pool(4)?;
     pool.init().await?;
     Ok(pool)
+}
+
+/// See `AppState::try_fetch_slot`.
+pub struct FetchSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    server: Uuid,
+    active: Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>,
+}
+
+impl Drop for FetchSlot {
+    fn drop(&mut self) {
+        self.active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.server);
+    }
 }

@@ -923,7 +923,7 @@ pub async fn binary(
     let Some((rel_id, rel_size)) = rel else {
         return crate::reject::not_found();
     };
-    let Ok(permit) = state.fetch_permits().clone().try_acquire_owned() else {
+    let Some(permit) = state.try_fetch_slot(link.server) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             [(header::RETRY_AFTER, HeaderValue::from_static("5"))],
