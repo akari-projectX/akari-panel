@@ -6,7 +6,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use sqlx::FromRow;
 use uuid::Uuid;
 
@@ -23,10 +22,6 @@ pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-pub fn hash_token(token: &str) -> String {
-    hex::encode(Sha256::digest(token.as_bytes()))
 }
 
 /// Length of a generated token (32 bytes, base64url without padding).
@@ -368,7 +363,7 @@ pub async fn subscription(
     if !plausible_token(&token) {
         return reject::not_found();
     }
-    let hash = hash_token(&token);
+    let hash = crate::token::digest_hex(&token);
 
     // Only served users (role=user, enabled, not expired; enforce::SERVED).
     let user = match sqlx::query_as::<_, SubUser>(sqlx::AssertSqlSafe(format!(
@@ -573,7 +568,7 @@ pub async fn rotate_token(
     let enc = keys.seal_sub_token(user_id, &token)?;
     let n = sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 WHERE id = $1")
         .bind(user_id)
-        .bind(hash_token(&token))
+        .bind(crate::token::digest_hex(&token))
         .bind(&enc)
         .execute(&mut *conn)
         .await?
@@ -670,7 +665,7 @@ pub async fn ensure_token(
         match row.sub_token_hash.zip(row.sub_token_enc) {
             Some((hash, enc)) => {
                 return Ok(Some(match keys.open_sub_token(user_id, &enc) {
-                    Some(t) if hash_token(&t) == hash => Stored::Ready(t),
+                    Some(t) if crate::token::digest_hex(&t) == hash => Stored::Ready(t),
                     _ => {
                         tracing::error!(user = %user_id,
                             "stored subscription token does not open (data/master.key changed?); \
@@ -687,7 +682,7 @@ pub async fn ensure_token(
                      WHERE id = $1 AND sub_token_hash IS NULL",
                 )
                 .bind(user_id)
-                .bind(hash_token(&token))
+                .bind(crate::token::digest_hex(&token))
                 .bind(&enc)
                 .execute(&mut *conn)
                 .await?

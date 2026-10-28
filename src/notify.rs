@@ -219,7 +219,7 @@ async fn connect(state: &AppState) -> sqlx::Result<PgListener> {
     l.listen(CHANNEL).await?;
     *w.listener_backend
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ListenerBackend {
+        .expect("mutex poisoned: a holder panicked") = Some(ListenerBackend {
         pid,
         started,
         app_name,
@@ -306,7 +306,7 @@ async fn supervise(state: AppState, first: PgListener) {
         w.listener_pid.store(0, Ordering::SeqCst);
         *w.listener_backend
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .expect("mutex poisoned: a holder panicked") = None;
         tracing::warn!(error = %err, "change listener: disconnected; reconnecting");
         tokio::time::sleep(RECONNECT_MIN).await;
     }
@@ -321,7 +321,7 @@ async fn run(state: &AppState, mut listener: PgListener) -> String {
         .wakeups()
         .listener_backend
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .expect("mutex poisoned: a holder panicked")
         .clone();
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<Result<Event, String>>();
     let reader = tokio::spawn(async move {

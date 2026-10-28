@@ -544,18 +544,10 @@ pub fn clean_query(q: Option<&str>) -> Result<Option<String>, ApiError> {
     Ok(Some(q.to_string()))
 }
 
-fn like_pattern(q: &str) -> String {
-    let escaped = q
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    format!("%{escaped}%")
-}
-
 /// Published articles grouped by category (categories by sort), filtered
 /// by `q` (substring of a title or body, either language).
 pub async fn help_list(conn: &mut PgConnection, q: Option<&str>) -> sqlx::Result<HelpList> {
-    let pattern = q.map(like_pattern);
+    let pattern = q.map(crate::db::like_contains);
     let items: Vec<HelpItem> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT a.id, a.category_id, a.title_zh, a.title_en, a.updated_at FROM kb_articles a \
          WHERE a.published AND ($1::text IS NULL OR a.title_zh ILIKE $1 OR a.title_en ILIKE $1 \

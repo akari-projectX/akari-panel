@@ -796,19 +796,6 @@ pub const VIEW_USAGE80: &str = "(u.enabled AND u.role = 'user' AND u.traffic_lim
      AND NOT (u.expires_at IS NOT NULL AND u.expires_at <= now()))";
 pub const VIEW_UNVERIFIED: &str = "(u.email_verified_at IS NULL AND u.erased_at IS NULL)";
 
-/// `s` with LIKE metacharacters escaped (backslash is the default escape).
-fn like_prefix(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 1);
-    for c in s.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('%');
-    out
-}
-
 /// A `YYYY-MM-DD` day filter (None = absent or blank).
 fn day_filter(field: &str, v: Option<&str>) -> Result<Option<chrono::NaiveDate>, ApiError> {
     match v.map(str::trim).filter(|v| !v.is_empty()) {
@@ -840,7 +827,7 @@ pub(crate) fn push_user_filters(
                 max = MAX_USER_QUERY
             ));
         }
-        let pat = like_prefix(&text.to_lowercase());
+        let pat = crate::db::like_prefix(&text.to_lowercase());
         qb.push(" AND (u.email LIKE ").push_bind(pat.clone());
         // Ids only for a hex-ish prefix (no index on id::text: keep the
         // scan out of the common email search).
@@ -1110,7 +1097,7 @@ pub async fn create_user(
     .bind(&email)
     .bind(&hash)
     .bind(role)
-    .bind(crate::sub::hash_token(&sub_token))
+    .bind(crate::token::digest_hex(&sub_token))
     .bind(&sub_enc)
     .fetch_one(&mut *tx)
     .await
@@ -4370,7 +4357,7 @@ mod tests {
         let mut secrets = vec![
             "first-password-123".to_string(),
             created.sub_token.clone(),
-            crate::sub::hash_token(&created.sub_token),
+            crate::token::digest_hex(&created.sub_token),
         ];
         let n = db.node().await;
         grant(&db, &[n], &[u]).await;
@@ -4405,7 +4392,7 @@ mod tests {
             .unwrap()
             .unwrap();
         secrets.push(token.clone());
-        secrets.push(crate::sub::hash_token(&token));
+        secrets.push(crate::token::digest_hex(&token));
         tx.commit().await.unwrap();
         let hash: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(u)

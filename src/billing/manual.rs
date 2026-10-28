@@ -191,14 +191,16 @@ pub async fn apply_create(
     }
     orders::record_event(
         conn,
-        Some(id),
-        Some(&otn),
-        "manual",
-        true,
-        "manual_order",
-        None,
-        Some(json!({ "reason": reason, "by": actor.label, "gift": req.gift })),
-        actor.ip,
+        &orders::PaymentEvent {
+            order_id: Some(id),
+            out_trade_no: Some(&otn),
+            source: "manual",
+            verified: true,
+            outcome: "manual_order",
+            params: Some(json!({ "reason": reason, "by": actor.label, "gift": req.gift })),
+            ip: actor.ip,
+            ..orders::PaymentEvent::default()
+        },
     )
     .await?;
     Ok(id)

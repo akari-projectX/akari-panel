@@ -244,7 +244,7 @@ impl TrafficBuffer {
         let h = self
             .health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .expect("mutex poisoned: a holder panicked");
         #[cfg(test)]
         let elapsed = h.last_ok.elapsed() + h.backdate;
         #[cfg(not(test))]
@@ -256,7 +256,7 @@ impl TrafficBuffer {
         let mut h = self
             .health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .expect("mutex poisoned: a holder panicked");
         h.failing = false;
         h.last_ok = snapshot_at;
         #[cfg(test)]
@@ -268,7 +268,7 @@ impl TrafficBuffer {
     fn flush_failed(&self) {
         self.health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("mutex poisoned: a holder panicked")
             .failing = true;
     }
 
@@ -279,7 +279,7 @@ impl TrafficBuffer {
         let mut h = self
             .health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .expect("mutex poisoned: a holder panicked");
         h.last_ok = Instant::now();
         h.backdate = ago;
     }
@@ -288,7 +288,7 @@ impl TrafficBuffer {
     pub fn failing(&self) -> bool {
         self.health
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expect("mutex poisoned: a holder panicked")
             .failing
     }
 

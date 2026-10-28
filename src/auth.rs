@@ -601,6 +601,11 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
+    /// The rate-limit bucket of this request's client address.
+    pub fn bucket(&self) -> String {
+        crate::client_ip::bucket_or_unknown(self.ip)
+    }
+
     pub fn require_admin(&self) -> Result<(), ApiError> {
         if self.role == "admin" {
             Ok(())

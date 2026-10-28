@@ -997,11 +997,7 @@ pub fn list_filter(q: &ListQuery, me: Uuid) -> Result<(String, Vec<String>), Api
                 "search text is longer than 64 characters"
             ));
         }
-        let escaped = s
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let p = bind(format!("%{escaped}%"), &mut binds);
+        let p = bind(crate::db::like_contains(s), &mut binds);
         clauses.push(format!("(t.subject ILIKE {p} OR u.email ILIKE {p})"));
     }
     let wh = if clauses.is_empty() {

@@ -181,7 +181,7 @@ fn codes_and_tokens() {
     assert!(!reset::plausible_token(&t[..42]));
     assert!(!reset::plausible_token(&format!("{}=", &t[..42])));
     assert_ne!(reset::new_token(), t);
-    assert_eq!(reset::token_hash(&t).len(), 32);
+    assert_eq!(crate::token::digest(&t).len(), 32);
 }
 
 #[test]

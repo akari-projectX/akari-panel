@@ -2739,7 +2739,7 @@ async fn end_order_outages_and_races() {
         &pending(o1, &otn1),
         "expired",
         &actor,
-        false,
+        orders::EndMode::Confirmed,
     )
     .await
     .unwrap();
@@ -2753,7 +2753,7 @@ async fn end_order_outages_and_races() {
         &pending(o1, &otn1),
         "expired",
         &actor,
-        true,
+        orders::EndMode::Forced,
     )
     .await
     .unwrap();
@@ -2784,7 +2784,7 @@ async fn end_order_outages_and_races() {
         &pending(o2, &otn2),
         "cancelled",
         &actor,
-        false,
+        orders::EndMode::Confirmed,
     )
     .await
     .unwrap();
@@ -2805,7 +2805,7 @@ async fn end_order_outages_and_races() {
         &pending(o3, &otn3),
         "expired",
         &actor,
-        false,
+        orders::EndMode::Confirmed,
     )
     .await
     .unwrap();
@@ -2827,14 +2827,13 @@ async fn prune_events_keeps_money_records() {
     for (verified, outcome) in [(false, "old_junk"), (true, "old_paid"), (false, "new_junk")] {
         orders::record_event(
             &mut c,
-            None,
-            Some("x"),
-            "notify",
-            verified,
-            outcome,
-            None,
-            None,
-            None,
+            &orders::PaymentEvent {
+                out_trade_no: Some("x"),
+                source: "notify",
+                verified,
+                outcome,
+                ..orders::PaymentEvent::default()
+            },
         )
         .await
         .unwrap();

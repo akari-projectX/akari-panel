@@ -1035,7 +1035,7 @@ pub async fn apply_update_plan(
         res.served_bumped = bumped;
     }
     if quota_changed && !users.is_empty() {
-        let synced = sync_users_from_plan(conn, &users, false).await?;
+        let synced = sync_users_from_plan(conn, &users, Usage::Keep).await?;
         let changed: Vec<Uuid> = synced
             .iter()
             .filter(|s| s.serve_changed)
@@ -1219,6 +1219,15 @@ struct Synced {
     used_before: i64,
 }
 
+/// What `sync_users_from_plan` does with the users' used traffic.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Usage {
+    /// Leave it.
+    Keep,
+    /// Zero it (a fresh quota).
+    Reset,
+}
+
 /// Rewrite users' enforced `traffic_limit_bytes` / `expires_at` from their
 /// active subscription (its quota snapshot, 中-5; resetting the expiry
 /// marker when the expiry moves),
@@ -1228,7 +1237,7 @@ struct Synced {
 async fn sync_users_from_plan(
     conn: &mut PgConnection,
     users: &[Uuid],
-    reset_traffic: bool,
+    usage: Usage,
 ) -> sqlx::Result<Vec<Synced>> {
     let rows: Vec<(Uuid, Value, Value, bool, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE users u SET traffic_limit_bytes = up.quota_bytes, \
@@ -1247,7 +1256,7 @@ async fn sync_users_from_plan(
         crate::audit::user_snapshot_sql("new"),
     )))
     .bind(users)
-    .bind(reset_traffic)
+    .bind(usage == Usage::Reset)
     .fetch_all(conn)
     .await?;
     Ok(rows
@@ -1544,7 +1553,7 @@ pub async fn apply_set_user_plan(
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
-    let synced = sync_users_from_plan(conn, &[user_id], true).await?;
+    let synced = sync_users_from_plan(conn, &[user_id], Usage::Reset).await?;
     let (before, mut after) = match synced.into_iter().next() {
         Some(s) => {
             // Served state or speed limit changed: every node of the user
@@ -1672,7 +1681,16 @@ pub async fn apply_renew_user_plan(
         outcome: entitle::apply_reconcile(conn, Scope::Users(&[user_id])).await?,
         ..Default::default()
     };
-    let synced = sync_users_from_plan(conn, &[user_id], fresh_quota).await?;
+    let synced = sync_users_from_plan(
+        conn,
+        &[user_id],
+        if fresh_quota {
+            Usage::Reset
+        } else {
+            Usage::Keep
+        },
+    )
+    .await?;
     let mut after = json!({
         "user_plan_id": up_id,
         "expires_at": new_expiry,
@@ -1928,7 +1946,7 @@ pub async fn apply_refund_revoke(
         .await?;
     }
     if !matches!(revoke, Revoke::End { .. }) {
-        let synced = sync_users_from_plan(conn, &[user_id], false).await?;
+        let synced = sync_users_from_plan(conn, &[user_id], Usage::Keep).await?;
         // A restore may change the speed limit as well: resend everything.
         if synced.iter().any(|s| s.serve_changed) || prior.is_some() {
             res.served_bumped = bump_servers_of_users(conn, &[user_id]).await?;

@@ -25,7 +25,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
 use serde::Deserialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use uuid::Uuid;
 
@@ -70,10 +69,6 @@ pub fn plausible_token(t: &str) -> bool {
     t.len() == TOKEN_LEN
         && t.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-pub fn token_hash(t: &str) -> Vec<u8> {
-    Sha256::digest(t.as_bytes()).to_vec()
 }
 
 /// POST /{prefix}/auth/password-reset/request {email, locale?}
@@ -154,7 +149,7 @@ pub async fn apply_send_link(
         "INSERT INTO password_resets (token_hash, user_id, email, expires_at) \
          VALUES ($1, $2, $3, now() + make_interval(secs => $4))",
     )
-    .bind(token_hash(&token))
+    .bind(crate::token::digest(&token))
     .bind(user)
     .bind(addr)
     .bind(super::RESET_TTL_SECS as f64)
@@ -195,7 +190,7 @@ pub async fn token_usable(pg: &sqlx::PgPool, token: &str) -> sqlx::Result<bool> 
          WHERE r.token_hash = $1 AND r.used_at IS NULL AND r.expires_at > now() \
          AND u.email = r.email AND {MAY_RESET})"
     )))
-    .bind(token_hash(token))
+    .bind(crate::token::digest(token))
     .fetch_one(pg)
     .await
 }
@@ -218,7 +213,7 @@ pub async fn apply_reset(
          AND u.id = r.user_id AND u.email = r.email AND {MAY_RESET} \
          RETURNING r.user_id"
     )))
-    .bind(token_hash(token))
+    .bind(crate::token::digest(token))
     .fetch_optional(&mut *conn)
     .await?;
     let Some(user) = row else {

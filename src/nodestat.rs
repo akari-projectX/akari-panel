@@ -213,7 +213,7 @@ pub struct Fleet {
 impl Local {
     /// Record a heartbeat; true when it is due for a history write.
     fn observe(&self, server: Uuid, s: Sample, now: Instant) -> bool {
-        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen = self.seen.lock().expect("mutex poisoned: a holder panicked");
         let e = seen.entry(server).or_insert(Seen {
             at: now,
             written: None,
@@ -234,13 +234,13 @@ impl Local {
     pub fn forget(&self, server: Uuid) {
         self.seen
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .expect("mutex poisoned: a holder panicked")
             .remove(&server);
     }
 
     pub fn fleet(&self) -> Fleet {
         let now = Instant::now();
-        let seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        let seen = self.seen.lock().expect("mutex poisoned: a holder panicked");
         let mut f = Fleet::default();
         for s in seen
             .values()

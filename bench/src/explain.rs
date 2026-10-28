@@ -466,7 +466,7 @@ async fn ids(pg: &sqlx::PgPool, flush_rows: usize) -> Result<Ids> {
     Ok(Ids {
         node,
         user,
-        sub_hash: akari_panel::sub::hash_token(&common::sub_token(1)),
+        sub_hash: akari_panel::token::digest_hex(&common::sub_token(1)),
         flush,
     })
 }

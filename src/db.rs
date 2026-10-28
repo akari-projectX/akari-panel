@@ -367,3 +367,38 @@ mod tests {
         t.drop().await;
     }
 }
+
+/// `term` with the LIKE metacharacters (`\`, `%`, `_`) taken literally,
+/// without wildcards around it (backslash is the default escape).
+fn like_escaped(term: &str) -> String {
+    let mut out = String::with_capacity(term.len() + 2);
+    for c in term.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// `%term%` for `LIKE`/`ILIKE`: a substring match on `term` taken literally.
+pub fn like_contains(term: &str) -> String {
+    format!("%{}%", like_escaped(term))
+}
+
+/// `term%` for `LIKE`/`ILIKE`: a prefix match on `term` taken literally.
+pub fn like_prefix(term: &str) -> String {
+    format!("{}%", like_escaped(term))
+}
+
+#[cfg(test)]
+mod like_tests {
+    use super::*;
+
+    #[test]
+    fn metacharacters_are_literal() {
+        assert_eq!(like_contains("50%_\\"), "%50\\%\\_\\\\%");
+        assert_eq!(like_prefix("a_b"), "a\\_b%");
+        assert_eq!(like_contains(""), "%%");
+    }
+}

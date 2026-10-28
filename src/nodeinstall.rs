@@ -687,9 +687,7 @@ struct Link {
 /// install link of a server that is not being deleted. None = reject.
 async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<Link> {
     let cfg = &state.cfg().limits;
-    let bucket = ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
+    let bucket = crate::client_ip::bucket_or_unknown(ip);
     match crate::rate::hit(
         state,
         format!("akari:rl:install:ip:{bucket}"),
@@ -705,7 +703,7 @@ async fn live_link(state: &AppState, ip: Option<IpAddr>, token: &str) -> Option<
     if !crate::enroll::plausible_token(token) {
         return None;
     }
-    let hash = crate::enroll::hash_token(token);
+    let hash = crate::token::digest(token);
     type Row = (
         Uuid,
         Vec<u8>,

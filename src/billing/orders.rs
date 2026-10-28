@@ -109,32 +109,54 @@ pub fn order_snapshot_sql(alias: &str) -> String {
     )
 }
 
-/// One payment_events row (in the caller's transaction or alone).
-#[allow(clippy::too_many_arguments)]
-pub async fn record_event(
-    conn: &mut PgConnection,
-    order_id: Option<Uuid>,
-    out_trade_no: Option<&str>,
-    source: &str,
-    verified: bool,
-    outcome: &str,
-    trade_status: Option<&str>,
-    params: Option<Value>,
-    ip: Option<IpAddr>,
-) -> sqlx::Result<()> {
+/// One `payment_events` row to record.
+#[derive(Debug, Default)]
+pub struct PaymentEvent<'a> {
+    /// The order it concerns, when known.
+    pub order_id: Option<Uuid>,
+    /// The gateway's order number as received (truncated on write).
+    pub out_trade_no: Option<&'a str>,
+    /// Where it came from (`notify`, `query`, `precreate`, ...).
+    pub source: &'a str,
+    /// Whether the gateway's signature checked out.
+    pub verified: bool,
+    /// What was done with it.
+    pub outcome: &'a str,
+    /// The gateway's trade status as received (truncated on write).
+    pub trade_status: Option<&'a str>,
+    /// Redacted request parameters.
+    pub params: Option<Value>,
+    /// The sender's address.
+    pub ip: Option<IpAddr>,
+}
+
+/// Record one payment_events row (in the caller's transaction or alone).
+pub async fn record_event(conn: &mut PgConnection, event: &PaymentEvent<'_>) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO payment_events (order_id, out_trade_no, source, verified, outcome, \
          trade_status, params, ip, payment_method_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
          (SELECT payment_method_id FROM orders WHERE id = $1))",
     )
-    .bind(order_id)
-    .bind(out_trade_no.map(|s| s.chars().take(64).collect::<String>()))
-    .bind(source)
-    .bind(verified)
-    .bind(outcome)
-    .bind(trade_status.map(|s| s.chars().take(32).collect::<String>()))
-    .bind(params)
-    .bind(ip.map(|ip| crate::client_ip::canonical(ip).to_string()))
+    .bind(event.order_id)
+    .bind(
+        event
+            .out_trade_no
+            .map(|s| s.chars().take(64).collect::<String>()),
+    )
+    .bind(event.source)
+    .bind(event.verified)
+    .bind(event.outcome)
+    .bind(
+        event
+            .trade_status
+            .map(|s| s.chars().take(32).collect::<String>()),
+    )
+    .bind(&event.params)
+    .bind(
+        event
+            .ip
+            .map(|ip| crate::client_ip::canonical(ip).to_string()),
+    )
     .execute(conn)
     .await?;
     Ok(())
@@ -631,14 +653,16 @@ pub async fn apply_admin_fulfil(
             apply_mark_paid(conn, actor, order_id, Via::Manual, None, None, Some(reason)).await?;
         record_event(
             conn,
-            Some(order_id),
-            Some(&otn),
-            "manual",
-            true,
-            "marked_paid",
-            None,
-            Some(json!({ "reason": reason, "by": actor.label })),
-            actor.ip,
+            &PaymentEvent {
+                order_id: Some(order_id),
+                out_trade_no: Some(&otn),
+                source: "manual",
+                verified: true,
+                outcome: "marked_paid",
+                params: Some(json!({ "reason": reason, "by": actor.label })),
+                ip: actor.ip,
+                ..PaymentEvent::default()
+            },
         )
         .await?;
         return Ok(r);
@@ -663,18 +687,20 @@ pub async fn apply_admin_fulfil(
     .await?;
     record_event(
         conn,
-        Some(order_id),
-        Some(&otn),
-        "manual",
-        true,
-        if fulfilled {
-            "fulfilled"
-        } else {
-            "fulfil_failed"
+        &PaymentEvent {
+            order_id: Some(order_id),
+            out_trade_no: Some(&otn),
+            source: "manual",
+            verified: true,
+            outcome: if fulfilled {
+                "fulfilled"
+            } else {
+                "fulfil_failed"
+            },
+            params: Some(json!({ "reason": reason, "by": actor.label })),
+            ip: actor.ip,
+            ..PaymentEvent::default()
         },
-        None,
-        Some(json!({ "reason": reason, "by": actor.label })),
-        actor.ip,
     )
     .await?;
     Ok(Paid::Now { fulfilled })
@@ -723,14 +749,16 @@ pub async fn apply_query_result(
         tracing::error!(order = %order.id, "payment query: paid amount differs from the order");
         record_event(
             &mut tx,
-            Some(order.id),
-            Some(&order.out_trade_no),
-            source,
-            true,
-            "amount_mismatch",
-            Some(status),
-            Some(json!({ "trade_no": trade_no, "total_cents": total_cents })),
-            None,
+            &PaymentEvent {
+                order_id: Some(order.id),
+                out_trade_no: Some(&order.out_trade_no),
+                source,
+                verified: true,
+                outcome: "amount_mismatch",
+                trade_status: Some(status),
+                params: Some(json!({ "trade_no": trade_no, "total_cents": total_cents })),
+                ..PaymentEvent::default()
+            },
         )
         .await?;
         crate::audit::record(
@@ -760,14 +788,16 @@ pub async fn apply_query_result(
     if r != Paid::Already {
         record_event(
             &mut tx,
-            Some(order.id),
-            Some(&order.out_trade_no),
-            source,
-            true,
-            "paid",
-            Some(status),
-            Some(json!({ "trade_no": trade_no, "total_cents": total_cents })),
-            None,
+            &PaymentEvent {
+                order_id: Some(order.id),
+                out_trade_no: Some(&order.out_trade_no),
+                source,
+                verified: true,
+                outcome: "paid",
+                trade_status: Some(status),
+                params: Some(json!({ "trade_no": trade_no, "total_cents": total_cents })),
+                ..PaymentEvent::default()
+            },
         )
         .await?;
     }
@@ -813,6 +843,28 @@ pub fn provider_of(state: &AppState, order: &Pending) -> Option<Arc<dyn PaymentP
         .and_then(|m| state.payments().provider(m))
 }
 
+/// Whether `end_order` may end the row although the gateway could not be
+/// asked or did not confirm the close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndMode {
+    /// End only when the gateway confirmed the close (or there is nothing
+    /// to close); otherwise the order stays pending.
+    Confirmed,
+    /// Close grace exceeded (or no method to ask): end regardless.
+    Forced,
+}
+
+impl EndMode {
+    /// `Forced` once `forced` holds.
+    pub fn forced_if(forced: bool) -> Self {
+        if forced {
+            Self::Forced
+        } else {
+            Self::Confirmed
+        }
+    }
+}
+
 /// End a pending order (`expired` or `cancelled`): query first (paid →
 /// fulfil instead), then close remotely; the row is ended only when the
 /// close succeeded (or there was nothing to close), or `force` (close
@@ -825,8 +877,9 @@ pub async fn end_order(
     order: &Pending,
     target: &str,
     actor: &Actor,
-    force: bool,
+    mode: EndMode,
 ) -> Result<String, ApiError> {
+    let force = mode == EndMode::Forced;
     let close_state = match provider {
         None if !force => return Ok("pending".into()),
         None => "method_unavailable".to_string(),
@@ -883,18 +936,20 @@ pub async fn end_order(
     after["released"] = release_holds(&mut tx, actor, order.id).await?;
     record_event(
         &mut tx,
-        Some(order.id),
-        Some(&order.out_trade_no),
-        if target == "expired" {
-            "expire"
-        } else {
-            "close"
+        &PaymentEvent {
+            order_id: Some(order.id),
+            out_trade_no: Some(&order.out_trade_no),
+            source: if target == "expired" {
+                "expire"
+            } else {
+                "close"
+            },
+            verified: true,
+            outcome: target,
+            params: Some(json!({ "close_state": close_state })),
+            ip: actor.ip,
+            ..PaymentEvent::default()
         },
-        true,
-        target,
-        None,
-        Some(json!({ "close_state": close_state })),
-        actor.ip,
     )
     .await?;
     crate::audit::record(
@@ -937,7 +992,7 @@ pub async fn reconcile_tick(state: &AppState) -> Result<usize, ApiError> {
     for order in batch {
         let provider = provider_of(state, &order);
         let res = if order.due {
-            let force =
+            let grace_over =
                 sqlx::query_scalar::<_, bool>("SELECT $1 <= now() - make_interval(secs => $2)")
                     .bind(order.expires_at)
                     .bind(CLOSE_GRACE_SECS as f64)
@@ -949,7 +1004,7 @@ pub async fn reconcile_tick(state: &AppState) -> Result<usize, ApiError> {
                 &order,
                 "expired",
                 &crate::audit::Actor::system(),
-                force,
+                EndMode::forced_if(grace_over),
             )
             .await
             .map(|_| ())
