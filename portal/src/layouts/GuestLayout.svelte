@@ -39,7 +39,7 @@
       </div>
     </div>
   </header>
-  <main id="main" tabindex="-1">
+  <main id="main" class="wrap guest" tabindex="-1">
     {@render children()}
   </main>
   <SiteFooter />
