@@ -286,6 +286,12 @@ impl Client {
         Ok(out)
     }
 
+    /// One zone by id (its name qualifies a relative record name).
+    pub async fn zone(&self, zone: &str) -> Result<Zone, DnsError> {
+        let path = format!("/zones/{zone}");
+        parse(self.call(hyper::Method::GET, &path, None).await?.0)
+    }
+
     /// One page of a zone's records (`search` matches name and content).
     pub async fn records(
         &self,

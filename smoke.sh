@@ -1115,6 +1115,8 @@ class H(BaseHTTPRequestHandler):
             z = {"id": ZONE, "name": "smoke.test", "status": "active", "paused": False,
                  "permissions": ["#zone:read", "#dns_records:edit"]}
             return self.out(200, [z], info={"page": 1, "per_page": 50, "total_count": 1, "total_pages": 1})
+        if p == "/client/v4/zones/" + ZONE:
+            return self.out(200, {"id": ZONE, "name": "smoke.test", "status": "active", "paused": False})
         m = re.fullmatch(r"/client/v4/zones/%s/dns_records(?:/([0-9a-f]{32}))?" % ZONE, p)
         if not m: return self.out(404, errors=[{"code": 7003, "message": "no route"}])
         rid = m.group(1)
@@ -4353,6 +4355,7 @@ PUT|settings/security|{"version":0}
 PUT|settings/mail|{"version":0,"enabled":false,"port":587,"security":"starttls","notify_order_paid":false,"notify_expiry_days":0,"notify_expired":false,"notify_quota":false,"notify_refund":false,"notify_ban":false,"notify_plan_change":false,"notify_withdrawal":false,"notify_commission":false}
 PUT|settings/auth|{"version":0,"turnstile_site_key":null,"turnstile_login":false,"turnstile_register":false,"turnstile_reset":false,"honeypot":true,"min_submit_secs":2,"passkey_only_admins":false,"passkey_only_users":false,"passkey_prompt":false}
 POST|settings/server-names/remove|{"name":"x.example.com","confirm":true}
+POST|dns/link|{"hosts":[{"host":"x.example.com","address":"8.8.8.8"}],"confirm":true}
 OWNER_ONLY
 # The read side stays open to every admin.
 [ "$(code -b "$A2JAR" "http://127.0.0.1:8081/$PREFIX/api/v1/settings/mail")" = "200" ] || { echo "FAIL: a non-owner admin cannot read the mail settings"; exit 1; }

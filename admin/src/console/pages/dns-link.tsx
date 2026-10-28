@@ -3,7 +3,8 @@
 // show what Cloudflare has for them and offer one-click fixes: "point at this
 // panel" / "point at this server", node domains back to grey cloud, and the
 // panel's own public addresses (owner). All writes are the `/dns/link*`
-// endpoints (the same audit and confirmation rules as the DNS page).
+// endpoints (the same audit and confirmation rules as the DNS page) and, like
+// every write to a record the panel uses, the owner's (red team A-3).
 import { useQuery } from "@tanstack/react-query";
 import { Cloud, CloudOff, Globe, Link2, Pencil } from "lucide-react";
 import { useState } from "react";
@@ -212,7 +213,8 @@ export function DomainDns({
   const [editing, setEditing] = useState(false);
   if (!state?.zone || state.not_a_name) return null;
   const set = !!(panel?.public_ipv4 || panel?.public_ipv6);
-  const editable = state.zone.can_edit !== false;
+  // Pointing the panel's names anywhere is the owner's (red team A-3).
+  const editable = state.zone.can_edit !== false && owner;
   const proxied = state.records.some((r) => r.proxied);
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-footnote" data-testid={`dns-link-${state.host}`}>
@@ -234,7 +236,7 @@ export function DomainDns({
           {tr("指向本面板", "Point at this panel")}
         </Button>
       )}
-      {editable && !set && owner && (
+      {editable && !set && (
         <Button size="sm" variant="outline" icon={Pencil} onClick={() => setEditing(true)}>
           {tr("设置面板地址", "Set panel address")}
         </Button>
@@ -252,6 +254,7 @@ export function DomainDns({
 /** Server settings: the certificate domain and direct entrance hosts of this server. */
 export function ServerDns({ id }: { id: string }) {
   const tr = useTr();
+  const owner = useOwner();
   const actions = useLinkActions();
   const [moved, setMoved] = useState(false);
   const [address, setAddress] = useState("");
@@ -316,7 +319,12 @@ export function ServerDns({ id }: { id: string }) {
             />
           </Field>
         )}
-        {!d.address && !moved && (
+        {!owner && (
+          <p className="text-footnote text-muted-foreground" data-testid="server-dns-owner-only">
+            {tr("只有所有者能更新这些解析。", "Only the owner can update these records.")}
+          </p>
+        )}
+        {owner && !d.address && !moved && (
           <Banner tone="info">
             {tr(
               "还不知道这台服务器的公网地址，点「IP 变了」手动填写。",
@@ -324,34 +332,38 @@ export function ServerDns({ id }: { id: string }) {
             )}
           </Banner>
         )}
-        <div className="flex flex-wrap gap-2">
-          {d.address && !moved && (
-            <Button variant="outline" loading={actions.busy} onClick={() => void actions.linkServer(id)}>
-              {tr(`指向 ${d.address}`, `Point at ${d.address}`)}
-            </Button>
-          )}
-          {!moved ? (
-            <Button variant="outline" onClick={() => setMoved(true)}>
-              {tr("IP 变了…", "IP changed…")}
-            </Button>
-          ) : (
-            <>
-              <Button
-                variant="primary"
-                loading={actions.busy}
-                disabled={!typed && !d.address}
-                onClick={() =>
-                  void actions.linkServer(id, typed || undefined).then((ok) => ok && (setMoved(false), setAddress("")))
-                }
-              >
-                {tr("更新全部解析", "Update all records")}
+        {owner && (
+          <div className="flex flex-wrap gap-2">
+            {d.address && !moved && (
+              <Button variant="outline" loading={actions.busy} onClick={() => void actions.linkServer(id)}>
+                {tr(`指向 ${d.address}`, `Point at ${d.address}`)}
               </Button>
-              <Button variant="ghost" onClick={() => setMoved(false)}>
-                {tr("取消", "Cancel")}
+            )}
+            {!moved ? (
+              <Button variant="outline" onClick={() => setMoved(true)}>
+                {tr("IP 变了…", "IP changed…")}
               </Button>
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                <Button
+                  variant="primary"
+                  loading={actions.busy}
+                  disabled={!typed && !d.address}
+                  onClick={() =>
+                    void actions
+                      .linkServer(id, typed || undefined)
+                      .then((ok) => ok && (setMoved(false), setAddress("")))
+                  }
+                >
+                  {tr("更新全部解析", "Update all records")}
+                </Button>
+                <Button variant="ghost" onClick={() => setMoved(false)}>
+                  {tr("取消", "Cancel")}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );

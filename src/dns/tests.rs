@@ -377,6 +377,19 @@ async fn dangerous_records_need_confirmation() {
         change("192.0.2.2", "note", true).await.status,
         StatusCode::OK
     );
+    // A relative name is the name Cloudflare stores: renaming another
+    // record onto the main domain as "panel" asks too.
+    let other = env
+        .mock
+        .add("example.test", "A", "www.example.test", "192.0.2.9", false);
+    let r = env
+        .owner
+        .put(
+            &format!("{path}/{other}"),
+            json!({ "type": "A", "name": "panel", "content": "192.0.2.9", "proxied": false }),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "dns.confirm_required", "{:?}", r.json());
     let r = env
         .owner
         .req(Method::DELETE, &format!("{path}/{id}?confirm=true"), None)
@@ -749,4 +762,156 @@ async fn a_server_links_its_certificate_domain_and_direct_hosts() {
         .get(&format!("{BASE}/link/server/{}", uuid::Uuid::new_v4()))
         .await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+/// Red team A-3: only the owner may write a record the panel depends on
+/// (site, passkey, certificate and connect domains) or point the panel's
+/// names somewhere (`/dns/link`, `/dns/link/server/{id}`). Other records
+/// stay open to every admin, and the refusal comes before any write.
+#[tokio::test]
+async fn panel_records_and_linking_are_owner_only() {
+    let Some(env) = setup().await else { return };
+    let acc = env.account("a", GOOD_TOKEN).await;
+    env.make_main_domain("panel.example.test").await;
+    let main = env.mock.add(
+        "example.test",
+        "A",
+        "panel.example.test",
+        "192.0.2.1",
+        false,
+    );
+    let other = env
+        .mock
+        .add("example.test", "A", "www.example.test", "192.0.2.1", false);
+    let path = env.records_path(&acc, "example.test");
+    let admin = client_for(&env.state, env.db.admin().await).await;
+    let owner_only = |r: &crate::testdb::http::Resp, what: &str| {
+        assert_eq!(
+            (r.status, r.json()["code"].clone()),
+            (StatusCode::FORBIDDEN, json!("user.owner_only")),
+            "{what}: {:?}",
+            r.json()
+        );
+    };
+    let record = |name: &str, content: &str| json!({ "type": "A", "name": name, "content": content, "proxied": false, "confirm": true });
+    let before = env.mock.records();
+    // Repointing the main domain, renaming a record onto it, adding a
+    // second address for it, deleting it.
+    let r = admin
+        .put(
+            &format!("{path}/{main}"),
+            record("panel.example.test", "198.51.100.66"),
+        )
+        .await;
+    owner_only(&r, "update");
+    let r = admin
+        .put(
+            &format!("{path}/{other}"),
+            record("panel.example.test", "198.51.100.66"),
+        )
+        .await;
+    owner_only(&r, "rename onto");
+    let r = admin
+        .post(&path, record("panel.example.test", "198.51.100.66"))
+        .await;
+    owner_only(&r, "create");
+    // Cloudflare qualifies a relative name and reads `@` as the apex.
+    let r = admin.post(&path, record("panel", "198.51.100.66")).await;
+    owner_only(&r, "create (relative name)");
+    let r = admin
+        .put(&format!("{path}/{other}"), record("panel", "198.51.100.66"))
+        .await;
+    owner_only(&r, "rename onto (relative name)");
+    let r = admin
+        .req(Method::DELETE, &format!("{path}/{main}?confirm=true"), None)
+        .await;
+    owner_only(&r, "delete");
+    let r = admin
+        .post(
+            &format!("{path}/batch"),
+            json!({ "action": "content", "ids": [other, main], "content": "198.51.100.66",
+                    "confirm": true }),
+        )
+        .await;
+    owner_only(&r, "batch");
+    let r = admin
+        .post(
+            &format!("{BASE}/link"),
+            json!({ "hosts": [{ "host": "panel.example.test", "address": "8.8.8.8" }],
+                    "confirm": true }),
+        )
+        .await;
+    owner_only(&r, "link");
+    let node = env.db.node().await;
+    let server = env.db.server_of(node).await;
+    sqlx::query("UPDATE servers SET tls_domain = 'hk.example.test', agent_addr = '8.8.4.4'::inet WHERE id = $1")
+        .bind(server)
+        .execute(&env.db.pool)
+        .await
+        .unwrap();
+    let r = admin
+        .post(
+            &format!("{BASE}/link/server/{server}"),
+            json!({ "confirm": true }),
+        )
+        .await;
+    owner_only(&r, "link server");
+    assert_eq!(env.mock.records(), before, "nothing was written");
+    // The server's certificate domain is a panel name too.
+    let cert = env
+        .mock
+        .add("example.test", "A", "hk.example.test", "8.8.4.4", false);
+    let r = admin
+        .put(
+            &format!("{path}/{cert}"),
+            record("hk.example.test", "198.51.100.66"),
+        )
+        .await;
+    owner_only(&r, "certificate domain");
+    // Reads stay open, and so do the records the panel does not use.
+    let r = admin.get(&format!("{BASE}/link/server/{server}")).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let r = admin.get(&path).await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let r = admin
+        .put(
+            &format!("{path}/{other}"),
+            record("www.example.test", "8.8.8.8"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    let r = admin
+        .post(&path, record("blog.example.test", "8.8.8.8"))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let r = admin
+        .post(
+            &format!("{path}/batch"),
+            json!({ "action": "proxied", "ids": [other], "proxied": true }),
+        )
+        .await;
+    assert_eq!(r.json()["ok"], 1, "{:?}", r.json());
+    // The owner may do what the admin may not.
+    let r = env
+        .owner
+        .put(
+            &format!("{path}/{main}"),
+            record("panel.example.test", "8.8.8.8"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+}
+
+#[test]
+fn record_names_are_qualified_like_cloudflare() {
+    for (name, want) in [
+        ("@", "example.test"),
+        ("panel", "panel.example.test"),
+        ("Panel.Example.Test.", "panel.example.test"),
+        ("example.test", "example.test"),
+        ("a.b", "a.b.example.test"),
+        ("xexample.test", "xexample.test.example.test"),
+    ] {
+        assert_eq!(super::qualified(name, "example.test"), want, "{name}");
+    }
 }
