@@ -95,6 +95,12 @@
   const left = $derived(daysLeft(expiresAt));
   const nodeList = $derived(nodes.data ?? []);
   const online = $derived(nodeList.filter((n) => n.status === 'online').length);
+  /* 「已用流量」的说明：已过期 / 流量用完（续费范围）写明原因，「购买套餐后可用」只给从没有套餐的账户 */
+  const used = $derived(
+    me?.expired ? t('套餐已过期，续费后恢复')
+      : me?.quota_exhausted ? t('流量已用完，续费或购买重置包后恢复')
+      : hasPlan ? t('套餐不限流量') : t('购买套餐后可用'),
+  );
   const stats = $derived.by((): Stat[] => [
     hasPlan && !usage.unlimited
       ? {
@@ -102,7 +108,7 @@
           bar: { pct: usage.leftPct, low: usage.leftPct < 10 },
           x: tp('共 {t} GB，已用 {u} GB', { t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) }),
         }
-      : { k: t('已用流量'), v: usage.used.toFixed(1), unit: 'GB', x: hasPlan ? t('套餐不限流量') : t('购买套餐后可用') },
+      : { k: t('已用流量'), v: usage.used.toFixed(1), unit: 'GB', x: used },
     /* 线路还没取到 / 没取到时写横杠，不写 0：0 条是「全部不可用」的意思 */
     full
       ? {

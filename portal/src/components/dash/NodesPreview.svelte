@@ -1,10 +1,10 @@
 <script lang="ts">
   import Zap from '@lucide/svelte/icons/zap';
   import type { MyNode } from '@/api';
-  import { formatRate } from '@/lib/format';
-  import { LOAD_TEXT, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, rateTone, sortTags, stripFlag } from '@/lib/node';
+  import { LOAD_TEXT, STATUS_TEXT, nodeCC, nodeKey, nodeLatency, nodeUp, sortTags, stripFlag } from '@/lib/node';
   import Empty from '../Empty.svelte';
   import Flag from '../Flag.svelte';
+  import RateChip from '../RateChip.svelte';
   import LoadError from '../LoadError.svelte';
   import Loading from '../Loading.svelte';
   import PaneHead from '../flat/PaneHead.svelte';
@@ -95,7 +95,7 @@
           {#if up && n.load}<span class={['nload', n.load]} data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span>{/if}
         </span>
       {/snippet}
-      {#snippet extra()}<span class={['rate', up ? rateTone(n.rate) : 'off']}>×{formatRate(n.rate)}</span>{/snippet}
+      {#snippet extra()}<RateChip rate={n.rate} />{/snippet}
     </Row>
   {/each}
   <Pager page={cur} {pages} onchange={(p) => (page = p)} meta={tp('第 {a} / {b} 页 · 共 {n} 条线路', { a: cur, b: pages, n: list.length })} />

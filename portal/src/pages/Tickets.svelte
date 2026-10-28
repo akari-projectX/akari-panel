@@ -106,7 +106,7 @@
           </span>
         {/snippet}
         {#snippet title()}{x.subject}{/snippet}
-        {#snippet desc()}{t(CATEGORY[x.category])}<span class="sm-hide">{' · '}{level(x)}</span>{' · '}<span class="tk-nw">{tp('更新于 {d}', { d: formatDateTime(x.updated_at) })}</span>{/snippet}
+        {#snippet desc()}{t(CATEGORY[x.category])}{' · '}<span class="tk-nw">{tp('更新于 {d}', { d: formatDateTime(x.updated_at) })}</span>{/snippet}
         {#snippet extra()}
           <span class="tk-end">
             <span class={['bdg', 'tk-pr', PRIORITY[x.priority].bdg]}>{level(x)}</span>
@@ -135,5 +135,4 @@
   .tk-nw { white-space: nowrap; }
   .tk-end { display: flex; align-items: center; gap: 13px; }
   @media (max-width: 639px) { .tk-pr { display: none; } }
-  @media (min-width: 640px) { .sm-hide { display: none; } }
 </style>

@@ -365,6 +365,7 @@ test('#19 renewal scope (expired): banner, no lines, subscription or traffic; th
   await expect(page.locator('section[aria-labelledby="h-traffic"]')).toHaveCount(0);
   await expect(page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '订阅内的线路' }) })).toContainText('线路暂不可用');
   await expect(page.locator('.statrow')).toContainText('续费后恢复');
+  await expect(page.locator('.statrow')).not.toContainText('购买套餐后可用');
   await shot(page, info, 'dashboard-renewal-light');
   await dark(page);
   await shot(page, info, 'dashboard-renewal-dark');

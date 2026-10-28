@@ -155,7 +155,7 @@
       <div class="sec-head"><div><h2 id="h-subscription" class="sec-title">{t('订阅链接')}</h2></div></div>
       <div class="set-row">
         <div class="set-l">
-          <div class="set-t">{t('订阅链接')}</div>
+          <div class="set-t">{t('链接状态')}</div>
           <p class="set-d">{t('等同于账号凭证：拿到它的人能用你的流量。一旦外泄就重置，旧链接与所有设备上的连接立即失效。')}</p>
         </div>
         <div class="set-r">
