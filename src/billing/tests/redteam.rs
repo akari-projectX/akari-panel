@@ -34,8 +34,10 @@ async fn oversized_notify_is_the_canonical_rejection() {
     let state = paid_state(&db, &mock).await;
     let baseline = post_notify(&state, rand_ip(), b"x=1".to_vec()).await;
     assert_eq!(baseline.status, StatusCode::NOT_FOUND);
-    for size in [20_000usize, 3 << 20] {
-        let r = post_notify(&state, rand_ip(), vec![b'a'; size]).await;
+    // Streamed (read up to the cap) and declared in Content-Length
+    // (refused before the body is touched).
+    for (size, declare) in [(20_000usize, false), (3 << 20, false), (20_000, true)] {
+        let r = post_notify_with(&state, rand_ip(), vec![b'a'; size], declare).await;
         assert_eq!(r.status, StatusCode::NOT_FOUND, "{size} bytes");
         assert!(r.body.is_empty(), "{size} bytes");
         let names = |h: &axum::http::HeaderMap| {
@@ -52,7 +54,7 @@ async fn oversized_notify_is_the_canonical_rejection() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(n, 2, "both oversized notifies leave an event");
+    assert_eq!(n, 3, "every oversized notify leaves an event");
     drop(state);
     db.drop().await;
 }
