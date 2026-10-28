@@ -65,9 +65,7 @@ use base64::engine::general_purpose::STANDARD;
 use hyper::body::Bytes;
 use serde_json::{Value, json};
 
-use super::crypto::{
-    self, AmountFormat, MAX_SKEW_SECS, Pricing, link_ok, text_field, token_ok, utc_stamp,
-};
+use super::crypto::{self, AmountFormat, MAX_SKEW_SECS, Pricing, link_ok, text_field, utc_stamp};
 use super::provider::{
     BoxFut, CallError, Checkout, Close, CreateReq, NotifyCheck, NotifyEvent, NotifyRequest,
     PaymentProvider, ProviderKind, Query, TestOutcome, Validated,
@@ -691,7 +689,7 @@ fn fingerprint(secret: &str) -> String {
 }
 
 fn secret_of(secrets: &Value) -> Option<String> {
-    text_field(secrets, "client_secret").filter(|s| token_ok(s, MAX_ID))
+    text_field(secrets, "client_secret").filter(|s| crypto::hmac_secret_ok(s, MAX_ID))
 }
 
 fn instance_base(instance: &str) -> Option<&'static str> {
@@ -775,10 +773,15 @@ impl ProviderKind for CoinPaymentsKind {
             ));
         }
         let new_secret = text_field(input, "client_secret");
-        if new_secret.as_deref().is_some_and(|v| !token_ok(v, MAX_ID)) {
+        if new_secret
+            .as_deref()
+            .is_some_and(|v| !crypto::hmac_secret_ok(v, MAX_ID))
+        {
             return Err(bad_request!(
                 "payments.coinpayments_secret_invalid",
-                "client_secret must be 1-128 visible ASCII characters"
+                "client_secret must be {min}-{max} visible ASCII characters",
+                min = crypto::MIN_HMAC_SECRET,
+                max = MAX_ID
             ));
         }
         let currency_id = text_field(input, "currency_id");
@@ -896,7 +899,7 @@ pub(crate) mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
     pub const CLIENT: &str = "4f8b9d2e-1234-5678-9abc-def012345678";
-    pub const SECRET: &str = "test-secret";
+    pub const SECRET: &str = "test-secret-0123456789";
     pub const CURRENCY_ID: &str = "5057";
     pub const NOTIFY_URL: &str =
         "https://panel.example/pay/9b0e5f2a-0000-4000-8000-000000000001/notify";

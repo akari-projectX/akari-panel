@@ -221,6 +221,16 @@ pub fn id_text(v: Option<&Value>) -> Option<String> {
     }
 }
 
+/// The shortest secret that may key a webhook HMAC: anything shorter can be
+/// guessed (and the setup guides once said "any value for now"), and a
+/// guessed key forges "paid" notifications.
+pub const MIN_HMAC_SECRET: usize = 16;
+
+/// A visible-ASCII secret that keys an HMAC: `MIN_HMAC_SECRET`..=`max`.
+pub fn hmac_secret_ok(v: &str, max: usize) -> bool {
+    v.len() >= MIN_HMAC_SECRET && token_ok(v, max)
+}
+
 /// A visible-ASCII token (ids, key names, secrets without whitespace).
 pub fn token_ok(v: &str, max: usize) -> bool {
     !v.is_empty() && v.len() <= max && v.bytes().all(|b| b.is_ascii_graphic())

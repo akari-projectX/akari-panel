@@ -735,7 +735,7 @@ fn api_secret_of(secrets: &Value) -> Option<String> {
 }
 
 fn webhook_secret_of(secrets: &Value) -> Option<String> {
-    text_field(secrets, "webhook_secret").filter(|s| token_ok(s, MAX_WEBHOOK_SECRET))
+    text_field(secrets, "webhook_secret").filter(|s| crypto::hmac_secret_ok(s, MAX_WEBHOOK_SECRET))
 }
 
 impl ProviderKind for CoinbaseKind {
@@ -805,11 +805,13 @@ impl ProviderKind for CoinbaseKind {
         let new_hook = text_field(input, "webhook_secret");
         if new_hook
             .as_deref()
-            .is_some_and(|s| !token_ok(s, MAX_WEBHOOK_SECRET))
+            .is_some_and(|s| !crypto::hmac_secret_ok(s, MAX_WEBHOOK_SECRET))
         {
             return Err(bad_request!(
                 "payments.coinbase_webhook_secret_invalid",
-                "webhook_secret must be visible ASCII without spaces"
+                "webhook_secret must be {min}-{max} visible ASCII characters without spaces",
+                min = crypto::MIN_HMAC_SECRET,
+                max = MAX_WEBHOOK_SECRET
             ));
         }
         let currency = text_field(input, "currency").unwrap_or_else(|| "USD".into());

@@ -625,7 +625,7 @@ Webhook `/api/webhooks/authenticating-requests`、`/api/webhooks/clients`（事�
    `invoiceTimedOut`），地址是本支付方式的 `<主域名>/pay/<支付方式 id>/notify`，必须是公网 https。
 4. 查出**发票币种的数字 ID**：公开接口 `GET https://a-api.coinpayments.net/api/v2/currencies?types=fiat`（把 `a` 换成你的实例），找到 `symbol` 为所选币种
    （如 USD）的那一项的 `id`。
-5. 面板：系统设置 → 支付 → 添加支付方式 → CoinPayments，填 实例、客户端 ID、客户端密钥、币种代码、币种 ID、汇率（非 CNY）、订单有效期，启用，点**测试连接**：
+5. 面板：系统设置 → 支付 → 添加支付方式 → CoinPayments，填 实例、客户端 ID、客户端密钥（至少 16 个字符，它同时是 Webhook 的 HMAC 密钥）、币种代码、币种 ID、汇率（非 CNY）、订单有效期，启用，点**测试连接**：
    先做一次带签名的读取（凭据 / 实例 / 权限），再用币种 ID 查公开接口核对其代码与所填币种一致（`keys_ok`；否则 `credentials_rejected`、
    `currency_mismatch`、`currency_unknown`、`unreachable`、`gateway_status`）。
 
@@ -654,7 +654,7 @@ Webhook `/api/webhooks/authenticating-requests`、`/api/webhooks/clients`（事�
 1. 开通 Coinbase Business 账户；在 CDP 门户（portal.cdp.coinbase.com → API Keys → Secret API keys）创建 API 密钥，权限勾 **View**（Checkouts 需要），
    可设 IP 白名单（面板出口地址）。记下**密钥名称 / ID**与**私钥**：Ed25519 密钥是 base64 的 64 字节（种子‖公钥），ECDSA 密钥是 PEM（`-----BEGIN EC PRIVATE KEY-----`
    或 PKCS#8，P-256；多行或带 `\n` 转义均可）。
-2. **创建 Webhook 订阅**（账户级，不是每张收银台；每个支付方式一个订阅）。先在面板里保存支付方式（Webhook 密钥可先随便填一个，稍后替换）以得到它的通知地址，然后用 CDP CLI：
+2. **创建 Webhook 订阅**（账户级，不是每张收银台；每个支付方式一个订阅）。先在面板里保存支付方式（Webhook 密钥先填一个随机的占位值，稍后替换；**必须至少 16 个字符**，短的会被拒绝——知道密钥的人可以伪造「已付款」通知，所以占位值也要随机，且在换成订阅返回的 secret 之前不要启用该支付方式）以得到它的通知地址，然后用 CDP CLI：
    `cdp data webhooks subscriptions create description="Akari" 'eventTypes:=["checkout.payment.success","checkout.payment.failed","checkout.payment.expired","checkout.refund.success","checkout.refund.failed"]' target.url=<通知地址> target.method=POST isEnabled:=true`，
    把返回里的 **secret**（文档示例在 `metadata.secret`）填进面板的「Webhook 签名密钥」。订阅会收到账户内**所有**收银台的事件，不属于本方式订单的一律按 `unknown_order` 拒绝。
 3. 面板：系统设置 → 支付 → 添加支付方式 → Coinbase，填 密钥名称、API 私钥、Webhook 签名密钥、币种（`USD`/`CNY`/`USDC`…）、汇率（非 CNY）、订单有效期，启用，点**测试连接**

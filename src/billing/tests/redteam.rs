@@ -1,6 +1,9 @@
 //! Red team 2026-10 (area B, money): regression tests of the findings.
 
 use axum::http::StatusCode;
+use serde_json::json;
+
+use super::super::provider::ProviderKind;
 
 use super::*;
 
@@ -37,4 +40,58 @@ async fn oversized_notify_is_the_canonical_rejection() {
     assert_eq!(n, 2, "both oversized notifies leave an event");
     drop(state);
     db.drop().await;
+}
+
+/// The HMAC secrets that gate a webhook (Coinbase's subscription secret,
+/// CoinPayments' client secret) must not be guessable: a short one is
+/// refused. (The setup guide used to say "fill in anything for now".)
+#[test]
+fn webhook_secrets_must_be_long_enough() {
+    use super::super::coinbase::{CoinbaseKind, tests as cbt};
+    use super::super::coinpayments::{CoinPaymentsKind, tests as cpt};
+    let (api, _) = cbt::ed25519_secret();
+    for weak in ["x", "test", "123456", "0123456789abcde"] {
+        let r = CoinbaseKind.validate(
+            &json!({"key_id": cbt::KEY_ID, "api_secret": api, "webhook_secret": weak,
+                    "currency": "CNY"}),
+            None,
+            true,
+        );
+        assert_eq!(
+            r.err().map(|e| e.code().to_string()).as_deref(),
+            Some("payments.coinbase_webhook_secret_invalid"),
+            "{weak}"
+        );
+        let r = CoinPaymentsKind.validate(
+            &json!({"client_id": cpt::CLIENT, "client_secret": weak, "currency_id": cpt::CURRENCY_ID,
+                    "currency": "CNY"}),
+            None,
+            true,
+        );
+        assert_eq!(
+            r.err().map(|e| e.code().to_string()).as_deref(),
+            Some("payments.coinpayments_secret_invalid"),
+            "{weak}"
+        );
+    }
+    assert!(
+        CoinbaseKind
+            .validate(
+                &json!({"key_id": cbt::KEY_ID, "api_secret": api,
+                        "webhook_secret": "0123456789abcdef", "currency": "CNY"}),
+                None,
+                true,
+            )
+            .is_ok()
+    );
+    assert!(
+        CoinPaymentsKind
+            .validate(
+                &json!({"client_id": cpt::CLIENT, "client_secret": "0123456789abcdef",
+                        "currency_id": cpt::CURRENCY_ID, "currency": "CNY"}),
+                None,
+                true,
+            )
+            .is_ok()
+    );
 }
