@@ -36,8 +36,9 @@
   aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
   不为外壳引入 bits-ui，首屏更小。
 - **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
-  窄屏是底部抽屉）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
+  窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；带图标的确认框窄屏图标单独一行、宽屏正文缩进到标题那一栏；图标底色随 `tone`，不要只改图标颜色）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
   所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
+- 页面容器：用户中心与访客布局的 `<main>` 都是 `.wrap`（访客是 `.wrap.guest`），两侧留白只来自 `--gutter`（56 / 32 / 20px），页面自己不加左右边距；要贴满页宽的条用 `calc(-1 * var(--gutter))` 抵消。
 - 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、
   `isEmail` / `isCode` / `digits` / `fieldOf`）、`lib/form-guard.svelte.ts`（`FormGuard`：蜜罐、Turnstile、表单令牌、每 30 秒 / 回到前台 / 提交后
   重新取 `/auth/options`、开了 Turnstile 而 CSP 没放行就重新加载一次；构造函数里挂 `$effect`，只能在组件初始化时 new）、
