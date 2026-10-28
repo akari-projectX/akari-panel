@@ -671,7 +671,7 @@ mod tests {
             SUB_TOKEN_PER_HOUR as usize
         );
         let text = all_audit_text(&db).await;
-        assert!(!text.contains(&t1) && !text.contains(&crate::sub::hash_token(&t1)));
+        assert!(!text.contains(&t1) && !text.contains(&crate::token::digest_hex(&t1)));
         // Admins are not proxy users.
         let a = db.admin().await;
         let token = crate::auth::issue_token(&state, a, "admin", 0).unwrap();

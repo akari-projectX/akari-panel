@@ -115,7 +115,7 @@ impl LocalLimiter {
         let mut map = self
             .buckets
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .expect("mutex poisoned: a holder panicked");
         let mut key = key;
         if !map.contains_key(key) && map.len() >= LOCAL_MAX_KEYS {
             map.retain(|k, b| k == OVERFLOW_KEY || b.refilled(limit, window, now) < limit);

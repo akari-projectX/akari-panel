@@ -302,7 +302,7 @@ async fn seed_nodes(pg: &PgPool, count: usize) -> Result<()> {
     .execute(&mut *tx)
     .await?;
     let hashes: Vec<Vec<u8>> = (0..count)
-        .map(|i| akari_panel::enroll::hash_token(&common::enroll_token(i)))
+        .map(|i| akari_panel::token::digest(&common::enroll_token(i)))
         .collect();
     sqlx::query(
         "INSERT INTO server_enrollments (server_id, token_hash, expires_at, panel_addr, server_name) \
@@ -321,7 +321,7 @@ async fn seed_users(pg: &PgPool, count: usize) -> Result<()> {
     let ids: Vec<Uuid> = (0..count).map(|_| Uuid::new_v4()).collect();
     let emails: Vec<String> = (0..count).map(common::user_email).collect();
     let hashes: Vec<String> = (0..count)
-        .map(|i| akari_panel::sub::hash_token(&common::sub_token(i)))
+        .map(|i| akari_panel::token::digest_hex(&common::sub_token(i)))
         .collect();
     // A fifth of the users have a traffic limit, a fifth an expiry in the
     // future (the enforcement predicates scan for both).

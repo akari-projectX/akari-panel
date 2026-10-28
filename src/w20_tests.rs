@@ -12,9 +12,10 @@ use uuid::Uuid;
 use crate::auth;
 use crate::masterkey;
 use crate::state::AppState;
-use crate::sub::{Stored, hash_token};
+use crate::sub::Stored;
 use crate::testdb::TestDb;
 use crate::testdb::http::{Client, rand_ip};
+use crate::token::digest_hex;
 
 const PW: &str = "w20-password-123";
 
@@ -112,7 +113,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     assert_eq!(me["sub_url"], format!("https://sub.example/sub/{token}"));
     assert!(me["probe_interval_secs"].as_u64().unwrap() >= 600);
     let (hash, enc) = stored(&db, id).await;
-    assert_eq!(hash.as_deref(), Some(hash_token(&token).as_str()));
+    assert_eq!(hash.as_deref(), Some(digest_hex(&token).as_str()));
     let enc = enc.expect("ciphertext stored");
     assert!(
         !enc.windows(token.len()).any(|w| w == token.as_bytes()),
@@ -163,7 +164,7 @@ async fn subscription_link_is_stored_encrypted_and_retrievable() {
     );
     assert_eq!(anon.get(&format!("/sub/{t2}")).await.status, StatusCode::OK);
     let (hash2, enc2) = stored(&db, id).await;
-    assert_eq!(hash2.as_deref(), Some(hash_token(&t2).as_str()));
+    assert_eq!(hash2.as_deref(), Some(digest_hex(&t2).as_str()));
     assert_ne!(enc2.as_deref(), Some(enc.as_slice()));
 
     // Admin read: same token, audited without token material; a user
@@ -261,7 +262,7 @@ async fn unreadable_tokens_are_kept_and_guarded() {
     let me = c.get("/test/api/v1/me").await.json();
     assert_eq!(me["sub_unreadable"], true);
     assert!(me["sub_token"].is_null() && me["sub_url"].is_null());
-    assert_eq!(stored(&db, id).await.0, Some(hash_token(&t)), "not rotated");
+    assert_eq!(stored(&db, id).await.0, Some(digest_hex(&t)), "not rotated");
     let anon = Client::new(&state, rand_ip());
     assert_eq!(
         anon.get(&format!("/sub/{t}")).await.status,
@@ -280,7 +281,7 @@ async fn unreadable_tokens_are_kept_and_guarded() {
     let u = crate::sub::generate_token();
     sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = $3 WHERE id = $1")
         .bind(id)
-        .bind(hash_token(&u))
+        .bind(digest_hex(&u))
         .bind(state.master_key().seal_sub_token(id, &t).unwrap())
         .execute(&mut *conn)
         .await

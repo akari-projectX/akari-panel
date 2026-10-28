@@ -173,7 +173,7 @@ impl TestDb {
     pub async fn set_sub_token(&self, user: Uuid, token: &str) {
         sqlx::query("UPDATE users SET sub_token_hash = $2, sub_token_enc = '\\x01' WHERE id = $1")
             .bind(user)
-            .bind(crate::sub::hash_token(token))
+            .bind(crate::token::digest_hex(token))
             .execute(&self.pool)
             .await
             .unwrap();

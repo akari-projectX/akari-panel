@@ -40,23 +40,12 @@ const DUE: &str = "(n.deleting_at IS NOT NULL AND ( \
     OR n.deleting_at <= now() - make_interval(secs => $2) \
     OR NOT (n.status = 'online' AND n.last_seen_at > now() - make_interval(secs => $3))))";
 
+/// Phase 2 of server deletion and the rollout tick, every 5 s. Slow
+/// maintenance runs in its own loops (`compact_loop`, `retention_loop`) so
+/// it cannot delay these.
 pub async fn reap_loop(state: AppState) {
     let mut tick = tokio::time::interval(EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // Audit retention (M1-7) rides on this loop: hourly, any instance
-    // (concurrent prunes are harmless).
-    let mut next_prune = tokio::time::Instant::now();
-    // traffic_counters retention (M2-5) too: every 10 min, any instance.
-    let mut next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
-    // W22: staged traffic history -> daily tables (one instance at a time).
-    let mut next_compact = tokio::time::Instant::now() + crate::traffic::COMPACT_EVERY;
-    // Q3: the monthly traffic_daily partitions right away (the retention
-    // pass keeps them ahead after that), so a panel that was down over a
-    // month boundary does not write the new month into the DEFAULT
-    // partition for ten minutes.
-    if let Err(e) = crate::traffic::ensure_partitions(state.pg()).await {
-        tracing::warn!(error = %e, "traffic daily partitions failed");
-    }
     loop {
         tick.tick().await;
         if let Err(e) = reap_once(&state).await {
@@ -66,56 +55,41 @@ pub async fn reap_loop(state: AppState) {
         if let Err(e) = crate::rollout::tick(state.pg()).await {
             tracing::warn!(error = %e, "rollout tick failed");
         }
-        if tokio::time::Instant::now() >= next_compact {
-            next_compact = tokio::time::Instant::now() + crate::traffic::COMPACT_EVERY;
-            if let Err(e) = crate::traffic::compact_pass(state.pg()).await {
-                tracing::warn!(error = %e, "traffic history compaction failed");
-            }
+    }
+}
+
+/// W22: staged traffic history -> daily tables (one instance at a time).
+pub async fn compact_loop(state: AppState) {
+    let mut tick = tokio::time::interval(crate::traffic::COMPACT_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first compaction comes one period after start, as before.
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        if let Err(e) = crate::traffic::compact_pass(state.pg()).await {
+            tracing::warn!(error = %e, "traffic history compaction failed");
         }
-        if tokio::time::Instant::now() >= next_retention {
-            next_retention = tokio::time::Instant::now() + crate::traffic::RETENTION_EVERY;
-            // W11: server metrics hour rollup + retention (one instance).
-            match crate::nodestat::rollup_and_prune(state.pg()).await {
-                Ok(Some(r)) if r.minutes_pruned + r.hours_pruned > 0 => tracing::info!(
-                    minutes_pruned = r.minutes_pruned,
-                    hours_pruned = r.hours_pruned,
-                    "server metrics retention"
-                ),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "server metrics rollup failed"),
-            }
-            match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS)
-                .await
-            {
-                Ok(r) if r == crate::traffic::Retention::default() => {}
-                Ok(r) => tracing::info!(
-                    sessions_retired = r.sessions_retired,
-                    rows_retired_session = r.rows_retired_session,
-                    rows_deleted_server = r.rows_deleted_server,
-                    "traffic counters retention"
-                ),
-                Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
-            }
-            // W29: block rule hit counts (90 days) and dead baselines.
-            match crate::blockrules::retention_pass(state.pg()).await {
-                Ok((0, 0)) => {}
-                Ok((days, counters)) => {
-                    tracing::info!(days, counters, "block rule counters retention")
-                }
-                Err(e) => tracing::warn!(error = %e, "block rule counters retention failed"),
-            }
-            // W22: per-day history older than the retention -> months.
-            match crate::traffic::rollup_pass(
-                state.pg(),
-                state.settings().get().traffic_daily_retention_days,
-            )
-            .await
-            {
-                Ok(0) => {}
-                Ok(n) => tracing::info!(rows = n, "traffic daily history rolled up"),
-                Err(e) => tracing::warn!(error = %e, "traffic daily rollup failed"),
-            }
-        }
+    }
+}
+
+/// Retention and roll-ups: every 10 minutes the server metrics, traffic
+/// counters, block rule counters and daily traffic history; hourly the
+/// audit log (any instance; the passes take their own locks).
+pub async fn retention_loop(state: AppState) {
+    // Q3: the monthly traffic_daily partitions right away (the retention
+    // pass keeps them ahead after that), so a panel that was down over a
+    // month boundary does not write the new month into the DEFAULT
+    // partition for ten minutes.
+    if let Err(e) = crate::traffic::ensure_partitions(state.pg()).await {
+        tracing::warn!(error = %e, "traffic daily partitions failed");
+    }
+    let mut tick = tokio::time::interval(crate::traffic::RETENTION_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // The first retention pass comes one period after start, as before.
+    tick.tick().await;
+    // Audit retention (M1-7): hourly, the first one at start.
+    let mut next_prune = tokio::time::Instant::now();
+    loop {
         if tokio::time::Instant::now() >= next_prune {
             next_prune = tokio::time::Instant::now() + crate::audit::PRUNE_EVERY;
             match crate::audit::prune(state.pg(), state.settings().get().audit_retention_days).await
@@ -125,6 +99,50 @@ pub async fn reap_loop(state: AppState) {
                 Err(e) => tracing::warn!(error = %e, "audit log prune failed"),
             }
         }
+        tick.tick().await;
+        retention_once(&state).await;
+    }
+}
+
+async fn retention_once(state: &AppState) {
+    // W11: server metrics hour rollup + retention (one instance).
+    match crate::nodestat::rollup_and_prune(state.pg()).await {
+        Ok(Some(r)) if r.minutes_pruned + r.hours_pruned > 0 => tracing::info!(
+            minutes_pruned = r.minutes_pruned,
+            hours_pruned = r.hours_pruned,
+            "server metrics retention"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "server metrics rollup failed"),
+    }
+    match crate::traffic::retention_pass(state.pg(), crate::traffic::RETENTION_MARGIN_SECS).await {
+        Ok(r) if r == crate::traffic::Retention::default() => {}
+        Ok(r) => tracing::info!(
+            sessions_retired = r.sessions_retired,
+            rows_retired_session = r.rows_retired_session,
+            rows_deleted_server = r.rows_deleted_server,
+            "traffic counters retention"
+        ),
+        Err(e) => tracing::warn!(error = %e, "traffic counters retention failed"),
+    }
+    // W29: block rule hit counts (90 days) and dead baselines.
+    match crate::blockrules::retention_pass(state.pg()).await {
+        Ok((0, 0)) => {}
+        Ok((days, counters)) => {
+            tracing::info!(days, counters, "block rule counters retention")
+        }
+        Err(e) => tracing::warn!(error = %e, "block rule counters retention failed"),
+    }
+    // W22: per-day history older than the retention -> months.
+    match crate::traffic::rollup_pass(
+        state.pg(),
+        state.settings().get().traffic_daily_retention_days,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(rows = n, "traffic daily history rolled up"),
+        Err(e) => tracing::warn!(error = %e, "traffic daily rollup failed"),
     }
 }
 

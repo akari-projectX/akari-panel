@@ -150,7 +150,8 @@ impl Effect {
     }
 
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or(Value::Null)
+        serde_json::to_value(self)
+            .expect("Effect is plain data with string keys, so it always serialises")
     }
 }
 
@@ -293,16 +294,29 @@ type RefundRow = (
     bool,
 );
 
+/// Whether `refundable` locks the order row.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowLock {
+    /// Plain read (previews).
+    Read,
+    /// `FOR UPDATE` (the refund itself).
+    ForUpdate,
+}
+
 async fn refundable(
     conn: &mut PgConnection,
     order_id: Uuid,
-    lock: bool,
+    lock: RowLock,
 ) -> Result<RefundRow, ApiError> {
     let row: Option<RefundRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT status, refunded_at, user_id, amount_cents, balance_cents, balance_state, \
          COALESCE(refund_request->>'state' = 'pending', false) \
          FROM orders WHERE id = $1{}",
-        if lock { " FOR UPDATE" } else { "" }
+        if lock == RowLock::ForUpdate {
+            " FOR UPDATE"
+        } else {
+            ""
+        }
     )))
     .bind(order_id)
     .fetch_optional(&mut *conn)
@@ -359,7 +373,8 @@ pub async fn preview(
     order_id: Uuid,
     gateway_cents: Option<i64>,
 ) -> Result<Value, ApiError> {
-    let (_, _, _, amount, balance, balance_state, _) = refundable(conn, order_id, false).await?;
+    let (_, _, _, amount, balance, balance_state, _) =
+        refundable(conn, order_id, RowLock::Read).await?;
     let sh = share(amount, gateway_cents.unwrap_or(amount))?;
     let partial = !sh.is_full();
     let effect = effect(conn, order_id).await?;
@@ -456,7 +471,8 @@ pub async fn apply_refund(
     req: &Refund<'_>,
 ) -> Result<Value, ApiError> {
     crate::entitle::lock(conn).await?;
-    let (_, _, user, amount, balance, balance_state, _) = refundable(conn, order_id, true).await?;
+    let (_, _, user, amount, balance, balance_state, _) =
+        refundable(conn, order_id, RowLock::ForUpdate).await?;
     // P2-4: the provider already refunded (original route, not recordable
     // then): only the matching record-only refund is accepted — anything
     // else would pay the customer twice.
@@ -623,7 +639,7 @@ pub async fn begin_original(
     order_id: Uuid,
     req: &Original<'_>,
 ) -> Result<OriginalRequest, ApiError> {
-    let (_, _, _, amount, _, _, _) = refundable(conn, order_id, true).await?;
+    let (_, _, _, amount, _, _, _) = refundable(conn, order_id, RowLock::ForUpdate).await?;
     let (otn, method, prev): (String, Option<Uuid>, Option<Value>) = sqlx::query_as(
         "SELECT out_trade_no, payment_method_id, refund_request FROM orders WHERE id = $1",
     )
@@ -705,7 +721,7 @@ pub async fn begin_original(
 async fn store(conn: &mut PgConnection, order_id: Uuid, r: &OriginalRequest) -> sqlx::Result<()> {
     sqlx::query("UPDATE orders SET refund_request = $2 WHERE id = $1")
         .bind(order_id)
-        .bind(serde_json::to_value(r).unwrap_or(Value::Null))
+        .bind(sqlx::types::Json(r))
         .execute(conn)
         .await?;
     Ok(())

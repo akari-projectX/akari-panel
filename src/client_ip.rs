@@ -293,6 +293,12 @@ pub fn bucket(ip: IpAddr) -> String {
     }
 }
 
+/// `bucket` of a request's client address; a request without one (no
+/// connection info) shares the single `unknown` bucket.
+pub fn bucket_or_unknown(ip: Option<IpAddr>) -> String {
+    ip.map_or_else(|| "unknown".to_owned(), bucket)
+}
+
 /// The network a client address belongs to for limits that pair it with an
 /// account name (the login lockout): IPv4 by its /24, IPv6 by its /64 (as
 /// `bucket`). A whole /24 is one "place" for this purpose: a person moves

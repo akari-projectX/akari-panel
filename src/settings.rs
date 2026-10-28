@@ -977,7 +977,10 @@ impl Live {
 
     /// Fixed one-second window; true = answer this ask request.
     fn ask_permit(&self, per_sec: u32) -> bool {
-        let mut w = self.ask_window.lock().unwrap_or_else(|p| p.into_inner());
+        let mut w = self
+            .ask_window
+            .lock()
+            .expect("mutex poisoned: a holder panicked");
         let now = Instant::now();
         if now.duration_since(w.0) >= Duration::from_secs(1) {
             *w = (now, 0);

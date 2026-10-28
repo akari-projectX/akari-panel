@@ -78,6 +78,7 @@ pub mod sysstatus;
 pub mod testdb;
 pub mod tickets;
 pub mod tlsserver;
+pub mod token;
 pub mod traffic;
 pub mod trafficlog;
 pub mod updatecheck;

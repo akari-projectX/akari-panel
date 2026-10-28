@@ -95,10 +95,7 @@ pub async fn request_email_change(
         )
         .await?;
     }
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
+    let bucket = user.bucket();
     super::limit_send(&state, &bucket, &addr).await?;
     let st = state.clone();
     let user_id = user.id;
@@ -224,10 +221,7 @@ pub async fn verify_email_change(
     ShopUser { user, .. }: ShopUser,
     ApiJson(req): ApiJson<VerifyReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let bucket = user
-        .ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
+    let bucket = user.bucket();
     super::limit_complete(&state, &bucket).await?;
     let mut tx = state.pg().begin().await?;
     // The verified address the account has now: it is told about the change.
@@ -385,12 +379,6 @@ fn bind_address(raw: &str, s: &super::SignupSettings) -> Result<String, ApiError
     Ok(addr)
 }
 
-fn bucket_of(user: &crate::auth::AuthUser) -> String {
-    user.ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into())
-}
-
 /// POST /api/v1/me/email/bind/code {email}: the code for the address to
 /// bind (the site verifies addresses: 注册需要邮箱验证 on, mail sending on).
 /// The same answer whether or not the address belongs to another account.
@@ -415,7 +403,7 @@ pub async fn bind_code(
             return Err(conflict!("account.mail_off", "mail sending is not enabled"));
         }
     }
-    super::limit_send(&state, &bucket_of(&user), &addr).await?;
+    super::limit_send(&state, &user.bucket(), &addr).await?;
     let st = state.clone();
     let user_id = user.id;
     tokio::spawn(async move {
@@ -500,7 +488,7 @@ pub async fn bind(
     let s = super::settings_or_none(&state)
         .await
         .ok_or_else(ApiError::internal)?;
-    let bucket = bucket_of(&user);
+    let bucket = user.bucket();
     let hash = match req.password.as_deref().filter(|p| !p.is_empty()) {
         Some(p) => {
             super::check_password(p)?;

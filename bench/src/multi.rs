@@ -266,7 +266,7 @@ pub async fn run(a: MultiArgs) -> Result<()> {
         .await?;
     let node: uuid::Uuid =
         sqlx::query_scalar("SELECT server_id FROM server_enrollments WHERE token_hash = $1")
-            .bind(akari_panel::enroll::hash_token(&common::enroll_token(
+            .bind(akari_panel::token::digest(&common::enroll_token(
                 a.delete_agent,
             )))
             .fetch_one(&pg)

@@ -27,6 +27,6 @@ scan() {
     --no-colors --threshold "$ceiling"
 }
 
-scan src rust 2.67
+scan src rust 2.65
 scan portal/src typescript,javascript,svelte,css 0.71
 scan admin/src typescript,tsx,javascript,css 1.28

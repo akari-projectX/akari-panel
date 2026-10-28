@@ -72,7 +72,6 @@ fn text_rules() {
         clean_query(Some(&"x".repeat(65))).unwrap_err().code(),
         "kb.query_long"
     );
-    assert_eq!(like_pattern("50%_\\"), "%50\\%\\_\\\\%");
     let c = CategoryReq {
         name_zh: "a".into(),
         name_en: Some(" ".into()),

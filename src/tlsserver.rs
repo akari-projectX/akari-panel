@@ -62,7 +62,10 @@ impl CertResolver {
         // Names first under the lock: readers comparing names never see a
         // newer name list with an older certificate for long, and the
         // reload path is serialized anyway (settings::Live::reload_lock).
-        let mut current = self.names.lock().unwrap_or_else(|p| p.into_inner());
+        let mut current = self
+            .names
+            .lock()
+            .expect("mutex poisoned: a holder panicked");
         self.key.store(Some(Arc::new(key)));
         *current = names;
         Ok(())
@@ -71,7 +74,10 @@ impl CertResolver {
     /// The names the served certificate covers (empty before the first
     /// `set`).
     pub fn names(&self) -> Vec<String> {
-        self.names.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.names
+            .lock()
+            .expect("mutex poisoned: a holder panicked")
+            .clone()
     }
 
     pub fn has_certificate(&self) -> bool {

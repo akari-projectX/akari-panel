@@ -426,7 +426,7 @@ async fn node_ids(pg: &sqlx::PgPool, n: usize) -> Result<Vec<Uuid>> {
     for i in 0..n {
         let id: Uuid =
             sqlx::query_scalar("SELECT server_id FROM server_enrollments WHERE token_hash = $1")
-                .bind(akari_panel::enroll::hash_token(&common::enroll_token(i)))
+                .bind(akari_panel::token::digest(&common::enroll_token(i)))
                 .fetch_optional(pg)
                 .await?
                 .with_context(|| format!("no seeded node for agent {i}"))?;

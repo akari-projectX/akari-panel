@@ -695,7 +695,15 @@ pub async fn create_order(
     .await?;
     if let Some(o) = open {
         let p = orders::provider_of(&state, &o);
-        let st = orders::end_order(&state, p.as_deref(), &o, "cancelled", &actor, false).await?;
+        let st = orders::end_order(
+            &state,
+            p.as_deref(),
+            &o,
+            "cancelled",
+            &actor,
+            orders::EndMode::Confirmed,
+        )
+        .await?;
         if st == "pending" {
             return Err(gateway_unavailable());
         }
@@ -938,14 +946,14 @@ pub async fn create_order(
                 .await?;
             orders::record_event(
                 &mut tx,
-                Some(id),
-                Some(&out_trade_no),
-                "precreate",
-                true,
-                "ok",
-                None,
-                None,
-                None,
+                &orders::PaymentEvent {
+                    order_id: Some(id),
+                    out_trade_no: Some(&out_trade_no),
+                    source: "precreate",
+                    verified: true,
+                    outcome: "ok",
+                    ..orders::PaymentEvent::default()
+                },
             )
             .await?;
             tx.commit().await?;
@@ -970,14 +978,15 @@ pub async fn create_order(
             };
             orders::record_event(
                 &mut tx,
-                Some(id),
-                Some(&out_trade_no),
-                "precreate",
-                true,
-                "failed",
-                None,
-                Some(json!({ "error": e.to_string() })),
-                None,
+                &orders::PaymentEvent {
+                    order_id: Some(id),
+                    out_trade_no: Some(&out_trade_no),
+                    source: "precreate",
+                    verified: true,
+                    outcome: "failed",
+                    params: Some(json!({ "error": e.to_string() })),
+                    ..orders::PaymentEvent::default()
+                },
             )
             .await?;
             if let Some((before, mut after)) = ended {
@@ -1063,7 +1072,7 @@ pub async fn cancel_order(
         &o,
         "cancelled",
         &Actor::of(&user),
-        provider.is_none(),
+        orders::EndMode::forced_if(provider.is_none()),
     )
     .await?;
     if st == "pending" {
@@ -1100,20 +1109,6 @@ pub struct ListOrdersQuery {
 
 /// Longest search term `q` (longer input is cut).
 const MAX_Q: usize = 100;
-
-/// `%term%` for ILIKE with `\`, `%` and `_` taken literally.
-fn like_contains(term: &str) -> String {
-    let mut out = String::with_capacity(term.len() + 2);
-    out.push('%');
-    for c in term.chars() {
-        if matches!(c, '\\' | '%' | '_') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out.push('%');
-    out
-}
 
 /// The list's filters (everything but the cursor and the limit) on a
 /// `… FROM orders WHERE true` query. `status` and `unfulfilled`/`refunded`
@@ -1163,11 +1158,11 @@ fn push_order_filters(
             let mail = mail.trim();
             if !mail.is_empty() {
                 qb.push(" AND user_id IN (SELECT u.id FROM users u WHERE u.email ILIKE ")
-                    .push_bind(like_contains(mail))
+                    .push_bind(crate::db::like_contains(mail))
                     .push(")");
             }
         } else {
-            let pat = like_contains(&t);
+            let pat = crate::db::like_contains(&t);
             qb.push(" AND (out_trade_no ILIKE ")
                 .push_bind(pat.clone())
                 .push(" OR trade_no ILIKE ")
@@ -1645,14 +1640,13 @@ pub async fn handle_notify(
     if req.body.len() > MAX_NOTIFY_BODY {
         orders::record_event(
             &mut c,
-            None,
-            None,
-            "notify",
-            false,
-            "oversized",
-            None,
-            None,
-            ip,
+            &orders::PaymentEvent {
+                source: "notify",
+                verified: false,
+                outcome: "oversized",
+                ip,
+                ..orders::PaymentEvent::default()
+            },
         )
         .await?;
         return Ok(false);
@@ -1682,14 +1676,16 @@ pub async fn handle_notify(
             let mut tx = c.begin_tx().await?;
             orders::record_event(
                 &mut tx,
-                order,
-                out_trade_no.as_deref(),
-                "notify",
-                verified,
-                reason,
-                status.as_deref(),
-                params,
-                ip,
+                &orders::PaymentEvent {
+                    order_id: order,
+                    out_trade_no: out_trade_no.as_deref(),
+                    source: "notify",
+                    verified,
+                    outcome: reason,
+                    trade_status: status.as_deref(),
+                    params,
+                    ip,
+                },
             )
             .await?;
             if let Some(id) = order {
@@ -1730,14 +1726,16 @@ pub async fn handle_notify(
         let mut tx = c.begin_tx().await?;
         orders::record_event(
             &mut tx,
-            order_id,
-            Some(&ev.out_trade_no),
-            "notify",
-            true,
-            reason,
-            Some(&ev.status),
-            Some(ev.params.clone()),
-            ip,
+            &orders::PaymentEvent {
+                order_id,
+                out_trade_no: Some(&ev.out_trade_no),
+                source: "notify",
+                verified: true,
+                outcome: reason,
+                trade_status: Some(&ev.status),
+                params: Some(ev.params.clone()),
+                ip,
+            },
         )
         .await?;
         if let Some(id) = order_id {
@@ -1781,14 +1779,16 @@ pub async fn handle_notify(
     };
     orders::record_event(
         &mut tx,
-        Some(order_id),
-        Some(&ev.out_trade_no),
-        "notify",
-        true,
-        outcome,
-        Some(&ev.status),
-        Some(ev.params),
-        ip,
+        &orders::PaymentEvent {
+            order_id: Some(order_id),
+            out_trade_no: Some(&ev.out_trade_no),
+            source: "notify",
+            verified: true,
+            outcome,
+            trade_status: Some(&ev.status),
+            params: Some(ev.params),
+            ip,
+        },
     )
     .await?;
     tx.commit().await?;

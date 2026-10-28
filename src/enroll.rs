@@ -31,7 +31,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use sqlx::PgConnection;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
@@ -55,10 +54,6 @@ pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
-}
-
-pub fn hash_token(token: &str) -> Vec<u8> {
-    Sha256::digest(token.as_bytes()).to_vec()
 }
 
 /// Shape check before any database work.
@@ -119,7 +114,7 @@ pub async fn apply_issue_token(
          RETURNING expires_at",
     )
     .bind(server_id)
-    .bind(hash_token(&token))
+    .bind(crate::token::digest(&token))
     .bind(ttl_secs as f64)
     .bind(link.map(|l| l.origin))
     .bind(link.and_then(|l| l.pin))
@@ -325,9 +320,7 @@ pub async fn enroll(
     req: EnrollRequest,
 ) -> Result<IssuedCertificate, Status> {
     let cfg = &state.cfg().limits;
-    let bucket = ip
-        .map(crate::client_ip::bucket)
-        .unwrap_or_else(|| "unknown".into());
+    let bucket = crate::client_ip::bucket_or_unknown(ip);
     if !within(
         state,
         format!("akari:rl:enroll:ip:{bucket}"),
@@ -354,7 +347,7 @@ pub async fn enroll(
         crate::metrics::enroll("refused");
         return Err(Status::permission_denied(ENROLL_REFUSED));
     }
-    let hash = hash_token(&req.token);
+    let hash = crate::token::digest(&req.token);
     match burn_and_issue(state, &hash, &key, ip).await {
         Ok(Some(issued)) => {
             crate::metrics::enroll("ok");
@@ -728,7 +721,11 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-        assert_eq!(stored, hash_token(&token), "only the hash is stored");
+        assert_eq!(
+            stored,
+            crate::token::digest(&token),
+            "only the hash is stored"
+        );
 
         // No client certificate: the channel is refused before any session.
         let anon = match panel.connect_anonymous().await {
