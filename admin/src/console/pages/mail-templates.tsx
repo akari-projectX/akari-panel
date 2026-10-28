@@ -643,8 +643,8 @@ function Editor({ templates, back }: { templates: Template[]; back: ReactNode })
       <p className="px-1 pt-2 text-caption text-faint">
         {source
           ? tr(
-              '源码里 {变量} 是转义后的文本：链接就是网址文本，写成 <a href="{link}">…</a>。不允许脚本、表单、iframe、onclick 之类的事件属性和 javascript: 链接。',
-              'In the source a {placeholder} is escaped text: a link is the URL, so write <a href="{link}">…</a>. Scripts, forms, iframes, event attributes such as onclick and javascript: links are refused.',
+              '源码里 {变量} 是转义后的文本：链接就是网址文本，写成 <a href="{link}">…</a>。验证码与重置链接只能放在文字或 <a href> 里。不允许脚本、表单、iframe、onclick 之类的事件属性和 javascript: 链接。',
+              'In the source a {placeholder} is escaped text: a link is the URL, so write <a href="{link}">…</a>. Codes and the reset link may stand only in text or in an <a href>. Scripts, forms, iframes, event attributes such as onclick and javascript: links are refused.',
             )
           : tr(
               "自动排版：空行分段；单独成段的链接变量显示为按钮。",
