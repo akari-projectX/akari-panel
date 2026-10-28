@@ -760,10 +760,8 @@ pub async fn fetch_artifact(
         return Err(Status::invalid_argument("bad digest"));
     }
     let permit = state
-        .fetch_permits()
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| Status::resource_exhausted("too many concurrent downloads; retry later"))?;
+        .try_fetch_slot(node)
+        .ok_or_else(|| Status::resource_exhausted("too many concurrent downloads; retry later"))?;
     let row: Option<(Uuid, i64)> = sqlx::query_as(
         "SELECT id, size FROM agent_releases WHERE sha256 = $1 AND complete_at IS NOT NULL",
     )

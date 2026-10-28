@@ -1267,6 +1267,7 @@ async fn session<S>(
             }
             match msg.msg {
                 Some(UpMsg::Hello(hello)) => {
+                    let hello = bounded_hello(hello);
                     tracing::info!(
                         server = %server_id,
                         session = %hello.session_id,
@@ -1356,7 +1357,7 @@ async fn session<S>(
                         server = %server_id,
                         ok = ack.ok,
                         reason = ack.reason,
-                        error = %ack.error,
+                        error = %ack.error.chars().take(200).collect::<String>(),
                         config_version = ack.config_version,
                         user_version = ack.user_version,
                         "agent ack"
@@ -1564,12 +1565,12 @@ async fn record_converged(pg: &sqlx::PgPool, server_id: Uuid, versions: (u64, u6
 /// Persist a failed apply: the error, the ATTEMPTED versions, what the agent
 /// held at the time and whether it answered at all.
 async fn record_failure(pg: &sqlx::PgPool, server_id: Uuid, failure: DbFailure, error: &str) {
-    tracing::warn!(server = %server_id, error = %error, no_ack = failure.no_ack, "agent failed to apply update");
     let msg: String = if error.is_empty() {
         "agent reported failure without detail".into()
     } else {
         error.chars().take(2000).collect()
     };
+    tracing::warn!(server = %server_id, error = %msg, no_ack = failure.no_ack, "agent failed to apply update");
     let res = sqlx::query(
         "UPDATE servers SET last_error = $2, last_error_at = now(), \
              failed_config_version = $3, failed_user_version = $4, \
@@ -1785,6 +1786,29 @@ async fn store_block_stats(sess: &Session, stats: &crate::pb::BlockStats) {
             tracing::warn!(server = %sess.server_id, error = %e, "block counters store failed")
         }
     }
+}
+
+/// Longest agent version / core version recorded from a Hello.
+const MAX_VERSION_CHARS: usize = 64;
+/// Longest os / arch name recorded (the release manifest's platform rule).
+const MAX_PLATFORM_CHARS: usize = 16;
+
+/// A Hello's free-text fields are agent input that reaches the database,
+/// the admin API and the log: control characters dropped and lengths capped
+/// (an unusable session id is treated as none), so one node cannot park
+/// megabytes in `servers` per Hello (red team 2026-10 C-1).
+fn bounded_hello(mut hello: crate::pb::Hello) -> crate::pb::Hello {
+    use crate::nodestat::agent_text;
+    if let Some(info) = hello.info.as_mut() {
+        info.agent_version = agent_text(&info.agent_version, MAX_VERSION_CHARS);
+        info.core_version = agent_text(&info.core_version, MAX_VERSION_CHARS);
+        info.os = agent_text(&info.os, MAX_PLATFORM_CHARS);
+        info.arch = agent_text(&info.arch, MAX_PLATFORM_CHARS);
+    }
+    if !crate::traffic::valid_session_id(&hello.session_id) {
+        hello.session_id.clear();
+    }
+    hello
 }
 
 /// W12: the capabilities to record from a Hello (agent input: at most 16

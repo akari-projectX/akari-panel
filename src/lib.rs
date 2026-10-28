@@ -63,6 +63,8 @@ pub mod protocols;
 pub mod rate;
 pub mod rates;
 pub mod reaper;
+#[cfg(test)]
+mod redteam_c_tests;
 pub mod reject;
 pub mod request_id;
 pub mod rollout;
