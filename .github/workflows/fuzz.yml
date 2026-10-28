@@ -31,7 +31,10 @@ permissions:
 
 concurrency:
   group: fuzz-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; main, nightly, dispatch and release
+  # runs never are (a nightly run starting on main used to cancel the push
+  # run of the same commit and leave a red mark on it).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
