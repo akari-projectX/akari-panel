@@ -41,7 +41,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="dlg-overlay" />
     <D.Content
-      class={['dlg', wide && 'wide', alert && 'confirm', reading && 'reading']}
+      class={['dlg', wide && 'wide', alert && 'confirm', reading && 'reading', icon && 'has-icon']}
       data-tone={tone}
       escapeKeydownBehavior={dismissible ? 'close' : 'ignore'}
       interactOutsideBehavior={dismissible ? 'close' : 'ignore'}
@@ -49,7 +49,7 @@
       {#if reading}
         <header>
           {#if meta}<div class="rd-meta">{@render meta()}</div>{/if}
-          <Dialog.Title level={2}>{title}</Dialog.Title>
+          <Dialog.Title level={2} class="dlg-title">{title}</Dialog.Title>
           {#if description}<Dialog.Description class="sr">{description}</Dialog.Description>{/if}
           <Dialog.Close class="dlg-x" aria-label={t('关闭')}><X size={16} strokeWidth={1.75} aria-hidden="true" /></Dialog.Close>
         </header>
@@ -58,8 +58,8 @@
           <div class="dlg-head">
             {@render icon?.()}
             <div>
-              <Dialog.Title level={2}>{title}</Dialog.Title>
-              {#if description}<Dialog.Description>{description}</Dialog.Description>{/if}
+              <Dialog.Title level={2} class="dlg-title">{title}</Dialog.Title>
+              {#if description}<Dialog.Description class="dlg-desc">{description}</Dialog.Description>{/if}
             </div>
           </div>
           {#if dismissible}

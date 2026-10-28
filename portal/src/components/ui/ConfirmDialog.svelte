@@ -48,7 +48,7 @@
 <style>
   /* 「会发生什么」：浅底的清单，每条前面一个语气色的小圆点 */
   .cons { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; padding: 14px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--hover) 60%, transparent); font-size: 13px; line-height: 1.6; color: var(--body); }
-  .cons li { position: relative; padding-left: 16px; }
+  .cons li { position: relative; padding-left: 16px; text-wrap: pretty; }
   .cons li::before { content: ''; position: absolute; left: 0; top: .6em; width: 6px; height: 6px; border-radius: 9999px; background: var(--brand); }
   :global(.dlg[data-tone='warn']) .cons li::before { background: var(--warn); }
   :global(.dlg[data-tone='danger']) .cons li::before { background: var(--danger); }
