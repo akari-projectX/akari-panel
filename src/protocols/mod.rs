@@ -225,6 +225,26 @@ mod tests {
         assert!(case_fold_duplicate(&deep).is_some());
     }
 
+    /// Fuzz `inbounds` (nightly crashes 2026-10-11/15/25): a key serde_json
+    /// reserves for `RawValue` makes `Value::to_string` output unparsable
+    /// (the map is sorted, so the `$` key comes first and is read as a raw
+    /// value), so such an inbound cannot be stored.
+    #[test]
+    fn serde_json_reserved_keys_are_refused() {
+        let key = "$serde_json::private::RawValue";
+        let bad = serde_json::from_str::<Value>(&format!(
+            r#"{{"protocol": "vless", "port": 443, "settings": {{"clients": [], "{key}": "[1]"}}}}"#
+        ))
+        .expect("an object whose reserved key is not first parses");
+        assert!(serde_json::from_str::<Value>(&bad.to_string()).is_err());
+        let e = check_inbound(&bad).unwrap_err();
+        assert!(e.contains("reserved"), "{e}");
+        let nested = json!({"protocol": "vless", "port": 443, "a": [{ key: 1 }]});
+        assert!(check_inbound(&nested).unwrap_err().contains("reserved"));
+        let fine = json!({"protocol": "vless", "port": 443, "settings": {"clients": [], "$x": 1}});
+        assert_eq!(check_inbound(&fine), Ok(()));
+    }
+
     /// W26 (fuzz `inbound_model`): an unmanaged kernel protocol whose name
     /// spells a manifest id is still unmanaged: no credentials, kept name.
     #[test]

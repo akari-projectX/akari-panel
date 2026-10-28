@@ -357,6 +357,7 @@ pub fn explain(f: &Fault) -> String {
         Fault::DuplicateKey(key) => format!(
             "duplicate key {key:?} (keys differing only in letter case are one key to xray)"
         ),
+        Fault::ReservedKey(key) => format!("key {key:?} is reserved and cannot be used"),
         Fault::ForeignNativeTransport => {
             "the hysteria transport is only for the hysteria protocol".into()
         }
@@ -470,6 +471,34 @@ pub fn case_fold_duplicate(v: &Value) -> Option<String> {
     None
 }
 
+/// Prefix of the keys serde_json uses for its own value encodings (the
+/// `raw_value` feature's `RawValue` token). A parsed `Value` object that has
+/// such a key serializes to text that no longer parses (`{"$serde_json::
+/// private::RawValue": ..}` is read back as a raw value, not as an object),
+/// so a stored inbound with one could not be read from the database again.
+const RESERVED_KEY_PREFIX: &str = "$serde_json::private::";
+
+/// The first key of an object anywhere in `v` that serde_json reserves
+/// (`RESERVED_KEY_PREFIX`). Iterative, like `case_fold_duplicate`.
+pub fn reserved_key(v: &Value) -> Option<String> {
+    let mut stack = vec![v];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Object(map) => {
+                for (k, child) in map {
+                    if k.starts_with(RESERVED_KEY_PREFIX) {
+                        return Some(k.clone());
+                    }
+                    stack.push(child);
+                }
+            }
+            Value::Array(items) => stack.extend(items),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Validation of one stored/submitted inbound: xray's decoder rules first
 /// (W14: xray decodes keys case-insensitively, so `tag` and `TAG` are one
 /// field to it but two to literal-key checks; the `hysteria` network
@@ -477,6 +506,9 @@ pub fn case_fold_duplicate(v: &Value) -> Option<String> {
 pub fn check(inbound: &Value) -> Result<(), Fault> {
     if let Some(key) = case_fold_duplicate(inbound) {
         return Err(Fault::DuplicateKey(key));
+    }
+    if let Some(key) = reserved_key(inbound) {
+        return Err(Fault::ReservedKey(key));
     }
     let id = manifest::get()
         .protocol_by_wire(protocol(inbound))
