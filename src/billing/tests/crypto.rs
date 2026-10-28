@@ -502,7 +502,7 @@ async fn coinpayments_methods_api() {
     let t = c.post(&format!("{BASE}/{id}/test"), json!({})).await.json();
     assert_eq!(t["result"], "currency_mismatch", "{t}");
     let mut wrong = cp_config(&mock.base);
-    wrong["client_secret"] = json!("wrong-secret");
+    wrong["client_secret"] = json!("wrong-secret-0123456789");
     let r = c.put(&format!("{BASE}/{id}"), json!({"version": ver + 1, "display_name": "加密货币", "enabled": true, "config": wrong})).await;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
     let t = c.post(&format!("{BASE}/{id}/test"), json!({})).await.json();
