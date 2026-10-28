@@ -498,6 +498,58 @@ mod tests {
         ));
     }
 
+    /// Red team D: other spellings of a private address — decimal, octal
+    /// and hex IPv4 (the resolver reads them like `inet_aton`), a trailing
+    /// dot, IPv4-mapped / -compatible IPv6, the unspecified addresses — are
+    /// refused before any connection: by the URL parser, or by the
+    /// every-address-public rule after the lookup (or they do not resolve).
+    #[tokio::test]
+    async fn private_address_spellings_are_refused() {
+        for url in [
+            "https://2130706433/",
+            "https://017700000001/",
+            "https://0x7f000001/",
+            "https://0x7f.1/",
+            "https://127.1/",
+            "https://0/",
+            "https://0.0.0.0/",
+            "https://[::]/",
+            "https://localhost./",
+            "https://LOCALHOST/",
+            "https://[::ffff:7f00:1]/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://[::127.0.0.1]/",
+            "https://[64:ff9b::7f00:1]/",
+            "https://[0:0:0:0:0:ffff:a00:1]/",
+            "https://3232235777/",
+            "https://0xa9fea9fe/",
+        ] {
+            let r = match target(url, OPERATOR) {
+                Ok(t) => send(&t, hyper::Method::GET, &[], Bytes::new()).await.err(),
+                Err(e) => Some(e),
+            };
+            assert!(
+                matches!(&r, Some(FetchError::Blocked))
+                    || r == Some(failed("the name does not resolve")),
+                "{url}: {r:?}"
+            );
+        }
+        // Plain http: only a literal loopback name or address passes the
+        // parser, and then every resolved address must be loopback.
+        for url in [
+            "http://2130706433/",
+            "http://0x7f.1/",
+            "http://127.1/",
+            "http://localhost./",
+            "http://[::ffff:127.0.0.1]/",
+            "http://0.0.0.0/",
+            "http://[::]/",
+            "http://u@127.0.0.1/",
+        ] {
+            assert!(target(url, OPERATOR).is_err(), "{url}");
+        }
+    }
+
     #[tokio::test]
     async fn bodies_are_capped_and_redirects_not_followed() {
         let app = axum::Router::new()
