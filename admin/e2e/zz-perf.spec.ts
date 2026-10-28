@@ -4,10 +4,20 @@
 // orders → settings, and scrolling a 2,000-row user list (rAF gaps), on a
 // desktop and on a "mid phone" (Pixel 7 viewport, CDP CPU ×4, Fast 3G).
 // Every metric: 7 runs, the first (cold cache) reported apart as "first
-// visit", the median of the other 6 against admin/perf-budget.json. The
-// results go to test-results/perf.json and the GitHub step summary. Budget
-// overruns fail the test only when perf-budget.json has `"blocking": true`
-// (or PERF_BLOCKING=1); otherwise they are printed.
+// visit", the median of the other 6 against admin/perf-budget.json, divided
+// by the host factor (below). The results go to test-results/perf.json and
+// the GitHub step summary. Budget overruns fail the test only when
+// perf-budget.json has `"blocking": true` (or PERF_BLOCKING=1); otherwise
+// they are printed.
+// Host factor: the same code measured on different CI runners differs by up
+// to 3x (phone "users" switch: 299-894 ms over 26 runs, 0.93 correlated with
+// the desktop run of the same job), which is more than any budget's headroom.
+// So each environment first times a fixed amount of main-thread work under its
+// own throttle (`hostCpuMs`); a runner slower than the reference one
+// (perf-budget.json `host.reference_cpu_ms`) gets its medians divided by the
+// slowdown (at most `host.max_factor`), a faster one is not held to a
+// tighter budget. A real regression slows the app, not the probe, so it still
+// shows.
 // Where the time goes: test-results/perf-timeline.json has the first
 // screen's request timeline (cold, warm) and, for every warm switch, the
 // requests since the click (start / end / KB), the main thread's long tasks,
@@ -23,6 +33,7 @@ import { CONSOLE, api, sql } from "./helpers";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUDGET_FILE = JSON.parse(readFileSync(join(HERE, "..", "perf-budget.json"), "utf8")) as {
   blocking?: boolean;
+  host: { reference_cpu_ms: Record<Env, number>; max_factor: number };
   desktop: Record<string, number>;
   phone: Record<string, number>;
 };
@@ -38,7 +49,18 @@ const SWITCHES: [string, string][] = [
 ];
 
 type Env = "desktop" | "phone";
-type Result = { env: Env; metric: string; first: number; median: number; budget?: number; over: boolean };
+type Result = {
+  env: Env;
+  metric: string;
+  first: number;
+  median: number;
+  /** The slowdown of this runner against the reference one (>= 1) the median is divided by. */
+  hostFactor: number;
+  /** `median / hostFactor`: what the budget is compared with. */
+  adjusted: number;
+  budget?: number;
+  over: boolean;
+};
 
 test.describe.configure({ mode: "serial" });
 
@@ -87,6 +109,41 @@ async function throttle(page: Page, env: Env): Promise<void> {
     downloadThroughput: (1.6 * 1024 * 1024) / 8,
     uploadThroughput: (750 * 1024) / 8,
   });
+}
+
+/** What `hostCpuMs` measured per environment (the throttle included). */
+const hostCpu: Partial<Record<Env, number>> = {};
+
+/**
+ * How fast this runner is: a fixed amount of integer work on the page's main
+ * thread, timed in the page under the environment's own throttle; the best of
+ * 7 (the others carry the scheduler's noise, the first the JIT warm-up).
+ */
+async function hostCpuMs(page: Page): Promise<number> {
+  const runs: number[] = [];
+  for (let i = 0; i < 7; i++)
+    runs.push(
+      await page.evaluate(() => {
+        let x = 123456789;
+        const t0 = performance.now();
+        for (let n = 0; n < 4_000_000; n++) {
+          x ^= x << 13;
+          x ^= x >>> 17;
+          x ^= x << 5;
+        }
+        // Read the result, or the loop may be optimised away.
+        return x === 0 ? -1 : performance.now() - t0;
+      }),
+    );
+  return Math.min(...runs);
+}
+
+/** The runner's slowdown against the reference one, 1 at the fastest (never below). */
+function hostFactor(env: Env): number {
+  const measured = hostCpu[env];
+  const reference = BUDGET_FILE.host.reference_cpu_ms[env];
+  if (measured === undefined || !(reference > 0)) return 1;
+  return Math.min(BUDGET_FILE.host.max_factor, Math.max(1, measured / reference));
 }
 
 async function ready(page: Page, id: string): Promise<void> {
@@ -238,6 +295,7 @@ async function measure(browser: Browser, bigList: boolean, add: Add): Promise<vo
     const ctx = await context(browser, env);
     const page = await ctx.newPage();
     await throttle(page, env);
+    hostCpu[env] = await hostCpuMs(page);
     const fsReady: number[] = [];
     const lcp: number[] = [];
     const sw: Record<string, number[]> = {};
@@ -298,13 +356,16 @@ test("perf: first screen, page switches, big list", async ({ browser }, info) =>
   const add = (env: Env, metric: string, xs: number[]) => {
     const budget = BUDGET_FILE[env]?.[metric];
     const m = median(xs.slice(1));
+    const factor = hostFactor(env);
     results.push({
       env,
       metric,
       first: Math.round(xs[0]),
       median: Math.round(m),
+      hostFactor: Math.round(factor * 100) / 100,
+      adjusted: Math.round(m / factor),
       budget,
-      over: !!budget && m > budget,
+      over: !!budget && m / factor > budget,
     });
   };
   // 2,000 users for the list (beyond what the other specs created); skipped if the insert fails.
@@ -352,13 +413,16 @@ test("perf: first screen, page switches, big list", async ({ browser }, info) =>
   }
   const mark = (r: Result) => (r.over ? (BLOCKING ? "**over**" : "over (report-only)") : "ok");
   const rows = results.map(
-    (r) => `| ${r.env} | ${r.metric} | ${r.first} | ${r.median} | ${r.budget ?? "—"} | ${mark(r)} |`,
+    (r) =>
+      `| ${r.env} | ${r.metric} | ${r.first} | ${r.median} | ${r.hostFactor} | ${r.adjusted} | ${r.budget ?? "—"} | ${mark(r)} |`,
   );
   const md = [
     `### Admin timing (${BLOCKING ? "blocking" : "report-only"})`,
     "",
-    "| env | metric | first visit | median (warm, 6 runs) | budget | |",
-    "|---|---|---|---|---|---|",
+    `Runner speed probe (best of 7, ms; reference ${JSON.stringify(BUDGET_FILE.host.reference_cpu_ms)}): ${JSON.stringify(hostCpu)}`,
+    "",
+    "| env | metric | first visit | median (warm, 6 runs) | host factor | median / host factor | budget | |",
+    "|---|---|---|---|---|---|---|---|",
     ...rows,
     "",
   ].join("\n");
@@ -366,7 +430,12 @@ test("perf: first screen, page switches, big list", async ({ browser }, info) =>
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
   if (BLOCKING)
     expect(
-      results.filter((r) => r.over).map((r) => `${r.env} ${r.metric}: median ${r.median} ms > budget ${r.budget} ms`),
+      results
+        .filter((r) => r.over)
+        .map(
+          (r) =>
+            `${r.env} ${r.metric}: median ${r.median} ms / host factor ${r.hostFactor} = ${r.adjusted} ms > budget ${r.budget} ms`,
+        ),
       "perf budget (admin/perf-budget.json)",
     ).toEqual([]);
 });
