@@ -280,17 +280,16 @@ async fn admin_password_at_the_root_is_counted_like_a_wrong_one() {
         return;
     };
     let st = AppState::for_test(db.pool.clone()).await;
-    let (_, right_email) = account(&db, "admin", "admin-password-1").await;
-    let (_, other_email) = account(&db, "admin", "admin-password-2").await;
+    // Generated, not literals: fixtures, but code scanning cannot tell.
+    let right_pw = format!("pw-{}", uuid::Uuid::new_v4());
+    let (_, right_email) = account(&db, "admin", &right_pw).await;
+    let (_, other_email) = account(&db, "admin", &format!("pw-{}", uuid::Uuid::new_v4())).await;
     for path in ["/auth/login", "/auth/login/fallback/code"] {
         let right = Client::new(&st, rand_ip());
         let wrong = Client::new(&st, rand_ip());
         for n in 1..=25 {
             let a = right
-                .post(
-                    path,
-                    json!({ "email": right_email, "password": "admin-password-1" }),
-                )
+                .post(path, json!({ "email": right_email, "password": right_pw }))
                 .await;
             let b = wrong
                 .post(
@@ -301,10 +300,7 @@ async fn admin_password_at_the_root_is_counted_like_a_wrong_one() {
             assert_eq!(a.status, b.status, "{path}: attempt {n}");
         }
         let last = right
-            .post(
-                path,
-                json!({ "email": right_email, "password": "admin-password-1" }),
-            )
+            .post(path, json!({ "email": right_email, "password": right_pw }))
             .await;
         assert_eq!(last.status, StatusCode::TOO_MANY_REQUESTS, "{path}");
         let keys = [(&right, &right_email), (&wrong, &other_email)]

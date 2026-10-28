@@ -502,8 +502,14 @@ export function LoginApp() {
     if (busy || !email || !password) return;
     setBusy("password");
     setError(null);
+    await minWait();
     try {
-      await authPost("/login/fallback/code", { email: email.trim(), password });
+      // Checks the password, so it carries the sign-in's bot protection.
+      await authPost("/login/fallback/code", {
+        email: email.trim(),
+        password,
+        guard: { form_token: opts?.guard?.form_token ?? null, website, turnstile: captcha || null },
+      });
       setCodeSent(true);
       setFbCode("");
     } catch (err) {
@@ -514,6 +520,9 @@ export function LoginApp() {
       );
     } finally {
       setBusy(null);
+      // A Turnstile token is single use; the sign-in that follows needs a new one.
+      setCaptchaReset((n) => n + 1);
+      loadOptions();
     }
   };
 
