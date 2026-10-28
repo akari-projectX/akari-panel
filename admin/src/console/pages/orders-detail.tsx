@@ -1048,8 +1048,13 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
             >
               {tr(
                 `退款会退回全部实付，但用户用它换来的新套餐不会收回：${p.data.credit_used_by
-                  .map((c) => `${c.out_trade_no}（抵扣 ${yuan(c.credit_cents)}）`)
-                  .join("、")}。如要一并退，请先退这些订单。`,
+                  .map((c) =>
+                    tr(
+                      `${c.out_trade_no}（抵扣 ${yuan(c.credit_cents)}）`,
+                      `${c.out_trade_no} (credit ${yuan(c.credit_cents)})`,
+                    ),
+                  )
+                  .join(tr("、", ", "))}。如要一并退，请先退这些订单。`,
                 `The refund returns everything paid, but the plan bought with it stays: ${p.data.credit_used_by
                   .map((c) => `${c.out_trade_no} (credit ${yuan(c.credit_cents)})`)
                   .join(", ")}. Refund those orders first to undo it all.`,
