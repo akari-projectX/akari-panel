@@ -59,12 +59,20 @@ const GRANTED_PAIRS: &str = "SELECT DISTINCT m.entrance_id, up.user_id FROM user
      WHERE up.status = 'active' AND m.entrance_id = ANY($1) \
      AND ($2::uuid[] IS NULL OR up.user_id = ANY($2))";
 
+/// The lock's key. Advisory locks belong to the database, not to a schema;
+/// the tests run in one schema each in a shared database, and a lock shared
+/// between them made a test wait for (and, under a short `lock_timeout`, fail
+/// on) the transactions of unrelated tests. So any schema other than the
+/// default one is part of the key; the default schema keeps the bare key, so
+/// instances of different versions in a rolling upgrade still exclude each
+/// other.
+const LOCK_SQL: &str = "SELECT pg_advisory_xact_lock(hashtextextended(\
+     'akari.entitlement' || coalesce(nullif(current_schema(), 'public'), ''), 0))";
+
 /// Take the entitlement lock (held until the transaction ends). Must be the
 /// first lock of the transaction.
 pub async fn lock(conn: &mut PgConnection) -> sqlx::Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('akari.entitlement', 0))")
-        .execute(conn)
-        .await?;
+    sqlx::query(LOCK_SQL).execute(conn).await?;
     Ok(())
 }
 
@@ -506,6 +514,36 @@ pub async fn granted_pairs(conn: &mut PgConnection) -> HashMap<Uuid, Vec<Uuid>> 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The tests share one database and one schema each: a test that holds
+    /// the lock must not make another schema's test wait (billing's
+    /// transient-error test runs under a 100 ms `lock_timeout` and failed
+    /// when an unrelated test held the lock for longer), while two
+    /// transactions of one schema still exclude each other.
+    #[tokio::test]
+    async fn the_lock_is_per_schema() {
+        let Some(first) = crate::testdb::TestDb::with_options(&[("lock_timeout", "100ms")]).await
+        else {
+            return;
+        };
+        let second = crate::testdb::TestDb::with_options(&[("lock_timeout", "100ms")])
+            .await
+            .expect("the first database exists, so does the second");
+        let mut holder = first.pool.begin().await.unwrap();
+        lock(&mut holder).await.unwrap();
+        let mut other_schema = second.pool.begin().await.unwrap();
+        lock(&mut other_schema)
+            .await
+            .expect("another schema's lock is a different lock");
+        let mut same_schema = first.pool.begin().await.unwrap();
+        let refused = lock(&mut same_schema)
+            .await
+            .expect_err("the same schema's lock is held");
+        assert!(crate::auth::is_transient(&refused), "{refused:?}");
+        drop((holder, other_schema, same_schema));
+        first.drop().await;
+        second.drop().await;
+    }
 
     #[test]
     fn eligible_protocol_of_inbounds() {
