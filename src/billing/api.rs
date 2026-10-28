@@ -1577,6 +1577,18 @@ pub async fn method_notify(
     // The body is read here, not by an extractor: an extractor's own
     // limit answers 413, which is not the canonical rejection. One byte
     // more than allowed is enough for `handle_notify` to see "oversized".
+    // A declared length above that is refused without touching the body:
+    // a body left unread is dropped exactly as on an unknown path, while
+    // one abandoned half read makes hyper close the connection, which
+    // would tell this route apart.
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|n| n > MAX_NOTIFY_BODY as u64) {
+        record_unread(&state, ip).await;
+        return crate::reject::not_found();
+    }
     let Ok(body) = axum::body::to_bytes(body, MAX_NOTIFY_BODY + 1).await else {
         record_unread(&state, ip).await;
         return crate::reject::not_found();

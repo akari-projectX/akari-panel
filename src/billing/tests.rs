@@ -444,6 +444,17 @@ async fn post_notify(
     ip: std::net::IpAddr,
     body: Vec<u8>,
 ) -> crate::testdb::http::Resp {
+    post_notify_with(state, ip, body, false).await
+}
+
+/// `post_notify`, optionally declaring the body's length in
+/// `Content-Length` as a real client does.
+async fn post_notify_with(
+    state: &AppState,
+    ip: std::net::IpAddr,
+    body: Vec<u8>,
+    declare_length: bool,
+) -> crate::testdb::http::Resp {
     use axum::body::Body;
     use tower::ServiceExt;
     // The per-method route of the panel's first method.
@@ -460,9 +471,11 @@ async fn post_notify(
         .header(
             "content-type",
             "application/x-www-form-urlencoded; charset=utf-8",
-        )
-        .body(Body::from(body))
-        .unwrap();
+        );
+    if declare_length {
+        req = req.header("content-length", body.len());
+    }
+    let mut req = req.body(Body::from(body)).unwrap();
     req.extensions_mut()
         .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
             ip, 40000,
