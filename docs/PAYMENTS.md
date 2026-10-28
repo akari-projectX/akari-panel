@@ -681,7 +681,7 @@ Ed25519 用 `EdDSA` 并带 `aud: ["cdp_service"]`，ECDSA 用 `ES256`），`Auth
 ## Notify endpoint rules（通知端点规则）
 
 `POST /pay/{method_id}/notify`（按支付方式；未知、格式错误或已停用的 method id 一律返回规范拒绝）。
-表单编码，≤16 KiB，≤64 个参数，无重复键，按来源地址（/64）在 Valkey 中限流 120/min（故障时放行）。
+表单编码，≤16 KiB（路由自己读正文，只读到上限多一字节；更大的正文也是规范拒绝并留一行 `oversized` 事件，不会露出框架的 413），≤64 个参数，无重复键，按来源地址（/64）在 Valkey 中限流 120/min（故障时放行）。
 依次检查：RSA2 签名（除 `sign`/`sign_type` 外的所有参数，URL 解码后排序；保留空值，或像某些支付宝 SDK 那样丢弃空值——
 两种都在支付宝的签名之下；使用当前的支付宝公钥，或宽限期内的上一把）、该支付方式的 `app_id`、
 `seller_id`（若已配置）、**属于该支付方式的** `out_trade_no`（`orders.payment_method_id`——签名有效但被路由到方式 A 的通知
