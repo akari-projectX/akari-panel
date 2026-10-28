@@ -971,7 +971,7 @@ export const EN: Record<string, string> = {
   "无法确定验证方式，请重试。": "Couldn't tell how to confirm it's you. Please retry.",
   "跟随系统": "System",
   "重置": "Reset",
-  "链接泄露时重置。所有设备都会断开，需要重新导入。": "Reset it if the link leaked. Every device disconnects and has to import it again.",
+  "用于订阅链接泄露的情况。": "Use this if your subscription link has leaked.",
   "请输入新邮箱地址": "Enter the new email address",
   "请输入有效的邮箱地址": "Enter a valid email address",
   "这就是你现在的邮箱": "That is already your email address",

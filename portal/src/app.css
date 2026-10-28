@@ -534,8 +534,8 @@
   .dlg-head .dlg-icon { box-sizing: content-box; flex: none; width: 18px; height: 18px; padding: 9px; border-radius: calc(var(--radius) * 1.4); color: var(--brand); background: var(--brand-soft); }
   .dlg[data-tone='warn'] .dlg-icon { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
   .dlg[data-tone='danger'] .dlg-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-  .dlg [data-dialog-title] { font-size: 17px; line-height: 1.4; font-weight: var(--fw-strong); letter-spacing: -.022em; color: var(--fg); }
-  .dlg header [data-dialog-description] { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 2px; }
+  .dlg .dlg-title { font-size: 17px; line-height: 1.4; font-weight: var(--fw-strong); letter-spacing: -.022em; color: var(--fg); }
+  .dlg .dlg-desc { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 2px; text-wrap: pretty; }
   .dlg-x {
     position: absolute; top: 14px; right: 14px; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
     border: 0; border-radius: calc(var(--radius) * .8); background: none; color: var(--muted); transition: background-color var(--dur-hover), color var(--dur-hover);
@@ -546,9 +546,11 @@
   .dlg footer .btn { height: 40px; }
   /* 确认：窄、按钮等宽并排；「会发生什么」在最前面 */
   .dlg.confirm header { padding-top: 24px; padding-bottom: 0; }
-  .dlg.confirm [data-dialog-title] { padding-top: 4px; font-size: 16.5px; line-height: 1.45; letter-spacing: -.01em; }
-  .dlg.confirm header [data-dialog-description] { margin-top: 6px; font-size: 13.5px; line-height: 1.75; }
+  .dlg.confirm .dlg-title { font-size: 16.5px; line-height: 1.45; letter-spacing: -.01em; }
+  .dlg.confirm .dlg-desc { margin-top: 6px; font-size: 13.5px; line-height: 1.75; }
   .dlg.confirm .dlg-head .dlg-icon { padding: 11px; border-radius: 9999px; }
+  /* 窄屏：图标单独一行，标题、说明、正文共用同一条左边线；宽屏：图标在左，正文缩进到标题那一栏 */
+  .dlg.confirm .dlg-head { flex-direction: column; gap: 16px; }
   .dlg.confirm .bd { flex: none; padding-top: 0; padding-bottom: 0; overflow: visible; }
   .dlg.confirm footer { gap: 10px; padding: 24px 24px 24px; border-top: 0; }
   @media (min-width: 640px) {
@@ -557,6 +559,9 @@
     .dlg .bd { padding-inline: 28px; }
     .dlg footer { display: flex; justify-content: flex-end; align-items: center; padding: 14px 28px 16px; }
     .dlg footer .btn { height: 36px; }
+    .dlg.confirm .dlg-head { flex-direction: row; gap: 14px; }
+    .dlg.confirm .dlg-title { padding-top: 4px; }
+    .dlg.confirm.has-icon .bd { padding-left: calc(28px + 40px + 14px); }
     .dlg.confirm footer { display: grid; padding: 24px 28px 28px; }
     .dlg.confirm footer .btn { height: 40px; }
     .dlg-x { top: 14px; right: 14px; }
@@ -565,14 +570,14 @@
   .dlg.reading { max-width: 640px; border-radius: 20px; }
   .dlg.reading header { display: block; padding: 24px 24px 20px; border-bottom: 1px solid var(--line); }
   .dlg.reading .rd-meta { min-height: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-right: 32px; font-size: 12px; line-height: 16px; color: var(--muted); }
-  .dlg.reading [data-dialog-title] { margin-top: 10px; padding-right: 32px; font-size: 20px; line-height: 1.35; letter-spacing: -.022em; text-wrap: balance; }
+  .dlg.reading .dlg-title { margin-top: 10px; padding-right: 32px; font-size: 20px; line-height: 1.35; letter-spacing: -.022em; text-wrap: balance; }
   .dlg.reading .bd { padding: 24px; }
   .dlg.reading .rd-in { max-width: 62ch; }
   .dlg.reading footer { display: block; padding: 14px 24px; }
   @media (min-width: 640px) {
     .dlg.reading { border-radius: 16px; max-height: min(86vh, 780px); }
     .dlg.reading header { padding: 28px 32px 20px; }
-    .dlg.reading [data-dialog-title] { font-size: 22px; }
+    .dlg.reading .dlg-title { font-size: 22px; }
     .dlg.reading .bd { padding: 24px 32px; }
     .dlg.reading footer { padding: 14px 32px; }
   }

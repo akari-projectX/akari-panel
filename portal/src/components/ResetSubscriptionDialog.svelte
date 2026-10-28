@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { meApi } from '@/api';
-  import Dialog from './ui/Dialog.svelte';
+  import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import { refresh } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
@@ -18,11 +19,10 @@
   let error = $state<string | null>(null);
   const busy = new Pending();
 
-  function change(o: boolean) {
-    if (busy.busy) return;
-    if (o) error = null;
-    open = o;
-  }
+  /* 每次打开都从干净的状态开始：上一次失败的原因不留到下一次 */
+  $effect(() => {
+    if (open) untrack(() => { error = null; });
+  });
 
   function reset() {
     void busy.run(async () => {
@@ -40,26 +40,11 @@
     });
   }
 
-  const consequences = ['旧的订阅链接立即失效', '所有设备会立即断线，节点上的旧凭据同时作废', '所有设备都要重新导入订阅', '此操作不可撤销'];
+  const consequences = $derived(['旧的订阅链接立即失效', '所有设备会立即断线，节点上的旧凭据同时作废', '所有设备都要重新导入订阅', '此操作不可撤销'].map((c) => t(c)));
 </script>
 
-<Dialog alert bind:open onOpenChange={change} title={t('重置订阅？')} description={t('链接泄露时重置。所有设备都会断开，需要重新导入。')}>
-  {#snippet icon()}<TriangleAlert class="dlg-icon warn-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
-  <ul class="cons">
-    {#each consequences as c (c)}<li>{t(c)}</li>{/each}
-  </ul>
-  {#if error}<p class="err-line" role="alert">{error}</p>{/if}
-  {#snippet footer()}
-    <button type="button" class="btn" disabled={busy.busy} onclick={() => change(false)}>{t('取消')}</button>
-    <button type="button" class="btn danger" disabled={busy.busy} onclick={reset}>{busy.busy ? t('重置中') : t('确认重置')}</button>
-  {/snippet}
-</Dialog>
-
-<style>
-  :global(.dlg .warn-icon) { color: var(--warn); }
-  .cons { display: flex; flex-direction: column; gap: 6px; padding-left: 18px; list-style: disc; font-size: 13.5px; color: var(--body); }
-  .cons li::marker { color: var(--faint); }
-  .err-line { margin-top: 14px; font-size: 13px; color: var(--danger); }
-  .danger { background: var(--warn); border-color: var(--warn); color: var(--on-solid); }
-  .danger:hover:not(:disabled) { border-color: var(--warn); filter: brightness(.95); }
-</style>
+<!-- 语气同「退出所有设备」：琥珀色（会断开所有设备，但不删任何东西） -->
+<ConfirmDialog bind:open tone="warn" title={t('重置订阅？')} description={t('用于订阅链接泄露的情况。')} {consequences}
+  confirmLabel={busy.busy ? t('重置中') : t('确认重置')} pending={busy.busy} {error} onconfirm={reset}>
+  {#snippet icon()}<TriangleAlert class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
+</ConfirmDialog>
