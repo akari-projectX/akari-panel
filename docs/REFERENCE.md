@@ -1,52 +1,13 @@
 # Akari 功能与实现参考
 
-> 本文件原为仓库根目录的 `README.md`（v0.4.3 起，根 README 改为项目介绍；部署、升级、迁移与卸载见 [`DEPLOY.md`](DEPLOY.md)）。
-> 这里保留逐功能的行为说明、API 表与设计笔记；与代码不一致时以代码和 `CLAUDE.md` 为准。
-
-# Akari
-
-代理面板控制平面，不留任何历史指纹：一个 Rust 单二进制（面板）加一个内嵌 xray-core 的 Go agent。
-不兼容 V2Board/XrayR 协议，节点上没有入站管理端口，也没有任何能让未认证探测识别出本软件的特征。
-
-```
-┌──────────────── Rust binary (akari) ────────────────┐
-│ axum web        portal at /, console + API behind a │
-│                 secret admin prefix, empty 404 else │
-│ tonic gRPC      mTLS AgentChannel (server)          │
-│ PG 18           users / nodes / traffic ledger      │
-│ Valkey 9        liveness TTL keys, heartbeat blobs  │
-└───────────────▲────────────────────────────────────┘
-                │ outbound-only mTLS gRPC stream
-┌───────────────┴────────────────────────────────────┐
-│ Go agent: embedded xray-core, dynamic AddUser,     │
-│ per-user traffic counters, heartbeats              │
-└────────────────────────────────────────────────────┘
-```
-
-## Quick start / 快速开始
-
-在全新的 Debian 12/13 或 Ubuntu 22.04/24.04 服务器上（root 或 sudo）执行：
-
-```bash
-curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/download/install.sh | sh
-```
-
-安装过程为交互式（中文/英文），每个提示都有默认值：
-
-- 部署方式：Docker Compose，或裸机（systemd 下的 PostgreSQL 18 + Valkey 9 + Caddy）。
-- 访问方式：域名，或仅用 IP。
-- 管理员邮箱（即登录名；密码自动生成，只显示一次）。
-
-安装前会先校验发布版本（cosign 签名的 SHA256SUMS）。安装后可用：`akari-ctl status | info | upgrade | backup | migrate --to docker|bare | uninstall [--purge]`。
-非交互安装：`… | sh -s -- --yes --mode bare --domain panel.example.com`。
-手动安装、升级、回滚、迁移的细节见 `docs/DEPLOY.md`。
+> 逐功能的行为说明、API 表与设计笔记。项目介绍见 [`../README.md`](../README.md)，安装、升级、迁移与卸载见 [`DEPLOY.md`](DEPLOY.md)；与代码不一致时以代码和 `CLAUDE.md` 为准。
 
 ## Status / what works
 
 `./smoke.sh`（完全由 API 驱动）端到端验证了以下功能：
 
-- `akari admin add <email>` 创建第一个账号（v0.4 D1：所有人包括管理员都用邮箱登录；密码通过环境变量 `AKARI_ADMIN_PASSWORD` 或隐藏提示输入；argon2id 哈希）。
-- **URL 布局（v0.4 D4/D11，`access.rs`，入口在 `web.rs`）**：
+- `akari admin add <email>` 创建第一个账号（所有人包括管理员都用邮箱登录；密码通过环境变量 `AKARI_ADMIN_PASSWORD` 或隐藏提示输入；argon2id 哈希）。
+- **URL 布局（`access.rs`，入口在 `web.rs`）**：
   - 用户门户（页面、`/api/v1/…`、`/auth/…`）位于主域名的 `/`。
   - 控制台和管理员 API 位于**管理前缀**之下。管理前缀是唯一的秘密前缀，存放在数据库中（首次启动导入 `data/state.json` 里的值）；owner 可免重启轮换（旧前缀在所有实例上立即失效），也可限定为 CIDR 白名单。
   - 订阅位于 `/<sub path>/<token>`。订阅路径是首次启动时抽取的全站随机路径，可编辑，旧路径立即失效，也可选择给每个用户邮件发送新链接。
@@ -64,7 +25,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - 当账号在当前 RP ID 下有 passkey，且选择了仅 passkey 或其角色策略要求时，密码登录会被拒绝（403 `auth.passkey_required`，仅在密码正确之后）。没有当前有效的 passkey 时，密码始终可用（换域名或删除最后一个 passkey 都不会把任何人锁在门外）。
   - 登录应答中的 `passkey_prompt` 提示页面引导用户绑定 passkey。passkey 丢失：`akari admin reset-login <email>`。
 - `POST /auth/login`（`{email, password}`；管理员：`/{admin prefix}/auth/login`）校验 argon2id 哈希。
-  - 对未知地址做了耗时均衡；失败尝试在 Valkey 中限速：按客户端地址（IPv6 按 /64）20 次/15 分钟，按账号地址 50 次/15 分钟。
+  - 对未知地址做了耗时均衡；失败尝试在 Valkey 中限速：三个桶、只计失败：按客户端地址（IPv6 按 /64）20 次/15 分钟，按（登录名, 客户端网络）20 次，按登录名跨网络 200 次。
   - 通过后签发 HS256 JWT，放在 `HttpOnly`、`SameSite=Strict` 的 cookie 中（12 小时；除非 `web.cookie_secure = false`，否则带 `Secure`）。
   - 令牌携带账号的 `session_ver`：改密码、禁用、改角色、过期、登出或 `POST /api/v1/users/{id}/revoke-sessions` 都会终止该账号的所有会话（登出 = 全端登出；被复制的 cookie 随之失效）。
   - **Owner（R47）**：`akari admin add` 创建的第一个管理员（即安装器创建的那个）就是 owner（`/me` 与用户视图中的 `is_owner`）。
@@ -89,7 +50,7 @@ curl -fsSL https://github.com/akari-projectX/akari-panel/releases/latest/downloa
   - 管理端列表按 服务器 → 节点 → 入口 分组（`GET /api/v1/servers`）。
 - `akari server add <name>`（或 `POST /api/v1/servers`，或不带 `server_id` 的 `POST /api/v1/nodes`：为该节点单独建一台服务器；UI 中为“新建节点”）创建服务器，生成一次性注册令牌，并写出不含任何私钥的 bootstrap 文件。
   - agent 在本地生成密钥（ECDSA P-256），通过 gRPC 端口用 CSR 注册（这是唯一不需要客户端证书的调用）；面板签发 90 天的客户端证书。
-  - Protocol 2 的 agent 在证书剩余三分之一有效期时通过 mTLS 续期（新密钥；看到新证书后旧证书被吊销）。
+  - agent 在证书剩余三分之一有效期时通过 mTLS 续期（新密钥；看到新证书后旧证书被吊销）。
   - `akari server enroll-token <id>` 用于重新注册服务器，见 docs/DEPLOY.md。
   - `akari server delete <id>`（或 `DELETE /api/v1/servers/{id}`）退役服务器及其节点，见下文 "Node deletion"。`DELETE /api/v1/nodes/{id}` 立即删除单个节点并保留其服务器。
 - agent 主动外连（TLS 1.3，客户端证书 = 节点身份），发送带有其已持有配置/用户版本的 `Hello`；节点变为 `online`，并记录版本。
@@ -125,10 +86,10 @@ src/auth.rs            argon2id passwords, JWT sessions, extractor
 src/api.rs             REST handlers (users, nodes, accounts)
 src/spa.rs             embedded user portal (rust-embed)
 src/console.rs         embedded admin app (rust-embed): sign-in page, session-gated console
-src/access.rs          D4/D11 URL layout: admin prefix + allowlist, subscription path
+src/access.rs          URL layout: admin prefix + allowlist, subscription path
 src/web.rs + reject.rs front door + uniform rejection
-portal/                Svelte 5 + Vite 8 + Tailwind 4 user portal
-admin/                 the admin app (W33-b): sign-in page + console, own build and e2e
+portal/                Svelte 5 + Vite + Tailwind 4 user portal
+admin/                 the admin app: sign-in page + console, own build and e2e
 migrations/            sqlx migrations (run at startup)
 smoke.sh               cross-repo end-to-end check (needs ../akari-agent)
 ```
@@ -138,7 +99,7 @@ agent 位于兄弟仓库 `akari-agent`（Go：`agent.go` 流生命周期与重�
 
 ## Frontend
 
-两个独立构建的前端（R23、W33-b），都基于 Vite 8（Rolldown）和 Tailwind 4：用户门户是 Svelte 5（2026-10 重写，v2.0.0 起），管理端是 React 19 + TanStack Query：
+两个独立构建的前端（R23、W33-b），都基于 Vite 8（Rolldown）和 Tailwind 4：用户门户是 Svelte 5，管理端是 React 19 + TanStack Query：
 
 - **用户门户**（`portal/`）位于主域名的 `/`（D11）：登录页，以及每个 URL 一个视图（仪表盘、商店、节点、订单、钱包、工单、账号），中文/英文。入口只提供它认识的页面（`access::PORTAL_PAGES`；须与门户路由保持一致）。
 - **管理端应用**（`admin/`，W33-b）：
@@ -440,7 +401,7 @@ trusted_proxies = ["127.0.0.1/32"]   # the proxy's address(es) as seen by the pa
 重复购买当前套餐会按其周期延长；购买另一个套餐会替换当前套餐（用量重置）。
 
 W16（M7）：优惠券（百分比/固定金额，可限定范围、可限次数，无竞态的预留）、每用户余额（余额）及只追加的流水（订单可全额或部分用余额支付）、邀请佣金（先挂起一个保留期，再入余额；退款时冲回），以及人工打款的提现。
-配置、沙箱测试、通知 URL 规则和对账：[docs/PAYMENTS.md](docs/PAYMENTS.md)。
+配置、沙箱测试、通知 URL 规则和对账：[PAYMENTS.md](PAYMENTS.md)。
 
 ## Registration, password reset and email (W15)
 

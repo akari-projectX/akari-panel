@@ -1,12 +1,9 @@
-// Screenshot set for design review (not an assertion suite): the v2 design
-// shots (design/admin-redesign-2026-10/screenshots-v2/, prototype/scripts/
-// screenshots.mjs: 1440×900 and 390×844 @2x, light + dark) taken from the
-// real app after the other specs left data behind. Shots are declared per
-// area in e2e/screens/<area>.ts (same areas and names as the prototype's
-// scripts/shots/<area>.json; format in e2e/screens/README.md). Written to
+// Screenshot set for design review (not an assertion suite): shots
+// (1440×900 and 390×844 @2x, light + dark) taken from the real app after
+// the other specs left data behind. Shots are declared per area in
+// e2e/screens/<area>.ts (format in e2e/screens/README.md). Written to
 // test-results/screens/<name>-<desktop|mobile>-<light|dark>.png and uploaded
-// by CI as the `admin-screens` artifact; the lead puts them next to the
-// drafts in design/admin-redesign-2026-10/compare/. A shot that cannot be
+// by CI as the `admin-screens` artifact. A shot that cannot be
 // taken is reported (annotation + log), not failed.
 //
 // Time: the four variants run in parallel (one browser context each, reused

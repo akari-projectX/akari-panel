@@ -1,9 +1,8 @@
 /*
- * 截图集（不是验收用例）：和 v1.4.0 React 门户的参照图（design/portal-v1-reference-2026-10/screens/）同名同视口同主题，
- * 给「恢复 v1.4.0 外观」的逐张对照用：导航（桌面的页头、手机打开的菜单）、页面（仪表盘、商店、订单、工单、设置、隐私、文档、邀请、钱包三个页签、节点、流量、公告）、加载骨架。
+ * 截图集（不是验收用例）：给设计评审逐张对照用，每个视口（桌面 / 手机）× 主题（浅 / 深）各一张：导航（桌面的页头、手机打开的菜单）、页面（仪表盘、商店、订单、工单、设置、隐私、文档、邀请、钱包三个页签、节点、流量、公告）、加载骨架。
  * 写到 test-results/screens/<名字>-<desktop|mobile>-<light|dark>.png，CI 作为 portal-screens 工件上传。
  * 放在最后跑（文件名 zz-，只在 mobile 项目里跑一次——那时两个视口的其余用例都跑完了），用前面用例留下的数据；
- * 拍不到的图记一条注解，不让整套失败。参照图里 USDT 付款的几张（usdt-*）是已作废的旧流程，不拍。
+ * 拍不到的图记一条注解，不让整套失败。
  */
 import type { Browser, Locator, Page } from '@playwright/test';
 import { signIn, test } from './fixtures.ts';
@@ -21,7 +20,7 @@ const VP = {
 } as const;
 
 /** run 返回一个元素时只截它，返回 'viewport' 时截可见区域，否则截整页 */
-type Shot = { name: string; account: string; /** 只拍浅色，文件名不带主题（参照图 pay-success-desktop.png 这样命名） */ plain?: boolean; run: (page: Page, device: Device) => Promise<Locator | 'viewport' | void> };
+type Shot = { name: string; account: string; /** 只拍浅色，文件名不带主题（如 pay-success-desktop.png） */ plain?: boolean; run: (page: Page, device: Device) => Promise<Locator | 'viewport' | void> };
 
 /** 每一步最多等这么久：拍不到就记一条注解，接着拍下一张 */
 const WAIT = 10_000;

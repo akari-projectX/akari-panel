@@ -217,7 +217,7 @@ Telegram API origin (alert channel)     系统设置 → 告警
 `set trust-cloudflare true|false` 和 `akari settings unset main|sub|node|trust-cloudflare|probe|all`
 可从 CLI 修改（带审计）：例如主域名填错之后。修改在一秒内对所有面板实例生效（通过数据库通知），**无需重启**，gRPC 证书同样如此。
 
-### 多域名（D8，中文）
+### 多域名
 
 主域名、订阅域名、节点通信域名都是**列表**，每类有一个**首选**（列表第一个）。每类域名只能访问规定的内容：
 
@@ -306,7 +306,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 普通管理员忘记密码或丢失通行密钥，请所有者在「用户」里重置其登录方式，或在服务器上执行 `akari admin passwd` /
 `akari admin reset-login <email>`；所有者自己只能在服务器上用这两条命令恢复。
 
-### 后台前缀、IP 白名单与订阅路径（D4/D11，中文）
+### 后台前缀、IP 白名单与订阅路径
 
 - **门户**在主域名根路径 `/`（用户登录、注册、购买、订阅等）；门户的页面、接口与回答里**永远不出现后台地址**，登录后也不会跳到后台。
   门户的页面：`/`、`/shop`、`/orders`、`/wallet`、`/invite`、`/nodes`、`/traffic`、`/tickets`、`/help`、`/announcements`、`/account`、
@@ -323,21 +323,21 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 - **安装链接**（`/install/…`）与**支付回调**（`/pay/…`）是独立的公开路径，不含后台前缀；后台前缀下也不提供订阅、安装链接与支付回调。
 - 反向代理（Caddy/nginx）把所有路径原样转发给面板，由面板判断；改前缀不需要改代理配置。
 
-### 账号注销（W27，中文）
+### 账号注销
 
 用户可以在门户自助注销账号（需要输入当前密码；只用通行密钥登录的账户除外）。注销前会显示会丢失什么（余额、可提现金额、生效中的套餐）。
 有待付款订单或待处理提现时需要先取消。没有任何财务记录（订单、余额明细、返佣、提现）的账号直接删除；有财务记录的账号**匿名化保留**：
 邮箱改为 `erased-<id>@erased.invalid`，个人数据（通行密钥、订阅链接、工单、邮件、流量明细等）全部删除，套餐取消、节点权限立即撤销，账号永久停用；
 订单与余额流水仍按原账户保留（后台用户列表状态为「已注销」）。原邮箱之后可以重新注册。
 
-### 清理从未使用的账号（D10，中文）
+### 清理从未使用的账号
 
 「从未使用」指：从没有过套餐、从没付过款（没有任何订单、余额流水、返佣、提现）、没有流量、余额为 0、没有工单的普通用户。管理员和有任何财务记录的账号永远不算。
 
 - **后台用户列表**：筛选「从未使用」「注册早于」「最后登录早于」（从未登录也算），可以勾选或选「全部匹配的 N 个」批量删除：先显示数量，确认后才删除（数量变了需要重新确认）。删除逻辑与用户自助注销相同。
 - **自动清理**（系统设置，默认关闭）：注册超过 N 天（默认 30）且 N 天内没有登录的从未使用账号，每小时检查一次并删除。可选**删除前发邮件提醒**：先发提醒，等待若干天（默认 7）后再删除；期间用户登录一次即保留。
 
-### 所有者（R47，中文）
+### 所有者
 
 安装时创建的第一个管理员（`akari admin add`）是**所有者**，全站唯一。只有所有者能：
 
@@ -359,7 +359,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 安装链接、订阅 URL 和支付回调随后都由它生成，而不再取决于浏览器碰巧使用的地址；同时 Host 检查（§1b）开启：
 请求其他任何名称都会得到空 404。订阅域名（用于 Cloudflare）和节点通信域名是可选的（§1b）。
 
-### 站点时区（Q3，W28-a，中文）
+### 站点时区
 
 **系统设置 → 站点 → 时区**（API `PUT /api/v1/settings/site {"version": N, "timezone": "Asia/Shanghai"}`），默认 `Asia/Shanghai`（北京时间，无夏令时）。填写 IANA 时区名（如 `Asia/Shanghai`、`Asia/Tokyo`、`UTC`、`America/New_York`），必须与 PostgreSQL 时区库中的名称完全一致；`CST`、`UTC+8`、`+08:00` 这类缩写或偏移会被拒绝（`settings.timezone_invalid`），因为它们的含义有歧义。留空 = 恢复默认。修改写入审计（`settings.site.update`）。
 
@@ -376,7 +376,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 
 **流量明细的存储**：`traffic_daily` 按月分区（`traffic_daily_YYYYMM`）。面板启动时和每 10 分钟检查一次，保证上个月到后两个月的分区存在；超过「流量明细保留天数」（系统设置 → 安全，默认 400 天）的**整月**汇总进月表后直接删除整个分区，不产生数据库膨胀。因此日明细至少保留设定的天数，最多再多保留不到一个月。
 
-## 2c. Mail, registration and password reset (optional, W15)（邮件、注册与找回密码，可选）
+## 2c. Mail, registration and password reset (optional)（邮件、注册与找回密码，可选）
 
 这里的一切在你打开之前都是关闭的；panel.toml 中没有对应项。
 
@@ -457,7 +457,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
    **通行密钥用不了时的回退**（用户裁决 2026-10-15）：「仅通行密钥」的账号在浏览器不支持关联来源、或中心域名连不上时，登录页在密码被拒（`auth.passkey_required`）之后显示「通行密钥用不了？改用密码 + 邮箱验证码」（浏览器报 `SecurityError` 时直接作为主操作）。面板不能验证「浏览器不支持」，所以回退需要**密码正确 + 发到账号已验证邮箱的一次性验证码**（6 位、10 分钟、单次、错 5 次作废；需要邮件发送已启用）。没有已验证邮箱的账号不能回退，仍用 `akari admin reset-login`。每次回退登录都写审计 `user.login.passkey_fallback` 并给该邮箱发一封「账号安全提醒」，错误验证码计入登录失败限速。邮件模板 `login_code`（登录验证码）可在 系统设置 → 邮件模板 中编辑。
    **更换主域名** 会让现有通行密钥成为孤儿（浏览器只在旧名称上提供它们）：它们显示为非当前，对应账号回退到密码登录。
 
-### 发信方式与「测试发信」诊断（W31）
+### 发信方式与「测试发信」诊断
 
 **系统设置 → 邮件 → 发信方式** 二选一：
 
@@ -487,7 +487,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 诊断最多 60 秒，前一步失败后其余步骤标为「未执行」；结果写审计 `settings.mail.test`。原来的
 「发送测试邮件」（`/settings/mail/test`，失败时 502 带服务器回答）保留。
 
-## 2d. Payments (系统设置 → 支付, W24)（支付）
+## 2d. Payments (系统设置 → 支付)（支付）
 
 支付方式只在控制台里配置（存数据库；不在 panel.toml 中，所有实例同时生效）：
 **系统设置 → 支付 → 添加支付方式 → 支付宝当面付**，选择环境（正式/沙箱），填 APPID、可选的 商户 PID，
@@ -496,7 +496,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 回调 URL 按支付方式由主域名（§2b）生成：网关侧无需配置（易支付、CoinPayments、Coinbase 的差异见 docs/PAYMENTS.md）。可以配置多种支付方式（付款人在结账时选择）。
 详情和密钥轮换见 docs/PAYMENTS.md。
 
-## 2e. DNS 管理（Cloudflare，中文）
+## 2e. DNS 管理（Cloudflare）
 
 后台「DNS」页管理 Cloudflare 上全部区域的 DNS 记录。**Cloudflare 是唯一事实源**：面板不保存区域或记录的副本，每次打开页面都实时读取；数据库里只有 API 令牌（用主密钥 `data/master.key` 加密）和审计日志。
 
@@ -520,7 +520,7 @@ curl -s https://www.cloudflare.com/ips-v4 https://www.cloudflare.com/ips-v6   # 
 
 ## 3. Add a node and install the agent（添加节点并安装 agent）
 
-### 服务器与节点（Q1，中文）
+### 服务器与节点
 
 - **服务器** = 一台机器 = 一个 agent 身份：证书、注册/安装命令、在线状态、机器状态与测速、告警、
   agent 更新（灰度按服务器）、节点域名（TLS 证书）、计费上限都属于服务器。
@@ -719,7 +719,7 @@ agent 用新证书重新连接，面板第一次见到新证书时吊销旧证�
 
 如果想在不重新注册的情况下恢复节点，请备份 agent 的状态目录。
 
-## 3h. 系统支持：BBR + fq 与 Alpine（W32，中文）
+## 3h. 系统支持：BBR + fq 与 Alpine
 
 **BBR + fq（安装时自动开启，可关闭）。** 一键安装脚本在节点上开启 TCP BBR 拥塞控制 + fq 队列
 （跨境、有丢包的长距离线路吞吐明显更好）。agent 本身**从不**修改内核参数，只有安装脚本做这件事：
@@ -800,7 +800,7 @@ CI：agent 仓库的 `openrc self-update` job（Alpine 3.22 容器，OpenRC 为 
 
 **重新生成订阅令牌** 会立即使旧链接失效（用户也可以在门户里这样做）。
 
-### 订阅格式、客户端与订阅模板（W30，中文）
+### 订阅格式、客户端与订阅模板
 
 **按客户端自动选择格式**（User-Agent；链接加 `?format=clash|sing-box|surge|surfboard|links` 可强制指定）：
 
@@ -953,7 +953,7 @@ openssl s_client -connect www.apple.com:443 -tls1_3 -alpn h2 </dev/null 2>/dev/n
 `serverNames[0]` 是客户端发送的 SNI。用户的 flow 取自入站的 `settings.flow`
 （要用 Vision，就像模板那样在 `settings` 中加 `"flow": "xtls-rprx-vision"`）；之后修改它会更新每个用户的凭据（id 不变），订阅随之更新。
 
-## 3d. Protocol / transport matrix (W8, agent xray-core v26.10.21)（协议 / 传输矩阵）
+## 3d. Protocol / transport matrix (agent xray-core v26.10.21)（协议 / 传输矩阵）
 
 每一行都做过端到端检查：模板 → `validate_inbound` → 每用户凭据 → agent 应用（gate 吊销）→ 三种格式的订阅 → 真实客户端转发流量
 （`smoke.sh` W8 段：可用时用 mihomo 1.19 和 sing-box 1.12+；agent 的 `TestRT_ProtocolMatrix` 金丝雀用 xray 自带客户端，含计费和吊销）。
@@ -1023,7 +1023,7 @@ Hysteria 2 之所以受支持，是因为 xray-core v26.10.21 把它实现为多
 
 **用户不能访问节点的内网（xray-core ≥ 26.4，随 agent 升级生效）。** 内嵌内核的直连出站（freedom）默认拒绝用户经 vless/vmess/trojan/hysteria/shadowsocks 入站去往私有、回环、链路本地地址（被拦的连接约 30–90 秒后才断开）。这是上游的安全默认，面板与 agent 保持不变；节点自身所在内网里的服务因此不会被用户借道访问。需要放行（例如要让用户访问本机上只监听回环的服务）时，在后台 服务器 → 设置 → 访问范围 打开“允许用户访问本机内网/回环地址”（每台服务器一个开关，默认关；API：`PATCH /servers/{id}` 的 `allow_private_destinations`）。**风险**：云厂商元数据服务（169.254.169.254，可能取得实例凭据）、本机服务和同一内网里其他机器（含其他租户）都会被用户访问到；改动会重建该服务器的入站，在线用户自动重连。需要 agent 带能力 `private-destinations`，较旧的 agent 忽略此开关（后台显示“agent 过旧”警告）。
 
-## 3e. Node status, latency tests and the traffic multiplier (W11)（节点状态、延迟测试与流量倍率）
+## 3e. Node status, latency tests and the traffic multiplier（节点状态、延迟测试与流量倍率）
 
 **机器状态。** 具备 `metrics` 能力的 agent（W11 agent）在每次心跳（15 秒；`akari-agent -heartbeat-interval` 可改，1 秒 – 5 分钟）中加入机器状态块：
 CPU %、负载 1/5/15、内存和 swap、`/` 的磁盘、默认路由网卡（自上次心跳以来的速率及开机以来的累计）、在用的 TCP/UDP socket、被代理的连接、
@@ -1086,7 +1086,7 @@ agent 把这类值留空（`metrics-presence` 能力）。
 `akari_fleet_cpu_percent_max`；对各实例求和）。按设计没有每节点的序列：节点 id 和名称会是无界的 label 值；
 每节点历史在面板中（`/servers/{id}/metrics`）。每节点的告警阈值留作后续工作。
 
-## 3f. Automatic node certificate (节点域名, W10, agent protocol 6)（节点自动证书）
+## 3f. Automatic node certificate (节点域名)（节点自动证书）
 
 在服务器上设置 **节点域名**（向导或节点页；新服务器用 `POST /api/v1/nodes` 的 `tls_domain`，已有的用 `PATCH /api/v1/servers/{id}`），
 每个读取节点证书文件的入站就会得到该域名的 Let's Encrypt 证书，由 agent 获取并续期。只有带这类入站的节点才会申请
@@ -1120,7 +1120,7 @@ agent 的做法（详见 akari-agent 的 `acme.go`）：
   更改 节点域名 会向节点发送新配置（重建：其连接断开一次）。节点没有设置公网地址时，订阅使用 节点域名 作为服务器地址。
 - 不支持：ZeroSSL / EAB CA（任何不需要 external account binding 的 CA 都可通过 `directory_url` 使用）、每个节点多个域名、DNS-01。
 
-## 3h. 审计规则（节点拦截，W29）
+## 3i. 审计规则（节点拦截）
 
 后台「审计规则」在节点上拦截指定流量（xray 路由 + `blackhole` 出站，被拦截的连接直接关闭）。规则在**面板**里编译好，agent 只把结果写进 xray 路由。
 
@@ -1163,7 +1163,7 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
 指标 label 从不包含后台前缀或节点 id：每节点的详情在控制台的节点页和 告警中心（§4b）。
 被接受的请求的每个响应都带有 `X-Request-Id`（传入的若短且可打印则复用）；它出现在该请求的日志行中。拒绝响应从不带它。
 
-## 4a. 系统状态（W31）
+## 4a. 系统状态
 
 后台 `GET /api/v1/system/status`（仅管理员，结果缓存 5 秒）一次给出：
 
@@ -1182,7 +1182,7 @@ panel 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB。整套
 
 各项检查并发执行、每项最多 3 秒，不读写 agent 路径；读不到的值为 `null`（未知），不当作 0。
 
-## 4b. Node alerts and notifications (告警中心, W17)（节点告警与通知）
+## 4b. Node alerts and notifications (告警中心)（节点告警与通知）
 
 面板自己监视整个集群；Prometheus 是可选的。控制台 → **告警** 显示正在触发的告警（及历史）、阈值和通知渠道。默认值：
 开启，离线 > 300 秒，CPU / 内存 > 90 % 持续 5 分钟，磁盘 > 90 %，证书（节点自动 TLS 证书 W10，或 agent 的 mTLS 证书）14 天内到期，
@@ -1354,7 +1354,7 @@ docker compose up -d --force-recreate           # Caddyfile is a single-file bin
 
 为什么是这个顺序：新面板会丢弃没有 `session_id` 的流量上报，并对低于 `MIN_AGENT_PROTOCOL`（8）的 agent 返回空状态。
 
-## 5b. Agent updates (M6: signed self-update, staged rollout)（agent 更新：签名自更新、分批灰度）
+## 5b. Agent updates (signed self-update, staged rollout)（agent 更新：签名自更新、分批灰度）
 
 agent 可以从面板更新。面板只做**中继**：agent 只有在其 manifest 由**编译进 agent** 的发布密钥签名（akari-agent 中的 `release-keys.txt`）、
 平台匹配、且版本比当前运行的更新时，才会运行新二进制（签名的 `rollback` manifest 是唯一的降级方式，并且永远不会降到该节点已经回滚过的版本；rollback manifest 还绑定它所替换的版本并带有效期，见下文「签名的 rollback」）。
