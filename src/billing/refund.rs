@@ -251,7 +251,11 @@ pub async fn effect(conn: &mut PgConnection, order_id: Uuid) -> Result<Effect, A
                 .pointer("/prior/used_bytes")
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
-            // The replaced subscription comes back unless it has expired.
+            // The replaced subscription comes back unless it has expired or
+            // the order that bought it was refunded meanwhile (money only:
+            // the switch replaced it first; the customer has their money
+            // back for it, so it does not return — unless that refund kept
+            // the plan on purpose).
             let restorable: Option<(String, Option<DateTime<Utc>>)> = match prior {
                 None => None,
                 Some(p) => {
@@ -259,7 +263,12 @@ pub async fn effect(conn: &mut PgConnection, order_id: Uuid) -> Result<Effect, A
                         "SELECT pl.name, up.expires_at FROM user_plans up \
                          JOIN plans pl ON pl.id = up.plan_id \
                          WHERE up.id = $1 AND up.user_id = $2 AND up.status = 'replaced' \
-                         AND (up.expires_at IS NULL OR up.expires_at > now())",
+                         AND (up.expires_at IS NULL OR up.expires_at > now()) \
+                         AND NOT EXISTS (SELECT 1 FROM orders o \
+                              WHERE o.user_id = $2 AND o.refunded_at IS NOT NULL \
+                              AND o.fulfil_result->>'user_plan_id' = up.id::text \
+                              AND o.fulfil_result->>'kind' IN ('new', 'switch') \
+                              AND COALESCE(o.refund_effect->>'why', '') <> 'keep_plan')",
                     )
                     .bind(p)
                     .bind(user)
