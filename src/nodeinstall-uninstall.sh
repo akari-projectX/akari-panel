@@ -16,6 +16,55 @@ UNINSTALLER=/usr/local/sbin/akari-agent-uninstall
 BBR_CONF=/etc/sysctl.d/90-akari-bbr.conf
 BBR_MOD=/etc/modules-load.d/akari-bbr.conf
 
+# qdisc_refresh: put the kernel's current default qdisc on the interfaces
+# the default routes use now, not at the next boot (net.core.default_qdisc
+# only applies to qdiscs created after it changes). Only interfaces whose
+# egress qdiscs are all the kernel's own (handle 0:, nobody configured
+# them): grafting a configured root and deleting it makes the kernel attach
+# its defaults again (mq with one child per queue on multiqueue NICs);
+# queued packets are dropped once, which TCP recovers from. Sets QDISC_DONE
+# (interfaces changed), QDISC_LEFT (interfaces that keep the old qdisc
+# until a reboot: configured by hand, or a failed change) and QDISC_NO_TC
+# (1: no tc/ip here, nothing looked at).
+# shellcheck disable=SC2034 # QDISC_NO_TC is read by the installer (bbr_qdisc)
+qdisc_refresh() {
+	QDISC_DONE=
+	QDISC_LEFT=
+	QDISC_NO_TC=
+	q_want=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null) || return 0
+	if ! command -v tc >/dev/null 2>&1 || ! command -v ip >/dev/null 2>&1; then
+		QDISC_NO_TC=1
+		return 0
+	fi
+	for q_dev in $({ ip -o -4 route show default; ip -o -6 route show default; } 2>/dev/null |
+		awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' | sort -u); do
+		case "$q_dev" in
+		'' | *[!A-Za-z0-9_.-]*) continue ;;
+		esac
+		q_show=$(LC_ALL=C tc qdisc show dev "$q_dev" 2>/dev/null) || continue
+		# 0 = nothing to do (already the default, or no queue at all:
+		# tunnels and other virtual interfaces), 1 = kernel defaults to
+		# refresh, 2 = configured by someone: left alone.
+		q_state=$(printf '%s\n' "$q_show" | awk -v w="$q_want" '
+			$1 != "qdisc" || $2 == "ingress" || $2 == "clsact" || $2 == "noqueue" { next }
+			{ n++ }
+			$3 != "0:" { bad = 1 }
+			$2 != "mq" && $2 != w { stale = 1 }
+			END { print (!n || bad) ? (stale ? 2 : 0) : (stale ? 1 : 0) }')
+		case "$q_state" in
+		1)
+			if tc qdisc replace dev "$q_dev" root pfifo >/dev/null 2>&1 &&
+				tc qdisc del dev "$q_dev" root >/dev/null 2>&1; then
+				QDISC_DONE="${QDISC_DONE:+$QDISC_DONE }$q_dev"
+			else
+				QDISC_LEFT="${QDISC_LEFT:+$QDISC_LEFT }$q_dev"
+			fi
+			;;
+		2) QDISC_LEFT="${QDISC_LEFT:+$QDISC_LEFT }$q_dev" ;;
+		esac
+	done
+}
+
 # bbr_remove: drop what the installer added for BBR + fq and put the
 # previous settings back while ours are still in effect (nothing else
 # changed them since).
@@ -40,6 +89,10 @@ bbr_remove() {
 		fi
 	done
 	note bbr_removed "$BBR_CONF" "${prev:--}"
+	qdisc_refresh
+	if [ -n "$QDISC_DONE" ]; then
+		note qdisc_now "$QDISC_DONE" "$(cat /proc/sys/net/core/default_qdisc 2>/dev/null)"
+	fi
 }
 
 uninstall() {

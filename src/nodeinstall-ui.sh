@@ -527,6 +527,7 @@ msg_zh_core() {
 	cancelled) m '已取消' ;;
 	uninstalling_agent) m '移除 Akari agent' ;;
 	bbr_removed) m 'BBR + fq：已移除 %s（已恢复之前的设置：%s）' ;;
+	qdisc_now) m '网卡 %s 已换用 %s 队列，无需重启' ;;
 	agent_removed) m 'akari-agent 已移除（二进制、服务、/etc/akari-agent、状态目录）。请同时在面板中删除该节点。' ;;
 	banner_uninstall) m '节点卸载器' ;;
 	unknown_option) m '未知参数：%s' ;;
@@ -557,6 +558,7 @@ msg_en_core() {
 	cancelled) m 'cancelled' ;;
 	uninstalling_agent) m 'Removing the Akari agent' ;;
 	bbr_removed) m 'BBR + fq: removed %s (previous settings put back: %s)' ;;
+	qdisc_now) m 'interface(s) %s now use the %s qdisc: no reboot needed' ;;
 	agent_removed) m 'akari-agent removed (binary, services, /etc/akari-agent, state). Delete the node in the panel as well.' ;;
 	banner_uninstall) m 'node uninstaller' ;;
 	unknown_option) m 'unknown option: %s' ;;

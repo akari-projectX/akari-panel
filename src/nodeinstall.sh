@@ -86,7 +86,9 @@ msg_zh() {
 	bbr_skipped_no_module) m 'BBR + fq：已跳过（内核 %s 没有 tcp_bbr，或此处无法加载模块）' ;;
 	bbr_skipped_readonly) m 'BBR + fq：已跳过（此处内核参数只读：可能是容器）' ;;
 	bbr_skipped_cc) m 'BBR + fq：已跳过（此处无法设置拥塞控制：可能是容器）' ;;
-	bbr_enabled_was) m 'BBR + fq：已启用（原为 %s + %s；%s；fq 对网卡的生效要等它们重新启动，即重启之后）' ;;
+	bbr_enabled_was) m 'BBR + fq：已启用（原为 %s + %s；%s）' ;;
+	bbr_qdisc_kept) m 'BBR 已对新连接生效；网卡 %s 的队列未更换（手动配置过，或更换失败），保持原样' ;;
+	bbr_qdisc_no_tc) m 'BBR 已对新连接生效；本机没有 tc（iproute2），现有网卡重启后才用 fq，不重启也可以' ;;
 	openrc_sysctl_not_boot) m 'OpenRC 的 sysctl 服务不在 boot 运行级别，所以 %s 不会在开机时应用：rc-update add sysctl boot' ;;
 	bbr_not_changed) m 'BBR + fq：未改动（--no-bbr）' ;;
 	nftables_firewall) m 'nftables 与防火墙' ;;
@@ -151,7 +153,9 @@ msg_en() {
 	bbr_skipped_no_module) m 'BBR + fq: skipped (kernel %s has no tcp_bbr, or modules cannot be loaded here)' ;;
 	bbr_skipped_readonly) m 'BBR + fq: skipped (kernel settings are read-only here: a container?)' ;;
 	bbr_skipped_cc) m 'BBR + fq: skipped (cannot set the congestion control here: a container?)' ;;
-	bbr_enabled_was) m 'BBR + fq: enabled (was %s + %s; %s; fq applies to network interfaces as they come up, i.e. after a reboot)' ;;
+	bbr_enabled_was) m 'BBR + fq: enabled (was %s + %s; %s)' ;;
+	bbr_qdisc_kept) m 'BBR is in effect for new connections; interface(s) %s keep their qdisc (configured by hand, or the change failed)' ;;
+	bbr_qdisc_no_tc) m 'BBR is in effect for new connections; no tc (iproute2) here, so the existing interfaces use fq after a reboot, which is optional' ;;
 	openrc_sysctl_not_boot) m 'the OpenRC service sysctl is not in the boot runlevel, so %s is not applied at boot: rc-update add sysctl boot' ;;
 	bbr_not_changed) m 'BBR + fq: not changed (--no-bbr)' ;;
 	nftables_firewall) m 'nftables and firewall' ;;
@@ -433,7 +437,9 @@ bbr_enable() {
 			note bbr_enabled_again "$BBR_CONF"
 		else
 			warn bbr_not_applied_now "$BBR_CONF"
+			return 0
 		fi
+		bbr_qdisc
 		return 0
 	fi
 	if [ "$cc" = bbr ] && [ "$qd" = fq ]; then
@@ -474,8 +480,22 @@ EOF
 		install -m 0644 "$TMP/bbr-mod.conf" "$BBR_MOD"
 	fi
 	note bbr_enabled_was "$cc" "$qd" "$BBR_CONF"
+	bbr_qdisc
 	if [ "$SVC_MGR" = openrc ] && ! rc-update show boot 2>/dev/null | grep -q '^ *sysctl '; then
 		warn openrc_sysctl_not_boot "$BBR_CONF"
+	fi
+}
+# bbr_qdisc: fq on the default-route interfaces now (qdisc_refresh), so no
+# reboot is needed; says which ones keep their qdisc.
+bbr_qdisc() {
+	qdisc_refresh
+	if [ -n "$QDISC_DONE" ]; then
+		note qdisc_now "$QDISC_DONE" fq
+	fi
+	if [ -n "$QDISC_LEFT" ]; then
+		note bbr_qdisc_kept "$QDISC_LEFT"
+	elif [ -n "$QDISC_NO_TC" ]; then
+		note bbr_qdisc_no_tc
 	fi
 }
 step bbr_fq
