@@ -2847,8 +2847,9 @@ async fn prune_events_keeps_money_records() {
     let keep = AppState::for_test(db.pool.clone()).await;
     db.settings(&keep, "audit_retention_days = 0").await;
     db.settings(&state, "audit_retention_days = NULL").await;
-    assert_eq!(orders::prune_events(&keep).await.unwrap(), 0);
-    assert_eq!(orders::prune_events(&state).await.unwrap(), 1);
+    // "Keep forever" keeps the audit trail, not the junk: 90 days apply.
+    assert_eq!(orders::prune_events(&keep).await.unwrap(), 1);
+    assert_eq!(orders::prune_events(&state).await.unwrap(), 0);
     let left: Vec<String> =
         sqlx::query_scalar("SELECT outcome FROM payment_events ORDER BY outcome")
             .fetch_all(&db.pool)

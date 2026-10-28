@@ -38,7 +38,7 @@ use crate::state::AppState;
 /// Unambiguous upper-case alphabet: 32 symbols (5 bits each); no 0/O/1/I.
 pub const ALPHABET: &[u8; 32] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub const MAX_COUNT: i32 = 5000;
-pub const MIN_LEN: usize = 6;
+pub const MIN_LEN: usize = 10;
 pub const MAX_LEN: usize = 16;
 pub const DEFAULT_LEN: usize = 10;
 pub const MAX_PREFIX: usize = 16;
@@ -139,7 +139,7 @@ pub fn draw(prefix: &str, len: usize, n: usize) -> Result<Vec<String>, ApiError>
     let mut seen = std::collections::HashSet::with_capacity(n);
     let mut out = Vec::with_capacity(n);
     let mut buf = vec![0u8; len];
-    // Each round draws what is missing; with ≥ 32^6 codes per batch of at
+    // Each round draws what is missing; with ≥ 32^10 codes per batch of at
     // most 5000 a few rounds always suffice.
     for _ in 0..(n * 4 + 16) {
         if out.len() == n {

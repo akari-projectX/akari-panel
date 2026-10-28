@@ -1793,6 +1793,9 @@ pub enum Revoke {
         user_plan_id: Uuid,
         prior_user_plan_id: Uuid,
         prior_used_bytes: i64,
+        /// The expiry it comes back with (its own, less the refunded
+        /// renewals' terms; None = never).
+        expires_at: Option<DateTime<Utc>>,
     },
 }
 
@@ -1857,6 +1860,7 @@ pub async fn apply_refund_revoke(
             user_plan_id,
             prior_user_plan_id,
             prior_used_bytes,
+            expires_at: restored_expiry,
         } => {
             // Lock order: every node the reconcile will touch (the replaced
             // plan's and the user's current ones), then the user rows.
@@ -1881,12 +1885,13 @@ pub async fn apply_refund_revoke(
             .await?;
             let cur = cur.ok_or_else(gone)?;
             let restored: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
-                "UPDATE user_plans SET status = 'active', ended_at = NULL \
+                "UPDATE user_plans SET status = 'active', ended_at = NULL, expires_at = $3 \
                  WHERE id = $1 AND user_id = $2 AND status = 'replaced' \
                  RETURNING plan_id, expires_at",
             )
             .bind(prior_user_plan_id)
             .bind(user_id)
+            .bind(restored_expiry)
             .fetch_optional(&mut *conn)
             .await?;
             let (plan, expires) = restored.ok_or_else(gone)?;
