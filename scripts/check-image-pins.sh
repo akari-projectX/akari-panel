@@ -2,7 +2,7 @@
 # Every container image the repository pulls is pinned by digest
 # (`name:tag@sha256:…`; the tag stays for humans and Dependabot's docker
 # ecosystems). Checks Dockerfiles (FROM), compose files and workflow service
-# images (`image:`), and `docker run` image arguments in the CI workflows.
+# images (`image:`), BuildKit `# syntax=` directives, and `docker run` image arguments in the CI workflows.
 # A stage of the same Dockerfile and `scratch` are not pulled.
 set -eu
 cd "$(dirname "$0")/.."
@@ -23,6 +23,18 @@ for f in $(git ls-files 'Dockerfile' '*/Dockerfile'); do
 		echo "unpinned FROM in $f: $ref" >&2
 		bad=1
 	done
+done
+
+# BuildKit frontend directives (`# syntax=…`) are pulled images too.
+for f in $(git ls-files 'Dockerfile' '*/Dockerfile'); do
+	syntax=$(sed -n '1,/^[^#]/s/^# *syntax=\([^ ]*\).*/\1/p' "$f")
+	case "$syntax" in
+	'' | *@sha256:*) ;;
+	*)
+		echo "unpinned syntax directive in $f: $syntax" >&2
+		bad=1
+		;;
+	esac
 done
 
 images=$(git ls-files '*compose*.yml' '.github/workflows/*.yml' |
