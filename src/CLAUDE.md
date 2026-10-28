@@ -96,7 +96,7 @@
 - W20 测试 `w20_tests.rs`（真库 + HTTP）：订阅 token 加密存储/可取回/轮换/按哈希查找/旧账户不轮换/触发器/管理员读取审计/日志无 token（捕获 tracing）、邀请码自动生成、每人一个（不能再生成、没有删除接口）。
 - 测试：`traffic`、`api`、`grpc`、`db`、`plans`（reconcile 全流程、周期重置、到期、并发、HTTP）、`entitle` 有单元测试与真库测试（`testdb.rs`）；`sub` 三格式（links/clash/sing-box）整份快照 + UA 分流/分桶测试、`web::tests::prefix_gate_rejections_are_byte_identical`（所有拒绝与规范 404 字节同构）已补；改任何客户端格式必须同时改快照。
 - **覆盖率门（W13；W16 加 `billing/{coupons,ledger,commission}`；W17 加 `tickets`、`alerts/{mod,eval,channels}`；W22 加 `trafficlog`；W28-a 加 `entrances`）**：`traffic`/`trafficlog`/`enforce`/`entitle`/`entrances`/`plans`/`billing/{orders,catalog,api,alipay,methods,coupons,ledger,commission,manual,coupon_batches,refund}`、`batch`/`export`/`csvx`（Ops）、`owner`/`access`/`erase`/`cleanup`/`billing/usdt`（PR ③）、`billing/epay`（C1）、`billing/{crypto,coinpayments,coinbase}`、`outbound` 的生产代码行覆盖率（真库测试计入，内联 `#[cfg(test)] mod` 之后不计）每个 ≥ 90%（CI job `coverage`，`make coverage`）；改这些模块要带测试，阈值只升不降。仅测试/fuzz 用的内省放在测试模块之后的 `#[cfg(any(test, fuzzing))]` 模块（如 `traffic::introspect::check_invariants`）。
-- advisory lock 是**全库**的：所有测试 schema 共用 `akari.entitlement`，测试里持有它的事务必须尽快结束（未结束的事务还会让 `db.drop()` 永远等待）。
+- `entitle::lock` 的 key 含当前 schema（默认 `public` 保持裸 key，滚动升级时新旧实例仍互斥），所以各测试 schema 的 `akari.entitlement` 互不相干；短 `lock_timeout` 的测试（`TestDb::with_options`）因此不会被别的测试持锁拖成 55P03。其余 advisory lock（`akari.rollout`、`akari.block_rules`、`akari.cleanup` 等）仍是全库的：持有它们的测试事务必须尽快结束（未结束的事务还会让 `db.drop()` 永远等待）。
 
 ## 内置常量（W25/R39，`config.rs`）
 
