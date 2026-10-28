@@ -800,7 +800,7 @@ export function BatchDialog({ plans, onClose }: { plans: PlanView[]; onClose: ()
       ? undefined
       : tr("最多 16 位大写字母、数字、- 或 _", "At most 16 of A–Z, 0–9, - or _"),
     count: numErr(f.count, tr, { int: true, min: 1, max: 5000 }),
-    length: numErr(f.length, tr, { int: true, min: 6, max: 16 }),
+    length: numErr(f.length, tr, { int: true, min: 10, max: 16 }),
     value: valueErr(f.kind, f.value, tr),
     per: numErr(f.per, tr, { int: true, min: 1, max: MAX_LIMIT }),
     min: numErr(f.min, tr, { money: true, allowEmpty: true, max: MAX_PRICE_YUAN }),
@@ -893,7 +893,7 @@ export function BatchDialog({ plans, onClose }: { plans: PlanView[]; onClose: ()
               onChange={(ev) => set("count", ev.target.value)}
             />
           </Field>
-          <Field label={tr("随机部分长度", "Random length")} error={show("length")} hint={tr("6–16 位", "6–16")}>
+          <Field label={tr("随机部分长度", "Random length")} error={show("length")} hint={tr("10–16 位", "10–16")}>
             <AffixInput
               suffix={tr("位", "")}
               inputMode="numeric"

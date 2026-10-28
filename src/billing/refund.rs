@@ -140,11 +140,13 @@ impl Effect {
                 user_plan_id,
                 prior_user_plan_id,
                 prior_used_bytes,
+                expires_at,
                 ..
             } => Some(Revoke::Restore {
                 user_plan_id,
                 prior_user_plan_id,
                 prior_used_bytes,
+                expires_at,
             }),
         }
     }
@@ -259,16 +261,27 @@ pub async fn effect(conn: &mut PgConnection, order_id: Uuid) -> Result<Effect, A
             let restorable: Option<(String, Option<DateTime<Utc>>)> = match prior {
                 None => None,
                 Some(p) => {
+                    // The expiry it comes back with has the terms of refunded
+                    // renewals taken off (money only at their refund because
+                    // the switch had replaced it): their time was not paid.
                     sqlx::query_as(
-                        "SELECT pl.name, up.expires_at FROM user_plans up \
-                         JOIN plans pl ON pl.id = up.plan_id \
+                        "SELECT name, exp FROM (SELECT pl.name, up.expires_at - COALESCE(( \
+                              SELECT sum((o.fulfil_result->>'expires_at')::timestamptz \
+                                       - (o.fulfil_result->>'base')::timestamptz) FROM orders o \
+                              WHERE o.user_id = $2 AND o.refunded_at IS NOT NULL \
+                              AND o.fulfil_result->>'user_plan_id' = up.id::text \
+                              AND o.fulfil_result->>'kind' = 'renew' \
+                              AND o.refund_effect->>'kind' = 'none' \
+                              AND COALESCE(o.refund_effect->>'why', '') <> 'keep_plan'), \
+                              interval '0') AS exp \
+                         FROM user_plans up JOIN plans pl ON pl.id = up.plan_id \
                          WHERE up.id = $1 AND up.user_id = $2 AND up.status = 'replaced' \
-                         AND (up.expires_at IS NULL OR up.expires_at > now()) \
                          AND NOT EXISTS (SELECT 1 FROM orders o \
                               WHERE o.user_id = $2 AND o.refunded_at IS NOT NULL \
                               AND o.fulfil_result->>'user_plan_id' = up.id::text \
                               AND o.fulfil_result->>'kind' IN ('new', 'switch') \
-                              AND COALESCE(o.refund_effect->>'why', '') <> 'keep_plan')",
+                              AND COALESCE(o.refund_effect->>'why', '') <> 'keep_plan')) t \
+                         WHERE exp IS NULL OR exp > now()",
                     )
                     .bind(p)
                     .bind(user)
@@ -399,7 +412,24 @@ pub async fn preview(
         .fetch_optional(&mut *conn)
         .await?
     };
+    // Later switch orders whose credit came out of the subscription this
+    // order created or renewed: refunding this one returns its money while
+    // their plan stays (red team B-5).
+    let credit_used_by: Vec<Value> = sqlx::query_as::<_, (String, i64)>(
+        "SELECT n.out_trade_no, n.credit_cents FROM orders o JOIN orders n \
+           ON n.user_id = o.user_id AND n.status = 'paid' AND n.refunded_at IS NULL \
+          AND n.credit_cents > 0 AND n.created_at > o.created_at \
+          AND n.prior_user_plan_id::text = o.fulfil_result->>'user_plan_id' \
+         WHERE o.id = $1 ORDER BY n.created_at",
+    )
+    .bind(order_id)
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .map(|(otn, cents)| json!({ "out_trade_no": otn, "credit_cents": cents }))
+    .collect();
     Ok(json!({
+        "credit_used_by": credit_used_by,
         "balance_part_cents": if balance_state == "held" { balance } else { 0 },
         "amount_cents": amount,
         "gateway_refund_cents": sh.refunded_cents,

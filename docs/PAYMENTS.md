@@ -151,7 +151,7 @@ amount  = price − min(credit, price)        -- never negative
 
 ### Late payments, failures, refunds（迟到付款、失败与退款）
 
-- 本地已过期或已取消、但（通过通知或查询）被报告为已付款的订单仍会开通：支付宝已经收了钱。
+- 本地已过期或已取消、但（通过通知或查询）被报告为已付款的订单，在**下单时冻结的条款仍然成立**时照常开通：支付渠道已经收了钱。条款不再成立（红队 B-4）则**不开通**，整笔（渠道实付 + 订单扣的余额部分已在结束时退回）自动退回余额，走与「套餐售罄」相同的路径（`order_admin.stale_terms`：退款通知邮件、`billing` 告警、审计 `order.refund`）：① 优惠券次数已用完（重新预留失败）；② 带换套餐抵扣的订单，抵扣来源的订阅已不是当前订阅（已结束或已换），或其价值已不足下单时的 95%（时间在流逝，略有衰减不算）。管理员标记的付款不受此限。不能关单的渠道（易支付、已在途的加密货币付款）因此不能靠一张放着不付的旧订单换取已过期的折扣或抵扣。
 - 运营规则（运营逻辑审查低-4）：订单记录下单时用户的订阅（`orders.prior_user_plan_id`）。迟到的付款
   如果要**替换**的订阅已经不是下单时那个（用户之后另购、换了套餐）——不替换，转为自动退回余额
   （`fulfil_error` = "not replaced"，同中-2 的自动退款与告警）。下单时的订阅在此期间到期、现在没有
@@ -229,7 +229,7 @@ N 个买家争抢最后一次使用：恰好一个订单拿到它，其余得到
   （`orders::release_holds`）：`released`，`used − 1`。
 - 已付款订单在 `apply_mark_paid` 中兑现（`redeemed`）。
 - 已结束订单的**迟到付款**（支付宝收的是折后金额）会在还有名额时重新预留；若此时优惠券已用完，
-  付款仍然生效：记为 `redeemed` 且 `over_limit = true`（不计数；在订单的 `order.paid` 审计行和优惠券的兑现记录中标记，供复核）。
+  付款**不开通**，整笔退回余额（红队 B-4，见「迟到付款」；优惠券不计数，订单的 `order.paid` 审计行里 `coupon.over_limit = true`）。
 - 对某订单折扣为 0 分的优惠券（几分钱的 1%）不会应用于该订单（不预留）。
 - 被任何订单使用过的优惠券不能删除（409：请停用）。
 - 带优惠码的商店预览按用户限流（30 次 / 10 分钟），防止猜码；创建订单有自己的限流（20 次 / 小时）。
@@ -378,7 +378,7 @@ original?, original_cents?}`），只对已付款订单、只能退一次。支�
   只发已验证邮箱；模板可在「邮件模板」里改（种类 `refund`，`{order_no}` 必填）。
 - 确认框里的效果来自 `GET /orders/{id}/refund-preview`（`{balance_part_cents,
   amount_cents, effect}`，`effect.kind` = `none`（带 `why`）/`cancel`/`rollback`/
-  `restore`），与实际执行用同一段计算；已退款或未付款的订单 409。
+  `restore`），与实际执行用同一段计算；已退款或未付款的订单 409。`credit_used_by` 列出用本订单所在订阅的价值做过换套餐抵扣的后续订单（订单号与抵扣额）：退这笔订单会退回全部实付，而用户用它换来的新套餐不会收回，确认框对此给出警告（不拦截，红队 B-5）。
 - 退款后订单不能再「重试开通」。订单详情显示 `refund_effect`（套餐被怎样处理）。
   审计 `order.refund`（含 `effect`）。
 
@@ -409,11 +409,11 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 已付款的人工订单是标记为 `paid_via = 'manual'` 的收入：仪表盘按时间窗口报告 `manual_cents` 和 `gift_cents`，
 订单列表可用 `?via=manual` 过滤，CSV 有 `manual` 列。与网关付款不同，开通失败的人工订单
 （套餐已不存在、售罄、重置包没有对应套餐）会整体回滚（409 `order_admin.manual_not_fulfilled`）；
-有待付款订单的用户会得到 409 `order_admin.user_has_pending`。邀请返利像对待任何付款一样适用于已付款（非赠送）的人工订单。
+有待付款订单的用户会得到 409 `order_admin.user_has_pending`。管理员记录的付款（人工订单、订单页的「标记已付款」，`paid_via = manual`）**不产生邀请返利**：钱没有经过支付渠道，否则管理员可以为自己的小号造出可提现的返利（红队 B-6）。
 
 ### Batch coupons (Ops)（批量优惠券）
 
-`POST /coupon-batches` 生成 N（≤5000）个共用一个模板的码：`prefix`（0–16 个 `A-Za-z0-9_-`）加 `length`（6–16，默认 10）个字符，
+`POST /coupon-batches` 生成 N（≤5000）个共用一个模板的码：`prefix`（0–16 个 `A-Za-z0-9_-`）加 `length`（10–16，默认 10）个字符，
 字符来自操作系统 CSPRNG，取自 `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`（无 0/O/1/I；32 个符号，每个 5 位，无取模偏差）。
 每个码都是带 `batch_id` 的普通 `coupons` 行，因此资格检查、创建订单时的无竞态预留、释放与兑现都沿用 W16 的路径；
 唯一性由 `coupons_code` 唯一索引保证（`ON CONFLICT DO NOTHING`，冲突时重新生成，轮数有限）。每个码的使用次数默认为 1。
@@ -693,7 +693,7 @@ Ed25519 用 `EdDSA` 并带 `aud: ["cdp_service"]`，ECDSA 用 `ES256`），`Auth
 每个通知——无论是否验证通过——都会留下一行 `payment_events`（结果为 `bad_signature`、`app_id_mismatch`、
 `seller_id_mismatch`、`unknown_order`、`amount_mismatch`、`malformed`、`oversized`、`paid`、`paid_unfulfilled`、
 `duplicate`、`ignored`）；`sign` 的值只存为 `<redacted>`。对真实订单的已验证但有误的通知也会被审计
-（`order.payment.rejected`）。未验证的事件在审计保留期（系统设置 → 安全）之后清理；已验证的保留。
+（`order.payment.rejected`）。未验证的事件在审计保留期（系统设置 → 安全）之后清理（保留期为「永久」时也在 90 天后清理，垃圾通知不会永远留着）；已验证的保留。
 
 同步应答（precreate/query/close）同样会被验证：签名覆盖所收到的原始 `<method>_response` JSON 字节；
 未签名或签名错误的成功应答视为错误。

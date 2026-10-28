@@ -821,7 +821,8 @@ async fn coupon_release_on_expiry_and_late_payment() {
         json!({"code": "ONE", "kind": "fixed", "value": 100, "max_uses": 1}),
     )
     .await;
-    let u1 = user_client(&state, db.user().await).await;
+    let u1_id = db.user().await;
+    let u1 = user_client(&state, u1_id).await;
     let u2 = user_client(&state, db.user().await).await;
     let r = buy_with(&u1, plan, "month", json!({"coupon": "ONE"})).await;
     let (o1, otn1) = (order_id(&r), otn_of(&r));
@@ -844,9 +845,14 @@ async fn coupon_release_on_expiry_and_late_payment() {
     )
     .await;
     assert_eq!(r.body, b"success");
-    assert_eq!(order_status(&db, o1).await, ("paid".into(), true, None));
-    assert_eq!(redemption(&db, o1).await, Some(("redeemed".into(), true)));
+    // Red team B-4: over the limit the discounted terms no longer hold: the
+    // payment goes back to the balance instead of fulfilling.
+    let (status, fulfilled, err) = order_status(&db, o1).await;
+    assert_eq!((status.as_str(), fulfilled), ("paid", false));
+    assert!(err.is_some());
+    assert_eq!(redemption(&db, o1).await, Some(("released".into(), false)));
     assert_eq!(coupon_used(&db, "ONE").await, 1);
+    assert_eq!(active_plan(&db, u1_id).await, None);
     let after: Value = sqlx::query_scalar(
         "SELECT after FROM audit_log WHERE action = 'order.paid' AND target_id = $1::text",
     )

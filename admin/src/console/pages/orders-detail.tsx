@@ -868,6 +868,7 @@ type Preview = {
   partial: boolean;
   keep_plan_default: boolean;
   coupon_released: string | null;
+  credit_used_by: { out_trade_no: string; credit_cents: number }[];
   commission: { status: string; amount_cents: number; action: string; undo_cents: number } | null;
   effect: RefundEffect;
   original_available: boolean;
@@ -1039,6 +1040,22 @@ function RefundDialog({ order: o, onClose }: { order: Order; onClose: () => void
         <ErrorState compact error={p.error} onRetry={() => void p.refetch()} />
       ) : (
         <div className="grid gap-5">
+          {p.data && p.data.credit_used_by.length > 0 && (
+            <Banner
+              tone="warning"
+              icon={<CircleAlert />}
+              title={tr("这笔订单的价值已被后续换套餐抵扣", "Later switch orders used this order as credit")}
+            >
+              {tr(
+                `退款会退回全部实付，但用户用它换来的新套餐不会收回：${p.data.credit_used_by
+                  .map((c) => `${c.out_trade_no}（抵扣 ${yuan(c.credit_cents)}）`)
+                  .join("、")}。如要一并退，请先退这些订单。`,
+                `The refund returns everything paid, but the plan bought with it stays: ${p.data.credit_used_by
+                  .map((c) => `${c.out_trade_no} (credit ${yuan(c.credit_cents)})`)
+                  .join(", ")}. Refund those orders first to undo it all.`,
+              )}
+            </Banner>
+          )}
           {confirmed !== null && (
             <Banner
               tone="warning"

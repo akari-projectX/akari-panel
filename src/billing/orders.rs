@@ -37,6 +37,9 @@ const RECONCILE_BATCH: i64 = 20;
 /// An expired order whose remote close keeps failing is ended anyway
 /// after this grace (a late payment is still fulfilled via notify).
 const CLOSE_GRACE_SECS: i64 = 3600;
+/// Unverified payment events are pruned after this long when the audit
+/// retention is "forever".
+const UNVERIFIED_EVENT_DAYS: u32 = 90;
 
 pub fn payment_actor(ip: Option<IpAddr>) -> Actor {
     Actor {
@@ -206,11 +209,36 @@ pub async fn apply_mark_paid(
     // an ended order re-reserves it); fulfilment re-takes a returned
     // balance part; the inviter's commission is created — all in this
     // transaction, so exactly once like the fulfilment.
+    let mut over_limit = false;
     if let Some(c) = super::coupons::redeem(conn, order_id).await? {
+        over_limit = c["over_limit"].as_bool().unwrap_or(false);
         after["coupon"] = c;
     }
     let bought = bought(conn, order_id).await?;
-    let (fulfilled, detail, failure) = fulfil(conn, actor, order_id, &bought).await?;
+    // 2026-10 red team B-4: the coupon, the switch credit and the price are
+    // frozen when the order is created. A payment of an order that had ended
+    // (expired, cancelled, replaced by a newer order) is honoured only while
+    // those terms still hold; else it goes back to the balance.
+    let late = matches!(before["status"].as_str(), Some("expired" | "cancelled"));
+    let stale = late
+        && via != Via::Manual
+        && bought.user_id.is_some()
+        && stale_terms(conn, &bought, over_limit).await?;
+    let (fulfilled, detail, failure) = if stale {
+        let msg = "late payment on terms that no longer hold";
+        sqlx::query("UPDATE orders SET fulfil_error = $2 WHERE id = $1")
+            .bind(order_id)
+            .bind(msg)
+            .execute(&mut *conn)
+            .await?;
+        (
+            false,
+            json!({ "error": msg, "code": STALE_TERMS }),
+            Some(STALE_TERMS),
+        )
+    } else {
+        fulfil(conn, actor, order_id, &bought).await?
+    };
     after["fulfilment"] = detail;
     // 中-2: a payment for a plan that cannot be granted any more (full,
     // gone, disabled, …) goes back to the customer's balance at once —
@@ -219,7 +247,10 @@ pub async fn apply_mark_paid(
     let auto_refund = failure
         .filter(|code| AUTO_REFUND.contains(code))
         .filter(|_| via != Via::Manual && bought.user_id.is_some());
+    // 2026-10 red team B-6: an admin-recorded payment (manual order, support
+    // "mark paid") brought no money through a gateway: no commission.
     if auto_refund.is_none()
+        && via != Via::Manual
         && let Some((id, cents)) = super::commission::on_paid(conn, actor, order_id).await?
     {
         after["commission"] = json!({ "id": id, "amount_cents": cents });
@@ -251,13 +282,51 @@ pub async fn apply_mark_paid(
 /// (中-2): the plan is full, gone or disabled, or a reset pack's plan is
 /// no longer the customer's; 低-4: a late payment that would replace a
 /// subscription bought after the order.
-const AUTO_REFUND: [&str; 5] = [
+const AUTO_REFUND: [&str; 6] = [
+    STALE_TERMS,
     "shop.sold_out",
     "order_admin.plan_gone",
     "plan.disabled",
     "shop.reset_needs_plan",
     "order_admin.superseded",
 ];
+
+/// The code of a late payment whose frozen terms (see `stale_terms`) no
+/// longer hold; refunded to the balance like the other `AUTO_REFUND` cases.
+const STALE_TERMS: &str = "order_admin.stale_terms";
+
+/// A switch credit counts as still valid while the subscription it came from
+/// is still the current one and has at least this share (percent) of the
+/// value it had when the order was created (time passes: a little decay is
+/// no reason to refuse a payment).
+const CREDIT_KEEPS_PERCENT: i64 = 95;
+
+/// Whether a late payment of `b` (the order is already paid in this
+/// transaction) rests on terms that no longer hold: its coupon use is over
+/// the limit, or its switch credit was taken from a subscription that is no
+/// longer the current one or no longer worth that much.
+async fn stale_terms(
+    conn: &mut PgConnection,
+    b: &Bought,
+    over_limit: bool,
+) -> Result<bool, ApiError> {
+    if over_limit {
+        return Ok(true);
+    }
+    let Some(user) = b.user_id.filter(|_| b.credit_cents > 0) else {
+        return Ok(false);
+    };
+    let active: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM user_plans WHERE user_id = $1 AND status = 'active'")
+            .bind(user)
+            .fetch_optional(&mut *conn)
+            .await?;
+    if active.is_none() || active != b.prior_user_plan_id {
+        return Ok(true);
+    }
+    let (now, _) = super::catalog::switch_credit(conn, user).await?;
+    Ok(now * 100 < b.credit_cents * CREDIT_KEEPS_PERCENT)
+}
 
 /// 中-2: refund a paid order that could not be fulfilled to the customer's
 /// balance (the gateway amount and the held balance part; the coupon use
@@ -274,6 +343,7 @@ async fn refund_unfulfillable(
         "shop.sold_out" => "自动退款：套餐已售罄，未能开通",
         "shop.reset_needs_plan" => "自动退款：已不再持有该套餐，流量重置包无法使用",
         "order_admin.superseded" => "自动退款：下单后已另购或更换套餐，不替换当前套餐",
+        STALE_TERMS => "自动退款：订单已过期后才付款，下单时的优惠券或换套餐抵扣已不成立",
         _ => "自动退款：套餐已停用或删除，未能开通",
     };
     let done = super::refund::apply_refund(
@@ -1029,12 +1099,14 @@ pub async fn reconcile_tick(state: &AppState) -> Result<usize, ApiError> {
 }
 
 /// Prune unverified payment events (junk notifies) older than the audit
-/// retention. Verified events are money records and are kept.
+/// retention (`UNVERIFIED_EVENT_DAYS` when that keeps everything). Verified events are money records and are kept.
 pub async fn prune_events(state: &AppState) -> sqlx::Result<u64> {
-    let days = state.settings().get().audit_retention_days;
-    if days == 0 {
-        return Ok(0);
-    }
+    // 2026-10 red team B-8: junk is never "kept forever" (audit retention 0
+    // keeps the audit trail, not unauthenticated notifies).
+    let days = match state.settings().get().audit_retention_days {
+        0 => UNVERIFIED_EVENT_DAYS,
+        d => d,
+    };
     let r = sqlx::query(
         "DELETE FROM payment_events WHERE NOT verified \
          AND created_at < now() - make_interval(days => $1)",
