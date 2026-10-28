@@ -3,9 +3,24 @@
 use axum::http::StatusCode;
 use serde_json::json;
 
+use super::super::catalog::PeriodKind;
 use super::super::provider::ProviderKind;
-
 use super::*;
+
+async fn admin_client(state: &AppState, db: &TestDb) -> Client {
+    let a = db.admin().await;
+    user_client(state, a).await
+}
+
+/// Buy (plan, period) over HTTP and pay it; returns the order.
+async fn bought(db: &TestDb, c: &Client, plan: Uuid, period: &str) -> Uuid {
+    let r = buy(c, plan, period).await;
+    assert_eq!(r.status, StatusCode::CREATED, "{:?}", r.json());
+    let o = order_id(&r);
+    pay(db, o).await;
+    assert!(order_status(db, o).await.1, "order {o} not fulfilled");
+    o
+}
 
 /// A notify body above the framework's body limit is a refusal like any
 /// other: the canonical rejection (404, empty), not a 413 that names the
@@ -94,4 +109,53 @@ fn webhook_secrets_must_be_long_enough() {
             )
             .is_ok()
     );
+}
+
+/// Refunding the order that created a subscription, after a switch replaced
+/// it, is money only; refunding the switch afterwards must not bring that
+/// refunded subscription back (the customer would keep the plan they got
+/// their money back for).
+#[tokio::test]
+async fn refunding_the_switch_does_not_resurrect_a_refunded_plan() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let mock = Mock::start().await;
+    let state = paid_state(&db, &mock).await;
+    let admin = admin_client(&state, &db).await;
+    let (_, a) = catalog_plan(&db, "rt-a", &[(PeriodKind::Month, None, 1000)], |_| {}).await;
+    let (_, b) = catalog_plan(&db, "rt-b", &[(PeriodKind::Month, None, 3000)], |_| {}).await;
+    let u = db.user().await;
+    let c = user_client(&state, u).await;
+    let first = bought(&db, &c, a, "month").await;
+    let switch = bought(&db, &c, b, "month").await;
+    let r = admin
+        .post(
+            &format!("/test/api/v1/orders/{first}/refund"),
+            json!({"reason": "r", "to_balance": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["effect"]["kind"], "none", "{:?}", r.json());
+    let r = admin
+        .post(
+            &format!("/test/api/v1/orders/{switch}/refund"),
+            json!({"reason": "r", "to_balance": true}),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.json());
+    assert_eq!(r.json()["effect"]["kind"], "cancel", "{:?}", r.json());
+    let active: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM user_plans WHERE user_id = $1 AND status = 'active'",
+    )
+    .bind(u)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        active, 0,
+        "both orders are refunded: no subscription is left"
+    );
+    drop(state);
+    db.drop().await;
 }
