@@ -729,8 +729,10 @@ agent 用新证书重新连接，面板第一次见到新证书时吊销旧证�
   网络命名空间而没有 `net.core.default_qdisc`）以及没有 BBR 的旧内核；
 - 开启后写入独立的 `/etc/sysctl.d/90-akari-bbr.conf`（`net.core.default_qdisc = fq`、
   `net.ipv4.tcp_congestion_control = bbr`，并以注释记下原来的值），`tcp_bbr` 是模块时另写
-  `/etc/modules-load.d/akari-bbr.conf`，开机自动生效。BBR 对新连接立即生效；fq 对之后新建的网卡
-  队列生效（重启后全部生效）；
+  `/etc/modules-load.d/akari-bbr.conf`，开机自动生效。BBR 对新连接立即生效；**不需要重启**：
+  脚本当场把默认路由所用网卡（IPv4 与 IPv6）的队列换成 fq（`tc`，需要 iproute2；只换内核默认
+  的队列——手工配置过的（句柄不是 `0:`）保持原样并提示，隧道等无队列网卡跳过；换的一瞬间丢弃
+  已排队的包，TCP 自行重传）；没有 `tc` 时现有网卡要到重启后才用 fq，BBR 照常生效；
 - 已经是 BBR + fq 的机器：不写任何文件（"already enabled ... left as it is"）。重复运行安装命令
   是幂等的；
 - **关闭**：安装时加 `--no-bbr`，或设置环境变量 `AKARI_BBR=0`：
@@ -741,7 +743,8 @@ agent 用新证书重新连接，面板第一次见到新证书时吊销旧证�
   ```
   对已经由安装脚本开启过 BBR 的节点，带 `--no-bbr` 重装会删除上述文件并恢复原来的值；
 - **卸载**（`akari-agent-uninstall`）只删除安装脚本加的这两个文件；如果当前生效的仍是我们设置的
-  值，就恢复为安装前记录的值（期间被别人改过的不动）。自己手工配置的 sysctl 不受影响。
+  值，就恢复为安装前记录的值（期间被别人改过的不动），并同样当场把默认路由网卡换回原来的默认队列。
+  自己手工配置的 sysctl 与队列不受影响。
 
 **Alpine Linux（OpenRC）。** 同一条安装命令在 Alpine 上自动识别 OpenRC（要求 OpenRC ≥ 0.45；
 CI 在 Alpine 3.22 / OpenRC 0.62 上测试；amd64/arm64）。agent 是无 cgo 的静态二进制，musl 上直接运行，
