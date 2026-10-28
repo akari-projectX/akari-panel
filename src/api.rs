@@ -83,40 +83,19 @@ pub async fn login(
         })?
         .ok_or_else(ApiError::too_many)?;
 
-    // v0.4 bot protection: a trapped attempt is answered exactly like a
-    // wrong password (same work: one argon2), and counts like one; a
-    // Turnstile refusal is its own error (the reservation is released).
-    match crate::botguard::check_form(
-        &state,
-        crate::botguard::Form::Login,
-        req.guard.as_ref(),
-        client,
-    )
-    .await
-    {
-        Ok(crate::botguard::Verdict::Pass) => {}
-        Ok(crate::botguard::Verdict::Trap) => {
-            if let Err(busy) = auth::scrub_password_async(&req.password).await {
-                // Load, not a credential failure.
-                attempt.release(&state).await;
-                return Err(busy.into());
-            }
-            attempt.fail();
-            return Err(ApiError::unauthorized());
-        }
-        Err(e) => {
-            attempt.release(&state).await;
-            return Err(e);
-        }
-    }
+    let attempt =
+        guard_password_form(&state, req.guard.as_ref(), &req.password, client, attempt).await?;
     match check_credentials(&state, &email, &req.password).await {
         Ok(Checked::Ok(row)) => {
             // The password was right: whatever follows is not a credential
             // failure (except a wrong fallback code below).
             // D4: admins sign in under the admin prefix; on the portal the
             // answer is the wrong password's.
+            // It costs a slot like a wrong password: handing it back would
+            // let the limiter itself tell the right password from a wrong
+            // one.
             if entry.refuses(&row.role) {
-                attempt.release(&state).await;
+                attempt.fail();
                 return Err(ApiError::unauthorized());
             }
             // W27: an account with a passkey may be passkey-only (its own
@@ -161,6 +140,36 @@ pub async fn login(
         Err(e) => {
             // Not a credential failure (e.g. the database is down).
             attempt.release(&state).await;
+            Err(e)
+        }
+    }
+}
+
+/// v0.4 bot protection of a form that checks a password (the sign-in and
+/// the passkey-only fallback's code request): a trapped attempt is answered
+/// exactly like a wrong password (same work: one argon2) and counts like
+/// one; a Turnstile refusal is its own error (the reservation is released).
+/// Hands the reservation back when the form is clean.
+pub(crate) async fn guard_password_form(
+    state: &AppState,
+    guard: Option<&crate::botguard::Guard>,
+    password: &str,
+    client: std::net::IpAddr,
+    attempt: crate::login_limit::Attempt,
+) -> Result<crate::login_limit::Attempt, ApiError> {
+    match crate::botguard::check_form(state, crate::botguard::Form::Login, guard, client).await {
+        Ok(crate::botguard::Verdict::Pass) => Ok(attempt),
+        Ok(crate::botguard::Verdict::Trap) => {
+            if let Err(busy) = auth::scrub_password_async(password).await {
+                // Load, not a credential failure.
+                attempt.release(state).await;
+                return Err(busy.into());
+            }
+            attempt.fail();
+            Err(ApiError::unauthorized())
+        }
+        Err(e) => {
+            attempt.release(state).await;
             Err(e)
         }
     }

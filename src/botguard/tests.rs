@@ -343,6 +343,61 @@ async fn honeypot_and_minimum_submit_time() {
     db.drop().await;
 }
 
+/// The passkey-only fallback's code request answers differently for a right
+/// password, so it is a password check: it must sit behind the same bot
+/// protection as the sign-in (red team 2026-10, area A). A trapped request
+/// is the sign-in's wrong-password answer, whatever the password.
+#[tokio::test]
+async fn fallback_code_request_is_guarded_like_the_login() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let st = AppState::for_test(db.pool.clone()).await;
+    set(&db, "min_submit_secs = 2, honeypot = true").await;
+    let (_, email) = account(&db, "right-password").await;
+    let c = Client::new(&st, rand_ip());
+    let aged = issue_token(
+        st.master_key(),
+        chrono::Utc::now().timestamp_millis() - 3_000,
+    );
+    let path = "/test/auth/login/fallback/code";
+    let wrong = c
+        .post(
+            path,
+            login_body(&email, "wrong-password", &json!({ "form_token": aged })),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    for (what, gd) in [
+        ("no guard", json!({})),
+        (
+            "honeypot",
+            json!({ "form_token": aged, "website": "http://spam.example" }),
+        ),
+    ] {
+        let r = c
+            .post(path, login_body(&email, "right-password", &gd))
+            .await;
+        assert_eq!(seen(&r), seen(&wrong), "{what}");
+    }
+    // A clean form reaches the account-specific answer (this account can
+    // still sign in with its password).
+    let r = c
+        .post(
+            path,
+            login_body(&email, "right-password", &json!({ "form_token": aged })),
+        )
+        .await;
+    assert_eq!(r.json()["code"], "auth.fallback_unneeded");
+    let _: i64 = fred::prelude::KeysInterface::del(
+        st.valkey(),
+        crate::login_limit::keys(Some(c.ip), &email),
+    )
+    .await
+    .unwrap();
+    db.drop().await;
+}
+
 /// Turnstile: settings (secret sealed, write-only, audited as "changed";
 /// a form switch needs both keys), the public site key, and the login fail
 /// closed — missing / rejected token = 400, verifier down = 503, a good

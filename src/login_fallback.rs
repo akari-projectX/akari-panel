@@ -78,8 +78,19 @@ pub async fn request_code(
             ApiError::internal()
         })?
         .ok_or_else(ApiError::too_many)?;
+    // The sign-in's bot protection: this endpoint answers differently for a
+    // right password, so unguarded it would test passwords.
+    let attempt =
+        crate::api::guard_password_form(&state, req.guard.as_ref(), &req.password, client, attempt)
+            .await?;
     let row = match crate::api::check_credentials(&state, &email, &req.password).await {
         Ok(Checked::Ok(row)) => {
+            // An admin's password at the root costs a slot like a wrong one
+            // (see `api::login`).
+            if entry.refuses(&row.role) {
+                attempt.fail();
+                return Err(ApiError::unauthorized());
+            }
             attempt.release(&state).await;
             row
         }
@@ -93,9 +104,6 @@ pub async fn request_code(
             return Err(e);
         }
     };
-    if entry.refuses(&row.role) {
-        return Err(ApiError::unauthorized());
-    }
     let policy = crate::passkey::login_policy(&state, row.id, &row.role).await?;
     if !policy.password_refused {
         return Err(bad_request!(
