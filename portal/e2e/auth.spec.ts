@@ -1,7 +1,7 @@
 /*
  * 门户 v2 · PR 2：登录、注册、找回 / 重设密码、通行密钥（登录、登录后引导、只用通行密钥、用通行密钥注册 + 绑定邮箱）、
  * 公开表单防护（表单令牌、蜜罐、最短提交时间、Turnstile）、站点开关、条款与隐私、注销结果页。
- * 覆盖切换前 React 门户 auth.spec.ts 的全部场景（research/portal-gap.md §1.1 #1–#16），外加新设计的截图。
+ * 覆盖登录、注册、找回密码的全部场景，外加截图。
  * 会改状态的账户每个视口各一个：v2-passkey-<视口>、v2-reset-<视口>（e2e/support/seed.ts）。
  */
 import type { Page } from '@playwright/test';

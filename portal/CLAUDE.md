@@ -1,12 +1,10 @@
 # portal/ — 门户 v2（Svelte 5）
 
-用户门户（brief：工作区 `briefs/portal-v2.md`；样稿 `design/portal-v2-2026-10/`）。v2.0.0 起它就是门户：面板只下发 `dist/app`
-（`src/spa.rs`），原来的 React 门户已删除（功能对照与 e2e 覆盖表见 PR #150）。
+用户门户（样稿只剩默认 Logo：`design/portal-v2-2026-10/logo/`）。面板只下发 `dist/app`（`src/spa.rs`）。
 
 ## 外观 = v1.4.0（门户外观恢复，PR #160）
 
-门户 v2 的外观已**整体恢复为 v1.4.0 React 门户**（2026-10-26 用户裁决，见工作区 `briefs/portal-restore.md`：v2 样稿的新外观作废，只保留 Svelte 的性能与架构；新 Logo 除外）。
-逐页参照图在 `design/portal-v1-reference-2026-10/screens/`，恢复报告（对照图、几何差异、剩余差异及原因）在 `design/portal-restore-2026-10/REPORT.md`。
+门户的外观是 v1.4.0 React 门户的外观（2026-10-26 用户裁决：v2 样稿的新外观作废，只保留 Svelte 的性能与架构；新 Logo 除外）。
 改外观时先对照 v1.4.0 源码（`git show v1.4.0:spa/src/...`），不要凭样稿。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
@@ -28,7 +26,7 @@
   旧地址 `/invite` → `/wallet?tab=invite`；找不到 = 404 页。门禁在 `App.svelte`（与 React 的 RequireAuth / GuestOnly / RequireScope 相同）。
 - **路由表 `src/lib/routes.ts`**：面板测试 `access::tests::routes_match_the_portal` 读它（`export const R = {` 到 `} as const;`
   之间的单引号路径），加路由要和 `access::PORTAL_PAGES` 一起改。
-- **与框架无关的共用模块在 `src/shared/`，别名 `@/`**（从 React 门户原样搬来，后台 `admin/` 也引其中一部分）：`@/api`（整个接口层）、
+- **与框架无关的共用模块在 `src/shared/`，别名 `@/`**（后台 `admin/` 也引其中一部分）：`@/api`（整个接口层）、
   `@/i18n/dict`（英文词典，按需加载）、`@/i18n/errors`、`@/lib/format`、`@/lib/cache`、`@/lib/traffic`、`@/lib/node`、`@/lib/sub-links`、
   `@/lib/content-text`、`@/lib/doc-categories`、`@/lib/shop`、`@/lib/confetti`、`@/data/platforms`；
   `$lib/` = 本应用自己的代码（`src/lib/`）。
@@ -40,8 +38,7 @@
 - **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
   窄屏是底部抽屉）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
   所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
-- 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）与 React 门户
-  `pages/auth.tsx`、`legal.tsx` 行为相同。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、
+- 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、
   `isEmail` / `isCode` / `digits` / `fieldOf`）、`lib/form-guard.svelte.ts`（`FormGuard`：蜜罐、Turnstile、表单令牌、每 30 秒 / 回到前台 / 提交后
   重新取 `/auth/options`、开了 Turnstile 而 CSP 没放行就重新加载一次；构造函数里挂 `$effect`，只能在组件初始化时 new）、
   `components/Turnstile.svelte`、`GuardFields.svelte`、`lib/errors.ts`（面板错误码 → 一句话，同 React 的 `errorText`）、`lib/site.ts`（`/auth/options` 的开关）。
@@ -60,7 +57,7 @@
   `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
-  轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑用 React 门户的 `@/lib/shop`；
+  轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
   余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
@@ -87,7 +84,7 @@
 - 小心 Tailwind 的工具类名：`block`、`hidden`、`flex`、`border` 之类会被 Tailwind 生成（工具层优先于组件层），自己的类名别用这些名字（按钮是 `btn-block`）。
 - 启动画面（`index.html` 的 `#boot`、`src/boot/boot.css`、`src/lib/boot.svelte.ts`）、启动守护（`src/boot/boot.js`，经典脚本，带哈希输出到
   `assets/`）、按需加载与新版本自动重新加载（`src/lib/lazy.ts`：重试一次 → 整页重新加载一次（sessionStorage `akari.chunk-reload`）→
-  「这一页没能下载完」；`vite:preloadError` 同样处理），规则与 React 门户相同。
+  「这一页没能下载完」；`vite:preloadError` 同样处理）。
 - 导航上的数字（`src/lib/attention.svelte.ts`）：启动画面收起后取待付款订单、工单新回复、未读公告；打开账户菜单取余额、返利比例；
   打开窄屏菜单再取线路可用数。按账户范围（full / renewal / banned）取，拉不到就空着。
 
@@ -104,7 +101,7 @@
 **只用系统字体，不自托管任何字体文件**（原来的 Noto Sans SC 切片 + Inter 在挂载后才注入，换字体时整页重排，还多下载约 1.3 MB）。字体栈 `--font-ui`（`src/styles/tokens.css`，`--font-sans` 指向它）：拉丁字母与数字在前（SF / Segoe UI），汉字落到 PingFang SC / 微软雅黑 / Noto Sans CJK SC；`<html lang>` 随界面语言，所以回落的汉字字形按简体选。系统字体的数字默认是比例数字：价格、流量、表格要对齐处显式 `font-variant-numeric: tabular-nums`（`.tnum` 与 `pages/common.css` 里的选择器清单）。
 **字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。微软雅黑没有 500，Windows / Android / Linux 上没有 300，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
 
-## 偏好与存储（键名沿用 React 门户，老用户的偏好照旧生效）
+## 偏好与存储
 
 明暗 `localStorage.theme`（light / dark / system；boot.js 首帧前给 `<html>` 加 `.dark` / `.light`）、语言 `akari.locale`（zh-CN / en）、
 接口缓存 sessionStorage `akari.cache:*`（`/me` 去掉订阅令牌）、`akari.boot-retry`、`akari.chunk-reload`。
@@ -140,9 +137,8 @@ make -C .. portal    # 同上（npm ci + build）；面板 `make panel` 之后�
   `fixtures.ts`：`signIn`（走接口）、`login` / `signInUI`（经登录页）、`signOut`（桌面邮箱下拉 / 窄屏菜单）、`admin()`（`support/panel.ts` 的 Client）、
   `authenticator`（虚拟 WebAuthn；服务端带 excludeCredentials，同一账户再添加一个要先换一台虚拟认证器）、`dark`。user@e2e.test 永远不退出；退出用 `logout-<视口>@e2e.test`；会改密码 / 改登录方式的用例用
   `v2-reset-<视口>`、`v2-passkey-<视口>`（seed 里每个视口一个）。
-  `auth.spec.ts` 覆盖切换前 React 门户 auth.spec 的全部场景，外加通行密钥注册 + 绑定邮箱、站点设置取不到、条款 / 隐私、注销结果页。
-- 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-screens`；每个 PR 的终版截图另存到工作区
-  `design/portal-v2-2026-10/impl/<pr>/`。
+  `auth.spec.ts` 覆盖登录、注册、找回密码的全部场景，外加通行密钥注册 + 绑定邮箱、站点设置取不到、条款 / 隐私、注销结果页。
+- 截图（设计评审）写到 `test-results/screens/<视口>-<名字>.png`，CI 工件 `portal-screens`。
 - 性能：`e2e/perf/perf.spec.ts`（`playwright.perf.config.ts`；桌面 + 限速中端手机，各 5 次取中位：FCP、LCP、TTI、内容就绪、站内切页）
   加上体积（`size-svelte.json`），`e2e/perf/summary.mjs` 与 `e2e/perf/baseline/`（切换前 React 门户最后一次的数字，以及 v2.0.0 发布时同一套测法的数字 `perf-v2-*.json`）对比，Δ 列相对 v2.0.0；切页另给不含旧页面淡出（100 ms，v1.4.0 的刻意动效）的 `bare.*`；
   CI 写进任务摘要并上传工件 `portal-perf`。切页预取（`lib/prefetch.ts`：门户空闲时按优先级每次三个预载分包与首屏数据，链接意图预载；一次全发会和首页抢带宽反而更慢）是手机端切页快于旧 React 门户的原因。

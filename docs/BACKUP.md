@@ -143,19 +143,4 @@ AKARI_BACKUP_VERIFY_KEY=backup-sign.pub AGE_IDENTITY_FILE=akari-backup.key scrip
 启动面板 -> 断言：前缀不变、登录不变、用户仍在、用户加密存放的订阅链接仍可解密（master key 已恢复）、
 未做任何改动的 agent 能重连且节点在线。
 
-Result（结果），2026-10-01 (WSL2 dev stack, PostgreSQL 18.6, age 1.2.1, dump via `docker compose exec`):
-
-```
-DRILL PASS: prefix kept, logins and users restored, agent reconnected in 1 s (panel start to online)
-```
-
-2026-10-02（W14）在当时的 schema 上重跑（迁移至 0091，PostgreSQL 18，age 1.2.1）：
-
-```
-DRILL PASS: prefix kept, logins and users restored, agent reconnected in 9 s (panel start to online)
-```
-
-这里的 9 s（首次为 1 s）是面板因恢复而停机期间 agent 的重连退避时间，并非恢复耗时。备份大小 108 KiB（db 86 KiB，data 10 KiB）。
-
-首次演练数据的备份大小：404 KiB（db 390 KiB，data 10 KiB）。演练脚本第一次运行时发现的是脚本自身的缺陷
-（「已停止」的面板其实是个孤儿进程），而非备份/恢复的问题；上面的通过结果是修复之后的那次运行。
+演练通过时脚本打印 `DRILL PASS`。重连耗时主要是面板停机期间 agent 的重连退避，并非恢复耗时。

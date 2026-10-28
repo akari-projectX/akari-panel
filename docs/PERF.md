@@ -1,12 +1,14 @@
 # Performance and scale（性能与规模，M2）
 
-目标（ROADMAP §0）在单个面板实例的数据集上测得：200 个节点 / 5 万用户 / 每节点 1 万用户（200 万行 `node_users`——W28-a 起为 `entrance_users`，每个用户每个入口一行；另有 200 万行 `traffic_counters`）。以下全部结果都可用 `bench/` 复现。
+性能目标在单个面板实例的数据集上测得：200 个节点 / 5 万用户 / 每节点 1 万用户（200 万行 `entrance_users`，每个用户每个入口一行；另有 200 万行 `traffic_counters`）。以下全部结果都可用 `bench/` 复现。
+
+每一节标明测量日期和机器；机器不同的数字不能直接比较，同一节内的前后对比才有意义。旧节里的名词（`node_users`、`W*` 编号、xray 26.3.27）是当时的状态，保留以便对照。
 
 ## Results against the targets（对照目标的结果）
 
 | 目标 | 实测 | 结论 |
 |---|---|---|
-| 1 万用户节点的快照构建 < 200 ms | 数据库读取 + 构建 33 ms；完整构建（读取 + 用户集 + 状态哈希 + 编码）43 ms；agent 侧：1 万用户的 xray 重建 57 ms | 通过 |
+| 1 万用户节点的快照构建 < 200 ms | 数据库读取 + 构建 33 ms；完整构建（读取 + 用户集 + 状态哈希 + 编码）43 ms（2026-10-02）；2026-10-07 覆盖键优化后 16–28 ms / 完整构建 21–25 ms，见 "Snapshot read"；agent 侧：1 万用户的 xray 重建 57 ms | 通过 |
 | 5 万行流量的 flush < 1 s | 0.91 s（criterion 均值；10 块，每块 5000 行，约 91 ms/块）；W11 0.49 s；W22（含流量历史）0.58 s，见 "W22" | 通过，余量约 40% |
 | 管理 API p99 < 50 ms | 节点 top 用户（`traffic_node`）查询 36–48 → 约 10 ms（0151 覆盖索引），见 "Node top users"；W21：`dashboard` 16–21 ms，`users_search` 7–31 ms，`users_filtered` 18–22 ms（一次噪声运行 55 ms）；空闲、16 客户端：最差端点 10.2 ms（`nodes`）；200 agent 负载下：最差读 30.5 ms（`users_deep`）；W17：控制台节点列表（`nodes?view=summary`）负载下 12–26 ms（完整列表 27–43 ms） | 通过 |
 | 订阅 p99 < 30 ms | 空闲 5.1 ms；负载下 16.7 ms（单实例），经双实例负载均衡器 31 ms（`clash`）/ 20 ms（`links`） | 通过（单实例）；均衡器那次超 1 ms，见注 |

@@ -1,6 +1,6 @@
 # Fuzzing and the billing-core coverage gate（模糊测试与计费核心覆盖率门槛）
 
-ROADMAP §0 出口标准：「关键解析器做 fuzz」和「计费核心路径覆盖率 ≥ 90%」。
+质量门槛有两项：关键解析器做 fuzz，计费核心路径行覆盖率 ≥ 90%。
 本文件说明面板侧的这两项；agent 侧对应内容在 `akari-agent`
 （`fuzz_test.go`、`release/fuzz_test.go`、`make fuzz`、`make cover`）。
 
@@ -52,7 +52,8 @@ make fuzz-lint                    # fmt + clippy of the fuzz crate
 `cd fuzz && cargo fuzz run <target> artifacts/<target>/<file>`。修复后，在出错处补一个单元测试，
 并把该输入移到 `seeds/<target>/regress-*`。
 
-- `ops_input`（Ops）：批量请求（`CreateReq`/`PreviewReq`，包括其中的 `action`/`selection`）、
+- `traffic_query`：流量明细查询串（`trafficlog::parse_query`）：被接受的查询范围、条数与分组都在端点限制内，解析是确定的。
+- `ops_input`：批量请求（`CreateReq`/`PreviewReq`，包括其中的 `action`/`selection`）、
   手动订单和优惠券批次请求体都是 `deny_unknown_fields`；手动订单绝不携带金额；批量动作校验器绝不 panic；
   CSV 写出器的输出总能解析回相同的单元格，文本单元格也绝不会以电子表格公式开头
   （`= + - @`、制表符、CR → 加撇号前缀）。
@@ -61,9 +62,9 @@ make fuzz-lint                    # fmt + clippy of the fuzz crate
 
 - 推送到 main，以及改动了目标编译内容的 PR（`src/`、`fuzz/`、`Cargo.*`、工具链；
   `scripts/ci-changes.sh` 的 `fuzz` 组）或带 `full-ci` 标签的 PR：每个目标跑 20 s
-  （19 个目标：约 6 分钟模糊测试加构建时间），用种子和缓存的语料库捕获回归；其他 PR 跳过该 job（W37）；
+  （23 个目标：约 8 分钟模糊测试加构建时间），用种子和缓存的语料库捕获回归；其他 PR 跳过该 job；
 - 发布前：`release.yml` 在打 tag 的提交上运行同样的 20 s 一轮，未通过则不发布任何内容；
-- 每夜（03:47 UTC）：每个目标 4 分钟（19 个目标：模糊测试 76 分钟，含构建约 86 分钟）；
+- 每夜（03:47 UTC）：每个目标 4 分钟（23 个目标：模糊测试 92 分钟，含构建约 102 分钟）；
 - 手动（`workflow_dispatch`）：可选择每个目标的秒数（默认 240）。
 
 时间预算：job 的 `timeout-minutes` 为 150；所有目标的模糊测试总时长上限为 `FUZZ_BUDGET_MIN`（120 分钟）
@@ -72,28 +73,24 @@ make fuzz-lint                    # fmt + clippy of the fuzz crate
 
 语料库从 Actions 缓存恢复并保存回去，因此各次夜间运行是逐次累积的。崩溃会使 job 失败并上传 `fuzz/artifacts/`。
 
-### Findings (W13, 2026-10-02)（发现的问题）
+### Findings（发现的问题）
 
 | 目标 | 发现 | 修复 |
 |---|---|---|
 | `domain` | 超长 IDN（Unicode 形式 > 300 字节，punycode ≤ 253）无法保存回去：控制台回传的是 Unicode `display`，而 `Domain::parse` 把输入限制在 300 字节 | 输入上限提高到 1024（真正的限制是 253 字节的 ASCII 长度）； `settings::tests::long_idn_display_round_trips` |
 | `agent_messages` | `Heartbeat.cert` 的 domain/challenge/error 未设上限且含控制字符就写入了共享的 Valkey blob（被攻陷的节点每次心跳可塞入约 4 MB） | `grpc::cert_status_json` 让每个 agent 字符串都经过 `nodestat::agent_text`（253/512/32）；含控制字符的延迟 URL 会被丢弃 |
-| `node_templates` | 模板渲染出了保存时会被拒绝的 tag（`_x`、`akari-*`、`api`、重复项） | `nodetpl::render` 以 `validate_inbound` 收尾（W28-a：模板完全不带 tag） |
+| `node_templates` | 模板渲染出了保存时会被拒绝的 tag（`_x`、`akari-*`、`api`、重复项） | `nodetpl::render` 以 `validate_inbound` 收尾（模板完全不带 tag） |
 
 覆盖率工作还发现，`traffic::db_tests::one_bad_row_does_not_poison_the_batch` 在按节点索引重构之后
 不再覆盖逐行重试路径（它植入的那一行对 `snapshot` 不可见）；现在它同时植入索引条目，并断言该路径。
 
 ## Billing-core coverage gate (`scripts/coverage-gate.py`)（计费核心覆盖率门槛）
 
-Ops 新增 `src/batch.rs`、`src/export.rs`、`src/csvx.rs`、
-`src/billing/manual.rs`、`src/billing/coupon_batches.rs`（各 ≥ 90%）。
-
 对完整测试集运行 `cargo llvm-cov`，**包括真实数据库测试**（CI 的 `coverage` job 与 `rust` job 使用相同的
 PostgreSQL/Valkey 服务），再按模块统计行覆盖率，只计生产代码（内联的 `#[cfg(test)] mod … {` 标志着文件中生产代码行的结束）。
-任何模块低于其阈值（90 %）时 job 即失败：
-
-`traffic.rs`, `enforce.rs`, `entitle.rs`, `plans.rs`, `billing/orders.rs`,
-`billing/catalog.rs`, `billing/api.rs`, `billing/alipay.rs`.
+任何受管模块低于其阈值（90 %）时 job 即失败。受管模块清单就是 `scripts/coverage-gate.py` 里的 `MODULES`：
+流量结算与明细、强制执行、授权与入口、套餐、订单 / 目录 / 支付方式 / 支付宝 / 优惠券 / 余额 / 返利 / 退款 / 人工订单、
+工单与告警、批量操作与导出、防机器人、通行密钥、所有者与前门等。新增资金或认证模块时把它加进去。
 
 ```bash
 cargo install cargo-llvm-cov && rustup component add llvm-tools-preview

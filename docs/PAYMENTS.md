@@ -1,6 +1,6 @@
 # Payments: payment methods (Alipay Face-to-Face, EPay, CoinPayments, Coinbase)（支付：支付方式——支付宝当面付、易支付、CoinPayments、Coinbase）
 
-R18-3 / W24 (R40) / C1。面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
+面板通过**支付方式**销售套餐，支付方式在 系统设置 → 支付 中配置（仅存数据库，不用 panel.toml）。
 一个支付方式是某个**渠道类型（provider kind）**的一份配置实例；目前有两种类型：**支付宝当面付**
 （`alipay_f2f`：`alipay.trade.precreate` → 二维码）与**易支付**（`epay`，C1：通用易支付 MD5 接口，见下文「EPay（易支付）」）。
 另有两个托管的加密货币网关：**CoinPayments**（`coinpayments`，API v2）与 **Coinbase**（`coinbase`，Business Checkouts API），
@@ -453,7 +453,7 @@ savepoint 内开通、`order.paid` 审计。赠送会令 `gift_cents` = 标价�
 规则（`billing::methods`、`provider::ProviderKind::validate`）：
 
 - 每次变更都带版本（`version`，表单过期 → 409 `settings.version_conflict`）并被审计
-  （`payment_method.create` / `.update` / `.delete` / `.import`；密钥字段只记为 `"changed"`，
+  （`payment_method.create` / `.update` / `.delete`；密钥字段只记为 `"changed"`，
   非密钥配置——公钥、APPID——明文记录）。0060 触发器函数通知所有实例，各实例重建变更的支付方式的客户端，
   并原子地替换整个集合；进行中的调用继续使用它已取得的客户端。启用要求配置能够构建成功。
 - 被任何订单使用过的支付方式不能删除（409 `payments.method_in_use`）：请停用。停用会停止新订单、
@@ -712,7 +712,7 @@ Ops 新增：`order.create` + `order.paid`（人工订单，`after.manual`、`re
 W16：`order.refund`（P1：撤销订阅时另有 `user.plan.refund`）、`coupon.create` / `coupon.update` / `coupon.delete`、
 `commission.create` / `commission.reverse`、`commission.settings.update`、
 `withdrawal.approved` / `withdrawal.rejected` / `withdrawal.cancelled`，以及每行账本对应一行 `balance.<kind>`（kind 同账本表）。
-W24：`payment_method.create` / `.update` / `.delete` / `.import`。`payment_events.payment_method_id` 记录订单所用的支付方式。
+W24：`payment_method.create` / `.update` / `.delete`。`payment_events.payment_method_id` 记录订单所用的支付方式。
 
 ## Reconciliation (operator)（对账，运维）
 

@@ -1,18 +1,20 @@
 # Akari
 
-**一个自托管的代理面板控制平面：Rust 单二进制面板 + 内嵌 xray-core 的 Go 节点 agent。**
+**自托管的代理服务控制面板：一个 Rust 单二进制面板 + 每台节点上一个内嵌 xray-core 的 Go agent。**
 A self-hosted control plane for proxy services: one Rust binary for the panel, one Go agent per node.
 
-面板与 V2Board / Xboard / SSPanel 做同一类事——用户、套餐、订阅、计费、节点管理——但架构不同，差别主要在性能：长连接增量推送、单条 SQL 批量结算、撤权立即断线，一个实例即可承载 200 个节点 / 5 万用户。
-**刻意不兼容 V2Board / XrayR 协议**——这是需求，不是缺陷。
+Akari 管理用户、套餐、订阅、计费和节点，并把结果实时推到节点上：用户被禁用、套餐到期、凭据被轮换，对应的活连接在一秒内被切断；节点只主动外连面板，没有任何入站管理端口。一个面板实例即可承载 200 个节点 / 5 万用户。
+（节点协议是面板与 agent 之间专用的 gRPC 契约，不兼容 V2Board / XrayR 的节点接口。）
 
 ```
 ┌──────────────── Rust binary (akari) ────────────────┐
 │ axum web        portal at /, console + API behind a │
 │                 secret admin prefix, empty 404 else │
 │ tonic gRPC      mTLS AgentChannel (server)          │
-│ PG 18           users / nodes / traffic ledger      │
-│ Valkey 9        liveness TTL keys, heartbeat blobs  │
+│ PG 18           source of truth: users / nodes /    │
+│                 traffic ledger / audit              │
+│ Valkey 9        liveness TTL keys, heartbeat blobs, │
+│                 rate limits                         │
 └───────────────▲────────────────────────────────────┘
                 │ outbound-only mTLS gRPC stream
 ┌───────────────┴────────────────────────────────────┐
@@ -21,67 +23,79 @@ A self-hosted control plane for proxy services: one Rust binary for the panel, o
 └────────────────────────────────────────────────────┘
 ```
 
-- [特性](#特性)
-- [性能：与 V2Board / Xboard / SSPanel 的区别](#性能与-v2board--xboard--sspanel-的区别)
+- [性能](#性能) · [技术栈](#技术栈) · [特性](#特性) · [安全模型](#安全模型)
 - [部署](#部署) · [升级](#升级) · [迁移](#迁移) · [卸载](#卸载)
-- [目录树与功能映射](#目录树与功能映射)
-- [路线](#路线)
-- [文档索引与许可](#文档索引与许可)
+- [仓库结构](#仓库结构) · [文档索引与许可](#文档索引与许可)
+
+## 性能
+
+下面的数字都是本仓库实测，全部可用 [`bench/`](bench/) 复现（命令与方法见 [`docs/PERF.md`](docs/PERF.md)，每个数字在那里有测量日期与机器）。数据集：**200 个节点 / 5 万用户 / 每节点 1 万用户**（约 200 万条授权行、200 万条流量计数行），单个面板实例，PostgreSQL 18 与 Valkey 9 在同一台机器上，压测器也在这台机器上，所以延迟偏保守。
+
+| 场景 | 实测 |
+|---|---|
+| 1 万用户节点的完整快照构建（读库 + 用户集 + 状态哈希 + 编码） | 约 21–25 ms |
+| 5 万行流量一次结算（含流量明细） | 约 0.58 s（4 vCPU 开发机，分 5000 行一块） |
+| 订阅响应 p99 | 空闲 5.1 ms；200 个 agent 在线上报时 16.7 ms |
+| 管理 API p99 | 仪表盘 16–21 ms；用户搜索 7–31 ms；200 个 agent 在线时节点列表（摘要视图）12–26 ms |
+| 管理员变更 → 节点生效 | p50 0.26 s，p99 0.59 s；两个面板实例 + 负载均衡器 p99 0.89 s |
+| 流量计费精确度 | 上报量 = 计费量，精确到字节（单实例与双实例） |
+| 订单搜索（20 万订单，SQL 部分） | 稀有关键字 p50 0.55 ms，邮箱片段 0.24 ms（trigram 索引） |
+| 登录洪水（256 并发，4 vCPU 共享机） | 被拒请求 p50 7.5 ms，约 12.5k req/s，同时管理员请求 p50 62 ms |
+| 单实例承载 200 个 agent × 1 万用户 | 稳态内存 0.55 GiB |
+| 空闲常驻内存（1 vCPU / 920 MB VPS，含一个 agent） | 面板 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB |
+| agent：1 万用户 xray 重建 / 增删 1 个用户 | 约 57 ms / 5.4 µs |
+| agent：每个被代理连接的准入判断（撤权闸门） | 249 ns |
+
+注：表中结算数字来自 2026-10 的开发机；在另一台更慢的共享 4 vCPU 机器上同一条结算语句测得 1.5 s，所以结算耗时随硬件和同机负载变化，PERF.md 如实记录了两者。200 个 agent × 1 万用户同时重连的风暴在共享 4 vCPU 机器上 13–17 s 全部恢复。
+
+**为什么快**
+
+- **长连接 + 增量推送。** 每个 agent 与面板之间是一条长连接，面板只在有变化时推送。用户变化走 `UserDelta`（微秒级，不重建 xray、不断开其他用户的连接），只有入站结构变化才整体快照。
+- **结算在一条 SQL 里完成。** agent 上报累计值，面板按块用单条语句（`RETURNING old/new`）对账、套用倍率与上限、写入流量明细；每行幂等，重放、重试、多实例都不会多记。流量明细先追加到无索引的暂存表，后台再合并，不拖慢结算路径。
+- **变更即时传播。** 改状态的操作在同一事务里写库、递增版本、发 `NOTIFY`，所有面板实例立即唤醒受影响节点的会话（< 1 s），不等轮询周期。
+- **撤权立即生效。** 节点内的 gate 在分发层按用户凭据放行，禁用、过期或轮换凭据会立刻切断该用户的活连接；会话鉴权每个请求只查一次索引（约 0.4 ms）、**不做缓存**，所以吊销在下一个请求、所有实例上生效。
+- **读路径按索引设计。** 快照读取用覆盖索引避免堆分散；节点列表改为分组连接；订阅在进程内渲染；订单与用户搜索走 trigram 索引。
+- **单个静态二进制。** Rust + mimalloc，内置 TLS 与 gRPC，空闲时面板只占几 MB。
+- **多实例。** 多个面板实例共用 PostgreSQL + Valkey，会话、限速与吊销跨实例一致；agent 在实例间切换不会重复计费。
+
+## 技术栈
+
+| 层 | 组成 |
+|---|---|
+| 后端 | Rust（edition 2024）单二进制 `akari`；axum 0.8（web）、tonic 0.14 gRPC（`proto/agent.proto` 由 protox 编译）、sqlx 0.9（PostgreSQL 18，依赖 `RETURNING old/new`）、fred 10（Valkey）、rustls（ring）、webauthn-rs（通行密钥）、argon2、lettre（SMTP）/ Resend、prometheus 指标、mimalloc |
+| 用户门户 | Svelte 5 + Vite 8 + Tailwind 4 + bits-ui，中英双语，Playwright e2e（桌面 + 手机） |
+| 管理后台 | React 19 + TypeScript + Vite 8 + Tailwind 4 + TanStack Query；登录页与控制台是两个独立构建包；邮件与订阅模板用 CodeMirror 6 编辑；中英双语，Playwright e2e |
+| 节点 agent | Go 1.27；内嵌 xray-core（[akari-projectX 的分支](https://github.com/akari-projectX/xray-core)，在官方版本上只多一处补丁）；仅出站 mTLS gRPC；systemd 或 OpenRC；Ed25519 签名的自更新 |
+| 数据与部署 | PostgreSQL 18、Valkey 9、Caddy（按需 TLS）；Docker（distroless 静态 musl 镜像）或裸机，均由安装器完成；Prometheus 指标 + 告警规则、Grafana 面板 |
+| 质量与供应链 | 分级 CI 与合并队列；`cargo deny`、`clippy -D warnings`、golangci-lint；knip、jscpd、cargo-machete；cargo-fuzz + Go 原生 fuzz；计费核心覆盖率门槛；cosign 无密钥签名、SBOM、按摘要固定的容器镜像 |
+
+前后端通过 HTTP JSON API 通信；门户与后台都嵌入二进制（rust-embed），部署时没有单独的前端服务。
 
 ## 特性
 
 **面板**
 
-- **用户门户**（`/`）：注册 / 登录（邮箱 + 密码，或通行密钥）、套餐与用量、订阅链接、节点线路、商店与订单、钱包与邀请返利、工单、公告与帮助中心、账号注销。Svelte 5，中英双语。
-- **管理后台**（独立应用，位于机密前缀之下）：用户、套餐与节点组、服务器 / 节点 / 入口、订单与退款、优惠券、提现、工单、告警、审计日志、系统设置、批量操作与 CSV 导出。
-- **节点与入口**：一台服务器 = 一个 agent 身份，其上可有多个节点（xray 入站）；每个节点有「直连」入口，可再加**中转入口**（独立凭据、来源 IP 白名单、健康检查、分时段倍率）。
-- **套餐与计费**：按周期定价、库存、换套餐折算、周期重置、限速；订单、优惠券、余额、邀请返利、提现（USDT）、退款（含原路退款）；支付渠道为可插拔结构，目前接入支付宝当面付、易支付、CoinPayments、Coinbase（具体以 `docs/PAYMENTS.md` 为准）。
-- **订阅**：按真实客户端 UA 输出 Clash / sing-box / Surge / Surfboard / 通用链接，每种客户端的订阅模板可编辑，各格式可由后台开关。
-- **协议**：VLESS（REALITY / TLS / WS / gRPC / XHTTP）、VMess、Trojan、Shadowsocks 2022（多用户）、Hysteria 2；协议能力清单是单一数据源（`proto/protocols.toml`）。
-- **审计规则**：按节点开关的域名 / IP / 协议拦截（不记录用户或目标，只记每规则次数）。
-- **运营**：告警中心（Telegram / webhook / 邮件）、系统状态页、Prometheus 指标（独立监听）、邮件模板与站点品牌、从未使用账号的自动清理。
+- **用户门户**（`/`）：邮箱 + 密码或通行密钥登录、套餐与用量、订阅链接与一键导入、节点线路（在线 / 负载 / 延迟）、商店与订单、钱包与邀请返利、工单、公告与帮助中心、账号注销。
+- **管理后台**（独立应用，位于机密前缀之下）：仪表盘、用户、套餐与节点组、服务器 / 节点 / 入口、订单与退款、优惠券、提现、工单、告警、审计日志、DNS、系统设置、批量操作与 CSV 导出。
+- **服务器、节点与入口**：一台服务器 = 一个 agent 身份，其上可有多个节点（xray 入站）；每个节点有「直连」入口，可再加**中转入口**（独立凭据、来源 IP 白名单、健康检查、分时段倍率）；服务器可设按网卡计的月流量额度。
+- **套餐与计费**：按周期定价、库存、换套餐折算、周期重置、限速；订单、优惠券、余额、邀请返利、提现（USDT）、退款（含原路退款）；支付渠道可插拔：支付宝当面付、易支付、CoinPayments、Coinbase（见 [`docs/PAYMENTS.md`](docs/PAYMENTS.md)）。
+- **订阅**：按真实客户端 UA 输出 Clash / sing-box / Surge / Surfboard / 通用链接；每种客户端的订阅模板可在后台编辑；各格式与一键导入可单独开关。
+- **协议**：VLESS（REALITY / TLS / WS / gRPC / XHTTP）、VMess、Trojan、Shadowsocks 2022（多用户）、Hysteria 2；协议能力清单是单一数据源（`proto/protocols.toml`），部署文档与后台表单由它生成。
+- **登录与账号**：通行密钥（含多个主域名共用的关联来源）、Cloudflare Turnstile 与蜜罐可选、注册 / 找回密码 / 邀请码、安全通知邮件、唯一的「所有者」账号。
+- **通知与运营**：告警中心（Telegram / webhook / 邮件）、可编辑的邮件模板、公告与帮助中心、站点品牌、系统状态页、Prometheus 指标（独立监听）。
+- **DNS 管理**：用 Cloudflare 令牌直接管理区域与记录，并一键把面板或节点域名指向正确地址。
+- **审计规则**：按节点开关的域名 / IP / 协议拦截（不记录用户或目标，只记每规则命中次数）。
+- **安装器**：`akari-ctl` 一条命令完成安装、升级（带备份与自动回滚）、备份恢复、同机迁移、卸载，也支持多个面板实例；节点一键安装命令支持 Debian / Ubuntu（systemd）与 Alpine（OpenRC），并自动开启 BBR。
 
-**安全与可靠性**
+## 安全模型
 
-- 节点身份是 mTLS 客户端证书（P-256，节点自己生成私钥，面板 CA 签发，90 天自动续期）；注册用一次性 token。
-- 管理后台前缀是全站唯一的秘密，可轮换、可加 IP 白名单；其余一切拒绝（错误前缀、白名单外、垃圾路径）都是**字节同构的空 404**。
-- 登录：argon2id、失败限速、会话吊销（改密码 / 禁用 / 登出即刻全端失效）、通行密钥（支持跨域名的关联来源 ROR）、Cloudflare Turnstile 与蜜罐可选。
-- 面板是唯一事实源：任何改变节点 / 用户期望状态的操作，在**同一事务**里写库并递增版本、写审计；多实例通过 PostgreSQL `LISTEN/NOTIFY` 收敛。
-- agent 自更新：编译进 agent 的 Ed25519 发布公钥是信任根，面板只做中继；支持分批灰度，更新失败自动回滚。
-- 发布件有 SBOM 与 cosign 无密钥签名，安装器逐项校验。
-
-## 性能：与 V2Board / Xboard / SSPanel 的区别
-
-Akari 的差别主要在性能：热路径（节点同步、流量结算、订阅）按「大规模、多节点、高频上报」设计。
-
-**Akari 的实测**（[`docs/PERF.md`](docs/PERF.md)，单个面板实例；数据集 200 个节点 / 5 万用户 / 每节点 1 万用户，约 200 万条授权行；复现命令在文档里）：
-
-| 场景 | 实测 | 目标 |
-|---|---|---|
-| 1 万用户节点的完整快照构建 | 约 21–25 ms（2026-10-07 复测；此前为 43 ms） | < 200 ms |
-| 5 万行流量一次结算（flush，含流量明细） | 0.58 s（约 91 ms / 5000 行块） | < 1 s |
-| 订阅响应 p99 | 空闲 5.1 ms；200 个 agent 在线上报时 16.7 ms | < 30 ms |
-| 管理 API p99（用户搜索、仪表盘、节点流量） | 约 7–31 ms；仪表盘 16–21 ms | < 50 ms |
-| 管理员变更 → 节点生效 | p50 0.26 s，p99 0.59 s（双实例 + 均衡器 p99 0.89 s） | < 2 s |
-| 流量计费精确度 | 上报量 = 计费量，精确到字节（单实例与双实例） | 精确 |
-| 单实例承载 200 个 agent × 1 万用户的内存 | 稳态 0.55 GiB | — |
-| 空闲常驻内存（1 vCPU / 920 MB VPS，含 agent） | 面板 5 MB、PostgreSQL 56 MB、Valkey 8 MB、Caddy 17 MB、agent 27 MB | — |
-| agent：1 万用户 xray 重建 / 增删 1 个用户 | 57 ms / 5.4 µs | — |
-| agent：每个被代理连接的准入判断（撤权闸门） | 249 ns | — |
-
-**为什么快：架构上的取舍**
-
-| 热路径 | Akari 的做法 | 传统 PHP + 拉取式面板的常见结构（用于对照，非实测） |
-|---|---|---|
-| 进程 | Rust 单静态二进制，mimalloc；内置 TLS 与 gRPC | PHP 运行时 + Web 服务器 + 队列 / 计划任务多个进程 |
-| 节点同步 | agent 与面板之间一条**长连接**，面板只在有变化时推送；用户变化走**增量**（微秒级，不重建、不断线），只有结构变化才整体快照 | 节点按固定间隔**轮询**接口并拉取整份用户列表，节点越多、间隔越短，面板请求量越大 |
-| 流量结算 | agent 上报累计值，面板按批量**单条 SQL** 完成对账与计费；5 万行约 0.5 秒；只发有变化的行 | 常见为逐节点、逐批次的应用层循环写库 |
-| 变更传播 | 数据库同事务写库并 `NOTIFY`，所有面板实例即时唤醒受影响节点的会话，< 1 s | 等待节点下一个轮询周期 |
-| 订阅 | 索引查找后在进程内渲染，p99 个位数到十几毫秒 | 每次请求走应用框架与 ORM |
-| 横向扩展 | 多个面板实例共用 PostgreSQL + Valkey，会话与限速跨实例一致；节点在实例间切换不重复计费 | 通常依赖框架缓存与队列自行拼装 |
-| 撤权 | 节点内的 gate 在分发层拦截，撤权**立即断开**该用户的活连接 | 通常等下一个同步周期 |
-
-> 说明：Akari 一侧的数字都是本仓库实测，用的是上述数据集和一台开发机（共享同一台机器上的压测器、PostgreSQL 与 Valkey，所以延迟偏保守）。**我们没有对 V2Board / Xboard / SSPanel 做同机对比测试，不给出它们的数字**；右列只描述这类面板常见的架构特点，具体表现随项目版本与部署而异。
+- **节点身份**是 mTLS 客户端证书（P-256，私钥只在节点生成，面板 CA 签发，90 天自动续期）；注册用一次性 token。节点上没有入站管理端口。
+- **机密的后台前缀**：全站唯一的秘密，可轮换、可加 IP 白名单；其余一切拒绝（错误前缀、白名单外、垃圾路径、坏订阅令牌）都返回**字节同构的空 404**，探测无法区分。
+- **登录**：argon2id（有界队列，繁忙时 503 而不是拖垮服务）、失败限速、会话吊销（改密码 / 禁用 / 登出即刻全端失效）、通行密钥、防机器人。
+- **面板是唯一事实源**：任何改变节点 / 用户期望状态的操作在**同一事务**里写库、递增版本并写审计；管理操作全部有审计，密钥只记「已更改」。
+- **出站访问防护**：面板访问运营者给定地址（webhook、规则下载、支付网关等）一律经 SSRF 防护，只连公网地址。
+- **agent 自更新**：编译进 agent 的 Ed25519 发布公钥是信任根，面板只做中继；支持分批灰度，失败自动回滚，降级只能用带有效期的签名回滚清单。
+- **供应链**：发布件有 SBOM 与 cosign 无密钥签名，安装器逐项校验；容器镜像按摘要固定。
 
 ## 部署
 
@@ -152,80 +166,35 @@ akari-ctl uninstall --purge         # 同时删除数据库、数据目录、配
 
 普通卸载会保留数据库、`/var/lib/akari`（CA 私钥、`jwt.key`、`master.key`）与配置，再次运行安装器即可接管（相同的前缀与账号）。`--purge` 之后每个节点都需要重新注册（CA 已不存在），除非恢复备份；`/var/backups/akari` 中的备份**永远不会被删除**。节点上的 agent 用 `akari-agent-uninstall` 卸载。详见 [`docs/DEPLOY.md`](docs/DEPLOY.md) §7。
 
-## 目录树与功能映射
+## 仓库结构
 
-仓库结构（Cargo.toml 在仓库根）；逐文件说明见 [`src/CLAUDE.md`](src/CLAUDE.md)，不变量见 [`CLAUDE.md`](CLAUDE.md)。节点 agent 在兄弟仓库 [`akari-agent`](https://github.com/akari-projectX/akari-agent)，两个仓库需并排检出才能跑 `smoke.sh`。
+节点 agent 在兄弟仓库 [`akari-agent`](https://github.com/akari-projectX/akari-agent)，两个仓库需并排检出才能跑 `smoke.sh`。逐文件说明见 [`src/CLAUDE.md`](src/CLAUDE.md)，不变量见 [`CLAUDE.md`](CLAUDE.md)。
 
 ```
 akari-panel/
-├── src/                   Rust 后端（crate akari_panel，全部模块在 lib.rs；main.rs = CLI 与启动）
+├── src/                   Rust 后端（crate akari_panel；main.rs = CLI 与启动）
 ├── proto/                 控制协议正本 agent.proto + 协议能力清单 protocols.toml
-├── migrations/            sqlx 迁移（启动时自动执行；基线 0001_baseline.sql）
-├── portal/                用户门户（Svelte 5 + Vite + Tailwind 4 + bits-ui，Playwright e2e）
-├── admin/                 管理后台（独立应用：登录页包 + 控制台包，中英双语）
-├── deploy/                docker-compose、systemd 单元、Caddy / nginx、Prometheus 告警、Grafana 面板
+├── migrations/            sqlx 迁移（启动时自动执行）
+├── portal/                用户门户（Svelte 5）
+├── admin/                 管理后台（React，登录页包 + 控制台包）
+├── deploy/                docker-compose、systemd 单元、Caddy / nginx、Prometheus 规则、Grafana 面板
 ├── scripts/               install.sh（= akari-ctl）、backup / restore、发布打包、e2e / 安装器测试
-├── docs/                  DEPLOY（部署手册）· REFERENCE（功能与 API 参考）· BACKUP · PAYMENTS · PERF · FUZZING
+├── docs/                  部署、参考、备份、支付、性能、模糊测试
 ├── bench/                 压测与基准工具（独立 crate，不进发布二进制）
 ├── fuzz/                  cargo-fuzz 目标（独立 crate）
-├── testdata/              黄金文件（模板、凭据、订阅格式、校验信息）
 ├── smoke.sh               跨仓端到端验收（需 ../akari-agent）
-├── Dockerfile             portal + admin → musl 静态二进制 → distroless 镜像
-└── build.rs               编译 proto；缺前端产物时写占位页
+└── Dockerfile             portal + admin → musl 静态二进制 → distroless 镜像
 ```
-
-**功能 → 代码**
-
-| 功能 | 主要位置 |
-|---|---|
-| 前门、URL 布局、统一空 404 | `src/web.rs`、`src/access.rs`、`src/reject.rs` |
-| 节点 agent 会话（快照 / 增量、租约、心跳） | `src/grpc.rs`、`src/state.rs`、`src/notify.rs`、`proto/agent.proto` |
-| 节点注册、证书签发与续期、CA | `src/enroll.rs`、`src/install.rs`、`src/tlsserver.rs` |
-| 服务器 / 节点 / 入口、中转与健康检查 | `src/servers.rs`、`src/nodes.rs`、`src/entrances.rs`、`src/entrance_health.rs`、`src/rates.rs` |
-| 授权（套餐 → 节点组 → 入口 → 凭据） | `src/entitle.rs`、`src/plans.rs`、`src/enforce.rs` |
-| 流量记账与流量明细 | `src/traffic.rs`、`src/trafficlog.rs`、`src/reaper.rs` |
-| 协议矩阵（模型 / 校验 / 渲染） | `src/protocols/`、`src/nodetpl.rs` |
-| 订阅（Clash / sing-box / 链接） | `src/sub/` |
-| 订单、支付、优惠券、余额、返利、退款 | `src/billing/` |
-| 登录、会话、通行密钥、防机器人 | `src/auth.rs`、`src/api.rs`、`src/passkey.rs`、`src/botguard.rs`、`src/login_limit.rs` |
-| 注册、找回密码、邮件 | `src/signup/`、`src/mail/` |
-| 工单、公告、知识库、站点品牌 | `src/tickets.rs`、`src/announcements.rs`、`src/kb.rs`、`src/branding.rs` |
-| 告警、系统状态、指标 | `src/alerts/`、`src/sysstatus/`、`src/metrics.rs` |
-| 审计、所有者、账号注销与清理 | `src/audit.rs`、`src/owner.rs`、`src/erase.rs`、`src/cleanup.rs` |
-| 审计规则（节点拦截） | `src/blockrules.rs` |
-| 节点一键安装与 agent 自更新 | `src/nodeinstall.rs`、`src/updates.rs`、`src/updatecheck.rs`、`src/rollout.rs` |
-| 系统设置、域名、主密钥 | `src/settings.rs`、`src/masterkey.rs`、`src/config.rs` |
-| 面板安装 / 升级 / 迁移 / 卸载 | `scripts/install.sh`（`akari-ctl`）、`deploy/` |
-
-## 路线
-
-权威计划在工作区的 `PLAN-next.md`（三仓库：`akari-panel` / `akari-agent` / `akari-client`）。
-
-**已完成（至 v2.1.0）**：身份与登录（邮箱登录、通行密钥及跨域名 ROR、通行密钥注册 + 绑定邮箱）、域名与前门（多域名、后台前缀与白名单、订阅路径）、服务器 / 节点 / 入口拆分与中转、分时段倍率、服务器流量额度、审计规则、订阅格式与可编辑订阅模板、系统状态与发信、DNS 管理（Cloudflare）、Alpine（OpenRC）节点、Svelte 5 门户与新后台、订单 / 退款 / 返利 / USDT 提现、多实例安装、四种支付渠道。
-
-**下一版本**：
-
-- 性能与稳定性：agent 24 小时以上压测、面板压测与瓶颈分析、单节点容量数据（写入 `docs/PERF.md`）。
-- 代码质量：全仓审计（计费漏洞、重复与无用代码），工程规范文档，并把重复代码 / 未用依赖检测放进 CI。
-- 红队测试：后台前缀与订阅令牌探测、认证、支付回调与资金逻辑、节点 mTLS 与注册、中转隔离、安装脚本供应链。
-- 运营：发信与支付宝沙箱实测、主流图形客户端的导入实测、更多支付渠道（按插件方式）、门户动效打磨。
-
-**暂缓 / 不做**：
-
-- 自研客户端 `akari-client`（mihomo 作为子进程）与**设备数限制**（席位绑定制，随客户端做；刻意不基于 IP）。
-- sing-box 第二内核。
-- 提现方式扩展与自动打款（目前只支持 USDT，人工打款）。
-- 兼容 V2Board / XrayR 节点协议（刻意不做）。
 
 ## 文档索引与许可
 
 | 文档 | 内容 |
 |---|---|
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | 部署、升级、回滚、卸载、迁移、协议矩阵、节点与告警、发布校验 |
-| [`docs/REFERENCE.md`](docs/REFERENCE.md) | 功能与实现参考：行为说明、API 表、设计笔记（原 README） |
+| [`docs/REFERENCE.md`](docs/REFERENCE.md) | 功能与实现参考：行为说明、API 表、设计笔记 |
 | [`docs/BACKUP.md`](docs/BACKUP.md) | 备份与恢复 |
 | [`docs/PAYMENTS.md`](docs/PAYMENTS.md) | 支付渠道、套餐目录规则、优惠券 / 余额 / 返利 |
-| [`docs/PERF.md`](docs/PERF.md) · [`docs/FUZZING.md`](docs/FUZZING.md) | 性能数字与复现、模糊测试 |
+| [`docs/PERF.md`](docs/PERF.md) · [`docs/FUZZING.md`](docs/FUZZING.md) | 性能数字与复现、模糊测试与覆盖率门槛 |
 | [`CLAUDE.md`](CLAUDE.md) · [`src/CLAUDE.md`](src/CLAUDE.md) | 开发者须知：硬性不变量、模块地图 |
 
 面板采用 MIT 许可（[`LICENSE`](LICENSE)）。`akari` 二进制静态链接的依赖在 CI 中由 `cargo deny` 检查（只允许宽松许可证），许可证清单作为 `THIRD_PARTY_LICENSES.txt` 随每个发布版本发布。
