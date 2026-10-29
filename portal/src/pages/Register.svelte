@@ -10,7 +10,7 @@
   import GuardFields from '../components/GuardFields.svelte';
   import Spinner from '../components/Spinner.svelte';
   import TextField from '../components/TextField.svelte';
-  import { signIn, site } from '$lib/auth.svelte';
+  import { promptPasskeyAfterSignup, signIn, site } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { FormGuard } from '$lib/form-guard.svelte';
   import { FieldErrors, fieldOf, isCode, isEmail } from '$lib/forms.svelte';
@@ -113,6 +113,7 @@
         guard: await guard.build(),
       });
       await signIn(result);
+      promptPasskeyAfterSignup();
       toast.success(t('注册成功'), result.trial ? { description: t('已赠送试用套餐，现在就可以使用') } : undefined);
       navigate(R.dashboard, { replace: true });
     } catch (err) {

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Lock from '@lucide/svelte/icons/lock';
   import { meApi, passkeyApi } from '@/api';
   import { isUserCancel } from '@/api/webauthn';
   import TextField from '../TextField.svelte';
@@ -72,7 +71,6 @@
   title={first ? t('设置密码') : t('修改密码')}
   description={first ? t('这个账号还没有密码，只能用通行密钥登录。设置密码需要先用通行密钥确认是你本人。') : t('密码更新后，其他设备需要重新登录')}
 >
-  {#snippet icon()}<Lock class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <form id="password-form" novalidate onsubmit={submit} class="form">
     {#if !first}
       <TextField {...f.field('current', 'current-password')} label={t('当前密码')} type="password" autocomplete="current-password" bind:value={current} />

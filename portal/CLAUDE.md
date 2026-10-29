@@ -11,7 +11,7 @@
   `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；common/rest 由 `lib/pages.ts` 的 `withCss` 在页面分包之前动态引入（Vite 不保证共用 CSS 先于页面 CSS 进 `<head>`；`withCss` 按调用顺序先插 common、rest 再插页面自己的），各 `pages/*.svelte` 只 import 自己的那份，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
   页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
 - 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
-- 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种：流程（图标 + 标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
+- 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种（2026-10-29 起一律不带图标：`Dialog` 没有 `icon` 片段）：流程（标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
   **阅读**（`reading` + `meta` 片段：公告、工单对话，宽 640，只有正文滚动）。弹窗开着时 `lib/visual-viewport.ts` 把可见视口写进 `--vv-h` / `--vv-top`，
   手机弹出软键盘时弹窗挪到键盘上方。
 - 切页：旧页面淡出（`--dur-exit` 100ms）→ 回到页首 → 新页面淡入（`App.svelte` 的 `shown` / `leaving`、`.page.out`）；换页的回到页首由它做，`navigate` 只在同一页内改查询串时立刻回到页首；
@@ -36,7 +36,7 @@
   aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
   不为外壳引入 bits-ui，首屏更小。
 - **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
-  窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；带图标的确认框窄屏图标单独一行、宽屏正文缩进到标题那一栏；图标底色随 `tone`，不要只改图标颜色）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
+  窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；`tone` 只决定确认按钮的语气）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
   所以 bits-ui 不进首屏。**按钮打开的对话框一律经 `lib/dialogs.ts`**：加载函数写在 `<script module>`，`preloadDialogs(…)` 在页面空闲时预载（同 `lib/prefetch` 的快网络规则），
   触发按钮 `{@attach intent(加载函数)}`（指针移上 / 按下、聚焦即下载；`flat/Row` 把组件上的 `{@attach}` 落到按钮上），打开用 `{#await chunk(加载函数) then m}`（已下好则同步画出）；
   否则第一次点击要等分包下载（限速网络上一两秒）。要取数的对话框先打开、数据区用 `Loading` 占位。e2e `e2e/dialogs.spec.ts`。表单控件（`TextField`、按钮）是手写的。
@@ -50,19 +50,19 @@
 - **页面取数** `lib/resource.svelte.ts`：`resource(() => ({ key, fetch, enabled }))`（= React 的 `useApi` 带缓存用法：先读 sessionStorage 缓存、后台刷新、
   没缓存时 soft 拖住启动画面、键变了读新键的缓存）与 `autoReload`（线路每 30 秒，后台标签页不取）。只能在组件初始化时调用。
   区块占位用 `components/Loading.svelte`（`aria-busy`，测速脚本等它消失），空状态 `Empty.svelte`（文字由调用处 `t()`）。
-- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、最新未读公告横幅、`Notices` 提醒细行、
-  四个关键数字、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
+- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、`Notices` 提示胶囊（已暂停 / 待支付 / 邮箱 / 工单 / 公告，每条一行，窄屏变小卡片；除「已暂停」外都有 ×：公告 = 标为已读，工单与订单记在 `lib/notice-dismiss`），
+  首屏大数字（`flat/Hero`：剩余流量 + 40 格分段条 + 右侧无边框信息行，商店当前套餐共用）、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
   图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
   下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
-  `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
-  单独分包、空闲时预载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
+  `PlanGrid`（样稿 shop-cards，2026-10-29 用户裁决恢复独立卡片：无周期切换、「¥x /月 起」、三格规格（流量 / 重置 / 速率）、功能清单、一个按钮（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，
+  单独分包、空闲时预载：周期单选 + 省 x%、优惠码、「用余额抵扣」开关（逐单打开）、原价 / 各项抵扣 / 还需支付、换套餐作废确认、支付方式单选；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
-  余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
+  余额抵扣是确认订单里的开关（`ui/Switch`），商店页右上只显示余额；流量重置包从右上「流量用完？买重置包」打开。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
   窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
@@ -75,7 +75,7 @@
 - **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
   当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
   窄屏 `<details>`，`RichHtml headings` 给 h3 / h4 补锚点）、同类文档、上一篇 / 下一篇、复制订阅链接）；`pages/Announcements.svelte`（头条 + 按月细线时间轴，
-  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部提示条带标签时卡片左侧 3px 同色细边（`pages/dashboard.css` 的 `.notice.edge`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte` → `components/tickets/`
+  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部的公告胶囊用标签色（`pages/dashboard.css` 的 `.cap`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte` → `components/tickets/`
   （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
   `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
   `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。

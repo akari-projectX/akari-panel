@@ -57,6 +57,9 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(std.locator('.plan-specs')).toContainText('100 GB');
   await expect(std.locator('.plan-specs')).toContainText('每月');
   await expect(std.locator('.plan-rich li').filter({ hasText: '全部节点' })).toBeVisible();
+  /* 套餐说明是 Markdown，面板渲染：**粗体** 是 <strong>，不会原样显示星号 */
+  await expect(std.locator('.plan-rich li strong')).toHaveText('全部节点');
+  await expect(std.locator('.plan-rich')).not.toContainText('**');
   const prem = card(page, seed.premium);
   await expect(prem.getByTestId('plan-price')).toHaveText(/¥\s*30\s*\/月$/);
   await expect(prem.getByText('更多流量')).toBeVisible();
@@ -73,8 +76,11 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(prem.getByRole('button', { name: '更换到此套餐' })).toHaveClass(/pri/);
   /* 当前套餐区：名称 + 生效中、到期与剩余天数、流量用量 */
   await expect(page.locator('main section.sec').first()).toContainText('生效中');
-  await expect(page.locator('main section.sec').first()).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
-  await expect(page.getByRole('progressbar', { name: '流量用量' })).toBeVisible();
+  await expect(page.locator('main section.sec').first()).toContainText(/到期\s*\d{4}-\d{2}-\d{2}/);
+  await expect(page.getByRole('meter', { name: '本期流量' })).toBeVisible();
+  /* 余额在右上的信息行里；「用余额抵扣」只在确认订单里 */
+  await expect(page.locator('.facts')).toContainText(/余额\s*¥/);
+  await expect(page.getByRole('switch', { name: '用余额抵扣' })).toHaveCount(0);
   /* 手机一栏，桌面同一行并排 */
   const [b1, b2] = [await std.boundingBox(), await prem.boundingBox()];
   if (isMobile(info)) expect(Math.abs((b1?.x ?? 0) - (b2?.x ?? 1))).toBeLessThan(2);
@@ -91,24 +97,29 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(dialog.locator('.popt > button')).toHaveCount(2);
   await expect(option(dialog, '年付')).toContainText(/每月 ¥12\.50/);
   await expect(dialog.getByRole('group', { name: '支付方式' })).toHaveCount(0);
-  await expect(dialog.getByText('应付金额')).toBeVisible();
-  await expect(dialog.getByRole('button', { name: /^支付 ¥15(\.00)?$/ })).toBeEnabled();
+  await expect(dialog.getByText('还需支付')).toBeVisible();
+  await expect(dialog.locator('.ftot')).toContainText(/¥15(\.00)?$/);
+  await expect(dialog.getByRole('button', { name: '去支付' })).toBeEnabled();
   await option(dialog, '年付').click();
-  await expect(dialog.getByRole('button', { name: /^支付 ¥150(\.00)?$/ })).toBeEnabled();
+  await expect(dialog.locator('.ftot')).toContainText(/¥150(\.00)?$/);
   await shot(page, info, 'confirm-alipay-light');
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
 
-  /* 余额抵扣：面板重新报价，全额抵扣 = 「确认开通」 */
-  await page.getByRole('switch', { name: '用余额抵扣' }).click();
-  await expect(page.getByRole('switch', { name: '用余额抵扣' })).toHaveAttribute('aria-checked', 'true');
+  /* 余额抵扣在确认订单里逐单打开：面板重新报价，全额抵扣 = 「确认购买」；关掉再开从「不用余额」开始 */
   await cur.getByRole('button', { name: '续费' }).click();
-  await expect(dialog.getByText('余额抵扣')).toBeVisible();
-  await expect(dialog.getByRole('button', { name: '确认开通' })).toBeEnabled();
+  await dialog.getByRole('switch', { name: '用余额抵扣' }).click();
+  await expect(dialog.getByRole('switch', { name: '用余额抵扣' })).toHaveAttribute('aria-checked', 'true');
+  await expect(dialog.getByText('余额抵扣', { exact: true })).toBeVisible();
+  await expect(dialog.getByText('余额足够支付，确认后直接开通，无需跳转。')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '确认购买' })).toBeEnabled();
   await shot(page, info, 'confirm-balance-light');
   await dark(page);
   await shot(page, info, 'confirm-balance-dark');
   await page.emulateMedia({ colorScheme: 'light' });
+  await page.keyboard.press('Escape');
+  await cur.getByRole('button', { name: '续费' }).click();
+  await expect(dialog.getByRole('switch', { name: '用余额抵扣' })).toHaveAttribute('aria-checked', 'false');
   await page.keyboard.press('Escape');
 });
 
@@ -117,10 +128,11 @@ test('#31 the current plan: quota, reset period and next reset, expiry, speed', 
   await shop(page);
   const cur = page.locator('main section.sec').first();
   await expect(cur).toContainText(/当前套餐 · E2E 标准/);
-  await expect(cur).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
+  await expect(cur).toContainText(/到期\s*\d{4}-\d{2}-\d{2}/);
   await expect(cur).toContainText('300 Mbps');
   await expect(cur).toContainText(/\/ 100 GB/);
-  await expect(cur).toContainText(/\d{4}-\d{2}-\d{2} 重置流量，剩余 [\d.]+ GB/);
+  await expect(cur).toContainText(/本期流量 剩余 [\d.]+ \/ 100 GB/);
+  await expect(cur).toContainText(/\d{4}-\d{2}-\d{2} 重置/);
 });
 
 test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 #44 a switch with proration is paid by QR; #46 types', async ({ page }, info) => {
@@ -129,13 +141,15 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await shop(page);
   const dialog = page.getByRole('dialog');
 
-  /* 流量重置包，余额全额抵扣：面板当场付清，订单页弹付款结果（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
-  await page.getByRole('switch', { name: '用余额抵扣' }).click();
-  await expect(page.locator('main section.sec').filter({ hasText: '流量重置包' })).toContainText(`重置「${seed.plan}」的流量`);
-  await page.getByRole('button', { name: '购买', exact: true }).click();
-  await expect(dialog.getByText('余额抵扣')).toBeVisible();
+  /* 流量重置包（右上「流量用完？买重置包」直接打开它的确认订单），余额全额抵扣：面板当场付清，订单页弹付款结果（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
+  await expect(page.getByText(`重置「${seed.plan}」的流量`)).toHaveCount(0);
+  await page.getByRole('button', { name: /^买重置包 / }).click();
+  await expect(dialog.getByText(`流量重置包 · ${seed.plan}`)).toBeVisible();
   await expect(dialog.locator('.popt > button')).toHaveCount(0);
-  await dialog.getByRole('button', { name: '确认开通' }).click();
+  await dialog.getByRole('switch', { name: '用余额抵扣' }).click();
+  await expect(dialog.getByText('余额抵扣', { exact: true })).toBeVisible();
+  await shot(page, info, 'confirm-reset-light');
+  await dialog.getByRole('button', { name: '确认购买' }).click();
   await expect(dialog.getByRole('button', { name: '查看订阅' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '返回仪表盘' })).toBeVisible();
   await expect(dialog.getByText('到期时间')).toBeVisible();
@@ -160,10 +174,10 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
 
   /* 用余额续费一个月 */
   await shop(page);
-  await page.getByRole('switch', { name: '用余额抵扣' }).click();
   await page.locator('.plan-card.is-current').getByRole('button', { name: '续费' }).click();
   await option(dialog, '月付').click();
-  await dialog.getByRole('button', { name: '确认开通' }).click();
+  await dialog.getByRole('switch', { name: '用余额抵扣' }).click();
+  await dialog.getByRole('button', { name: '确认购买' }).click();
   await payResult(page, '支付成功', seed.plan);
   await expect(page.locator('.od-dl')).toContainText('续费');
 
@@ -174,14 +188,14 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await card(page, seed.premium).getByRole('button', { name: '更换到此套餐' }).click();
     await expect(dialog.getByText('旧套餐折算抵扣')).toBeVisible();
     await expect(dialog.getByRole('group', { name: '支付方式' }).getByRole('radio')).toHaveCount(2);
-    await expect(dialog.getByRole('button', { name: /^支付 ¥/ })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: '去支付' })).toBeDisabled();
     await option(dialog, /^支付宝$/).click();
     await expect(dialog.getByRole('radio', { name: /^支付宝$/ })).toBeChecked();
     await shot(page, info, 'confirm-methods-light');
     await dark(page);
     await shot(page, info, 'confirm-methods-dark');
     await page.emulateMedia({ colorScheme: 'light' });
-    await dialog.getByRole('button', { name: /^支付 ¥/ }).click();
+    await dialog.getByRole('button', { name: '去支付' }).click();
     await ready(page, '订单详情');
     await expect(page.getByRole('heading', { name: /扫码支付|支付宝付款/ })).toBeVisible();
     await expect(page.getByRole('img', { name: '付款二维码' })).toBeVisible();
@@ -228,9 +242,9 @@ test('#37 credit beyond the new price is forfeited only after an explicit acknow
   await card(page, seed.plan).getByRole('button', { name: '更换到此套餐' }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByText('折算作废')).toBeVisible();
-  await expect(dialog.getByRole('button', { name: '确认开通' })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: '确认购买' })).toBeDisabled();
   await dialog.getByRole('checkbox').check();
-  await dialog.getByRole('button', { name: '确认开通' }).click();
+  await dialog.getByRole('button', { name: '确认购买' }).click();
   await payResult(page, '支付成功', seed.plan);
   await ready(page, '订单详情');
   await expect(page.locator('.od-bh')).toContainText('已付款');
@@ -243,7 +257,7 @@ test('#45 a pending order is shown on the shop, blocks a new order, and can be c
   await expect(page.locator('main section.sec').first()).toContainText('未订阅');
   await card(page, seed.plan).getByRole('button', { name: '立即订阅' }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByRole('button', { name: /^支付 ¥/ }).click();
+  await dialog.getByRole('button', { name: '去支付' }).click();
   await ready(page, '订单详情');
   await expect(page.getByRole('list', { name: '订单进度' })).toContainText('等待付款');
 
@@ -252,7 +266,7 @@ test('#45 a pending order is shown on the shop, blocks a new order, and can be c
   await expect(page.getByText('你有一笔待支付的订单').first()).toBeVisible();
   await card(page, seed.plan).getByRole('button', { name: '立即订阅' }).click();
   await expect(dialog.getByText('你有一笔待支付的订单')).toBeVisible();
-  await expect(dialog.getByRole('button', { name: /^支付 ¥/ })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: '去支付' })).toBeDisabled();
   await shot(page, info, 'confirm-pending-light');
   await page.keyboard.press('Escape');
   /* 「去支付」回到订单页，取消 */
@@ -293,20 +307,20 @@ test('#40 coupons are entered in the order confirmation: refused in the UI langu
   /* 有效：服务端报价里的折扣与应付金额 */
   await apply(code);
   await expect(dialog.getByText(new RegExp(`优惠码 ${code} 已生效`))).toBeVisible();
-  await expect(dialog.locator('.fline')).toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).toContainText(/[−-]\s?¥3(\.00)?/);
   await shot(page, info, 'confirm-coupon-light');
   /* 关掉再开：优惠码清空，价格回到不带码的报价 */
   await page.keyboard.press('Escape');
   await premium.click();
   await expect(dialog.getByLabel('优惠码')).toHaveValue('');
-  await expect(dialog.locator('.fline')).not.toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).not.toContainText(/[−-]\s?¥3(\.00)?/);
   await page.keyboard.press('Escape');
 
   /* 与余额一起用（换套餐的折算同在这份报价里） */
-  await page.getByRole('switch', { name: '用余额抵扣' }).click();
   await premium.click();
+  await dialog.getByRole('switch', { name: '用余额抵扣' }).click();
   await apply(code);
-  await expect(dialog.locator('.fline')).toContainText(/[−-]¥3(\.00)?/);
+  await expect(dialog.locator('.fline')).toContainText(/[−-]\s?¥3(\.00)?/);
   await expect(dialog.locator('.fline')).toContainText('余额抵扣');
   await page.keyboard.press('Escape');
 });

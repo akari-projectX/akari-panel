@@ -553,10 +553,14 @@ pub async fn shop(
         .map(|(r, offers)| {
             let holder = cur.is_some_and(|c| c.plan_id == r.plan_id);
             let remaining = r.capacity.map(|c| (i64::from(c) - r.taken).max(0));
+            // The card's one-line summary and feature list, Markdown (no HTML)
+            let (summary_html, details_html) = crate::markdown::render_lead(&r.description);
             json!({
                 "plan_id": r.plan_id,
                 "name": r.name,
                 "description": r.description,
+                "summary_html": summary_html,
+                "details_html": details_html,
                 "traffic_quota_bytes": r.traffic_quota_bytes,
                 "period": crate::plans::Period::from_columns(&r.reset_period, r.reset_days).render(),
                 "speed_limit_mbps": r.speed_limit_mbps,

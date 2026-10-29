@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Mail from '@lucide/svelte/icons/mail';
   import { meApi, passkeyApi } from '@/api';
   import { isUserCancel } from '@/api/webauthn';
   import { K } from '@/lib/cache';
@@ -97,7 +96,6 @@
 </script>
 
 <Dialog bind:open onOpenChange={change} title={t('更换邮箱')} description={tp('第 {n} 步，共 2 步', { n: sentTo ? 2 : 1 })}>
-  {#snippet icon()}<Mail class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   {#if sentTo}
     <form id="change-email" novalidate onsubmit={verify} class="form">
       <div class="to">

@@ -2,10 +2,34 @@
   .pager div { display: flex; gap: 4px; }
 }
 .ns > div { min-width: 0; }
-/* 带标签的公告提示条：卡片左侧 3px 标签色细边（design/announcement-tags-2026-10）；标题单行截断 */
-.notice.edge { position: relative; overflow: hidden; }
-.notice.edge::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--c); }
-.notice .nt.tagged { flex-wrap: nowrap; min-width: 0; }
+/* 提示胶囊（design/portal-polish-2026-10）：页标题下每条一行。左边类别（类别色淡底小圆角 + 色点）、加粗标题、一句说明、操作、×；
+ * 颜色 --c 来自类别（c-red / c-orange / c-brand / c-green，公告用标签色）。窄屏变成圆角小卡片：类别 + 标题一行，说明与操作换到下一行。 */
+.cap { position: relative; display: flex; align-self: flex-start; max-width: 100%; min-width: 0; align-items: center; gap: 4px 12px;
+  min-height: 34px; padding: 3px 6px 3px 4px; border: 1px solid var(--line2); border-radius: 999px; background: var(--surface); color: var(--body); font-size: 13px; }
+.cap.c-brand { --c: var(--brand); }
+.cap-main { display: flex; min-width: 0; align-items: center; gap: 10px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; text-decoration: none; }
+button.cap-main, a.cap-main { cursor: pointer; padding-right: 4px; }
+.cap-main > svg { flex: none; color: var(--muted); transition: translate var(--dur-fast); }
+.cap-main:hover > svg { translate: 2px 0; }
+.cap:has(> a.cap-main:hover), .cap:has(> button.cap-main:hover) { border-color: color-mix(in srgb, var(--fg) 30%, transparent); }
+.cap-tag { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;
+  background: color-mix(in srgb, var(--c) 13%, transparent); color: var(--c); font-size: 12px; font-weight: var(--fw-strong); white-space: nowrap; }
+.cap-tag > i { width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.cap-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: var(--fw-strong); }
+.cap-d { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.cap-x { display: flex; flex: none; align-items: center; gap: 4px; }
+.cap-x .btn { height: 26px; border-radius: 999px; }
+.cap-close { display: inline-flex; flex: none; width: 24px; height: 24px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--faint); cursor: pointer; }
+.cap-close:hover { background: var(--hover); color: var(--fg); }
+@media (max-width: 640px) {
+  .cap { align-self: stretch; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; }
+  .cap:has(> .cap-close) { padding-right: 36px; }
+  .cap-main { flex-wrap: wrap; row-gap: 8px; flex: 1 1 100%; }
+  .cap-d { flex: 1 1 100%; white-space: normal; }
+  .cap-main > svg { display: none; }
+  .cap-x { margin-left: auto; }
+  .cap-close { position: absolute; top: 8px; right: 8px; }
+}
 .feat-h > svg { flex: none; color: var(--fg); }
 .feat-t > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feat-go > svg { transition: translate var(--dur-fast); }
@@ -29,3 +53,34 @@
 }
 @container (max-width: 24rem) { .sub-cl { column-gap: 10px; }
 }
+
+/* 近 7 日流量（design/portal-polish-2026-10）：黑白两色叠柱（下行实色、上行浅色）、直角柱顶、等宽刻度与日期 */
+.wk { --wk-down: var(--fg); --wk-up: color-mix(in srgb, var(--fg) 18%, var(--bg)); }
+.wk-sum { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.wk-bar:first-of-type { border-radius: 2px 2px 0 0; }
+.wk-y, .wk-x, .wk-total, .wk-legend .wk-unit, .wk-tip dd { font-family: var(--font-mono); }
+.wk-x b { font-family: var(--font-ui); }
+.wk-total { color: var(--fg); }
+@media (max-width: 640px) { .wk-sum { white-space: normal; text-align: right; } }
+
+/* 订阅内的线路：细线表格（表头淡色小字，行间细线，倍率等宽着色） */
+.ntbl { width: 100%; border-collapse: collapse; font-size: 14px; }
+.ntbl th { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; font-weight: var(--fw-regular); color: var(--faint); white-space: nowrap; }
+.ntbl td { padding: 14px 12px 14px 0; border-bottom: 1px solid var(--line); vertical-align: middle; color: var(--fg); white-space: nowrap; }
+.ntbl th:last-child, .ntbl td:last-child { padding-right: 0; }
+.ntbl .nr { text-align: right; }
+.ntbl td.nl { font-size: 13px; color: var(--body); }
+.ntbl tr.is-off td > * { opacity: .55; }
+.nname { display: flex; min-width: 0; max-width: 220px; align-items: center; gap: 8px; }
+.nflag { display: inline-flex; flex: none; width: 18px; height: 12px; }
+.nflag > .flag { border-radius: 2px; }
+.ntbl .nstate { font-size: 13px; }
+.nlat { display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 13px; color: var(--body); }
+.sig { display: inline-flex; gap: 2px; }
+.sig > i { width: 3px; height: 10px; border-radius: 1px; background: var(--secondary); }
+.sig > i.on { background: var(--ok); }
+.nrate { font-family: var(--font-mono); font-size: 14px; font-weight: var(--fw-strong); }
+.nrate.rate-lo { color: var(--ok); } .nrate.rate-hi { color: var(--warn); } .nrate.rate-mid { color: var(--fg); }
+@media (max-width: 640px) { .ntbl .nl { display: none; } .nname { max-width: 150px; } }
+.nname > .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-notices { gap: 8px; }

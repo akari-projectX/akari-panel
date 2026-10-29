@@ -429,8 +429,8 @@ export function PlanEditor({
               <Field
                 label={tr("说明", "Description")}
                 hint={tr(
-                  "门户套餐卡片上显示；「- 」开头的行显示为列表",
-                  'Shown on the portal card; lines starting with "- " are a list',
+                  "门户套餐卡片上显示，支持 Markdown：**粗体**、- 列表、链接；第一段是卡片上的简介，其余是功能清单",
+                  "Shown on the portal card, Markdown supported: **bold**, - lists, links; the first paragraph is the card's summary, the rest its feature list",
                 )}
               >
                 <Textarea rows={3} value={f.description} onChange={(e) => set("description", e.target.value)} />

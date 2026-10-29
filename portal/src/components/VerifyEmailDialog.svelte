@@ -1,5 +1,4 @@
 <script lang="ts">
-  import MailCheck from '@lucide/svelte/icons/mail-check';
   import { meApi } from '@/api';
   import TextField from './TextField.svelte';
   import Dialog from './ui/Dialog.svelte';
@@ -63,7 +62,6 @@
 </script>
 
 <Dialog bind:open onOpenChange={change} title={t('验证邮箱')}>
-  {#snippet icon()}<MailCheck class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <div class="to">
     <span>{sent ? t('验证码已发到') : t('验证码会发到')}</span>
     <b>{email}</b>

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
   import { walletApi, type MyInvite, type UsdtChain } from '@/api';
   import { formatMoney, parseYuan } from '@/lib/format';
   import TextField from '../TextField.svelte';
@@ -82,7 +81,6 @@
 </script>
 
 <Dialog bind:open title={t('申请提现')} description={t('提交后金额立即从余额扣除，管理员核对后以 USDT 打款到你的地址')}>
-  {#snippet icon()}<ArrowDownToLine class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <form id="withdraw-form" class="form" novalidate onsubmit={submit}>
     <TextField
       {...f.field('amount', 'w-amount')}

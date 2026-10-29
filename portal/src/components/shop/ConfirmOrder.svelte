@@ -1,31 +1,30 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import Crown from '@lucide/svelte/icons/crown';
   import CreditCard from '@lucide/svelte/icons/credit-card';
   import CircleDollarSign from '@lucide/svelte/icons/circle-dollar-sign';
-  import Gauge from '@lucide/svelte/icons/gauge';
   import QrCode from '@lucide/svelte/icons/qr-code';
   import TicketPercent from '@lucide/svelte/icons/ticket-percent';
   import Wallet from '@lucide/svelte/icons/wallet';
-  import Zap from '@lucide/svelte/icons/zap';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import type { MyOrder, Offer, PayMethod, Shop, ShopPlan } from '@/api';
-  import { ORDER_ACTION, PERIOD_MONTHS, formatBytes, formatMoney, periodText } from '@/lib/format';
+  import { ORDER_ACTION, PERIOD_MONTHS, formatMoney, periodText } from '@/lib/format';
   import { COUPON_REFUSAL_TEXT, REFUSAL_TEXT, needsMethod, needsSwitchConfirm, offerKey } from '@/lib/shop';
   import Dialog from '../ui/Dialog.svelte';
+  import Switch from '../ui/Switch.svelte';
   import PendingOrder from './PendingOrder.svelte';
   import { t, tp } from '$lib/i18n.svelte';
 
   /*
-   * 确认订单（样稿 shop.html#confirm）。价格全部由面板按「现在下单」算好
+   * 确认订单（design/portal-polish-2026-10 的 30 / 31 号稿）。价格全部由面板按「现在下单」算好
    * （/me/shop 的 offers），优惠码、余额抵扣也是让面板重新报价——这里不做任何价格计算（「省 x%」「每月 ¥x」只是标价的换算）。
-   *   购买时长（不止一档时）→ 优惠码（选填）→ 换套餐的作废确认 → 支付方式（要付钱且不止一种时）→ 金额明细 → 提交。
+   *   标题下一行 = 套餐 · 动作 → 购买时长（不止一档时）→ 优惠码（选填）→「用余额抵扣」开关（有余额时，逐单打开）
+   *   → 原价 / 各项抵扣 / 还需支付 → 换套餐的作废确认 → 支付方式（还要付钱且不止一种时）→ 取消 / 去支付（余额等全额付清时是「确认购买」）。
    * 有待支付订单时面板拒绝再下单：提醒放在最上面，提交按钮不可用。窄屏是底部抽屉（ui/Dialog）。
    * 第一次打开时才下载（含 bits-ui）。
    */
   let {
-    open, plan, offers, offer, shop, loading, coupon, pending, submitting,
-    onclose, onpick, oncoupon, onorderchange, onsubmit,
+    open, plan, offers, offer, shop, loading, coupon, useBalance, pending, submitting,
+    onclose, onpick, oncoupon, onbalance, onorderchange, onsubmit,
   }: {
     open: boolean;
     plan: ShopPlan | undefined;
@@ -37,11 +36,14 @@
     loading: boolean;
     /** 已经交给面板报价的优惠码 */
     coupon: string;
+    /** 这一单用余额抵扣（已经交给面板报价） */
+    useBalance: boolean;
     pending: MyOrder | null;
     submitting: boolean;
     onclose: () => void;
     onpick: (key: string) => void;
     oncoupon: (code: string) => void;
+    onbalance: (on: boolean) => void;
     onorderchange: () => void;
     onsubmit: (method: PayMethod | undefined, acceptForfeit: boolean) => void;
   } = $props();
@@ -74,15 +76,18 @@
   const couponRefusal = $derived(shop?.coupon?.refusal ?? offer?.coupon_refusal ?? null);
   const blocked = $derived(submitting || !offer?.action || !!pending || noPayment || (confirmSwitch && !ack) || (pickMethod && !method));
 
+  /* 选项上的价格不扣余额（余额抵扣写在下面的明细里，否则余额够时每一档都显示 ¥0）；优惠码与换套餐折算照算 */
+  const beforeBalance = (o: Offer) => (o.amount_cents == null ? o.price_cents : o.amount_cents + o.balance_cents);
+
   function perMonth(o: Offer): string {
     const months = PERIOD_MONTHS[o.period];
     if (o.refusal) return t(REFUSAL_TEXT[o.refusal]);
-    if (months && months > 1 && o.amount_cents != null) return tp('每月 {v}', { v: formatMoney(Math.round(o.amount_cents / months)) });
+    if (months && months > 1 && o.amount_cents != null) return tp('每月 {v}', { v: formatMoney(Math.round(beforeBalance(o) / months)) });
     return '';
   }
 
-  /* 步骤编号：只给显示出来的步骤编号（购买时长只有一档时不显示） */
-  const base = $derived(offers.length > 1 ? 1 : 0);
+  const isReset = $derived(offer?.period === 'reset');
+  const subtitle = $derived(plan ? (isReset ? `${t('流量重置包')} · ${plan.name}` : offer?.action ? `${plan.name} · ${t(ORDER_ACTION[offer.action])}` : plan.name) : '');
 
   /* 面板的 icon 是后台填的短名字：认得的换成对应图标 */
   const ICONS: Record<string, typeof QrCode> = { alipay: QrCode, wechat: QrCode, qq: QrCode, balance: Wallet, usdt: CircleDollarSign, crypto: CircleDollarSign };
@@ -99,32 +104,21 @@
   }
 </script>
 
-<Dialog {open} wide onOpenChange={(o) => { if (!o) onclose(); }} title={t('确认订单')} description={t('价格由服务端计算，下面就是你要付的金额')}>
-  {#snippet icon()}<Crown class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
+<Dialog {open} wide onOpenChange={(o) => { if (!o) onclose(); }} title={t('确认订单')} description={subtitle}>
   {#if plan}
     <div class="flow-body">
       {#if pending}<PendingOrder order={pending} onchange={onorderchange} compact />{/if}
-
-      <div class="fbox">
-        <div class="fbox-h">
-          <span>{plan.name}</span>
-          {#if offer?.action}<span>{t(ORDER_ACTION[offer.action])}</span>{/if}
-        </div>
-        <div class="fspec">
-          <span><Gauge size={14} strokeWidth={1.75} aria-hidden="true" />{plan.traffic_quota_bytes != null ? `${formatBytes(plan.traffic_quota_bytes)} ${t('流量')}` : t('不限流量')}</span>
-          <span><Zap size={14} strokeWidth={1.75} aria-hidden="true" />{plan.speed_limit_mbps ? `${plan.speed_limit_mbps} Mbps` : t('不限速')}</span>
-        </div>
-      </div>
+      {#if isReset}<p class="fsub">{t('立即把本周期已用流量清零，不改变套餐与到期时间。')}</p>{/if}
 
       {#if offers.length > 1}
         <section class="fstep">
-          <div class="fstep-h"><span class="fstep-n">1</span><h3>{t('购买时长')}</h3></div>
+          <div class="fstep-h"><h3>{t('购买时长')}</h3></div>
           <div class="popt">
             {#each offers as o (offerKey(o))}
               {@const on = !!offer && offerKey(o) === offerKey(offer)}
               <button type="button" disabled={!o.action} aria-pressed={on} title={o.refusal ? t(REFUSAL_TEXT[o.refusal]) : undefined} onclick={() => pick(offerKey(o))}>
                 <b>{periodText(o.period, o.days, t, tp)}</b>
-                <span class="pv">{formatMoney(o.amount_cents ?? o.price_cents)}</span>
+                <span class="pv">{formatMoney(beforeBalance(o))}</span>
                 <small>{perMonth(o) || (o.action ? t(ORDER_ACTION[o.action]) : '')}</small>
               </button>
             {/each}
@@ -134,7 +128,7 @@
 
       {#if offer}
         <section class="fstep">
-          <div class="fstep-h"><span class="fstep-n">{base + 1}</span><h3><label for="coupon">{t('优惠码')}</label></h3><span class="fstep-aside">{t('选填')}</span></div>
+          <div class="fstep-h"><h3><label for="coupon">{t('优惠码')}</label></h3><span class="fstep-aside">{t('选填')}</span></div>
           <form class="cpn" novalidate onsubmit={applyCoupon}>
             <div>
               <TicketPercent size={16} strokeWidth={1.75} aria-hidden="true" />
@@ -153,14 +147,21 @@
         </section>
 
         <section class="fstep">
-          <div class="fstep-h"><span class="fstep-n">{base + 2}</span><h3>{t('金额明细')}</h3></div>
+          {#if shop && shop.balance_cents > 0}
+            <label class="fbal">
+              <span>{t('用余额抵扣')}<small>{tp('可用 {v}', { v: formatMoney(shop.balance_cents) })}</small></span>
+              <Switch bind:checked={() => useBalance, (v) => onbalance(v)} disabled={loading && !useBalance} label={t('用余额抵扣')} />
+            </label>
+          {/if}
           <div class="fline">
-            <div><span>{t('价格')}</span><span>{formatMoney(offer.price_cents)}</span></div>
-            {#if offer.discount_cents > 0}<div class="ok"><span>{t('优惠码')}</span><span>−{formatMoney(offer.discount_cents)}</span></div>{/if}
-            {#if offer.credit_cents > 0}<div class="ok"><span>{t('旧套餐折算抵扣')}</span><span>−{formatMoney(offer.credit_cents)}</span></div>{/if}
+            <div><span>{isReset ? t('价格') : t('原价')}</span><span>{formatMoney(offer.price_cents)}</span></div>
+            {#if offer.discount_cents > 0}<div class="ok"><span>{t('优惠码')}</span><span>− {formatMoney(offer.discount_cents)}</span></div>{/if}
+            {#if offer.credit_cents > 0}<div class="ok"><span>{t('旧套餐折算抵扣')}</span><span>− {formatMoney(offer.credit_cents)}</span></div>{/if}
             {#if offer.forfeited_cents > 0}<div class="warn"><span>{t('折算作废')}</span><span>{formatMoney(offer.forfeited_cents)}</span></div>{/if}
-            {#if offer.balance_cents > 0}<div class="ok"><span>{t('余额抵扣')}</span><span>−{formatMoney(offer.balance_cents)}</span></div>{/if}
+            {#if offer.balance_cents > 0}<div class="ok"><span>{t('余额抵扣')}</span><span>− {formatMoney(offer.balance_cents)}</span></div>{/if}
+            <div class="ftot"><span>{t('还需支付')}</span><span>{formatMoney(amount)}</span></div>
           </div>
+          {#if amount === 0 && offer.balance_cents > 0}<p class="fhint">{t('余额足够支付，确认后直接开通，无需跳转。')}</p>{/if}
         </section>
       {/if}
 
@@ -178,7 +179,7 @@
 
       {#if pickMethod}
         <section class="fstep">
-          <div class="fstep-h"><span class="fstep-n">{base + 3}</span><h3>{t('支付方式')}</h3></div>
+          <div class="fstep-h"><h3>{t('支付方式')}</h3></div>
           <fieldset class="pmeth">
             <legend class="sr">{t('支付方式')}</legend>
             {#each methods as m (m.id)}
@@ -193,23 +194,22 @@
       {/if}
       {#if noPayment}
         <p class="fnote">{offer?.balance_only
-          ? t('站点暂未开放在线支付。这个套餐可以用余额全额支付：请在商店页打开「用余额抵扣」。')
+          ? t('站点暂未开放在线支付。这个套餐可以用余额全额支付：请打开上面的「用余额抵扣」。')
           : t('站点暂未开放在线支付。可以用余额抵扣，或提交工单联系客服。')}</p>
       {/if}
     </div>
   {/if}
 
   {#snippet footer()}
-    <div class="flow-sum"><div class="k">{t('应付金额')}</div><div class="v">{formatMoney(amount)}</div></div>
     <div class="flow-btns">
-      <button type="button" class="btn hide-m" onclick={onclose}>{t('取消')}</button>
-      <button type="button" class="btn pri submit" disabled={blocked} onclick={() => onsubmit(amount > 0 ? method : undefined, confirmSwitch && ack)}>
-        {submitting ? t('处理中') : amount === 0 ? t('确认开通') : tp('支付 {v}', { v: formatMoney(amount) })}
+      <button type="button" class="btn" onclick={onclose}>{t('取消')}</button>
+      <button type="button" class="btn ink submit" disabled={blocked} onclick={() => onsubmit(amount > 0 ? method : undefined, confirmSwitch && ack)}>
+        {submitting ? t('处理中') : amount === 0 ? t('确认购买') : t('去支付')}
       </button>
     </div>
   {/snippet}
 </Dialog>
 
 <style>
-  .submit { min-width: 128px; }
+  .submit { min-width: 112px; }
 </style>
