@@ -1,18 +1,19 @@
 <script lang="ts">
   import { contentApi, type Announcement, type Announcements } from '@/api';
   import { summarize } from '@/lib/content-text';
-  import { daysLeft, formatBytes, formatDate, formatMoney, fromNow, trafficUsage } from '@/lib/format';
+  import { daysLeft, formatBytes, formatDate, formatMoney, formatSpeed, fromNow, trafficUsage } from '@/lib/format';
   import { trafficDays } from '@/lib/traffic';
   import { NODES_REFRESH_MS } from '@/lib/node';
-  import TrendingUp from '@lucide/svelte/icons/trending-up';
+  import Crown from '@lucide/svelte/icons/crown';
   import Megaphone from '@lucide/svelte/icons/megaphone';
+  import TrendingUp from '@lucide/svelte/icons/trending-up';
   import PageTitle from '../flat/PageTitle.svelte';
   import PaneHead from '../flat/PaneHead.svelte';
   import Row from '../flat/Row.svelte';
   import Pin from '@lucide/svelte/icons/pin';
   import Section from '../flat/Section.svelte';
   import Split from '../flat/Split.svelte';
-  import StatRow, { type Stat } from '../flat/StatRow.svelte';
+  import Hero from '../flat/Hero.svelte';
   import WeekChart from './WeekChart.svelte';
   import Empty from '../Empty.svelte';
   import LoadError from '../LoadError.svelte';
@@ -33,7 +34,7 @@
   /*
    * 仪表盘（full / renewal 范围；banned 是 Banned.svelte）。数据、缓存键、分支见下。
    * 结构：页头（套餐 · 重置周期）→ 最新未读公告横幅 → 提醒细行 →
-   * 四个关键数字 → 流量走势（7 / 30 天）→ 接入配置 | 公告与动态 → 订阅内的线路 | 使用文档。
+   * 首屏大数字（剩余流量 + 右侧几行信息，flat/Hero）→ 流量走势（7 / 30 天）→ 接入配置 | 公告与动态 → 订阅内的线路 | 使用文档。
    * 续费范围（已过期 / 流量用完）：面板不给订阅、线路、流量记录，这几块写明「续费后恢复」，其余照常。
    */
   let { full }: { full: boolean } = $props();
@@ -101,31 +102,9 @@
       : me?.quota_exhausted ? t('流量已用完，续费或购买重置包后恢复')
       : hasPlan ? t('套餐不限流量') : t('购买套餐后可用'),
   );
-  const stats = $derived.by((): Stat[] => [
-    hasPlan && !usage.unlimited
-      ? {
-          k: t('剩余流量'), v: usage.left.toFixed(1), unit: 'GB',
-          bar: { pct: usage.leftPct, low: usage.leftPct < 10 },
-          x: tp('共 {t} GB，已用 {u} GB', { t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) }),
-        }
-      : { k: t('已用流量'), v: usage.used.toFixed(1), unit: 'GB', x: used },
-    /* 线路还没取到 / 没取到时写横杠，不写 0：0 条是「全部不可用」的意思 */
-    full
-      ? {
-          k: t('可用线路'), v: nodes.data ? String(online) : '—', unit: nodes.data ? t('条') : '',
-          x: nodes.data ? tp('共 {n} 条线路在订阅内', { n: nodes.data.length }) : nodes.error ? t('线路列表没能加载') : t('正在获取线路列表'),
-        }
-      : { k: t('可用线路'), v: '0', unit: t('条'), x: t('续费后恢复') },
-    {
-      k: t('套餐剩余'), v: !hasPlan ? '—' : left === null ? t('长期') : String(left), unit: hasPlan && left !== null ? t('天') : '',
-      x: expiresAt ? tp('到期 {d}', { d: formatDate(expiresAt) }) : hasPlan ? t('无到期时间') : t('还没有套餐'),
-    },
-    {
-      /* 单一余额：佣金入账就进余额（佣金追回后可以是负数），可提现的是其中一部分 */
-      k: t('账户余额'), v: balance.data ? formatMoney(balance.data.balance_cents) : '—',
-      x: balance.data ? tp('其中可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) }) : t('下单时可以抵扣'),
-    },
-  ]);
+  const balanceText = $derived(balance.data ? formatMoney(balance.data.balance_cents) : '—');
+  const pct = $derived(hasPlan && !usage.unlimited ? usage.leftPct : null);
+  const nextReset = $derived(plan?.plan?.next_reset_at ?? null);
 
   /* 地址带 #subscribe（付款结果的「查看订阅」）：内容画好后滚过去 */
   $effect(() => {
@@ -139,20 +118,40 @@
 
 <PageTitle title={t('仪表盘')} sub={t('你的账号状态、流量走势与订阅信息一览。')}>
   {#snippet notices()}
-    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} />
+    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} ondismiss={() => latest && markRead(latest)} />
   {/snippet}
 </PageTitle>
 
 <Section>
-  <StatRow items={stats} />
+  <Hero
+    value={pct !== null ? usage.left.toFixed(1) : usage.used.toFixed(1)}
+    unit={pct !== null ? t('GB 剩余') : t('GB 已用')}
+    meter={pct !== null ? { pct, low: pct < 10 } : null}
+    label={t('剩余流量')}
+    capL={pct !== null ? tp('剩余 {l} / {t} GB · 已用 {u}', { l: +usage.left.toFixed(1), t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) }) : used}
+    capR={nextReset ? tp('{d} 重置', { d: formatDate(nextReset) }) : undefined}
+  >
+    {#snippet head()}
+      <Crown size={14} strokeWidth={1.75} aria-hidden="true" />
+      <span>{plan?.plan?.name ?? t('还没有套餐')}</span>
+      {#if me?.expired}<span class="pill warn"><i></i>{t('已过期')}</span>
+      {:else if me?.quota_exhausted}<span class="pill warn"><i></i>{t('流量已用完')}</span>
+      {:else if hasPlan}<span class="pill"><i></i>{t('生效中')}</span>{/if}
+    {/snippet}
+    {#snippet facts()}
+      <div><span>{t('套餐到期')}</span><span>{#if !hasPlan}—{:else if left === null}{t('长期')}{:else}{tp('{n} 天', { n: left })}{/if}{#if expiresAt}<small>{formatDate(expiresAt)}</small>{/if}</span></div>
+      <div><span>{t('在线线路')}</span><span>{#if !full}<small>{t('续费后恢复')}</small>{:else if nodes.data}{online} / {nodeList.length}{:else}—{/if}</span></div>
+      <div><span>{t('余额')}</span><span>{balanceText}{#if balance.data}<small>{tp('可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) })}</small>{/if}</span></div>
+      <div><span>{t('速率')}</span><span>{plan?.plan ? t(formatSpeed(plan.plan.speed_limit_mbps)) : '—'}</span></div>
+    {/snippet}
+  </Hero>
 </Section>
 
 <!-- 流量走势（续费范围没有） -->
 {#if full}
   <Section>
-    {#snippet title()}<TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" />{t('近 7 日流量趋势')}{/snippet}
-    {#snippet desc()}{#if traffic.data}<span class="tnum">{tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(totalDown + totalUp), d: formatBytes(totalDown), u: formatBytes(totalUp) })}</span>{/if}{/snippet}
-    {#snippet extra()}{#if traffic.data}<span class="sec-x">{t('计费')} <span class="tnum">{formatBytes(traffic.data.total.billed_bytes)}</span></span>{/if}{/snippet}
+    {#snippet title()}<TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" />{t('近 7 日流量')}{/snippet}
+    {#snippet extra()}{#if traffic.data}<span class="wk-sum" title={tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(totalDown + totalUp), d: formatBytes(totalDown), u: formatBytes(totalUp) })}>{formatBytes(totalDown + totalUp)} · ↓ {formatBytes(totalDown)} · ↑ {formatBytes(totalUp)} · {t('计费')} {formatBytes(traffic.data.total.billed_bytes)}</span>{/if}{/snippet}
     {#if traffic.loading && !traffic.data}
       <Loading block={268} />
     {:else if traffic.error && !traffic.data}

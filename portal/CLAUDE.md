@@ -48,19 +48,19 @@
 - **页面取数** `lib/resource.svelte.ts`：`resource(() => ({ key, fetch, enabled }))`（= React 的 `useApi` 带缓存用法：先读 sessionStorage 缓存、后台刷新、
   没缓存时 soft 拖住启动画面、键变了读新键的缓存）与 `autoReload`（线路每 30 秒，后台标签页不取）。只能在组件初始化时调用。
   区块占位用 `components/Loading.svelte`（`aria-busy`，测速脚本等它消失），空状态 `Empty.svelte`（文字由调用处 `t()`）。
-- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、最新未读公告横幅、`Notices` 提醒细行、
-  四个关键数字、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
+- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、`Notices` 提示胶囊（已暂停 / 待支付 / 邮箱 / 工单 / 公告，每条一行，窄屏变小卡片；除「已暂停」外都有 ×：公告 = 标为已读，工单与订单记在 `lib/notice-dismiss`），
+  首屏大数字（`flat/Hero`：剩余流量 + 40 格分段条 + 右侧无边框信息行，商店当前套餐共用）、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
   图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
   下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
-  `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
-  第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
+  `PlanGrid`（design/portal-polish-2026-10：外框圆角、共用细线的格子，每行三格，最后一行用浅底空格补齐；无周期切换、等宽「¥x /月 起」、一个按钮（只有当前套餐实底）、流量 / 速率两行规格、功能清单）、`ConfirmOrder`（确认订单对话框，
+  第一次打开才下载：周期单选 + 省 x%、优惠码、「用余额抵扣」开关（逐单打开）、原价 / 各项抵扣 / 还需支付、换套餐作废确认、支付方式单选；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
-  余额抵扣是商店页上的开关（手写 `role=switch`，不为它加载 bits-ui）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
+  余额抵扣是确认订单里的开关（`ui/Switch`），商店页右上只显示余额；流量重置包从右上「流量用完？买重置包」打开。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
   窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
@@ -73,7 +73,7 @@
 - **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
   当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
   窄屏 `<details>`，`RichHtml headings` 给 h3 / h4 补锚点）、同类文档、上一篇 / 下一篇、复制订阅链接）；`pages/Announcements.svelte`（头条 + 按月细线时间轴，
-  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部提示条带标签时卡片左侧 3px 同色细边（`pages/dashboard.css` 的 `.notice.edge`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte` → `components/tickets/`
+  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部的公告胶囊用标签色（`pages/dashboard.css` 的 `.cap`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte` → `components/tickets/`
   （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
   `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
   `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。

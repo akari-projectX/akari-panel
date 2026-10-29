@@ -1,5 +1,5 @@
 /*
- * 公告标签（实底，design/announcement-tags-2026-10）：标签在仪表盘顶部提示条（卡片左侧 3px 同色细边）、「公告与动态」列表、
+ * 公告标签（实底，design/announcement-tags-2026-10）：标签在仪表盘顶部的公告胶囊（标签色淡底 + 色字）、「公告与动态」列表、
  * 公告详情弹窗、公告页；公告页用到的标签多于一个时有按标签筛选；颜色只来自 tokens.css（浅色 700 档底 + 白字，深色 400 档底 + 深字）；
  * 手机上标题单行截断。账户：user@e2e.test；种子里有两条带标签的公告（维护、活动，e2e/support/seed.ts）。
  */
@@ -35,36 +35,31 @@ async function stubAnnouncements(page: Page) {
   await page.route(/\/api\/v1\/me\/announcements\/[^/]+\/read$/, (r) => r.fulfill({ status: 204 }));
 }
 
-test('tags: the dashboard banner has the coloured edge and a one-line title; list and dialog show the solid tag', async ({ page }, info) => {
+test('tags: the dashboard capsule carries the tag colour and a one-line title; list and dialog show the solid tag', async ({ page }, info) => {
   await stubAnnouncements(page);
   await signIn(page, 'user@e2e.test');
   await page.goto('/');
   await ready(page, '仪表盘');
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
 
-  const banner = page.locator('[data-page-notices] .notice.edge');
+  /* 仪表盘顶部的公告胶囊：标签色淡底小圆角（色点 + 标签名）、加粗标题；标题单行截断 */
+  const banner = page.locator('[data-page-notices] .cap', { hasText: '维护' });
   await expect(banner).toHaveCount(1);
-  const chip = banner.locator('.tg');
+  await expect(banner).toHaveClass(/c-amber/);
+  const chip = banner.locator('.cap-tag');
   await expect(chip).toHaveText('维护');
-  await expect(chip).toHaveClass(/c-amber/);
-  /* 浅色：700 档底 + 白字；细边与标签同色 */
-  expect(await colors(chip)).toEqual({ color: 'rgb(255, 255, 255)', bg: 'rgb(180, 83, 9)' });
-  const edge = () => banner.evaluate((n) => getComputedStyle(n, '::before').backgroundColor);
-  expect(await edge()).toBe('rgb(180, 83, 9)');
-  expect(await banner.evaluate((n) => getComputedStyle(n, '::before').width)).toBe('3px');
-  /* 标题单行：手机上被截断（省略号），不换行 */
-  const title = banner.locator('.nt .trunc');
+  /* 浅色：标签名用 700 档色字 */
+  expect((await colors(chip)).color).toBe('rgb(180, 83, 9)');
+  const title = banner.locator('.cap-t');
   expect(await title.evaluate((n) => getComputedStyle(n).whiteSpace)).toBe('nowrap');
   if (!isDesktop(info)) {
     expect(await title.evaluate((n) => n.scrollWidth > n.clientWidth)).toBe(true);
-    expect(await banner.locator('.nt').evaluate((n) => n.getBoundingClientRect().height)).toBeLessThan(30);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await shot(page, info, 'announcement-tag-banner-light');
   await dark(page);
-  /* 深色：400 档底 + 深字 */
-  expect(await colors(chip)).toEqual({ color: 'rgb(17, 19, 23)', bg: 'rgb(251, 191, 36)' });
-  expect(await edge()).toBe('rgb(251, 191, 36)');
+  /* 深色：400 档色字 */
+  expect((await colors(chip)).color).toBe('rgb(251, 191, 36)');
   await shot(page, info, 'announcement-tag-banner-dark');
   await page.emulateMedia({ colorScheme: 'light' });
 
