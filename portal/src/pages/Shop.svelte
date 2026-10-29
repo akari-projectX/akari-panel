@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Confirm = () => import('../components/shop/ConfirmOrder.svelte');
+</script>
+
 <script lang="ts">
   import '../styles/pages/shop.css';
   import { orderApi, shopApi, walletApi, type Offer, type PayMethod, type ShopPlan } from '@/api';
@@ -13,6 +17,7 @@
   import Loading from '../components/Loading.svelte';
   import PendingOrder from '../components/shop/PendingOrder.svelte';
   import PlanGrid from '../components/shop/PlanGrid.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { auth, refresh } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
@@ -57,7 +62,9 @@
 
   /* 下单：选中的套餐与周期（offerKey）；报价随优惠码 / 余额重新取，按键找回同一档 */
   let buy = $state<{ planId: string; key: string; resetOnly: boolean } | null>(null);
+  /* 确认订单第一次打开时才挂载；分包在空闲时与购买按钮上的意图预载（lib/dialogs） */
   let dialogLoaded = $state(false);
+  preloadDialogs(Confirm);
   const buyPlan = $derived(buy ? plans.find((p) => p.plan_id === buy?.planId) : undefined);
   const buyOffers = $derived(buyPlan ? buyPlan.offers.filter((o) => (buy?.resetOnly ? o.period === 'reset' : o.period !== 'reset')) : []);
   const offer = $derived(buyOffers.find((o) => offerKey(o) === buy?.key));
@@ -149,7 +156,7 @@
         {#if data && data.credit_cents > 0}<div><span>{t('换套餐可折算')}</span><span>{formatMoney(data.credit_cents)}</span></div>{/if}
         {#if resetBuy}
           {@const rb = resetBuy}
-          <div><span>{t('流量用完？')}</span><button type="button" class="go" onclick={() => openBuy(rb.plan, rb.offer, true)}>{tp('买重置包 {v} →', { v: formatMoney(rb.offer.amount_cents ?? rb.offer.price_cents) })}</button></div>
+          <div><span>{t('流量用完？')}</span><button type="button" class="go" {@attach intent(Confirm)} onclick={() => openBuy(rb.plan, rb.offer, true)}>{tp('买重置包 {v} →', { v: formatMoney(rb.offer.amount_cents ?? rb.offer.price_cents) })}</button></div>
         {/if}
       {/snippet}
     </Hero>
@@ -170,12 +177,12 @@
   {:else if plans.length === 0}
     <Empty title={t('暂时没有可购买的套餐')} desc={t('站点还没有上架套餐。')} />
   {:else}
-    <PlanGrid {plans} {me} onbuy={openBuy} />
+    <PlanGrid {plans} {me} onbuy={openBuy} buyIntent={intent(Confirm)} />
   {/if}
 </Section>
 
 {#if dialogLoaded}
-  {#await import('../components/shop/ConfirmOrder.svelte') then m}
+  {#await chunk(Confirm) then m}
     <m.default
       open={!!buy && !!buyPlan} plan={buyPlan} offers={buyOffers} {offer} shop={data} loading={shop.loading} {coupon} {useBalance} {pending}
       submitting={submitting.busy}

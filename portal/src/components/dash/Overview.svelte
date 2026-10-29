@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Detail = () => import('../AnnouncementDialog.svelte');
+</script>
+
 <script lang="ts">
   import { contentApi, type Announcement, type Announcements } from '@/api';
   import { summarize } from '@/lib/content-text';
@@ -22,6 +26,7 @@
   import DocsPreview from './DocsPreview.svelte';
   import NodesPreview from './NodesPreview.svelte';
   import Notices from './Notices.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { announcementText, tagOf } from '$lib/announcement';
   import { dashSpecs } from '$lib/dash-data';
   import { att } from '$lib/attention.svelte';
@@ -71,8 +76,9 @@
     att.announcements = next;
   }
 
-  /* 公告详情对话框（含 bits-ui）第一次打开时才下载 */
+  /* 公告详情对话框（含 bits-ui）第一次打开时才挂载；分包在空闲时与行 / 按钮上的意图预载（lib/dialogs） */
   let dialogLoaded = $state(false);
+  preloadDialogs(Detail);
   function openNotice(a: Announcement) {
     dialogLoaded = true;
     notice = a;
@@ -118,7 +124,7 @@
 
 <PageTitle title={t('仪表盘')} sub={t('你的账号状态、流量走势与订阅信息一览。')}>
   {#snippet notices()}
-    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} ondismiss={() => latest && markRead(latest)} />
+    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} ondismiss={() => latest && markRead(latest)} openIntent={intent(Detail)} />
   {/snippet}
 </PageTitle>
 
@@ -184,7 +190,7 @@
         {#each ann.slice(0, 3) as a, i (a.id)}
           {@const at = text(a)}
           {@const tg = tagOf(a, i18n.locale)}
-          <Row first={i === 0} onclick={() => openNotice(a)}>
+          <Row first={i === 0} onclick={() => openNotice(a)} {@attach intent(Detail)}>
             {#snippet title()}
               <span class="rt">
                 {#if a.pinned}<span class="pinb"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
@@ -210,5 +216,5 @@
 </Section>
 
 {#if dialogLoaded}
-  {#await import('../AnnouncementDialog.svelte') then m}<m.default item={notice} onclose={() => (notice = null)} />{/await}
+  {#await chunk(Detail) then m}<m.default item={notice} onclose={() => (notice = null)} />{/await}
 {/if}

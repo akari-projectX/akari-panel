@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Confirm = () => import('../ui/ConfirmDialog.svelte');
+</script>
+
 <script lang="ts">
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import Fingerprint from '@lucide/svelte/icons/fingerprint';
@@ -9,6 +13,7 @@
   import { formatDate, formatDateTime } from '@/lib/format';
   import { defaultPasskeyName } from '@/lib/passkey-name';
   import Menu from '../ui/Menu.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
   import { t, tp } from '$lib/i18n.svelte';
@@ -39,6 +44,8 @@
   let removeOpen = $state(false);
   let removeError = $state<string | null>(null);
   let confirmLoaded = $state(false);
+  /* 确认框（删除、只用通行密钥）第一次打开时才挂载；分包在空闲时与按钮上的意图预载（lib/dialogs） */
+  preloadDialogs(Confirm);
 
   function add() {
     void adding.run(async () => {
@@ -191,7 +198,7 @@
                     <Pencil size={15} strokeWidth={1.75} aria-hidden="true" />
                   </button>
                 {/if}
-                <button type="button" class="iconbtn del" aria-label={tp('删除 {n}', { n: k.name })} title={t('删除')} disabled={busy.busy} onclick={() => askRemove(k)}>
+                <button type="button" class="iconbtn del" aria-label={tp('删除 {n}', { n: k.name })} title={t('删除')} disabled={busy.busy} {@attach intent(Confirm)} onclick={() => askRemove(k)}>
                   <Trash2 size={15} strokeWidth={1.75} aria-hidden="true" />
                 </button>
               </div>
@@ -227,14 +234,14 @@
     <div class="set-r">
       <button
         type="button" id="passkey-only" class="switch" role="switch" aria-checked={m.password_login_disabled} aria-labelledby="passkey-only-label"
-        data-state={m.password_login_disabled ? 'checked' : 'unchecked'} disabled={only.busy || current === 0} onclick={toggleOnly}
+        data-state={m.password_login_disabled ? 'checked' : 'unchecked'} disabled={only.busy || current === 0} {@attach intent(Confirm)} onclick={toggleOnly}
       ><span class="switch-thumb"></span></button>
     </div>
   </div>
 {/if}
 
 {#if confirmLoaded}
-  {#await import('../ui/ConfirmDialog.svelte') then C}
+  {#await chunk(Confirm) then C}
     <C.default
       bind:open={removeOpen}
       tone="danger"
@@ -252,7 +259,7 @@
   {/await}
 {/if}
 {#if onlyLoaded}
-  {#await import('../ui/ConfirmDialog.svelte') then C}
+  {#await chunk(Confirm) then C}
     <C.default
       bind:open={asking}
       tone="warn"

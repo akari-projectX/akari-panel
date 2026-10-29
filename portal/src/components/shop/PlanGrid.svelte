@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Attachment } from 'svelte/attachments';
   import type { Me, Offer, OfferAction, ShopPlan } from '@/api';
   import { formatBytes, periodText, yuan } from '@/lib/format';
   import { ACTION_TEXT, REFUSAL_TEXT, headline, planRefusal, preselect } from '@/lib/shop';
@@ -12,10 +13,12 @@
    * +「N 种周期可选 · 年付省 x%」→ 三格规格（流量 / 重置 / 速率）→ 功能清单（说明的其余部分 details_html：套餐说明是 Markdown，由面板 src/markdown.rs 渲染并清洗，经 RichHtml 插入）→ 一个按钮 + 一行说明。
    * 按钮的动作 = preselect（流量用完的当前套餐 = 重置包）；买不了的按钮置灰并写原因。当前套餐卡与「推荐」套餐卡用主按钮（2026-10-22 裁决）。
    */
-  let { plans, me, onbuy }: {
+  let { plans, me, onbuy, buyIntent }: {
     plans: ShopPlan[];
     me: Pick<Me, 'expired' | 'quota_exhausted'> | undefined;
     onbuy: (plan: ShopPlan, offer: Offer, resetOnly: boolean) => void;
+    /** 购买按钮上的意图预载（确认订单对话框的分包，lib/dialogs） */
+    buyIntent?: Attachment<HTMLElement>;
   } = $props();
 
   /** 按钮下面的一行说明（新购没有） */
@@ -86,7 +89,7 @@
       <div class="plan-cta">
         {#if v.act?.action}
           {@const act = v.act}
-          <button type="button" class={['btn', 'btn-block', (pl.current || pl.recommended) && 'pri']} onclick={() => onbuy(pl, act, act.action === 'reset')}>
+          <button type="button" class={['btn', 'btn-block', (pl.current || pl.recommended) && 'pri']} {@attach buyIntent} onclick={() => onbuy(pl, act, act.action === 'reset')}>
             {t(ACTION_TEXT[act.action!])}
           </button>
         {:else}

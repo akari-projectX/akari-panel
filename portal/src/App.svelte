@@ -9,7 +9,8 @@
   import { boot, startBoot } from '$lib/boot.svelte';
   import { t } from '$lib/i18n.svelte';
   import { match, type Page } from '$lib/pages';
-  import { prefetchCurrent, prefetchDash, prefetchSite, whenIdle } from '$lib/prefetch';
+  import { whenIdle } from '$lib/lazy';
+  import { prefetchCurrent, prefetchDash, prefetchSite } from '$lib/prefetch';
   import { loc, navigate } from '$lib/router.svelte';
   import { allowed, R, safeRedirect } from '$lib/routes';
 
