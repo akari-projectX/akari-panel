@@ -41,8 +41,10 @@ async function stubNotices(page: Page) {
     orders = [];
     return r.fulfill({ json: {} });
   });
+  /* 时间在挂上时定好：每次请求都重新算的话，「最后更新时间」每次都变，× 关掉的那一版永远对不上 */
+  const opened = iso(-3600_000), answered = iso(-600_000);
   await page.route(/\/api\/v1\/me\/tickets$/, (r) => r.fulfill({
-    json: [{ id: 't-e2e', subject: 'E2E 连不上香港线路', category: 'other', priority: 'normal', status: 'answered', messages: 2, created_at: iso(-3600_000), updated_at: iso(-600_000), unread: true }],
+    json: [{ id: 't-e2e', subject: 'E2E 连不上香港线路', category: 'other', priority: 'normal', status: 'answered', messages: 2, created_at: opened, updated_at: answered, unread: true }],
   }));
   let read = new Set<string>();
   const anns = () => {
