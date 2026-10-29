@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
   import Dialog from './Dialog.svelte';
   import { t } from '$lib/i18n.svelte';
 
@@ -10,7 +9,7 @@
    * 进行中（pending）时不能关掉。role="alertdialog"。
    */
   let {
-    open = $bindable(false), title, description, consequences = [], confirmLabel, tone = 'brand', pending = false, error = null, onconfirm, icon,
+    open = $bindable(false), title, description, consequences = [], confirmLabel, tone = 'brand', pending = false, error = null, onconfirm,
   }: {
     open?: boolean;
     title: string;
@@ -21,7 +20,6 @@
     pending?: boolean;
     error?: string | null;
     onconfirm: () => void;
-    icon?: Snippet;
   } = $props();
 
   function change(o: boolean) {
@@ -30,7 +28,7 @@
   }
 </script>
 
-<Dialog alert {tone} bind:open onOpenChange={change} {title} {description} {icon}>
+<Dialog alert {tone} bind:open onOpenChange={change} {title} {description}>
   {#if consequences.length || error}
     {#if consequences.length}
       <ul class="cons">

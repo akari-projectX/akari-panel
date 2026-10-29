@@ -8,12 +8,12 @@
   /*
    * 对话框（bits-ui Dialog：焦点困在框里、Esc、点遮罩、锁滚动、关闭后焦点还给触发它的元素、aria-modal / 标题 / 说明）。
    * 版式是 v1.4.0 的弹窗（居中的卡片，手机上也居中、四边留 12px）：流程弹窗 = 图标 + 标题 + 一行说明、可滚动的正文、底部一条不动的按钮栏；
-   * alert（确认）= 窄的一版（420px），按钮等宽并排。tone 决定图标底色（brand / warn / danger）。
+   * alert（确认）= 窄的一版（420px），按钮等宽并排。弹窗不带图标（标题 + 说明）；tone 记在 data-tone 上（brand / warn / danger）。
    * alert：确认 / 破坏性操作用 role="alertdialog"，aria-labelledby / aria-describedby 指向标题和说明。
    * dismissible=false：不可关闭（没有关闭按钮，遮罩和 Esc 都不起作用，例如「绑定邮箱」）。wide：520px（确认订单，样稿同宽）。
    */
   let {
-    open = $bindable(false), onOpenChange, dismissible = true, wide = false, alert = false, reading = false, meta, tone = 'brand', title, description, icon, children, footer,
+    open = $bindable(false), onOpenChange, dismissible = true, wide = false, alert = false, reading = false, meta, tone = 'brand', title, description, children, footer,
   }: {
     open?: boolean;
     onOpenChange?: (open: boolean) => void;
@@ -25,7 +25,6 @@
     tone?: 'brand' | 'warn' | 'danger';
     title: string;
     description?: string;
-    icon?: Snippet;
     children?: Snippet;
     footer?: Snippet;
   } = $props();
@@ -41,7 +40,7 @@
   <Dialog.Portal>
     <Dialog.Overlay class="dlg-overlay" />
     <D.Content
-      class={['dlg', wide && 'wide', alert && 'confirm', reading && 'reading', icon && 'has-icon']}
+      class={['dlg', wide && 'wide', alert && 'confirm', reading && 'reading']}
       data-tone={tone}
       escapeKeydownBehavior={dismissible ? 'close' : 'ignore'}
       interactOutsideBehavior={dismissible ? 'close' : 'ignore'}
@@ -56,7 +55,6 @@
       {:else}
         <header>
           <div class="dlg-head">
-            {@render icon?.()}
             <div>
               <Dialog.Title level={2} class="dlg-title">{title}</Dialog.Title>
               {#if description}<Dialog.Description class="dlg-desc">{description}</Dialog.Description>{/if}

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { meApi } from '@/api';
   import ConfirmDialog from './ui/ConfirmDialog.svelte';
   import { refresh } from '$lib/auth.svelte';
@@ -46,5 +45,4 @@
 <!-- 语气同「退出所有设备」：琥珀色（会断开所有设备，但不删任何东西） -->
 <ConfirmDialog bind:open tone="warn" title={t('重置订阅？')} description={t('用于订阅链接泄露的情况。')} {consequences}
   confirmLabel={busy.busy ? t('重置中') : t('确认重置')} pending={busy.busy} {error} onconfirm={reset}>
-  {#snippet icon()}<TriangleAlert class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
 </ConfirmDialog>

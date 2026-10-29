@@ -11,7 +11,7 @@
   `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；common/rest 由 `lib/pages.ts` 的 `withCss` 在页面分包之前动态引入（Vite 不保证共用 CSS 先于页面 CSS 进 `<head>`；`withCss` 按调用顺序先插 common、rest 再插页面自己的），各 `pages/*.svelte` 只 import 自己的那份，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
   页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
 - 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
-- 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种：流程（图标 + 标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
+- 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种（2026-10-29 起一律不带图标：`Dialog` 没有 `icon` 片段）：流程（标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
   **阅读**（`reading` + `meta` 片段：公告、工单对话，宽 640，只有正文滚动）。弹窗开着时 `lib/visual-viewport.ts` 把可见视口写进 `--vv-h` / `--vv-top`，
   手机弹出软键盘时弹窗挪到键盘上方。
 - 切页：旧页面淡出（`--dur-exit` 100ms）→ 回到页首 → 新页面淡入（`App.svelte` 的 `shown` / `leaving`、`.page.out`）；换页的回到页首由它做，`navigate` 只在同一页内改查询串时立刻回到页首；
@@ -36,7 +36,7 @@
   aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
   不为外壳引入 bits-ui，首屏更小。
 - **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
-  窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；带图标的确认框窄屏图标单独一行、宽屏正文缩进到标题那一栏；图标底色随 `tone`，不要只改图标颜色）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
+  窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；`tone` 只决定确认按钮的语气）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
   所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
 - 页面容器：用户中心与访客布局的 `<main>` 都是 `.wrap`（访客是 `.wrap.guest`），两侧留白只来自 `--gutter`（56 / 32 / 20px），页面自己不加左右边距；要贴满页宽的条用 `calc(-1 * var(--gutter))` 抵消。
 - 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、

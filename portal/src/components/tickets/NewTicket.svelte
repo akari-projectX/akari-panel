@@ -1,5 +1,4 @@
 <script lang="ts">
-  import LifeBuoy from '@lucide/svelte/icons/life-buoy';
   import {
     TICKET_CATEGORIES, TICKET_MAX_BODY, TICKET_MAX_SUBJECT, TICKET_PRIORITIES, orderApi, ticketApi,
     type TicketCategory, type TicketPriority,
@@ -70,7 +69,6 @@
 </script>
 
 <Dialog bind:open onOpenChange={change} wide title={t('提交新工单')} description={t('把现象、时间和用的客户端写清楚，能省掉一轮来回')}>
-  {#snippet icon()}<LifeBuoy class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <form id="ticket-form" novalidate onsubmit={submit} class="form">
     <TextField
       {...f.field('subject', 'ticket-subject')}

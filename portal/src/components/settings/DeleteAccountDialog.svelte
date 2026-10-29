@@ -1,6 +1,5 @@
 <script lang="ts">
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { untrack } from 'svelte';
   import { accountApi, passkeyApi, type DeleteImpact } from '@/api';
   import { isUserCancel } from '@/api/webauthn';
@@ -108,7 +107,6 @@
 </script>
 
 <Dialog bind:open onOpenChange={change} tone="danger" title={t('注销账户')} description={t('这是不可恢复的操作，请先看清会失去什么。')}>
-  {#snippet icon()}<TriangleAlert class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   {#if impact.loading && !d}
     <Loading rows={3} />
   {:else if impact.error && !d}

@@ -42,7 +42,6 @@
   title={signup ? t('添加通行密钥') : t('给这台设备添加通行密钥？')}
   description={signup ? t('为了保证您的账户安全，请添加通行密钥。') : t('下次用 Face ID、指纹或锁屏密码登录，不用再输密码。')}
 >
-  {#snippet icon()}<KeyRound class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   {#if !signup}
   <div class="setting">
     <div>
