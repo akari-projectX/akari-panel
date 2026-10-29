@@ -1948,14 +1948,19 @@ async fn every_period_kind() {
         assert_eq!(r.json()["amount_cents"], *cents);
         assert_eq!(r.json()["credit_cents"], 0, "renewals earn no credit");
         assert_eq!(pay(&db, order_id(&r)).await, Paid::Now { fulfilled: true });
-        let want: Option<chrono::DateTime<chrono::Utc>> =
-            sqlx::query_scalar("SELECT akari_period_end($1, $2, $3)")
-                .bind(exp)
-                .bind(period.as_str())
-                .bind(*days)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        // Renewals keep the subscription's anchor day (P3-5): bought on the
+        // 29th, a half year from Feb 28 ends on Aug 29, not Aug 28.
+        let want: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT akari_period_end($1, $2, $3, \
+             (SELECT period_anchor FROM user_plans WHERE user_id = $4 AND status = 'active'))",
+        )
+        .bind(exp)
+        .bind(period.as_str())
+        .bind(*days)
+        .bind(user)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
         let now = expiry(&db, user).await.unwrap();
         assert_eq!(
             Some(now),
