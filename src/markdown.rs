@@ -116,6 +116,38 @@ pub fn to_text(md: &str) -> String {
         .collect()
 }
 
+/// Render a short text as a lead and the rest (the shop's plan
+/// descriptions): the opening paragraph, up to the first blank line or
+/// block (list, heading, quote, fence, rule), is the lead; everything
+/// after it is the rest. A text that opens with a block has no lead. Both
+/// halves go through [`render`].
+pub fn render_lead(md: &str) -> (String, String) {
+    let text = md.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = text.split('\n').collect();
+    let starts_block = |l: &str| {
+        is_fence(l).is_some()
+            || is_rule(l)
+            || heading(l).is_some()
+            || bullet(l).is_some()
+            || numbered(l).is_some()
+            || quoted(l).is_some()
+    };
+    let Some(start) = lines.iter().position(|l| !l.trim().is_empty()) else {
+        return (String::new(), String::new());
+    };
+    if starts_block(lines[start]) {
+        return (String::new(), render(&text));
+    }
+    let end = lines[start..]
+        .iter()
+        .position(|l| l.trim().is_empty() || starts_block(l))
+        .map_or(lines.len(), |n| start + n);
+    (
+        render(&lines[start..end].join("\n")),
+        render(&lines[end..].join("\n")),
+    )
+}
+
 fn is_fence(line: &str) -> Option<usize> {
     let t = line.trim_start();
     let n = t.chars().take_while(|c| *c == '`').count();
@@ -494,6 +526,30 @@ fn inline_no_links(s: &str, out: &mut String, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lead_and_rest() {
+        let (lead, rest) = render_lead("Fast **lines**\nsecond\n\n- one\n- **two**");
+        assert_eq!(lead, "<p>Fast <strong>lines</strong><br>second</p>");
+        assert_eq!(rest, "<ul><li>one</li><li><strong>two</strong></li></ul>");
+        // A list right after the lead line ends the lead.
+        let (lead, rest) = render_lead("Lead\n- a");
+        assert_eq!(
+            (lead.as_str(), rest.as_str()),
+            ("<p>Lead</p>", "<ul><li>a</li></ul>")
+        );
+        // Opening with a block: no lead.
+        let (lead, rest) = render_lead("\n- **核心配置**：\n- 月流量");
+        assert_eq!(lead, "");
+        assert_eq!(
+            rest,
+            "<ul><li><strong>核心配置</strong>：</li><li>月流量</li></ul>"
+        );
+        assert_eq!(render_lead(" \n "), (String::new(), String::new()));
+        let (lead, rest) = render_lead("<script>x</script>\n\n<b>y</b>");
+        assert_eq!(lead, "<p>&lt;script&gt;x&lt;/script&gt;</p>");
+        assert_eq!(rest, "<p>&lt;b&gt;y&lt;/b&gt;</p>");
+    }
 
     #[test]
     fn blocks_and_inline() {

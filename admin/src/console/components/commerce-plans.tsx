@@ -144,12 +144,17 @@ export function listed(p: PlanView): boolean {
   return p.enabled && p.on_sale && p.prices.some((x) => x.period !== "reset");
 }
 
-/** The first line of a plan description (portal markdown-lite: "- " lines are a list). */
+/** The first line of a plan description as plain text (the description is Markdown: drop list/heading/quote markers and emphasis). */
 export function firstLine(text: string): string {
   return (
     text
       .split("\n")
-      .map((l) => l.replace(/^-\s+/, "").trim())
+      .map((l) =>
+        l
+          .replace(/^\s*(?:[-*+]\s+|\d+\.\s+|#+\s+|>\s*)/, "")
+          .replace(/\*\*|__|`/g, "")
+          .trim(),
+      )
       .find(Boolean) ?? ""
   );
 }

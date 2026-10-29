@@ -55,7 +55,7 @@
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
-  `PlanGrid`（design/portal-polish-2026-10：外框圆角、共用细线的格子，每行三格，最后一行用浅底空格补齐；无周期切换、等宽「¥x /月 起」、一个按钮（只有当前套餐实底）、流量 / 速率两行规格、功能清单）、`ConfirmOrder`（确认订单对话框，
+  `PlanGrid`（样稿 shop-cards，2026-10-29 用户裁决恢复独立卡片：无周期切换、「¥x /月 起」、三格规格（流量 / 重置 / 速率）、功能清单、一个按钮（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，
   第一次打开才下载：周期单选 + 省 x%、优惠码、「用余额抵扣」开关（逐单打开）、原价 / 各项抵扣 / 还需支付、换套餐作废确认、支付方式单选；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；

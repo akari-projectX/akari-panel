@@ -77,7 +77,7 @@ const group = await admin.call<{ id: string }>('POST', '/api/v1/node-groups', {
 /* ── 套餐 ── */
 const plan = await admin.call<{ id: string }>('POST', '/api/v1/plans', {
   name: 'E2E 标准', period: 'monthly', traffic_quota_bytes: 100 * 1024 ** 3, speed_limit_mbps: 300, group_ids: [group.id],
-  description: '- 全部节点\n- 每月重置流量',
+  description: '- **全部节点**\n- 每月重置流量',
   pricing: { on_sale: true, prices: [
     { period: 'month', days: null, price_cents: 1500 },
     { period: 'year', days: null, price_cents: 15000 },

@@ -53,10 +53,13 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(std.getByTestId('plan-price')).toHaveText(/¥\s*12\.50\s*\/月 起/);
   await expect(std.getByText('2 种周期可选')).toBeVisible();
   await expect(std.getByText('年付省 17%')).toBeVisible();
-  await expect(std.locator('.plan-specs > div')).toHaveCount(2);
+  await expect(std.locator('.plan-specs > div')).toHaveCount(3);
   await expect(std.locator('.plan-specs')).toContainText('100 GB');
   await expect(std.locator('.plan-specs')).toContainText('每月');
   await expect(std.locator('.plan-rich li').filter({ hasText: '全部节点' })).toBeVisible();
+  /* 套餐说明是 Markdown，面板渲染：**粗体** 是 <strong>，不会原样显示星号 */
+  await expect(std.locator('.plan-rich li strong')).toHaveText('全部节点');
+  await expect(std.locator('.plan-rich')).not.toContainText('**');
   const prem = card(page, seed.premium);
   await expect(prem.getByTestId('plan-price')).toHaveText(/¥\s*30\s*\/月$/);
   await expect(prem.getByText('更多流量')).toBeVisible();
@@ -67,10 +70,10 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   const cur = page.locator('.plan-card.is-current');
   await expect(cur).toHaveCount(1);
   await expect(cur.locator('.plan-tag')).toHaveText('当前套餐');
-  await expect(cur.getByRole('button', { name: '续费' })).toHaveClass(/ink/);
+  await expect(cur.getByRole('button', { name: '续费' })).toHaveClass(/pri/);
   await expect(cur.getByText('从到期日顺延')).toBeVisible();
   await expect(prem.getByText('旧套餐剩余价值自动抵扣')).toBeVisible();
-  await expect(prem.getByRole('button', { name: '更换到此套餐' })).not.toHaveClass(/ink/);
+  await expect(prem.getByRole('button', { name: '更换到此套餐' })).toHaveClass(/pri/);
   /* 当前套餐区：名称 + 生效中、到期与剩余天数、流量用量 */
   await expect(page.locator('main section.sec').first()).toContainText('生效中');
   await expect(page.locator('main section.sec').first()).toContainText(/到期\s*\d{4}-\d{2}-\d{2}/);

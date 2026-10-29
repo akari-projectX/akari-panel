@@ -516,11 +516,26 @@ async fn http_purchase_flow() {
     let user = db.user().await;
     let mut c = Client::new(&state, rand_ip());
     c.cookie = Some(token(&state, user).await);
+    // The description is Markdown, rendered by the server (never raw HTML)
+    sqlx::query("UPDATE plans SET description = $2 WHERE id = $1")
+        .bind(plan)
+        .bind("Fast **lines**\n\n- **核心配置**：80 GB\n- <script>x</script>")
+        .execute(&db.pool)
+        .await
+        .unwrap();
 
     let r = c.get("/test/api/v1/me/shop").await;
     assert_eq!(r.status, StatusCode::OK);
     let shop = r.json();
     assert_eq!(shop["enabled"], true);
+    assert_eq!(
+        shop["plans"][0]["summary_html"],
+        "<p>Fast <strong>lines</strong></p>"
+    );
+    assert_eq!(
+        shop["plans"][0]["details_html"],
+        "<ul><li><strong>核心配置</strong>：80 GB</li><li>&lt;script&gt;x&lt;/script&gt;</li></ul>"
+    );
     assert_eq!(shop["plans"][0]["offers"][0]["price_cents"], 990);
     assert_eq!(shop["plans"][0]["offers"][0]["amount_cents"], 990);
     assert_eq!(shop["plans"][0]["offers"][0]["period"], "days");
