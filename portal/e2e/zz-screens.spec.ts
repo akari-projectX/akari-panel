@@ -89,12 +89,12 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       name: `page-${path === '/' ? 'dashboard' : path.slice(1)}`, account: 'user@e2e.test',
       run: (page: Page) => ready(page, path),
     })),
-    /* 仪表盘的「近 7 日流量趋势」：整块、以及点开今天那一根的提示 */
+    /* 仪表盘的「近 7 日流量」：整块、以及点开今天那一根的提示 */
     ...(['dashboard-chart', 'dashboard-chart-tip'] as const).map((name) => ({
       name, account: 'user@e2e.test',
       run: async (page: Page, device: Device) => {
         await ready(page, '/');
-        const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量趋势' }) });
+        const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量' }) });
         await sec.scrollIntoViewIfNeeded();
         if (name === 'dashboard-chart-tip') {
           if (device === 'desktop') await sec.locator('.wk-col').last().hover();

@@ -529,11 +529,8 @@
   .dlg.wide { max-width: 560px; }
   .dlg.confirm { max-width: 420px; }
   .dlg header { position: relative; display: flex; flex: none; align-items: flex-start; gap: 14px; padding: 24px 24px 16px; }
-  .dlg-head { display: flex; align-items: flex-start; gap: 14px; min-width: 0; padding-right: 32px; }
-  /* 图标底：36px 的圆角块（确认弹窗 40px 的圆），底色随语气 */
-  .dlg-head .dlg-icon { box-sizing: content-box; flex: none; width: 18px; height: 18px; padding: 9px; border-radius: calc(var(--radius) * 1.4); color: var(--brand); background: var(--brand-soft); }
-  .dlg[data-tone='warn'] .dlg-icon { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
-  .dlg[data-tone='danger'] .dlg-icon { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+  /* 弹窗统一不带图标（2026-10-29 用户裁决）：标题 + 说明 */
+  .dlg-head { min-width: 0; padding-right: 32px; }
   .dlg .dlg-title { font-size: 17px; line-height: 1.4; font-weight: var(--fw-strong); letter-spacing: -.022em; color: var(--fg); }
   .dlg .dlg-desc { color: var(--muted); font-size: 13px; line-height: 1.6; margin-top: 2px; text-wrap: pretty; }
   .dlg-x {
@@ -548,9 +545,6 @@
   .dlg.confirm header { padding-top: 24px; padding-bottom: 0; }
   .dlg.confirm .dlg-title { font-size: 16.5px; line-height: 1.45; letter-spacing: -.01em; }
   .dlg.confirm .dlg-desc { margin-top: 6px; font-size: 13.5px; line-height: 1.75; }
-  .dlg.confirm .dlg-head .dlg-icon { padding: 11px; border-radius: 9999px; }
-  /* 窄屏：图标单独一行，标题、说明、正文共用同一条左边线；宽屏：图标在左，正文缩进到标题那一栏 */
-  .dlg.confirm .dlg-head { flex-direction: column; gap: 16px; }
   .dlg.confirm .bd { flex: none; padding-top: 0; padding-bottom: 0; overflow: visible; }
   .dlg.confirm footer { gap: 10px; padding: 24px 24px 24px; border-top: 0; }
   @media (min-width: 640px) {
@@ -559,9 +553,6 @@
     .dlg .bd { padding-inline: 28px; }
     .dlg footer { display: flex; justify-content: flex-end; align-items: center; padding: 14px 28px 16px; }
     .dlg footer .btn { height: 36px; }
-    .dlg.confirm .dlg-head { flex-direction: row; gap: 14px; }
-    .dlg.confirm .dlg-title { padding-top: 4px; }
-    .dlg.confirm.has-icon .bd { padding-left: calc(28px + 40px + 14px); }
     .dlg.confirm footer { display: grid; padding: 24px 28px 28px; }
     .dlg.confirm footer .btn { height: 40px; }
     .dlg-x { top: 14px; right: 14px; }

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import MailCheck from '@lucide/svelte/icons/mail-check';
   import { meApi } from '@/api';
   import TextField from './TextField.svelte';
   import Dialog from './ui/Dialog.svelte';
@@ -80,7 +79,6 @@
   title={t('绑定邮箱')}
   description={t('账号已创建。请先绑定一个邮箱：它是你的登录名，用来接收提醒和找回账号。完成之前其他功能都不能使用。')}
 >
-  {#snippet icon()}<MailCheck class="dlg-icon" size={20} strokeWidth={1.5} aria-hidden="true" />{/snippet}
   <form id="bind-email" novalidate onsubmit={submit} class="form">
     <TextField
       {...f.field('email', 'bind-email-addr')}

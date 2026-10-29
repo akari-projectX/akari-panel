@@ -41,8 +41,10 @@ async function stubNotices(page: Page) {
     orders = [];
     return r.fulfill({ json: {} });
   });
+  /* 时间在挂上时定好：每次请求都重新算的话，「最后更新时间」每次都变，× 关掉的那一版永远对不上 */
+  const opened = iso(-3600_000), answered = iso(-600_000);
   await page.route(/\/api\/v1\/me\/tickets$/, (r) => r.fulfill({
-    json: [{ id: 't-e2e', subject: 'E2E 连不上香港线路', category: 'other', priority: 'normal', status: 'answered', messages: 2, created_at: iso(-3600_000), updated_at: iso(-600_000), unread: true }],
+    json: [{ id: 't-e2e', subject: 'E2E 连不上香港线路', category: 'other', priority: 'normal', status: 'answered', messages: 2, created_at: opened, updated_at: answered, unread: true }],
   }));
   let read = new Set<string>();
   const anns = () => {
@@ -75,18 +77,21 @@ test('#60 plan, days left, traffic left, lines, balance, subscription, announcem
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
   await expect(page.locator('main .page-sub')).toHaveText('你的账号状态、流量走势与订阅信息一览。');
-  const kpis = page.locator('.statrow');
-  for (const k of ['剩余流量', '套餐剩余', '可用线路', '账户余额']) await expect(kpis.getByText(k, { exact: true }).first()).toBeVisible();
+  /* 首屏：剩余流量大字 + 分段条，右侧套餐到期 / 在线线路 / 余额 / 速率 */
+  const kpis = page.locator('.hx');
+  for (const k of ['套餐到期', '在线线路', '余额', '速率']) await expect(kpis.getByText(k, { exact: true }).first()).toBeVisible();
   await expect(kpis.getByRole('meter', { name: '剩余流量' })).toBeVisible();
-  await expect(kpis).toContainText(/共 100 GB，已用/);
-  await expect(kpis).toContainText(/到期 \d{4}-\d{2}-\d{2}/);
+  await expect(kpis).toContainText(/GB 剩余/);
+  await expect(kpis).toContainText(/\/ 100 GB · 已用/);
+  await expect(kpis).toContainText(/\d{4}-\d{2}-\d{2}/);
   await expect(kpis).toContainText(/可提现 ¥/);
   await expect(page.getByRole('button', { name: '复制订阅链接' })).toBeVisible();
   await expect(page.getByText('E2E 维护通知').first()).toBeVisible();
-  /* 线路：每个入口一行，国旗，倍率是此刻生效的（中转 ×2、日本全天 ×0.5） */
+  /* 线路：细线表格，每个入口一行，名称前是国旗（地区名是国旗的读屏名称），倍率是此刻生效的（中转 ×2、日本全天 ×0.5） */
   const lines = page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '订阅内的线路' }) });
-  await expect(lines.locator('.rowline')).toHaveCount(3);
-  await expect(lines.locator('.rowline .flag').first()).toBeVisible();
+  await expect(lines.locator('.ntbl tbody tr')).toHaveCount(3);
+  await expect(lines.locator('.ntbl .nname .flag').first()).toBeVisible();
+  for (const h of ['线路', '状态', '延迟', '倍率']) await expect(lines.getByRole('columnheader', { name: h })).toBeVisible();
   await expect(lines.getByText('×2', { exact: true })).toBeVisible();
   await expect(lines.getByText('×0.5', { exact: true })).toBeVisible();
   await expect(lines.getByRole('link', { name: '全部线路' })).toHaveAttribute('href', '/nodes');
@@ -99,8 +104,8 @@ test('#60 plan, days left, traffic left, lines, balance, subscription, announcem
 test('#60 traffic chart: 7 daily bars with axis and unit, today\'s label, tooltip by pointer and keyboard', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
-  const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量趋势' }) });
-  await expect(sec).toContainText(/合计 .+，其中下行 .+、上行 .+/);
+  const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量' }) });
+  await expect(sec.locator('.wk-sum')).toContainText(/↓ .+ · ↑ .+/);
   await expect(sec).toContainText(/计费 \d/);
   await expect(sec).toContainText(/单位 (GB|MB|KB)/);
   const cols = sec.locator('.wk-col');
@@ -283,21 +288,25 @@ test('notices: pending order, staff reply; the latest unread announcement as a n
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
   const notes = page.locator('[data-page-notices]');
-  await expect(notes).toContainText('你有一笔待支付的订单');
-  await expect(notes).toContainText(/E2E 高级 · 月付 · ¥30 · .+前未支付将自动关闭/);
+  /* 提示胶囊，按急迫程度：待支付 → 工单 → 公告 */
+  const caps = notes.locator('.cap');
+  await expect(caps).toHaveCount(3);
+  await expect(caps.nth(0)).toContainText('待支付');
+  await expect(caps.nth(0)).toContainText(/E2E 高级 · 月付 · ¥30/);
+  await expect(caps.nth(0)).toContainText(/前未支付将自动关闭/);
   await expect(notes.getByRole('link', { name: '去支付' })).toHaveAttribute('href', '/orders/o-e2e');
-  await expect(notes).toContainText('管理员已回复你的工单');
-  await expect(notes.getByRole('link', { name: '查看回复' })).toHaveAttribute('href', '/tickets?id=t-e2e');
-  const banner = notes.locator('.notice', { hasText: '日本节点今晚 02:00–03:00 维护' });
-  await expect(banner).toBeVisible();
-  await expect(notes.locator('.notice')).toHaveCount(3);
+  await expect(caps.nth(1)).toContainText('管理员已回复你的工单');
+  await expect(notes.getByRole('link', { name: /管理员已回复你的工单/ })).toHaveAttribute('href', '/tickets?id=t-e2e');
+  const banner = caps.nth(2);
+  await expect(banner).toContainText('日本节点今晚 02:00–03:00 维护');
+  await expect(banner.locator('.cap-tag')).toHaveText('维护');
   await shot(page, info, 'dashboard-notices-light');
   await dark(page);
   await shot(page, info, 'dashboard-notices-dark');
   await page.emulateMedia({ colorScheme: 'light' });
 
   /* 公告详情：标题、正文（面板的 HTML）、「我知道了」；打开即已读，提醒换成下一条未读 */
-  await banner.getByRole('button', { name: '查看详情' }).click();
+  await banner.getByRole('button', { name: /日本节点今晚/ }).click();
   const dialog = page.getByRole('dialog', { name: '日本节点今晚 02:00–03:00 维护' });
   await expect(dialog).toContainText('期间东京、大阪线路短暂不可用');
   await expect(dialog).toContainText('置顶');
@@ -312,7 +321,40 @@ test('notices: pending order, staff reply; the latest unread announcement as a n
   /* 取消待付款订单：提示，提醒消失 */
   await notes.getByRole('button', { name: '取消订单' }).click();
   await expect(page.getByText('订单已取消').first()).toBeVisible();
-  await expect(notes).not.toContainText('你有一笔待支付的订单');
+  await expect(notes.locator('.cap', { hasText: '待支付' })).toHaveCount(0);
+});
+
+test('notices: × closes each capsule — the announcement is marked read, the ticket and the order stay hidden until they change', async ({ page }) => {
+  await stubNotices(page);
+  await signIn(page, 'user@e2e.test');
+  await dashboard(page);
+  const notes = page.locator('[data-page-notices]');
+  const cap = (text: string | RegExp) => notes.locator('.cap', { hasText: text });
+  /* 公告的 × = 标为已读：下一条未读顶上来 */
+  await cap('日本节点今晚').getByRole('button', { name: '关闭' }).click();
+  await expect(cap('日本节点今晚')).toHaveCount(0);
+  await expect(cap('双十一全场八折')).toBeVisible();
+  /* 工单与待支付的 ×：刷新后仍然关着（localStorage），订单页照常 */
+  await cap('管理员已回复你的工单').getByRole('button', { name: '关闭' }).click();
+  await cap('待支付').getByRole('button', { name: '关闭' }).click();
+  await expect(cap('管理员已回复你的工单')).toHaveCount(0);
+  await expect(cap('待支付')).toHaveCount(0);
+  await page.reload();
+  await ready(page, '仪表盘');
+  await expect(cap('双十一全场八折')).toBeVisible();
+  await expect(cap('管理员已回复你的工单')).toHaveCount(0);
+  await expect(cap('待支付')).toHaveCount(0);
+  /* 客服又回复了（更新时间变了）：工单胶囊再出现 */
+  await page.unroute(/\/api\/v1\/me\/tickets$/);
+  await page.route(/\/api\/v1\/me\/tickets$/, (r) => r.fulfill({
+    json: [{ id: 't-e2e', subject: 'E2E 连不上香港线路', category: 'other', priority: 'normal', status: 'answered', messages: 3, created_at: iso(-3600_000), updated_at: iso(-60_000), unread: true }],
+  }));
+  await page.evaluate(() => { for (const k of Object.keys(sessionStorage)) if (k.startsWith('akari.cache')) sessionStorage.removeItem(k); });
+  await page.reload();
+  await ready(page, '仪表盘');
+  await expect(cap('管理员已回复你的工单')).toBeVisible();
+  await expect(cap('待支付')).toHaveCount(0);
+  await page.evaluate(() => { localStorage.removeItem('akari.dismiss.order'); localStorage.removeItem('akari.dismiss.ticket'); });
 });
 
 test('#17 unverified email: "later" hides it for the session, "verify" opens the code dialog on the page', async ({ page }, info) => {
@@ -322,7 +364,7 @@ test('#17 unverified email: "later" hides it for the session, "verify" opens the
   await dashboard(page);
   const notes = page.locator('[data-page-notices]');
   await expect(notes).toContainText('邮箱还没有验证');
-  await notes.getByRole('button', { name: '稍后' }).click();
+  await notes.locator('.cap', { hasText: '邮箱还没有验证' }).getByRole('button', { name: '关闭' }).click();
   await expect(page.getByText('邮箱还没有验证')).toHaveCount(0);
   await page.reload();
   await ready(page, '仪表盘');
@@ -364,8 +406,12 @@ test('#19 renewal scope (expired): banner, no lines, subscription or traffic; th
   await expect(page.locator('#subscribe')).toContainText('订阅已暂停');
   await expect(page.locator('section[aria-labelledby="h-traffic"]')).toHaveCount(0);
   await expect(page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '订阅内的线路' }) })).toContainText('线路暂不可用');
-  await expect(page.locator('.statrow')).toContainText('续费后恢复');
-  await expect(page.locator('.statrow')).not.toContainText('购买套餐后可用');
+  await expect(page.locator('.hx')).toContainText('续费后恢复');
+  await expect(page.locator('.hx')).not.toContainText('购买套餐后可用');
+  /* 红色「已暂停」胶囊没有 × */
+  const paused = page.locator('[data-page-notices] .cap', { hasText: '已暂停' });
+  await expect(paused).toBeVisible();
+  await expect(paused.getByRole('button', { name: '关闭' })).toHaveCount(0);
   await shot(page, info, 'dashboard-renewal-light');
   await dark(page);
   await shot(page, info, 'dashboard-renewal-dark');

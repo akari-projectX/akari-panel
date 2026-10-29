@@ -28,8 +28,11 @@ type State = {
   booting: boolean;
   /** 第一次取 /me 出了网络 / 服务器错误、又没有缓存：登录状态未知（门禁显示重试，不送去登录页） */
   failed: boolean;
-  /** 登录答复里带了 passkey_prompt：进用户中心后引导绑定通行密钥（一次） */
-  passkeyPrompt: boolean;
+  /**
+   * 进用户中心后引导绑定通行密钥（一次）：'login' = 登录答复里带了 passkey_prompt（站点开了引导、账户还没有通行密钥）；
+   * 'signup' = 刚用密码注册成功、站点能用通行密钥。false = 不引导
+   */
+  passkeyPrompt: false | 'login' | 'signup';
 };
 
 const cached = readCache<Me>(K.me);
@@ -95,9 +98,14 @@ export async function refresh() {
 /** 登录、注册成功后调用（拿到登录答复之后）：丢掉旧缓存，取一遍账户数据 */
 export async function signIn(result: LoginResult) {
   clearCache();
-  auth.passkeyPrompt = !!result.passkey_prompt;
+  auth.passkeyPrompt = result.passkey_prompt ? 'login' : false;
   apply(await fetchAccount(true));
   auth.failed = false;
+}
+
+/** 密码注册成功之后：第一次进仪表盘请用户加一个通行密钥（站点的通行密钥可用时） */
+export function promptPasskeyAfterSignup() {
+  if (site.options?.passkey) auth.passkeyPrompt = 'signup';
 }
 
 export function dismissPasskeyPrompt() {

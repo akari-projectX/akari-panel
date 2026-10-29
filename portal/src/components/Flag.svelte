@@ -29,13 +29,14 @@
    * 国旗图标（v1.4.0 components/flag）。用 SVG 而非 emoji：Windows 系统字体不含 regional indicator 组合字形，emoji 国旗会退化成 "HK" 字母对。
    * 只按名字逐个引入用得到的那些旗（与 lib/node.ts 的关键词表对应）；查不到的回退成一个占位方块，不猜。
    */
-  let { cc, w = 20, h = 13 }: { cc: string; w?: number; h?: number } = $props();
+  /* label = 悬停提示（如地区名）；不给时提示国家代码 */
+  let { cc, w = 20, h = 13, label }: { cc: string; w?: number; h?: number; label?: string } = $props();
   const FLAGS: Record<string, string> = { AR, AU, BR, CA, CN, DE, FR, GB, HK, ID, IN, JP, KR, MO, MY, NL, PH, RU, SG, TH, TR, TW, US, VN, ZA };
   const src = $derived(FLAGS[cc.toUpperCase()]);
 </script>
 
 {#if src}
-  <img class="flag" {src} alt="" title={cc} width={w} height={h} />
+  <img class="flag" {src} alt="" title={label ?? cc} width={w} height={h} />
 {:else}
   <span class="flag ph" style:width="{w}px" style:height="{h}px"></span>
 {/if}

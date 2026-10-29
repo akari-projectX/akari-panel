@@ -270,8 +270,12 @@ export type Offer = {
 export type ShopPlan = {
   plan_id: string;
   name: string;
-  /** 纯文本（Markdown-lite），永不当 HTML */
+  /** 说明原文（Markdown），门户不直接显示 */
   description: string;
+  /** 说明开头的段落：面板 src/markdown.rs 渲染并清洗的 HTML（只经 RichHtml 插入；没有则为空） */
+  summary_html: string;
+  /** 说明的其余部分（功能清单等），同上 */
+  details_html: string;
   traffic_quota_bytes: number | null;
   period: ResetPeriod;
   speed_limit_mbps: number | null;
