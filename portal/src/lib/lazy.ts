@@ -68,13 +68,20 @@ export function loadPage<T>(load: () => Promise<T>): Promise<T> {
   return p;
 }
 
+const preloading = new Map<() => Promise<unknown>, Promise<void>>();
+
 /**
- * 预载一个页面模块（lib/prefetch 用）：成功后 loadedPage 同步取得到；失败静默——真正进页面时 loadPage 照常重试 / 重新加载。
- * 浏览器对同一个模块地址只发一次请求，预载在途时进页面的 import() 复用它。
+ * 预载一个页面模块（lib/prefetch、lib/dialogs 用）：成功后 loadedPage 同步取得到；失败静默——真正进页面时 loadPage 照常重试 / 重新加载。
+ * 浏览器对同一个模块地址只发一次请求，预载在途时进页面的 import() 复用它；在途时再预载（指针移上又聚焦）不再调用 load。
  */
 export function preloadPage<T>(load: () => Promise<T>): Promise<void> {
   if (done.has(load)) return Promise.resolve();
-  return (cache.get(load) ?? load()).then((m) => { done.set(load, m); }, () => {});
+  let p = preloading.get(load);
+  if (!p) {
+    p = (cache.get(load) ?? load()).then((m) => { done.set(load, m); }, () => {}).finally(() => preloading.delete(load));
+    preloading.set(load, p);
+  }
+  return p;
 }
 
 /** Vite 的模块预加载失败：同样重新加载一次（之后照常抛出，交给页面） */
@@ -82,4 +89,25 @@ export function watchPreloadErrors() {
   addEventListener('vite:preloadError', (e) => {
     if (reloadOnce()) e.preventDefault();
   });
+}
+
+/*
+ * 预载（lib/prefetch 的页面、lib/dialogs 的对话框）共用的两条规则：只在快网络上做、等浏览器空闲再做。
+ */
+
+/** effectiveType 只有 slow-2g / 2g / 3g / 4g 四档；拿不到这个值的浏览器（Safari、Firefox）按快网络处理 */
+export function fastNetwork(): boolean {
+  const net = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+  if (net?.saveData) return false;
+  return !net?.effectiveType || net.effectiveType === '4g';
+}
+
+/** 等浏览器闲下来再跑，别和当前页面自己的请求抢带宽 */
+export function whenIdle(fn: () => void, timeout = 2500): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const id = window.requestIdleCallback(fn, { timeout });
+    return () => window.cancelIdleCallback(id);
+  }
+  const t = setTimeout(fn, Math.min(timeout, 1200));
+  return () => clearTimeout(t);
 }

@@ -1,11 +1,17 @@
+<script module lang="ts">
+  const Verify = () => import('../VerifyEmailDialog.svelte');
+</script>
+
 <script lang="ts">
   import Megaphone from '@lucide/svelte/icons/megaphone';
   import Clock from '@lucide/svelte/icons/clock';
   import Headphones from '@lucide/svelte/icons/headphones';
   import Mail from '@lucide/svelte/icons/mail';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import type { Attachment } from 'svelte/attachments';
   import { orderApi, type MyOrder, type TicketRow } from '@/api';
   import { formatMoney, formatTime, periodText } from '@/lib/format';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import type { TagView } from '$lib/announcement';
   import { auth, scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
@@ -20,19 +26,23 @@
    * 页面提醒按急迫程度在后：没付完的订单（components/pending-order.tsx）→ 客服回复了工单 → 流量快用完了（样稿新增）。
    * 最新公告是上面单独的横幅（Overview）。
    */
-  let { order, onorderchange, replied, latest, onopen }: {
+  let { order, onorderchange, replied, latest, onopen, openIntent }: {
     order: MyOrder | null;
     onorderchange: () => void;
     replied: TicketRow[];
     /** 最新一条没读过的公告：标题、摘要与标签（卡片左边一道同色细边）；onopen = 点「查看详情」 */
     latest: { title: string; brief: string; tag: TagView | null } | null;
     onopen: () => void;
+    /** 「查看详情」上的意图预载（公告对话框的分包，lib/dialogs） */
+    openIntent?: Attachment<HTMLElement>;
   } = $props();
 
   const NUDGE_KEY = 'akari.verify-nudge';
   let hidden = $state(readNudge());
   let verifying = $state(false);
   let verifyLoaded = $state(false);
+  /* 验证邮箱的对话框：只有这条提醒在时才预载（lib/dialogs） */
+  if (auth.me && !auth.me.email_verified && !readNudge()) preloadDialogs(Verify);
   const cancelling = new Pending();
 
   function readNudge(): boolean {
@@ -95,7 +105,7 @@
       </div>
       <div class="nx">
         <button type="button" class="btn sm ghost muted" onclick={later}>{t('稍后')}</button>
-        <button type="button" class="btn sm" onclick={verify}>{t('去验证')}</button>
+        <button type="button" class="btn sm" {@attach intent(Verify)} onclick={verify}>{t('去验证')}</button>
       </div>
     </div>
   {/if}
@@ -135,11 +145,11 @@
         </div>
         {#if latest.brief}<div class="nd">{latest.brief}</div>{/if}
       </div>
-      <button type="button" class="btn sm" onclick={onopen}>{t('查看详情')}</button>
+      <button type="button" class="btn sm" {@attach openIntent} onclick={onopen}>{t('查看详情')}</button>
     </div>
   {/if}
 {/if}
 
 {#if verifyLoaded}
-  {#await import('../VerifyEmailDialog.svelte') then m}<m.default bind:open={verifying} />{/await}
+  {#await chunk(Verify) then m}<m.default bind:open={verifying} />{/await}
 {/if}

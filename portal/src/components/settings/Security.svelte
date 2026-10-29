@@ -1,8 +1,14 @@
+<script module lang="ts">
+  const Password = () => import('./PasswordDialog.svelte');
+  const Confirm = () => import('../ui/ConfirmDialog.svelte');
+</script>
+
 <script lang="ts">
   import LogOut from '@lucide/svelte/icons/log-out';
   import { passkeyApi } from '@/api';
   import { K } from '@/lib/cache';
   import Passkeys from './Passkeys.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { signOut } from '$lib/auth.svelte';
   import { Pending } from '$lib/forms.svelte';
   import { t } from '$lib/i18n.svelte';
@@ -16,6 +22,8 @@
   const methods = resource(() => ({ key: K.passkeys, fetch: () => passkeyApi.list() }));
   const m = $derived(methods.data);
 
+  /* 两个对话框第一次打开时才挂载；分包在空闲时与按钮上的意图预载（lib/dialogs） */
+  preloadDialogs(Password, Confirm);
   let pwdOpen = $state(false);
   let pwdLoaded = $state(false);
   let leaveOpen = $state(false);
@@ -47,7 +55,7 @@
         {/if}
       {:else}
         <span class="val" class:muted={!m.password_set}>{m.password_set ? t('已设置') : t('未设置')}</span>
-        <button type="button" class={m.password_set ? 'btn' : 'btn pri'} onclick={() => { pwdLoaded = true; pwdOpen = true; }}>
+        <button type="button" class={m.password_set ? 'btn' : 'btn pri'} {@attach intent(Password)} onclick={() => { pwdLoaded = true; pwdOpen = true; }}>
           {m.password_set ? t('修改') : t('设置密码')}
         </button>
       {/if}
@@ -62,7 +70,7 @@
       <p class="set-d">{t('结束这个账户在所有设备上的登录，包括这一台。')}</p>
     </div>
     <div class="set-r">
-      <button type="button" class="btn" onclick={() => { leaveLoaded = true; leaveOpen = true; }}>
+      <button type="button" class="btn" {@attach intent(Confirm)} onclick={() => { leaveLoaded = true; leaveOpen = true; }}>
         <LogOut size={14} strokeWidth={1.75} aria-hidden="true" />{t('全部退出')}
       </button>
     </div>
@@ -70,10 +78,10 @@
 </section>
 
 {#if pwdLoaded && m}
-  {#await import('./PasswordDialog.svelte') then P}<P.default bind:open={pwdOpen} first={!m.password_set} ondone={methods.reload} />{/await}
+  {#await chunk(Password) then P}<P.default bind:open={pwdOpen} first={!m.password_set} ondone={methods.reload} />{/await}
 {/if}
 {#if leaveLoaded}
-  {#await import('../ui/ConfirmDialog.svelte') then C}
+  {#await chunk(Confirm) then C}
     <C.default
       bind:open={leaveOpen}
       tone="warn"

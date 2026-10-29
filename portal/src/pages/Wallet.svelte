@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Withdraw = () => import('../components/wallet/WithdrawDialog.svelte');
+</script>
+
 <script lang="ts">
   import '../styles/pages/wallet.css';
   import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
@@ -17,6 +21,7 @@
   import InviteLink from '../components/wallet/InviteLink.svelte';
   import Ledger from '../components/wallet/Ledger.svelte';
   import Withdrawals from '../components/wallet/Withdrawals.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
@@ -92,6 +97,8 @@
   const chains = $derived(invite.data?.usdt_chains ?? []);
   let dialogOpen = $state(false);
   let dialogLoaded = $state(false);
+  /* 提现对话框第一次打开时才挂载；分包在空闲时与按钮上的意图预载（lib/dialogs） */
+  preloadDialogs(Withdraw);
   const cancelling = new Pending();
 
   function openDialog() {
@@ -139,7 +146,7 @@
   </dl>
   {#if full}
     <div style="margin-top: 24px">
-      <button type="button" class="btn pri wd-btn" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} onclick={openDialog}>
+      <button type="button" class="btn pri wd-btn" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} {@attach intent(Withdraw)} onclick={openDialog}>
         <ArrowDownToLine size={16} strokeWidth={1.75} aria-hidden="true" />{t('申请提现')}
       </button>
       <!-- 按钮置灰时说清楚为什么（只说一条，按优先级）；否则说明打款方式 -->
@@ -188,7 +195,7 @@
 {/if}
 
 {#if dialogLoaded}
-  {#await import('../components/wallet/WithdrawDialog.svelte') then m}
+  {#await chunk(Withdraw) then m}
     <m.default bind:open={dialogOpen} invite={invite.data} {withdrawable} onsent={refresh} />
   {/await}
 {/if}
