@@ -9,12 +9,12 @@
   import Loading from '../Loading.svelte';
   import PaneHead from '../flat/PaneHead.svelte';
   import Pager from '../flat/Pager.svelte';
-  import { t, tp } from '$lib/i18n.svelte';
+  import { i18n, t, tp } from '$lib/i18n.svelte';
   import type { Resource } from '$lib/resource.svelte';
   import { R } from '$lib/routes';
 
   /*
-   * 订阅内的线路（design/portal-polish-2026-10）：一张细线表格，每页 5 条——线路（国旗 + 名称；地区名是国旗的读屏名称与悬停提示，认不出地区时留出国旗的位置）、状态、延迟（五格信号 + ms）、
+   * 订阅内的线路（design/portal-polish-2026-10）：一张细线表格，每页 5 条——线路（国旗 + 名称；按界面语言的地区名是国旗的读屏名称与悬停提示，认不出地区时留出国旗的位置）、状态、延迟（五格信号 + ms）、
    * 负载、倍率（颜色只看倍率）。能连的排前面（延迟低的在上），维护中 / 离线的沉底置灰。窄屏收起负载列。
    * 每 30 秒刷新（Overview 里的 autoReload）。续费范围：线路暂不可用。
    */
@@ -32,6 +32,22 @@
   const pages = $derived(Math.max(1, Math.ceil(list.length / PAGE)));
   const cur = $derived(Math.min(page, pages));
   const paged = $derived(list.slice((cur - 1) * PAGE, cur * PAGE));
+  /* 国旗的读屏名称与悬停提示：按界面语言的地区名（认不出代码时用面板给的地区） */
+  const regionNames = $derived.by(() => {
+    try {
+      return new Intl.DisplayNames([i18n.locale === 'en' ? 'en' : 'zh-CN'], { type: 'region' });
+    } catch {
+      return null;
+    }
+  });
+  const regionName = (cc: string, n: MyNode) => {
+    try {
+      return regionNames?.of(cc.toUpperCase()) ?? n.region ?? cc;
+    } catch {
+      return n.region ?? cc;
+    }
+  };
+
   /* 延迟的五格信号：越快格越多（只是直观参考，数字在旁边） */
   const bars = (ms: number | null) => (ms == null ? 0 : ms < 60 ? 5 : ms < 120 ? 4 : ms < 200 ? 3 : ms < 350 ? 2 : 1);
 </script>
@@ -58,8 +74,9 @@
         {@const cc = nodeCC(n)}
         {@const up = nodeUp(n)}
         {@const ms = up ? nodeLatency(n) : null}
+        {@const region = cc ? regionName(cc, n) : undefined}
         <tr class={[!up && 'is-off']}>
-          <td><span class="nname"><span class="nflag" role={cc ? 'img' : undefined} aria-label={cc ? (n.region ?? cc) : undefined} title={n.region ?? undefined}>{#if cc}<Flag {cc} w={18} h={12} />{/if}</span><span class="trunc">{stripFlag(n.entrance)}</span></span></td>
+          <td><span class="nname"><span class="nflag" role={cc ? 'img' : undefined} aria-label={region}>{#if cc}<Flag {cc} w={18} h={12} label={region} />{/if}</span><span class="trunc">{stripFlag(n.entrance)}</span></span></td>
           <td><span class="nstate" data-node-status={n.status}><i></i>{t(STATUS_TEXT[n.status])}</span></td>
           <td><span class="nlat" aria-label={ms != null ? `${ms} ms` : t('未测')}><span class="sig" aria-hidden="true">{#each { length: 5 } as _, k (k)}<i class={k < bars(ms) ? 'on' : ''}></i>{/each}</span>{ms != null ? `${ms} ms` : '—'}</span></td>
           <td class="nl">{#if up && n.load}<span data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span>{:else}—{/if}</td>

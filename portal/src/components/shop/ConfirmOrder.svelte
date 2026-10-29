@@ -76,10 +76,13 @@
   const couponRefusal = $derived(shop?.coupon?.refusal ?? offer?.coupon_refusal ?? null);
   const blocked = $derived(submitting || !offer?.action || !!pending || noPayment || (confirmSwitch && !ack) || (pickMethod && !method));
 
+  /* 选项上的价格不扣余额（余额抵扣写在下面的明细里，否则余额够时每一档都显示 ¥0）；优惠码与换套餐折算照算 */
+  const beforeBalance = (o: Offer) => (o.amount_cents == null ? o.price_cents : o.amount_cents + o.balance_cents);
+
   function perMonth(o: Offer): string {
     const months = PERIOD_MONTHS[o.period];
     if (o.refusal) return t(REFUSAL_TEXT[o.refusal]);
-    if (months && months > 1 && o.amount_cents != null) return tp('每月 {v}', { v: formatMoney(Math.round(o.amount_cents / months)) });
+    if (months && months > 1 && o.amount_cents != null) return tp('每月 {v}', { v: formatMoney(Math.round(beforeBalance(o) / months)) });
     return '';
   }
 
@@ -115,7 +118,7 @@
               {@const on = !!offer && offerKey(o) === offerKey(offer)}
               <button type="button" disabled={!o.action} aria-pressed={on} title={o.refusal ? t(REFUSAL_TEXT[o.refusal]) : undefined} onclick={() => pick(offerKey(o))}>
                 <b>{periodText(o.period, o.days, t, tp)}</b>
-                <span class="pv">{formatMoney(o.amount_cents ?? o.price_cents)}</span>
+                <span class="pv">{formatMoney(beforeBalance(o))}</span>
                 <small>{perMonth(o) || (o.action ? t(ORDER_ACTION[o.action]) : '')}</small>
               </button>
             {/each}
