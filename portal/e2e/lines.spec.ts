@@ -100,7 +100,9 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   await expect(page.getByText('30 天的每日上下行流量')).toBeVisible();
   const days = page.locator('section.sec').filter({ hasText: '30 天的每日上下行流量' }).locator('tbody tr');
   await expect(days).toHaveCount(30);
-  await expect(days.first()).toContainText('4.50 GB');
+  /* 种子写在「种子那天」：跑到站点时区的午夜之后，它就是第二行（最上面是新的一天，0 流量） */
+  await expect(days.filter({ hasText: '4.50 GB' })).toHaveCount(1);
+  await expect(days.nth(0).or(days.nth(1)).filter({ hasText: '4.50 GB' })).toHaveCount(1);
   await shot(page, info, 'traffic-30d-light');
 });
 
