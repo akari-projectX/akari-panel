@@ -4,7 +4,6 @@
 .plan-specs > div + div { border-left: 1px solid var(--line); }
 .plan-specs dd { font-size: 15px; font-weight: var(--fw-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 一行四张卡时格子窄：数值小一号，「300 Mbps」不折行 */
-@media (min-width: 1200px) { .plan-cols[data-count='4'] .plan-specs dd { font-size: 13.5px; } }
 .plan-specs dt { font-size: 12px; color: var(--faint); }
 .plan-rich ul { display: flex; flex-direction: column; list-style: none; padding-left: 0; gap: 9px; }
 .plan-rich ul li { position: relative; padding-left: 24px; }
