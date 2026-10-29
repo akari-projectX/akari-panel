@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Detail = () => import('../components/AnnouncementDialog.svelte');
+</script>
+
 <script lang="ts">
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import Pin from '@lucide/svelte/icons/pin';
@@ -10,6 +14,7 @@
   import Loading from '../components/Loading.svelte';
   import PageTitle from '../components/flat/PageTitle.svelte';
   import Section from '../components/flat/Section.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { announcementText, tagFilters, tagOf } from '$lib/announcement';
   import { att } from '$lib/attention.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
@@ -48,6 +53,8 @@
 
   let detail = $state<Announcement | null>(null);
   let dialogLoaded = $state(false);
+  /* 详情对话框第一次打开时才挂载；分包在空闲时与按钮上的意图预载（lib/dialogs） */
+  preloadDialogs(Detail);
 
   function open(n: Announcement) {
     dialogLoaded = true;
@@ -108,7 +115,7 @@
           </div>
           <h2>{f.title}</h2>
           <p>{summarize(f.html, 140)}</p>
-          <button type="button" class="an-more" onclick={() => open(featured)}>{t('阅读全文')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></button>
+          <button type="button" class="an-more" {@attach intent(Detail)} onclick={() => open(featured)}>{t('阅读全文')}<ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" /></button>
         </div>
       </article>
     {/if}
@@ -120,7 +127,7 @@
           {@const x = text(n)}
           {@const tg = tagOf(n, i18n.locale)}
           {@const d = siteParts(n.created_at)}
-          <button type="button" class="an-item" onclick={() => open(n)}>
+          <button type="button" class="an-item" {@attach intent(Detail)} onclick={() => open(n)}>
             <div class="an-day"><div class="an-dn tnum">{pad(d.day)}</div><div class="an-dw">{weekday.format(new Date(n.created_at))}</div></div>
             <div class="an-rail">
               <i class={['an-dot', !n.read && 'an-on']}></i>
@@ -144,7 +151,7 @@
 </Section>
 
 {#if dialogLoaded}
-  {#await import('../components/AnnouncementDialog.svelte') then m}<m.default item={detail} onclose={() => (detail = null)} />{/await}
+  {#await chunk(Detail) then m}<m.default item={detail} onclose={() => (detail = null)} />{/await}
 {/if}
 
 <style>

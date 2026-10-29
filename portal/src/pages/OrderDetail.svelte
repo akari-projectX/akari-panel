@@ -1,3 +1,7 @@
+<script module lang="ts">
+  const Result = () => import('../components/shop/PayResult.svelte');
+</script>
+
 <script lang="ts">
   import '../styles/pages/order-detail.css';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -19,6 +23,7 @@
   import PageTitle from '../components/flat/PageTitle.svelte';
   import Section from '../components/flat/Section.svelte';
   import Qr from '../components/dash/Qr.svelte';
+  import { chunk, preloadDialogs } from '$lib/dialogs';
   import { refresh } from '$lib/auth.svelte';
   import { Copied } from '$lib/copy.svelte';
   import { errorText } from '$lib/errors';
@@ -52,6 +57,8 @@
   /* 付款结果：轮询到状态变化时，或商店当场付清后带着 paid 跳过来时（只放一次：刷新、后退回来都不再弹） */
   let outcome = $state<PayOutcome | null>(null);
   let resultLoaded = $state(false);
+  /* 结果对话框没有触发按钮（轮询到变化时弹出）：分包在空闲时预载（lib/dialogs） */
+  preloadDialogs(Result);
   let arrivedPaid = (history.state as { paid?: boolean } | null)?.paid === true;
   function show(o: PayOutcome | null) {
     if (o) resultLoaded = true;
@@ -335,7 +342,7 @@
   </div>
 
   {#if resultLoaded}
-    {#await import('../components/shop/PayResult.svelte') then m}
+    {#await chunk(Result) then m}
       <m.default order={data} {outcome} onclose={() => show(null)} />
     {/await}
   {/if}

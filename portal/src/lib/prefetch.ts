@@ -1,7 +1,7 @@
 import { contentApi, meApi, orderApi, shopApi, ticketApi } from '@/api';
 import { K, load, readCache } from '@/lib/cache';
 import { dashSpecs } from './dash-data';
-import { loadedPage, preloadPage } from './lazy';
+import { fastNetwork, loadedPage, preloadPage } from './lazy';
 import { match, PAGES } from './pages';
 import { allowed, R, type Scope } from './routes';
 
@@ -14,13 +14,6 @@ import { allowed, R, type Scope } from './routes';
  * 预载过的页面切过去是同步渲染的（lib/lazy 的 loadedPage），数据有缓存就一次画全。
  * 失败一律静默：预取是锦上添花，真正进页面时会重新请求并展示错误。省流量、网络不到 4G 时不做空闲预取。
  */
-
-/** effectiveType 只有 slow-2g / 2g / 3g / 4g 四档；拿不到这个值的浏览器（Safari、Firefox）按快网络处理 */
-function fastNetwork(): boolean {
-  const net = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
-  if (net?.saveData) return false;
-  return !net?.effectiveType || net.effectiveType === '4g';
-}
 
 /** 各页的首屏数据（缓存键与页面自己的 resource 相同）；指针移上链接时取那一页的 */
 const DATA: Record<string, [string, () => Promise<unknown>]> = {
@@ -90,16 +83,6 @@ export function prefetchSite() {
   signedIn = null;
   if (!fastNetwork()) return;
   for (const page of PAGES) if (page.layout === 'guest' || page.path === R.dashboard) void preloadPage(page.load);
-}
-
-/** 等浏览器闲下来再跑，别和当前页面自己的请求抢带宽 */
-export function whenIdle(fn: () => void, timeout = 2500): () => void {
-  if (typeof window.requestIdleCallback === 'function') {
-    const id = window.requestIdleCallback(fn, { timeout });
-    return () => window.cancelIdleCallback(id);
-  }
-  const t = setTimeout(fn, Math.min(timeout, 1200));
-  return () => clearTimeout(t);
 }
 
 /** 站内链接上的意图（指针移上、按下、键盘聚焦）：预载那一页的分包 */

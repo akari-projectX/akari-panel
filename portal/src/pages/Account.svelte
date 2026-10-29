@@ -1,3 +1,10 @@
+<script module lang="ts">
+  /* 这一页的对话框（lib/dialogs：空闲时预载，按钮上的意图预载） */
+  const VerifyEmail = () => import('../components/VerifyEmailDialog.svelte');
+  const ChangeEmail = () => import('../components/settings/ChangeEmailDialog.svelte');
+  const DeleteAccount = () => import('../components/settings/DeleteAccountDialog.svelte');
+</script>
+
 <script lang="ts">
   import '../styles/pages/account.css';
   import PageTitle from '../components/flat/PageTitle.svelte';
@@ -14,6 +21,7 @@
   import { loc, navigate } from '$lib/router.svelte';
   import { R } from '$lib/routes';
   import { siteFlags } from '$lib/site';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { setTheme, theme, type ThemeMode } from '$lib/theme.svelte';
 
   /*
@@ -44,7 +52,8 @@
     sc !== 'full' ? 'paused' : me?.sub_own_client ? 'own' : mySubUrl(me) ? 'ok' : me?.sub_unreadable ? 'unreadable' : 'none',
   );
 
-  /* ── 对话框（第一次打开时才下载） ── */
+  /* ── 对话框（第一次打开时才挂载；分包在空闲时与按钮上的意图预载） ── */
+  preloadDialogs(VerifyEmail, ChangeEmail, DeleteAccount);
   let verifying = $state(false);
   let verifyLoaded = $state(false);
   let changing = $state(false);
@@ -122,8 +131,8 @@
           </span>
           {#if s.mail}
             <span class="btns">
-              {#if !me?.email_verified}<button type="button" class="btn pri" onclick={() => { verifyLoaded = true; verifying = true; }}>{t('验证')}</button>{/if}
-              <button type="button" class="btn" onclick={() => { changeLoaded = true; changing = true; }}>{t('更换')}</button>
+              {#if !me?.email_verified}<button type="button" class="btn pri" {@attach intent(VerifyEmail)} onclick={() => { verifyLoaded = true; verifying = true; }}>{t('验证')}</button>{/if}
+              <button type="button" class="btn" {@attach intent(ChangeEmail)} onclick={() => { changeLoaded = true; changing = true; }}>{t('更换')}</button>
             </span>
           {/if}
         </div>
@@ -218,7 +227,7 @@
           <p class="set-d">{t('删除你的个人数据。付款与退款记录按法规匿名保留。注销后不能恢复。')}</p>
         </div>
         <div class="set-r">
-          <button type="button" class="btn bad" onclick={() => { deleteLoaded = true; deleting = true; }}>{t('注销账户…')}</button>
+          <button type="button" class="btn bad" {@attach intent(DeleteAccount)} onclick={() => { deleteLoaded = true; deleting = true; }}>{t('注销账户…')}</button>
         </div>
       </div>
     </section>
@@ -226,13 +235,13 @@
 </div>
 
 {#if verifyLoaded}
-  {#await import('../components/VerifyEmailDialog.svelte') then V}<V.default bind:open={verifying} />{/await}
+  {#await chunk(VerifyEmail) then V}<V.default bind:open={verifying} />{/await}
 {/if}
 {#if changeLoaded}
-  {#await import('../components/settings/ChangeEmailDialog.svelte') then C}<C.default bind:open={changing} />{/await}
+  {#await chunk(ChangeEmail) then C}<C.default bind:open={changing} />{/await}
 {/if}
 {#if deleteLoaded}
-  {#await import('../components/settings/DeleteAccountDialog.svelte') then D}<D.default bind:open={deleting} />{/await}
+  {#await chunk(DeleteAccount) then D}<D.default bind:open={deleting} />{/await}
 {/if}
 
 <style>

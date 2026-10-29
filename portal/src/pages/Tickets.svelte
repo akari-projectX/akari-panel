@@ -1,3 +1,8 @@
+<script module lang="ts">
+  const NewTicket = () => import('../components/tickets/NewTicket.svelte');
+  const Thread = () => import('../components/tickets/Thread.svelte');
+</script>
+
 <script lang="ts">
   import Headphones from '@lucide/svelte/icons/headphones';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
@@ -12,6 +17,7 @@
   import Row from '../components/flat/Row.svelte';
   import Section from '../components/flat/Section.svelte';
   import StatRow from '../components/flat/StatRow.svelte';
+  import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { att } from '$lib/attention.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
@@ -34,6 +40,8 @@
   $effect(() => { if (tickets.data) att.tickets = tickets.data; });
 
   let current = $state<TicketRow | null>(null);
+  /* 两个对话框第一次打开时才挂载；分包在空闲时与按钮 / 行上的意图预载（lib/dialogs） */
+  preloadDialogs(NewTicket, Thread);
   let threadLoaded = $state(false);
   let creating = $state(false);
   let newLoaded = $state(false);
@@ -87,7 +95,7 @@
 <Section>
   {#snippet title()}<Headphones size={16} strokeWidth={1.75} aria-hidden="true" />{t('我的工单')}{/snippet}
   {#snippet desc()}{t('点击任意工单查看完整对话')}{/snippet}
-  {#snippet extra()}<button type="button" class="btn pri tk-new" onclick={openNew}><Plus size={16} strokeWidth={1.75} aria-hidden="true" />{t('提交工单')}</button>{/snippet}
+  {#snippet extra()}<button type="button" class="btn pri tk-new" {@attach intent(NewTicket)} onclick={openNew}><Plus size={16} strokeWidth={1.75} aria-hidden="true" />{t('提交工单')}</button>{/snippet}
 
   {#if tickets.loading && !tickets.data}
     <Loading />
@@ -98,7 +106,7 @@
   {:else}
     {#each list as x (x.id)}
       {@const fresh = x.unread && x.status !== 'closed'}
-      <Row onclick={() => openThread(x)}>
+      <Row onclick={() => openThread(x)} {@attach intent(Thread)}>
         {#snippet avatar()}
           <span class="tk-av">
             <MessageCircle size={18} strokeWidth={1.75} aria-hidden="true" />
@@ -119,10 +127,10 @@
 </Section>
 
 {#if newLoaded}
-  {#await import('../components/tickets/NewTicket.svelte') then m}<m.default bind:open={creating} oncreated={created} />{/await}
+  {#await chunk(NewTicket) then m}<m.default bind:open={creating} oncreated={created} />{/await}
 {/if}
 {#if threadLoaded}
-  {#await import('../components/tickets/Thread.svelte') then m}
+  {#await chunk(Thread) then m}
     <m.default ticket={current} onclose={() => (current = null)} onchanged={() => tickets.reload()} />
   {/await}
 {/if}

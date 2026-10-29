@@ -37,7 +37,9 @@
   不为外壳引入 bits-ui，首屏更小。
 - **bits-ui 只用于真正需要的原语**：对话框（`src/components/ui/Dialog.svelte`：焦点困住、Esc / 遮罩、锁滚动、还焦点；`dismissible=false` = 不可关闭；`alert` = role="alertdialog"（确认 / 破坏性操作，`ConfirmDialog` 与重置订阅，同 React）；
   窄屏是底部抽屉；标题 / 说明用 `.dlg-title` / `.dlg-desc` 定样式（bits-ui 的 data 属性在 alert 变体下是 `data-alert-dialog-*`，别按属性选）；带图标的确认框窄屏图标单独一行、宽屏正文缩进到标题那一栏；图标底色随 `tone`，不要只改图标颜色）与开关（`ui/Switch.svelte`）。用到它们的组件一律按需加载（`PasskeyPrompt`、`BindEmailDialog` 由 DashLayout `{#await import()}`），
-  所以 bits-ui 不进首屏。表单控件（`TextField`、按钮）是手写的。
+  所以 bits-ui 不进首屏。**按钮打开的对话框一律经 `lib/dialogs.ts`**：加载函数写在 `<script module>`，`preloadDialogs(…)` 在页面空闲时预载（同 `lib/prefetch` 的快网络规则），
+  触发按钮 `{@attach intent(加载函数)}`（指针移上 / 按下、聚焦即下载；`flat/Row` 把组件上的 `{@attach}` 落到按钮上），打开用 `{#await chunk(加载函数) then m}`（已下好则同步画出）；
+  否则第一次点击要等分包下载（限速网络上一两秒）。要取数的对话框先打开、数据区用 `Loading` 占位。e2e `e2e/dialogs.spec.ts`。表单控件（`TextField`、按钮）是手写的。
 - 页面容器：用户中心与访客布局的 `<main>` 都是 `.wrap`（访客是 `.wrap.guest`），两侧留白只来自 `--gutter`（56 / 32 / 20px），页面自己不加左右边距；要贴满页宽的条用 `calc(-1 * var(--gutter))` 抵消。
 - 登录、注册、找回 / 重设密码、注销结果、条款 / 隐私（`src/pages/`，访客布局；条款 / 隐私用 680px 的阅读栏 `Page.wide`）。共用的小模块：`lib/forms.svelte.ts`（`FieldErrors` 内联错误 + 聚焦第一个、`Pending`、`Countdown`、
   `isEmail` / `isCode` / `digits` / `fieldOf`）、`lib/form-guard.svelte.ts`（`FormGuard`：蜜罐、Turnstile、表单令牌、每 30 秒 / 回到前台 / 提交后
@@ -51,12 +53,12 @@
 - **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、最新未读公告横幅、`Notices` 提醒细行、
   四个关键数字、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
   图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
-  下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱）都是第一次打开时才下载（含 bits-ui）。
+  下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。
   小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
   线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards：无周期切换、「¥x /月 起」、三格规格、功能清单、一个按钮；当前套餐卡与「推荐」卡用主按钮）、`ConfirmOrder`（确认订单对话框，
-  第一次打开才下载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
+  单独分包、空闲时预载：周期单选 + 省 x%、优惠码、换套餐作废确认、支付方式单选、金额明细；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
@@ -66,7 +68,7 @@
   窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
   `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`）、
   `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
-  `WithdrawDialog` 第一次点「申请提现」才下载（含 bits-ui）；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
+  `WithdrawDialog`（含 bits-ui）单独分包、空闲时预载；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
   地址 `?tab=`，换分页 `navigate(…, { replace: true, keepScroll: true })`。文案表与纯函数 `lib/wallet.ts`（`wallet.test.ts`），
   复制 `lib/copy.svelte.ts`（`Copied`）。页内分页是 `components/flat/Tabs`，关键数字 `flat/StatRow`，表格 `.tbl.flat-head` / `.wtbl`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
   seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
