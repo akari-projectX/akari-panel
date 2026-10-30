@@ -71,7 +71,7 @@
   → `Flow`（7 / 30 天切换，默认 7 天 = 预取的那份（`lib/dash-data` 的 `trafficSpec`），切到 30 天才取；`WeekChart` 30 天时只标今天和往前每 5 天）→ `News`（三条公告的细线列表，点开公告详情）；
   右栏 `Access`（`#subscribe`；仅自研客户端 / 暂停 / 读不出 / 没有套餐几种分支）+ `Subscribe`（「复制订阅链接」正文色胶囊、格式菜单、二维码开关（默认收起，`Qr` 本地生成）、导入的客户端名字之间细竖线 + 更多、还没有客户端）→ `DocsPreview`（教程：四篇文章，分类名 + 标题，当前设备的分类在前）；
   整宽 `NodesPreview`（线路 · 负载（小条 + 字）· 延迟 · 倍率 · 状态，至多两个入口标签，每页 5 条）。
-  样稿里的「活动位」（限时活动、倒计时、优惠码）没有数据来源，不画。样式全在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`、`ntbl`、`dload`）。
+  活动位 `Promo`（右栏，接入配置与教程之间）：数据 = 站长在后台「内容 › 活动」配置的 `GET /me/promotion`（`K.promotion`，在 `lib/dash-data` 里随首屏预取），没有活动整块不画；标签「限时活动」+ 倒计时（`role=timer`，按面板 `now` 与本机时钟的差，每秒走、后台标签页不走，到 0 收起）、大号折扣字样（公告标签的玫红 `--t-pink`）、标题与说明（按界面语言，英文空回落中文）、虚线框优惠码 + 复制（券可用时才有）、按钮（默认去商店，外链新窗口）。样式全在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`、`ntbl`、`dload`）。
   对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards，2026-10-29 用户裁决恢复独立卡片：无周期切换、「¥x /月 起」、三格规格（流量 / 重置 / 速率）、功能清单、一个按钮（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，

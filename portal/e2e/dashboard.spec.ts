@@ -276,6 +276,38 @@ test('B1 own client only: no link, copy, QR or import buttons; only the client d
   }
 });
 
+test('promotion: the admin-configured slot with its countdown, badge and code (copied); gone after delete', async ({ page, context }, info) => {
+  const code = `E2EPROMO${info.project.name === 'desktop' ? 'D' : 'M'}`;
+  psql(`INSERT INTO coupons (id, code, kind, value) VALUES (gen_random_uuid(), '${code}', 'percent', 20) ON CONFLICT DO NOTHING;`);
+  const a = await admin();
+  const now = Date.now();
+  const { id } = await a.call<{ id: string }>('POST', '/api/v1/promotions', {
+    title_zh: 'E2E 双十一全场八折', line_zh: '续费同样适用', badge: '8折', coupon_code: code,
+    starts_at: new Date(now - 3_600_000).toISOString(), ends_at: new Date(now + 2 * 86_400_000 + 3_600_000).toISOString(),
+  });
+  try {
+    await signIn(page, 'user@e2e.test');
+    await dashboard(page);
+    const slot = page.getByTestId('promo');
+    await expect(slot).toContainText('限时活动');
+    await expect(slot).toContainText('E2E 双十一全场八折');
+    await expect(slot).toContainText('8折');
+    await expect(slot.getByRole('timer')).toContainText(/还剩 2 天 \d\d:\d\d:\d\d/);
+    await expect(slot.locator('code')).toHaveText(code);
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await slot.getByRole('button', { name: '复制' }).click();
+    await expect(slot.getByRole('button', { name: '已复制' })).toBeVisible();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
+    await expect(slot.getByRole('link', { name: /去商店/ })).toHaveAttribute('href', '/shop');
+    await shot(page, info, 'dashboard-promotion');
+  } finally {
+    await a.call('DELETE', `/api/v1/promotions/${id}`);
+  }
+  await page.evaluate(() => sessionStorage.clear());
+  await dashboard(page);
+  await expect(page.getByTestId('promo')).toHaveCount(0);
+});
+
 test('#14 client downloads: configured downloads replace the per-platform guides', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await dashboard(page);

@@ -272,7 +272,7 @@ docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "DELETE FROM cle
 # W17: alert settings an aborted run may leave (a webhook to a dead receiver).
 docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE server_alerts, alert_notifications; UPDATE alert_settings SET version = 0, enabled = true, offline_secs = 300, webhook_enabled = false, webhook_url = NULL, webhook_secret_enc = NULL, telegram_enabled = false, telegram_chat_id = NULL, telegram_token_enc = NULL, telegram_api_url = NULL, email_enabled = false, email_to = '{}';" >/dev/null 2>&1 || true
 # Ops: announcements, knowledge base, templates and branding of an earlier run.
-docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates CASCADE; DELETE FROM announcement_tags WHERE name_zh LIKE '冒烟%'; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
+docker compose exec -T postgres psql -U akari -d "$SMOKE_DB" -c "TRUNCATE announcements, kb_articles, kb_categories, mail_templates, promotions CASCADE; DELETE FROM announcement_tags WHERE name_zh LIKE '冒烟%'; DELETE FROM site_branding; INSERT INTO site_branding (id) VALUES (1);" >/dev/null 2>&1 || true
 vk flushdb >/dev/null
 
 # --- sections: run them all, report every failure ---------------------------
@@ -3928,6 +3928,23 @@ done
 [ "$(api_json "$JAR" POST "$BASE/api/v1/content/preview" '{"markdown":"[x](javascript:alert(1)) ![i](http://e/i.png)"}')" = "200" ] \
   && ! matches -F '<a ' </tmp/akari-smoke/last && ! matches -F '<img' </tmp/akari-smoke/last \
   || { echo "FAIL: preview let an unsafe link/image through"; cat /tmp/akari-smoke/last; exit 1; }
+# Promotions (the dashboard activity slot): one live promotion reaches the
+# customer with its badge, code and the shop as the default link; a stale
+# version is 409; a deleted one leaves null; customers refused on the admin API.
+PROMO_FROM=$(date -u -d '-1 hour' +%FT%TZ); PROMO_TO=$(date -u -d '+2 days' +%FT%TZ)
+[ "$(api_json "$JAR" POST "$BASE/api/v1/promotions" "{\"title_zh\":\"冒烟活动\",\"line_zh\":\"续费同样适用\",\"badge\":\"8折\",\"starts_at\":\"$PROMO_FROM\",\"ends_at\":\"$PROMO_TO\"}")" = "201" ] \
+  || { echo "FAIL: create promotion"; cat /tmp/akari-smoke/last; exit 1; }
+PROMO=$(last_json "d['id']")
+[ "$(code -b "$TJA" "$BASE/api/v1/me/promotion")" = "200" ] \
+  && [ "$(last_json "d['promotion']['id'] == '$PROMO' and d['promotion']['badge'] == '8折' and d['promotion']['cta_url'] == '/shop' and d['promotion']['code'] is None and bool(d['now'])")" = "True" ] \
+  || { echo "FAIL: user promotion"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(api_json "$JAR" PUT "$BASE/api/v1/promotions/$PROMO" "{\"title_zh\":\"冒烟活动\",\"line_zh\":\"x\",\"starts_at\":\"$PROMO_FROM\",\"ends_at\":\"$PROMO_TO\",\"version\":7}")" = "409" ] \
+  && last_json "d['code']" | matches -x 'promotion.version_conflict' \
+  || { echo "FAIL: stale promotion version"; cat /tmp/akari-smoke/last; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/promotions")" = "403" ] || { echo "FAIL: customer reached the promotion admin"; exit 1; }
+[ "$(code -b "$JAR" -X DELETE "$BASE/api/v1/promotions/$PROMO")" = "204" ] || { echo "FAIL: delete promotion"; exit 1; }
+[ "$(code -b "$TJA" "$BASE/api/v1/me/promotion")" = "200" ] && last_json "d['promotion']" | matches -x None \
+  || { echo "FAIL: deleted promotion still shown"; cat /tmp/akari-smoke/last; exit 1; }
 # Announcement tags: the eight presets, a colour only from the palette, the tag
 # on the user's list (names in both languages + the colour key), in use = 409 with
 # the count (disable instead), a disabled tag cannot be picked, reorder is the

@@ -351,6 +351,16 @@ plan.quota_negative
 plan.speed_limit_range
 plan.unknown
 plan.unknown_ref
+promotion.audience_invalid
+promotion.coupon_unknown
+promotion.cta_url_invalid
+promotion.sort_invalid
+promotion.text_long
+promotion.text_multiline
+promotion.text_required
+promotion.version_conflict
+promotion.version_required
+promotion.window_invalid
 release.binary_exists
 release.binary_mismatch
 release.binary_too_large

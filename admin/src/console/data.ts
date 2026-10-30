@@ -56,7 +56,7 @@ const NODES = [
 ];
 const PLANS = ["plans", "plan", "plan-prices", "node-groups", "users", "user"];
 const FINANCE = ["withdrawals", "commissions", "commission-settings", "balances", "balance", "users", "user"];
-const CONTENT = ["announcements", "announcement-tags", "kb"];
+const CONTENT = ["announcements", "announcement-tags", "kb", "promotions"];
 const SETTINGS = [
   "dns-domains",
   "dns-panel",
@@ -83,6 +83,7 @@ const ENTITIES: Record<string, string[]> = {
   tickets: ["tickets", "ticket"],
   announcements: CONTENT,
   "announcement-tags": CONTENT,
+  promotions: CONTENT,
   kb: CONTENT,
   content: CONTENT,
   servers: [...NODES, ...PLANS],

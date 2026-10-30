@@ -414,3 +414,53 @@ test("CNT-03 CNT-04 CNT-05 CNT-06: knowledge base — categories, articles with 
   await toast(page, "已删除");
   await expect(page.getByRole("listitem").filter({ hasText: art })).toHaveCount(0);
 });
+
+test("CNT-09 CNT-10: promotions — create with a live preview, an unknown coupon is refused, edit, delete", async ({
+  page,
+}, info) => {
+  const title = `${uniq(info, "promo")}-${run}`.slice(0, 40);
+  await openConsole(page, "/content/promotions");
+  await page.getByRole("button", { name: "新建活动" }).first().click();
+  const d = dialog(page, "新建活动");
+  // Required fields are checked before anything is sent.
+  await d.getByRole("button", { name: "保存" }).click();
+  await expect(d.getByText("请填写标题")).toBeVisible();
+  await expect(d.getByText("请填写一句说明")).toBeVisible();
+  await d.getByLabel("标题", { exact: true }).fill(title);
+  await d.getByLabel("折扣字样").fill("8折");
+  await d.getByLabel("一句说明").fill("续费同样适用");
+  const preview = d.getByTestId("promotion-preview");
+  await expect(preview).toContainText(title);
+  await expect(preview).toContainText("8折");
+  // A code that is not a coupon: the server refuses it, the dialog stays open.
+  await d.getByLabel("优惠码").fill(`NOPE${run}`);
+  await d.getByRole("button", { name: "保存" }).click();
+  await toast(page, /没有优惠码为/);
+  await expect(d).toBeVisible();
+  await d.getByLabel("优惠码").fill("");
+  await d.getByRole("button", { name: "保存" }).click();
+  await toast(page, "活动已创建");
+  const rows = page.getByTestId("promotion-row");
+  const mine = rows.filter({ hasText: title });
+  await expect(mine).toHaveCount(1);
+  await expect(mine).toContainText("进行中");
+  await expect(mine).toContainText("8折");
+  // Edit: a new description; the version moves on, a second save works too.
+  await mine.getByRole("button", { name: `编辑 ${title}` }).click();
+  const e = dialog(page, "编辑活动");
+  await e.getByLabel("一句说明").fill("十一月结束");
+  await e.getByRole("button", { name: "保存" }).click();
+  await toast(page, "活动已保存");
+  await mine.getByRole("button", { name: `编辑 ${title}` }).click();
+  const e2 = dialog(page, "编辑活动");
+  await expect(e2.getByLabel("一句说明")).toHaveValue("十一月结束");
+  await e2.getByLabel("排序").fill("5");
+  await e2.getByRole("button", { name: "保存" }).click();
+  await toast(page, "活动已保存");
+  // Delete (confirmed): gone from the list.
+  await mine.getByRole("button", { name: `${title} 的操作` }).click();
+  await page.getByRole("menuitem", { name: "删除…" }).click();
+  await confirmDialog(page);
+  await toast(page, "已删除");
+  await expect(mine).toHaveCount(0);
+});

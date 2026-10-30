@@ -110,6 +110,7 @@ PATCH /{prefix}/api/v1/me/passkeys/{id} shop
 POST /{prefix}/api/v1/me/password shop
 PUT /{prefix}/api/v1/me/password-login shop
 GET /{prefix}/api/v1/me/plan shop
+GET /{prefix}/api/v1/me/promotion shop
 POST /{prefix}/api/v1/me/reauth/options shop
 GET /{prefix}/api/v1/me/shop shop
 POST /{prefix}/api/v1/me/sub-token user
@@ -152,6 +153,10 @@ DELETE /{prefix}/api/v1/plans/{id} admin
 PATCH /{prefix}/api/v1/plans/{id} admin
 POST /{prefix}/api/v1/plans/{id}/impact admin
 PUT /{prefix}/api/v1/plans/{id}/prices admin
+GET /{prefix}/api/v1/promotions admin
+POST /{prefix}/api/v1/promotions admin
+DELETE /{prefix}/api/v1/promotions/{id} admin
+PUT /{prefix}/api/v1/promotions/{id} admin
 GET /{prefix}/api/v1/rollouts admin
 POST /{prefix}/api/v1/rollouts admin
 GET /{prefix}/api/v1/rollouts/{id} admin

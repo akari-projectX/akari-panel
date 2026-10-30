@@ -1182,4 +1182,7 @@ export const EN: Record<string, string> = {
   '账户与安全': 'Account and security',
   '邀请朋友，拿返佣': 'Invite friends, earn commission',
   '余额与收支流水': 'Balance and transactions',
+  '限时活动': 'Limited-time offer',
+  '距活动结束还有 {d} 天 {t}': '{d} days {t} until the offer ends',
+  '还剩 {d} 天': '{d} days left',
 };

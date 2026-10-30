@@ -59,6 +59,7 @@ pub mod owner;
 pub mod passkey;
 pub mod pb;
 pub mod plans;
+pub mod promotions;
 pub mod protocols;
 pub mod rate;
 pub mod rates;

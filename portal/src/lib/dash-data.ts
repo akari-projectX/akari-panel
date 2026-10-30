@@ -9,6 +9,7 @@ import { addDays, siteToday } from '@/lib/format';
 export function dashSpecs() {
   return {
     announcements: { key: K.announcements, fetch: () => contentApi.announcements() },
+    promotion: { key: K.promotion, fetch: () => contentApi.promotion() },
     nodes: { key: K.nodes, fetch: () => meApi.nodes() },
     balance: { key: K.balance, fetch: () => walletApi.balance({ limit: 1 }) },
     orders: { key: K.orders, fetch: () => orderApi.list() },

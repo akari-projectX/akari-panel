@@ -217,3 +217,22 @@ button.cap-main, a.cap-main { cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
   .track-fill, .track-pin, .drow, .drow-go, .acc-qr, .cap-main > svg { transition: none; }
 }
+
+/* 活动位（Promo）：标签 + 倒计时、大号折扣字样（公告标签的玫红）、标题 / 说明、虚线框优惠码 + 复制、去商店 */
+.slot { --hot: var(--t-pink); }
+.slot-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.slot-tag { font-size: 12px; font-weight: var(--fw-strong); letter-spacing: .06em; color: var(--hot); }
+.slot-cd { font-size: 12.5px; color: var(--muted); }
+.slot-cd b { margin-left: 2px; font-weight: var(--fw-strong); color: var(--fg); }
+.slot-b { display: flex; align-items: flex-start; gap: 18px; margin-top: 14px; }
+.slot-big { flex: none; font-size: 44px; line-height: 1; font-weight: var(--fw-strong); letter-spacing: -.03em; color: var(--hot); }
+.slot-t { min-width: 0; flex: 1; }
+.slot-t h3 { font-size: 15px; line-height: 1.4; font-weight: var(--fw-strong); color: var(--fg); overflow-wrap: anywhere; }
+.slot-t p { margin-top: 4px; font-size: 13px; line-height: 1.6; color: var(--muted); overflow-wrap: anywhere; }
+.slot-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+.slot-code { display: inline-flex; max-width: 100%; align-items: center; gap: 8px; padding: 4px 4px 4px 10px; border: 1px dashed var(--line2); border-radius: 8px; font-size: 12.5px; color: var(--muted); }
+.slot-code code { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono); font-size: 13px; font-weight: var(--fw-strong); letter-spacing: .04em; color: var(--fg); }
+.slot-copy { display: inline-flex; flex: none; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: none; color: var(--fg); font: inherit; font-size: 12.5px; cursor: pointer; }
+.slot-copy:hover { background: var(--hover); }
+.slot-go { font-size: 13px; font-weight: var(--fw-strong); color: var(--fg); white-space: nowrap; }
+.slot-go:hover { text-decoration: underline; text-underline-offset: 3px; }

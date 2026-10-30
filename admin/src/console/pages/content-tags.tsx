@@ -22,7 +22,7 @@ import { Field, Input, Switch } from "../../shared/ui/form";
 import { MenuItem, MenuSeparator, RowMenu } from "../../shared/ui/menu";
 import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
-import { FixCount } from "../components/kit";
+import { SaveFooter } from "../components/kit";
 import { useAction } from "../data";
 import { useQS } from "../router";
 
@@ -304,17 +304,7 @@ function TagEditor({ tag, onClose }: { tag: AnnouncementTag | null; onClose: () 
         "Colours come from a preset palette that reads well in the light and the dark theme.",
       )}
       dirty={dirty && !!tag}
-      footer={
-        <>
-          {tried && <FixCount n={bad} />}
-          <Button variant="ghost" onClick={onClose}>
-            {tr("取消", "Cancel")}
-          </Button>
-          <Button variant="primary" loading={saving} onClick={() => void submit()}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
-      }
+      footer={<SaveFooter tried={tried} bad={bad} saving={saving} onClose={onClose} onSave={() => void submit()} />}
     >
       <div className="grid gap-4">
         <div className="grid gap-3 sm:grid-cols-2">
