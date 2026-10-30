@@ -159,6 +159,8 @@ fn inner_router(state: AppState) -> Router {
         // publicly under the prefix with cache headers).
         .merge(crate::announcements::routes())
         .merge(crate::announcement_tags::routes())
+        // The dashboard activity slot (promotions).
+        .merge(crate::promotions::routes())
         .merge(crate::kb::routes())
         .merge(crate::branding::routes())
         .merge(crate::sysstatus::routes())

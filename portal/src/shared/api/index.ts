@@ -9,7 +9,7 @@ import { rememberGuard } from './guard';
 import { creationOptions, credentialJSON, requestOptions } from './webauthn';
 import type {
   Announcements, AuthOptions, CreateOrder, DeleteImpact, FormGuard, HelpArticle, HelpList, HolderProof, InviteCodes, LegalPage,
-  LoginMethods, LoginResult, Me, MyBalance, MyInvite, MyNode, MyOrder, MyPlan, MyTraffic, NewTicket, PasskeyChallenge,
+  LoginMethods, LoginResult, Me, MyBalance, MyInvite, MyNode, MyOrder, MyPlan, MyPromotionView, MyTraffic, NewTicket, PasskeyChallenge,
   Shop, SubTokenReset, TicketDetail, TicketRow, UsdtChain, Withdrawal,
 } from './types';
 
@@ -217,6 +217,7 @@ export const pageApi = {
 export const contentApi = {
   announcements: () => api.get<Announcements>('/me/announcements'),
   markRead: (id: string) => api.post<void>(`/me/announcements/${id}/read`),
+  promotion: () => api.get<MyPromotionView>('/me/promotion'),
   help: (q?: string) => api.get<HelpList>(`/me/help${qs({ q })}`),
   article: (id: string) => api.get<HelpArticle>(`/me/help/${id}`),
 };

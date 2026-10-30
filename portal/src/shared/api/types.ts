@@ -523,6 +523,24 @@ export type Announcement = {
 
 export type Announcements = { announcements: Announcement[]; unread: number };
 
+/** 仪表盘的活动位（站长在后台「内容 › 活动」配置）：两种语言、折扣字样、优惠码（券可用时才给）、按钮、结束时刻 */
+type MyPromotion = {
+  id: string;
+  title_zh: string;
+  title_en: string | null;
+  line_zh: string;
+  line_en: string | null;
+  badge: string | null;
+  code: string | null;
+  cta_label: string | null;
+  /** https / http / 站内路径；站长没填时是商店 */
+  cta_url: string;
+  ends_at: string;
+};
+
+/** `now` = 面板时钟（倒计时以它为准，设备时钟可能不准） */
+export type MyPromotionView = { promotion: MyPromotion | null; now: string };
+
 export type HelpItem = {
   id: string;
   category_id: string | null;

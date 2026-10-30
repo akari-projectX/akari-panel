@@ -73,7 +73,7 @@ export function prefetchCurrent(path: string, scope: Scope) {
   void preloadPage(found.page.load);
   if (found.page.path !== R.dashboard) return;
   const d = dashSpecs();
-  const jobs: { key: string; fetch: () => Promise<unknown> }[] = [d.announcements, d.balance, d.orders, d.tickets, d.help];
+  const jobs: { key: string; fetch: () => Promise<unknown> }[] = [d.announcements, d.promotion, d.balance, d.orders, d.tickets, d.help];
   if (scope === 'full') jobs.push(d.traffic, d.nodes);
   for (const j of jobs) void load(j.key, j.fetch).catch(() => {});
 }

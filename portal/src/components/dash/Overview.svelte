@@ -9,6 +9,7 @@
   import { NODES_REFRESH_MS } from '@/lib/node';
   import Access from './Access.svelte';
   import DocsPreview from './DocsPreview.svelte';
+  import Promo from './Promo.svelte';
   import Flow from './Flow.svelte';
   import News from './News.svelte';
   import NodesPreview from './NodesPreview.svelte';
@@ -26,7 +27,7 @@
    * 仪表盘（full / renewal 范围；banned 是 Banned.svelte），外观 A · A3（2026-10-30 用户确认）：
    *   左栏：页标题那行（问候 · 套餐 · 状态）→ 提醒（Notices）→ 大字（本期还剩多少、几天后到期）+ 两把尺 + 判断 + 操作 + 四个小事实（Status）
    *         → 流量（7 / 30 天，Flow）→ 公告（News）；
-   *   右栏：接入配置（Access / Subscribe，#subscribe）→ 教程（DocsPreview）；
+   *   右栏：接入配置（Access / Subscribe，#subscribe）→ 活动位（Promo，站长配置了才有）→ 教程（DocsPreview）；
    *   整宽：线路（NodesPreview）。
    * 样稿里的「活动位」没有数据来源（面板没有活动 / 倒计时 / 优惠码展示的接口），不画。
    * 续费范围（已过期 / 流量用完）：面板不给订阅、线路、流量记录，这几块写明「续费后恢复」，其余照常。
@@ -105,6 +106,7 @@
   <aside class="dside">
     <!-- #subscribe：付款结果弹窗的「查看订阅」直达这里 -->
     <section id="subscribe" class="acc" aria-label={t('接入配置')}><Access {full} /></section>
+    <Promo />
     <DocsPreview />
   </aside>
 </div>

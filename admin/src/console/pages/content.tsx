@@ -51,6 +51,7 @@ import { useAction } from "../data";
 import { navigate, useQS, useRoute } from "../router";
 import { useSite } from "../session";
 import { KnowledgeBase, useArticles } from "./content-kb";
+import { PromotionsManager, usePromotions } from "./content-promotions";
 import { TagChip, TagsManager, useAnnouncementTags, type AnnouncementTag } from "./content-tags";
 
 export type Announcement = {
@@ -122,10 +123,12 @@ export function ContentPage() {
   const tr = useTr();
   const { sub } = useRoute();
   const [, patch] = useQS();
-  const tab = sub[0] === "kb" ? "kb" : sub[0] === "tags" ? "tags" : "announcements";
+  const tab =
+    sub[0] === "kb" ? "kb" : sub[0] === "tags" ? "tags" : sub[0] === "promotions" ? "promotions" : "announcements";
   const anns = useAnnouncements();
   const arts = useArticles();
   const tags = useAnnouncementTags();
+  const promos = usePromotions();
   const live = (anns.data ?? []).filter((a) => lifeOf(a) === "live").length;
   const docs = (arts.data ?? []).filter((a) => a.slug !== "terms" && a.slug !== "privacy").length;
   return (
@@ -134,7 +137,10 @@ export function ContentPage() {
         title={tr("内容", "Content")}
         description={
           <span className="inline-flex flex-wrap items-center gap-x-1">
-            {tr("门户里用户能看到的公告和帮助文章。", "The announcements and help articles users see in the portal.")}
+            {tr(
+              "门户里用户能看到的公告、帮助文章和活动。",
+              "The announcements, help articles and promotions users see in the portal.",
+            )}
             <Link to="/settings/brand" className="inline-flex items-center gap-1 text-primary hover:underline">
               <Brush className="size-3.5" aria-hidden="true" />
               {tr("Logo 与页脚在 系统设置 › 外观与品牌", "Logo and footer: Settings › Brand")}
@@ -149,6 +155,10 @@ export function ContentPage() {
           ) : tab === "tags" ? (
             <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
               {tr("新建标签", "New tag")}
+            </Button>
+          ) : tab === "promotions" ? (
+            <Button variant="primary" icon={Plus} onClick={() => patch({ open: "new" })}>
+              {tr("新建活动", "New promotion")}
             </Button>
           ) : undefined
         }
@@ -172,11 +182,20 @@ export function ContentPage() {
               },
               { value: "tags", label: tr("公告标签", "Announcement tags"), count: tags.data?.length },
               { value: "kb", label: tr("知识库", "Knowledge base"), count: arts.data ? docs : undefined },
+              { value: "promotions", label: tr("活动", "Promotions"), count: promos.data?.length },
             ]}
           />
         </div>
       </PageHeader>
-      {tab === "announcements" ? <Announcements q={anns} /> : tab === "tags" ? <TagsManager /> : <KnowledgeBase />}
+      {tab === "announcements" ? (
+        <Announcements q={anns} />
+      ) : tab === "tags" ? (
+        <TagsManager />
+      ) : tab === "promotions" ? (
+        <PromotionsManager />
+      ) : (
+        <KnowledgeBase />
+      )}
     </>
   );
 }

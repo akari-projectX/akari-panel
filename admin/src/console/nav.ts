@@ -100,6 +100,7 @@ export function navOf(id: string): { group?: NavGroup; item: NavItem } {
 export const SUB_LABELS: Record<string, { zh: string; en: string }> = {
   "content/announcements": { zh: "公告", en: "Announcements" },
   "content/kb": { zh: "知识库", en: "Knowledge base" },
+  "content/promotions": { zh: "活动", en: "Promotions" },
   "finance/withdrawals": { zh: "提现审核", en: "Withdrawals" },
   "finance/balances": { zh: "余额", en: "Balances" },
   "finance/commissions": { zh: "返利", en: "Commissions" },

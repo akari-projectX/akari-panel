@@ -45,7 +45,7 @@ import { Field, Input, Select, Switch, Textarea } from "../../shared/ui/form";
 import { MenuItem, MenuSeparator, RowMenu } from "../../shared/ui/menu";
 import { EmptyState, ErrorState, Skeleton } from "../../shared/ui/states";
 import { useToast } from "../../shared/ui/toast";
-import { FixCount, SearchField } from "../components/kit";
+import { SaveFooter, SearchField } from "../components/kit";
 import { LangTabs } from "../components/inputs";
 import { LangChip, MarkdownPreview, useMediaQuery } from "../components/support-content";
 import { useAction } from "../data";
@@ -679,13 +679,14 @@ function ArticleEditor({
             </Button>
           )}
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-            {tried && <FixCount n={bad} />}
-            <Button variant="ghost" onClick={onClose}>
-              {tr("取消", "Cancel")}
-            </Button>
-            <Button variant="primary" loading={saving} disabled={!loaded} onClick={() => void submit()}>
-              {tr("保存", "Save")}
-            </Button>
+            <SaveFooter
+              tried={tried}
+              bad={bad}
+              saving={saving}
+              disabled={!loaded}
+              onClose={onClose}
+              onSave={() => void submit()}
+            />
           </div>
         </>
       }
@@ -962,18 +963,11 @@ function CategoriesDialog({
       )}
       dirty={dirty}
       footer={
-        <>
+        <SaveFooter tried={tried} bad={bad} saving={saving} onClose={onClose} onSave={() => void submit()}>
           <Button variant="ghost" icon={Plus} className="mr-auto" onClick={() => setRows((rs) => [...rs, fresh()])}>
             {tr("新建分类", "New category")}
           </Button>
-          {tried && <FixCount n={bad} />}
-          <Button variant="ghost" onClick={onClose}>
-            {tr("取消", "Cancel")}
-          </Button>
-          <Button variant="primary" loading={saving} onClick={() => void submit()}>
-            {tr("保存", "Save")}
-          </Button>
-        </>
+        </SaveFooter>
       }
     >
       {rows.length === 0 ? (

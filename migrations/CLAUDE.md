@@ -71,3 +71,5 @@ CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,onlin
 `kb_articles.slug` TEXT（可空；CHECK `kb_articles_slug_format` `^[a-z0-9][a-z0-9-]{0,63}$`；UNIQUE `kb_articles_slug_key`）——文章的固定地址，`terms`/`privacy` 由门户读取（公开读接口在 W36 门户 PR）。
 部分索引 `users_expiry_due (expires_at) WHERE role='user' AND expires_at IS NOT NULL AND NOT expiry_enforced`（`enforce::apply_expiry` 每 5 秒的候选查询；20 万用户 52 ms → 2 ms）。**超流量 pass 故意不建索引**：谓词含 `traffic_used_bytes`，会让每次流量 flush 的 UPDATE 失去 HOT（实测 HOT 70% → 0%）。
 `sub_templates`：`format` PK ∈ sing-box/clash/surge/surfboard；`body` 1–262144 字符；`version`；`updated_at`/`updated_by`；无行 = 内置默认，由 `sub::templates::apply_set`/`apply_reset` 写并同事务审计。`panel_settings.sub_formats`/`sub_import_clients` 的 CHECK 含 `surge`/`surfboard`（NULL = 全开）。
+
+`promotions`（0008，仪表盘活动位）：标题/说明 zh 必填、en 可选（长度 CHECK 同 `promotions::check`）、`badge` ≤8、`coupon_id` → coupons（SET NULL，删券 = 活动保留、不带码）、`cta_url`（`^(https?://|/)`）、`starts_at` < `ends_at`（都必填，倒计时要终点）、`audience` all/with_plan/without_plan、`enabled`、`sort` ±1e6、`version` ≥1（乐观并发）；部分索引 `promotions_live (ends_at) WHERE enabled`。只由 `promotions::apply_*` 写，同事务审计。

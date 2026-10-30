@@ -696,6 +696,42 @@ export function FixCount({ n }: { n: number }) {
   );
 }
 
+/**
+ * A form dialog's footer: the fix count (after the first submit), 取消 and 保存.
+ * `children` go before the fix count (e.g. a secondary action on the left).
+ */
+export function SaveFooter({
+  tried,
+  bad,
+  saving,
+  disabled,
+  onClose,
+  onSave,
+  children,
+}: {
+  tried: boolean;
+  bad: number;
+  saving: boolean;
+  disabled?: boolean;
+  onClose: () => void;
+  onSave: () => void;
+  children?: ReactNode;
+}) {
+  const tr = useTr();
+  return (
+    <>
+      {children}
+      {tried && <FixCount n={bad} />}
+      <Button variant="ghost" onClick={onClose}>
+        {tr("取消", "Cancel")}
+      </Button>
+      <Button variant="primary" loading={saving} disabled={disabled} onClick={onSave}>
+        {tr("保存", "Save")}
+      </Button>
+    </>
+  );
+}
+
 /** Impact list inside an ordinary dialog (same look as the confirmations' list). */
 export function ImpactList({
   items,

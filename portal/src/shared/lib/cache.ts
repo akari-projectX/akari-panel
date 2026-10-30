@@ -111,6 +111,7 @@ export const K = {
   tickets: 'tickets',
   ticket: (id: string) => `ticket:${id}`,
   announcements: 'announcements',
+  promotion: 'promotion',
   help: (q = '') => `help:${q}`,
   article: (id: string) => `help.article:${id}`,
   passkeys: 'passkeys',
