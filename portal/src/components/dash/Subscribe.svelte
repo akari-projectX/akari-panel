@@ -3,6 +3,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Copy from '@lucide/svelte/icons/copy';
   import Download from '@lucide/svelte/icons/download';
+  import QrCode from '@lucide/svelte/icons/qr-code';
   import type { SubFormat } from '@/api';
   import { PLATFORMS } from '@/data/platforms';
   import { enabledFormats, importLinks, mySubUrl, withFormat, type ImportLink } from '@/lib/sub-links';
@@ -16,13 +17,13 @@
 
   /*
    * 接入：一个订阅链接导入任意客户端。
-   *   · 「复制订阅链接」+ 格式（默认自动识别；系统设置里开着的格式才列出）；下面一行打码的链接（链接等同密码）；
-   *   · 一键导入：系统设置里开着的客户端（面板已按开着的格式筛过，顺序即面板的顺序），各用自己认得的深链接；
-   *   · 二维码（本地生成）；
+   *   · 「复制订阅链接」（正文色实底胶囊）+ 格式（默认自动识别；系统设置里开着的格式才列出）+ 二维码开关（默认收起，本地生成）；
+   *   · 一键导入：系统设置里开着的客户端（面板已按开着的格式筛过，顺序即面板的顺序），名字之间一道细竖线，各用自己认得的深链接；
    *   · 还没有客户端：站长配了下载地址就直接给下载，没配就按平台去文档页。
    */
   let format = $state<SubFormat>('auto');
   let copied = $state(false);
+  let qr = $state(false);
   let copyTimer: ReturnType<typeof setTimeout> | undefined;
   $effect(() => () => clearTimeout(copyTimer));
 
@@ -75,52 +76,49 @@
 </script>
 
 {#if url}
-  <div class="sub">
-    <div class="sub-l">
-      <div class="sub-acts">
-        <button type="button" class="btn pri sub-copy" onclick={copy}>
-          {#if copied}<Check size={16} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={14} strokeWidth={1.75} aria-hidden="true" />{/if}
-          {copied ? t('已复制订阅链接') : t('复制订阅链接')}
-        </button>
-        <!-- 格式：默认按客户端自动识别；认不出的客户端可以手动指定 -->
-        <Menu class="sub-fmt" label={t('订阅格式')} items={formatItems}>
-          {t(FORMAT_LABEL[format])}<ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" />
-        </Menu>
+  <div class="acc-b">
+    <div class="acc-row">
+      <button type="button" class="btn pri acc-copy" onclick={copy}>
+        {#if copied}<Check size={15} strokeWidth={2} aria-hidden="true" />{:else}<Copy size={15} strokeWidth={1.75} aria-hidden="true" />{/if}
+        {copied ? t('已复制订阅链接') : t('复制订阅链接')}
+      </button>
+      <!-- 格式：默认按客户端自动识别；认不出的客户端可以手动指定 -->
+      <Menu class="acc-fmt" label={t('订阅格式')} items={formatItems}>
+        {t(FORMAT_LABEL[format])}<ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />
+      </Menu>
+      <!-- 二维码默认收起（2026-10-30 用户：一直显示太挤） -->
+      <button type="button" class="acc-fmt" aria-expanded={qr} aria-controls="sub-qr" onclick={() => (qr = !qr)}>
+        <QrCode size={14} strokeWidth={1.75} aria-hidden="true" />{t('二维码')}
+      </button>
+    </div>
+
+    {#if clients.length > 0}
+      <div class="acc-k">{t('导入到客户端')}</div>
+      <div class="acc-cl">
+        {#each primary as c (c.id)}
+          <button type="button" class="acc-imp" title={c.platforms} onclick={() => importTo(c)}>{c.name}</button>
+        {/each}
+        {#if more.length > 0}
+          <Menu class="acc-more" label={t('更多')} items={moreItems}>{t('更多')}<ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" /></Menu>
+        {/if}
       </div>
+    {/if}
 
-      {#if clients.length > 0}
-        <div>
-          <div class="sub-k">{t('导入到客户端')}</div>
-          <div class="sub-cl">
-            {#each primary as c, i (c.id)}
-              <span>
-                {#if i > 0}<i class="sep" aria-hidden="true"></i>{/if}
-                <button type="button" class="sub-imp" title={c.platforms} onclick={() => importTo(c)}>{c.name}</button>
-              </span>
-            {/each}
-            {#if more.length > 0}
-              <i class="sep" aria-hidden="true"></i>
-              <Menu class="sub-more" label={t('更多')} items={moreItems}>{t('更多')}<ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" /></Menu>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      <!-- 退路：站长在后台配了下载地址的平台直接给下载，没配的去文档页 -->
-      <div class="sub-fb">
-        <p>
-          <Download size={14} strokeWidth={1.75} aria-hidden="true" />{t('还没有客户端？')}
-          <Menu class="sub-dl" label={downloads.length ? t('下载客户端') : t('按平台查看教程')} items={dlItems}>
-            {downloads.length ? t('下载客户端') : t('按平台查看教程')}<ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />
-          </Menu>
-        </p>
+    <div id="sub-qr" class="acc-qr" data-open={qr || undefined}>
+      <div>
+        {#if qr}
+          <div class="acc-qf"><Qr value={url} mark /></div>
+          <p><b>{t('用手机扫码导入')}</b>{t('在手机客户端里扫一扫，订阅会自动添加。')}</p>
+        {/if}
       </div>
     </div>
 
-    <div class="sub-qr">
-      <div class="sub-box"><i class="c1"></i><i class="c2"></i><i class="c3"></i><i class="c4"></i><Qr value={url} mark defer /></div>
-      <div class="sub-qk">{t('扫码导入')}</div>
-    </div>
+    <!-- 退路：站长在后台配了下载地址的平台直接给下载，没配的去文档页 -->
+    <p class="acc-fb">
+      <Download size={14} strokeWidth={1.75} aria-hidden="true" />{t('还没有客户端？')}
+      <Menu class="acc-dl" label={downloads.length ? t('下载客户端') : t('按平台查看教程')} items={dlItems}>
+        {downloads.length ? t('下载客户端') : t('按平台查看教程')}<ChevronDown size={12} strokeWidth={1.75} aria-hidden="true" />
+      </Menu>
+    </p>
   </div>
 {/if}
-

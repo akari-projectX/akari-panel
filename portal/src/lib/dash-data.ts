@@ -7,17 +7,20 @@ import { addDays, siteToday } from '@/lib/format';
  * 共用这一份——键对不上就等于预取白做。近 7 天 = 站点时区的日历日，今天算一天。
  */
 export function dashSpecs() {
-  const to = siteToday();
-  const from = addDays(to, -6);
   return {
-    from,
-    to,
     announcements: { key: K.announcements, fetch: () => contentApi.announcements() },
     nodes: { key: K.nodes, fetch: () => meApi.nodes() },
     balance: { key: K.balance, fetch: () => walletApi.balance({ limit: 1 }) },
     orders: { key: K.orders, fetch: () => orderApi.list() },
     tickets: { key: K.tickets, fetch: () => ticketApi.list() },
-    traffic: { key: K.traffic(from, to), fetch: () => meApi.traffic(from, to) },
+    traffic: trafficSpec(7),
     help: { key: K.help(), fetch: () => contentApi.help() },
   };
+}
+
+/** 近 n 天的流量（站点时区的日历日，今天算一天）：仪表盘默认 7 天（预取的就是它），切到 30 天才取 30 天 */
+export function trafficSpec(days: 7 | 30) {
+  const to = siteToday();
+  const from = addDays(to, -(days - 1));
+  return { key: K.traffic(from, to), fetch: () => meApi.traffic(from, to) };
 }

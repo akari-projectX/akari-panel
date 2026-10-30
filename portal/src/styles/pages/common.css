@@ -115,56 +115,11 @@
 .rate.rate-hi { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }
 .rate.rate-mid { background: var(--brand-soft); color: var(--brand-ink); }
 
-/* 使用文档（v1.4.0：featured 大卡 + 其他分类三列格） */
-.feat { display: block; width: 100%; padding: 16px; border: 0; border-radius: calc(var(--radius) * 1.8); background: color-mix(in srgb, var(--hover) 60%, transparent); color: inherit; font: inherit; text-align: left; transition: background-color var(--dur-hover); }
-.feat:hover { background: var(--hover); }
-.feat-h { display: flex; align-items: center; gap: 14px; }
-.feat-m { min-width: 0; flex: 1; }
-.feat-t { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: var(--fw-strong); }
-.feat-t > .cur { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font-size: 11px; font-style: normal; font-weight: var(--fw-strong); }
-.feat-s { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
-.feat-go { display: flex; flex: none; align-items: center; gap: 4px; font-size: 12.5px; font-weight: var(--fw-strong); color: var(--brand); }
-.feat li.more { padding-left: 16px; font-size: 12px; }
-.oth { margin-top: 20px; }
-.oth-h { margin-bottom: 10px; font-size: 12.5px; letter-spacing: .05em; color: var(--muted); }
-.oth-g { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .notice > .nd.wrap2 { overflow: visible; text-overflow: clip; white-space: normal; }
 .btn.ghost.muted { color: var(--muted); }
 .notice > svg.ic-warn { color: var(--warn); } .notice > svg.ic-brand { color: var(--brand); } .notice > svg.ic-ok { color: var(--ok); }
 .sec-x { font-size: 12.5px; color: var(--muted); }
 .sec-x > .tnum { color: var(--fg); }
-.rt { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.rt > .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rt > .mid { font-weight: var(--fw-strong); }
-.rx { font-size: 12.5px; color: var(--muted); }
-.clamp1 { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
-.pinb { display: inline-flex; flex: none; align-items: center; gap: 4px; height: 20px; line-height: 1; padding: 2px 8px; border-radius: 999px; background: var(--brand-soft); border: 1px solid transparent; color: var(--brand-ink); font-size: 12px; font-weight: var(--fw-strong); }
-
-/* ===== 接入配置（v1.4.0 components/subscribe） ===== */
-.sub { display: flex; flex-grow: 1; flex-wrap: wrap; align-items: stretch; gap: 28px 40px; }
-.sub-l { display: flex; min-width: 17.5rem; flex: 1; flex-direction: column; justify-content: space-between; gap: 20px; }
-.sub-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.btn.sub-copy { width: fit-content; height: 36px; gap: 8px; padding-inline: 16px; }
-:is(.sub-fmt) { display: inline-flex; height: 40px; align-items: center; gap: 4px; padding-inline: 10px; border: 0; border-radius: var(--radius); background: none; color: var(--muted); font: inherit; font-size: 13px; transition: color var(--dur-hover), background-color var(--dur-hover); }
-:is(.sub-fmt):hover, :is(.sub-fmt)[aria-expanded='true'] { background: var(--hover); color: var(--fg); }
-.sub-k { margin-bottom: 6px; font-size: 12.5px; letter-spacing: .05em; color: var(--muted); }
-.sub-cl { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; font-size: 13.5px; }
-.sub-cl .sep { width: 1px; height: 12px; background: var(--line); }
-.sub-imp { position: relative; padding: 4px 6px; border: 0; background: none; color: var(--fg); font: inherit; font-size: 14px; transition: color var(--dur-hover); }
-.sub-imp::after { content: ''; position: absolute; inset-inline: 6px; bottom: -2px; height: 1px; background: var(--brand); transform: scaleX(0); transform-origin: left; transition: transform var(--dur-fast); }
-.sub-imp:hover { color: var(--brand); }
-:is(.sub-more) { display: inline-flex; align-items: center; gap: 4px; padding: 4px 6px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13.5px; font-weight: var(--fw-strong); }
-:is(.sub-more):hover, :is(.sub-more)[aria-expanded='true'] { color: var(--brand); }
-.sub-fb { padding-top: 16px; border-top: 1px solid var(--line); }
-:is(.sub-dl) { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--brand); font: inherit; font-size: 12.5px; }
-:is(.sub-dl):hover, :is(.sub-dl)[aria-expanded='true'] { text-decoration: underline; text-underline-offset: 4px; }
-.sub-qr { display: flex; flex: none; flex-direction: column; align-items: center; justify-content: center; align-self: center; gap: 8px; }
-.sub-box { position: relative; width: 132px; height: 132px; padding: 10px; }
-.sub-box > .c1 { left: 0; top: 0; border-width: 2px 0 0 2px; border-top-left-radius: 7px; }
-.sub-box > .c2 { right: 0; top: 0; border-width: 2px 2px 0 0; border-top-right-radius: 7px; }
-.sub-box > .c3 { left: 0; bottom: 0; border-width: 0 0 2px 2px; border-bottom-left-radius: 7px; }
-.sub-box > .c4 { right: 0; bottom: 0; border-width: 0 2px 2px 0; border-bottom-right-radius: 7px; }
-.sub-qk { font-size: 12px; color: var(--muted); }
 
 /* ---- 第 3 组：商店 / 订单（v1.4.0 的 Badge、Progress、套餐卡、流程弹窗的小标题与选项） ---- */
 .hero-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
@@ -341,8 +296,6 @@
 .srch .input { height: 36px; padding-left: 36px; }
 .trunc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nlegend.plain { padding-block: 0; border-bottom: 0; margin-bottom: 16px; }
-@container (max-width: 24rem) { .sub-cl .sep { display: none; }
-}
 @layer components {
 
 /* 用量页图表（components/charts/*，v1.4.0 的 recharts + shadcn chart 的外观） */

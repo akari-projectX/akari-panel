@@ -9,7 +9,6 @@ export const EN: Record<string, string> = {
   /* ── 导航与外壳 ── */
   /* 顶栏、账号卡片、窄屏菜单（v1.4.0 外壳） */
   '中文': '中文',
-  'GB 剩余': 'GB left',
   '{n} 张未关闭': '{n} open',
   '{n} 笔待支付': '{n} unpaid',
   '我的账号': 'My account',
@@ -112,8 +111,6 @@ export const EN: Record<string, string> = {
 
   /* ── 接入与教程 ── */
   '接入配置': 'Setup',
-  '扫码导入': 'Scan to import',
-  '使用文档': 'Documentation',
 
   /* ── 页面标题与说明 ── */
   '一个链接，导入任意客户端': 'One link, any client',
@@ -139,7 +136,6 @@ export const EN: Record<string, string> = {
   '流量走势，用左右方向键逐日查看': 'Traffic trend; use the arrow keys to step through the days',
   '点击任意工单查看完整对话': 'Open any ticket to see the full thread',
   '请描述问题现象、出现时间、使用的节点与客户端版本，以便我们更快定位。': 'Tell us what happened, when, which node you were on and your client version — it helps us find it faster.',
-  '节点变更、维护与活动通知': 'Node changes, maintenance and promotions',
   '设置一个安全的密码': 'Choose a strong password',
   '请输入当前密码': 'Enter your current password',
 
@@ -417,7 +413,6 @@ export const EN: Record<string, string> = {
   '删除': 'Remove',
 
   /* ── 文档目录 ── */
-  '{n} 篇': '{n} articles',
   '清除搜索': 'Clear search',
 
   /* ── 支付宝一键付款 ── */
@@ -428,10 +423,7 @@ export const EN: Record<string, string> = {
   '微信里无法打开支付宝。请点右上角「…」，选择「在浏览器打开」后再付款。': 'Alipay can’t be opened inside WeChat. Tap “…” at the top right, choose “Open in browser”, then pay.',
   '打开支付宝，扫描上方二维码完成付款': 'Scan the code above with Alipay to pay',
   '购买套餐后可用': 'Available after you buy a plan',
-  '套餐已过期，续费后恢复': 'Plan expired; back after renewal',
-  '流量已用完，续费或购买重置包后恢复': 'Traffic used up; back after renewal or a reset pack',
   '链接状态': 'Link status',
-  '订阅可用的线路': 'Lines in your subscription',
   '余额抵扣': 'Paid from balance',
   '复制订单号': 'Copy order number',
   '完成支付': 'Payment',
@@ -474,10 +466,8 @@ export const EN: Record<string, string> = {
   '可提现': 'Available',
 
   /* 文档分类入口、仪表盘的工单提醒 */
-  '{n} 个分类': '{n} categories',
   '管理员已回复你的工单': 'Support replied to your ticket',
   '等 {n} 张': '({n} tickets)',
-  '接入步骤与常见问题': 'Setup guides and FAQs',
   '站长在后台的「知识库」里发布文章后，这里就会有入口。': 'Entries appear here once the site publishes articles in its knowledge base.',
 
   /* 文档页：使用手册 */
@@ -768,7 +758,6 @@ export const EN: Record<string, string> = {
   "订单即将超时关闭，请尽快完成支付": "This order is about to close; please pay soon",
   "订单已超时关闭": "Order closed (timed out)",
   "订单支付": "Order payment",
-  "订阅内的线路": "Lines in your subscription",
   "订阅已暂停": "Subscription paused",
   "订阅已重置": "Subscription reset",
   "订阅格式": "Subscription format",
@@ -790,7 +779,6 @@ export const EN: Record<string, string> = {
   "超时自动关闭": "Closes automatically on timeout",
   "输入当前密码确认": "Enter your current password to confirm",
   "近 30 天": "Last 30 days",
-  "近 7 天还没有流量记录": "No traffic in the last 7 days",
   "还没有提现记录": "No withdrawals yet",
   "还没有收支记录": "No ledger entries yet",
   "这个账户只能用通行密钥登录。": "This account signs in with a passkey only.",
@@ -1021,7 +1009,6 @@ export const EN: Record<string, string> = {
   "请输入密码": "Enter your password",
   "请设置密码": "Choose a password",
   "站点设置没能加载，暂时无法登录或注册。": "Couldn't load the site settings, so signing in or up won't work right now.",
-  "1 篇": "1 article",
   "订单 {v}": "Order {v}",
   "共 {n} 条线路，按倍率从低到高排列": "{n} lines, lowest multiplier first",
   "请填写问题标题": "Enter a subject",
@@ -1113,23 +1100,17 @@ export const EN: Record<string, string> = {
   '上行流量': 'Upload',
   '每日计费流量': 'Billed traffic per day',
   '单位 GB': 'in GB',
-  '查看教程': 'View guide',
-  '还有 {n} 篇': '{n} more',
-  '其他分类': 'Other categories',
-  '你的账号状态、流量走势与订阅信息一览。': 'Your account, traffic trend and subscription at a glance.',
   '下载': 'Download',
   '看教程': 'Guide',
   '导入到客户端': 'Import into the client',
   '按平台查看教程': 'Guides by platform',
   '单位 {u}': 'Unit: {u}',
-  '近 7 日流量，每天一项': 'Traffic over the last 7 days, one item per day',
   '第 {a} / {b} 页': 'Page {a} of {b}',
   '继续使用你的订阅': 'Sign in to manage your subscription',
   '还没有账号？': 'No account yet?',
   '注册后即可取得订阅链接': 'Get your subscription link right after signing up',
   '{label}（选填）': '{label} (optional)',
   '已有账号？': 'Already have an account? ',
-  'GB 已用': 'GB used',
   '{d} 重置': 'resets {d}',
   '{on} / {n} 在线': '{on} / {n} online',
   '买重置包 {v} →': 'Buy a reset pack {v} →',
@@ -1149,7 +1130,6 @@ export const EN: Record<string, string> = {
   '流量用完？': 'Out of traffic?',
   '站点暂未开放在线支付。这个套餐可以用余额全额支付：请打开上面的「用余额抵扣」。': 'Online payment is not available yet. This plan can be paid in full from your balance: turn on "Pay with balance" above.',
   '负载': 'Load',
-  '近 7 日流量': 'Last 7 days',
   '余额足够支付，确认后直接开通，无需跳转。': 'Your balance covers it: confirm and the plan starts right away, no payment page.',
   '原价': 'List price',
   '可用 {v}': '{v} available',
@@ -1166,4 +1146,27 @@ export const EN: Record<string, string> = {
   '剩余 {n} GB': '{n} GB left',
   '{n} 条新回复': 'New replies: {n}',
   '有待支付的订单': 'You have an unpaid order',
+  '教程': 'Guides',
+  '全部教程': 'All guides',
+  '近 {n} 天还没有流量记录': 'No traffic in the last {n} days yet',
+  '夜深了': 'Up late',
+  '早上好': 'Good morning',
+  '下午好': 'Good afternoon',
+  '晚上好': 'Good evening',
+  '套餐已到期，续费后立即恢复。': 'Your plan has expired. Renew to resume right away.',
+  '本期流量已用完，续费或买重置包后恢复。': 'This period\'s data is used up. Renew or buy a reset pack to resume.',
+  '还没有套餐，选一个就能开始用。': 'No plan yet. Pick one to get started.',
+  '本期已用 {u}，套餐长期有效。': '{u} used this period; the plan never expires.',
+  '本期已用 {u}，套餐 {d}后到期。': '{u} used this period; the plan expires in {d}.',
+  '本期还剩 {l}，套餐长期有效。': '{l} left this period; the plan never expires.',
+  '本期还剩 {l}，套餐 {d}后到期。': '{l} left this period; the plan expires in {d}.',
+  '已用': 'used',
+  '照近 7 天的速度，本期流量够用。': 'At the last 7 days\' pace, this period\'s data will last.',
+  '照近 7 天的速度，约 {d} 用完，比重置早 {n} 天。': 'At the last 7 days\' pace, it runs out around {d}, {n} days before the reset.',
+  '照近 7 天的速度，约 {d} 用完，比到期早 {n} 天。': 'At the last 7 days\' pace, it runs out around {d}, {n} days before expiry.',
+  '买重置包': 'Buy a reset pack',
+  '二维码': 'QR code',
+  '用手机扫码导入': 'Scan with your phone',
+  '在手机客户端里扫一扫，订阅会自动添加。': 'Scan it in your phone\'s client and the subscription is added.',
+  '近 {n} 日流量，每天一项': 'Traffic over the last {n} days, one item per day',
 };

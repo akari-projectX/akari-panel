@@ -5,48 +5,33 @@
 <script lang="ts">
   import { contentApi, type Announcement, type Announcements } from '@/api';
   import { summarize } from '@/lib/content-text';
-  import { daysLeft, formatBytes, formatDate, formatMoney, formatSpeed, fromNow, trafficUsage } from '@/lib/format';
   import { trafficDays } from '@/lib/traffic';
   import { NODES_REFRESH_MS } from '@/lib/node';
-  import Crown from '@lucide/svelte/icons/crown';
-  import Megaphone from '@lucide/svelte/icons/megaphone';
-  import TrendingUp from '@lucide/svelte/icons/trending-up';
-  import PageTitle from '../flat/PageTitle.svelte';
-  import PaneHead from '../flat/PaneHead.svelte';
-  import Row from '../flat/Row.svelte';
-  import Pin from '@lucide/svelte/icons/pin';
-  import Section from '../flat/Section.svelte';
-  import Split from '../flat/Split.svelte';
-  import Hero from '../flat/Hero.svelte';
-  import WeekChart from './WeekChart.svelte';
-  import Empty from '../Empty.svelte';
-  import LoadError from '../LoadError.svelte';
-  import Loading from '../Loading.svelte';
   import Access from './Access.svelte';
   import DocsPreview from './DocsPreview.svelte';
+  import Flow from './Flow.svelte';
+  import News from './News.svelte';
   import NodesPreview from './NodesPreview.svelte';
   import Notices from './Notices.svelte';
+  import Status from './Status.svelte';
   import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { announcementText, tagOf } from '$lib/announcement';
-  import { dashSpecs } from '$lib/dash-data';
+  import { dashSpecs, trafficSpec } from '$lib/dash-data';
   import { att } from '$lib/attention.svelte';
-  import { auth } from '$lib/auth.svelte';
-  import { i18n, t, tp } from '$lib/i18n.svelte';
+  import { i18n, t } from '$lib/i18n.svelte';
   import { autoReload, resource } from '$lib/resource.svelte';
   import { loc } from '$lib/router.svelte';
-  import { R } from '$lib/routes';
 
   /*
-   * 仪表盘（full / renewal 范围；banned 是 Banned.svelte）。数据、缓存键、分支见下。
-   * 结构：页头（套餐 · 重置周期）→ 最新未读公告横幅 → 提醒细行 →
-   * 首屏大数字（剩余流量 + 右侧几行信息，flat/Hero）→ 流量走势（7 / 30 天）→ 接入配置 | 公告与动态 → 订阅内的线路 | 使用文档。
+   * 仪表盘（full / renewal 范围；banned 是 Banned.svelte），外观 A · A3（2026-10-30 用户确认）：
+   *   左栏：页标题那行（问候 · 套餐 · 状态）→ 提醒（Notices）→ 大字（本期还剩多少、几天后到期）+ 两把尺 + 判断 + 操作 + 四个小事实（Status）
+   *         → 流量（7 / 30 天，Flow）→ 公告（News）；
+   *   右栏：接入配置（Access / Subscribe，#subscribe）→ 教程（DocsPreview）；
+   *   整宽：线路（NodesPreview）。
+   * 样稿里的「活动位」没有数据来源（面板没有活动 / 倒计时 / 优惠码展示的接口），不画。
    * 续费范围（已过期 / 流量用完）：面板不给订阅、线路、流量记录，这几块写明「续费后恢复」，其余照常。
    */
   let { full }: { full: boolean } = $props();
-
-  const me = $derived(auth.me);
-  const plan = $derived(auth.plan);
-  const hasPlan = $derived(!!plan?.plan);
 
   /* 键与取法与「进页面之前就开始取」共用（lib/dash-data） */
   const spec = dashSpecs();
@@ -90,27 +75,11 @@
   const replied = $derived((tickets.data ?? []).filter((x) => x.unread && x.status !== 'closed'));
   const latestInfo = $derived(latest ? { title: text(latest).title, brief: summarize(text(latest).html, 80), tag: tagOf(latest, i18n.locale) } : null);
 
-  /* ── 近 7 天（全站时区的日历日，今天算一天；续费范围的账户面板不给流量记录） ── */
-  const traffic = resource(() => ({ ...spec.traffic, enabled: full }));
-  const week = $derived(trafficDays(traffic.data));
-  const totalDown = $derived(week.reduce((n, d) => n + d.downBytes, 0));
-  const totalUp = $derived(week.reduce((n, d) => n + d.upBytes, 0));
-
-  /* ── 关键数字 ── */
-  const usage = $derived(trafficUsage(plan?.traffic_used_bytes ?? me?.traffic_used_bytes, plan?.traffic_limit_bytes ?? null));
-  const expiresAt = $derived(plan?.expires_at ?? me?.expires_at ?? null);
-  const left = $derived(daysLeft(expiresAt));
-  const nodeList = $derived(nodes.data ?? []);
-  const online = $derived(nodeList.filter((n) => n.status === 'online').length);
-  /* 「已用流量」的说明：已过期 / 流量用完（续费范围）写明原因，「购买套餐后可用」只给从没有套餐的账户 */
-  const used = $derived(
-    me?.expired ? t('套餐已过期，续费后恢复')
-      : me?.quota_exhausted ? t('流量已用完，续费或购买重置包后恢复')
-      : hasPlan ? t('套餐不限流量') : t('购买套餐后可用'),
-  );
-  const balanceText = $derived(balance.data ? formatMoney(balance.data.balance_cents) : '—');
-  const pct = $derived(hasPlan && !usage.unlimited ? usage.leftPct : null);
-  const nextReset = $derived(plan?.plan?.next_reset_at ?? null);
+  /* ── 流量：默认近 7 天（预取的那一份，也是首屏判断「何时用完」的依据）；切到 30 天才取 30 天（续费范围的账户面板不给流量记录） ── */
+  let range = $state<7 | 30>(7);
+  const traffic = resource(() => ({ ...(range === 7 ? spec.traffic : trafficSpec(30)), enabled: full, keep: true }));
+  const days = $derived(trafficDays(traffic.data));
+  const week = $derived(days.slice(-7));
 
   /* 地址带 #subscribe（付款结果的「查看订阅」）：内容画好后滚过去 */
   $effect(() => {
@@ -122,98 +91,25 @@
   });
 </script>
 
-<PageTitle title={t('仪表盘')} sub={t('你的账号状态、流量走势与订阅信息一览。')}>
-  {#snippet notices()}
-    <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} ondismiss={() => latest && markRead(latest)} openIntent={intent(Detail)} />
-  {/snippet}
-</PageTitle>
+<div class="dtop">
+  <div class="dmain">
+    <Status week={week} nodes={nodes.data} balance={balance.data} {full}>
+      {#snippet notices()}
+        <Notices order={openOrder} onorderchange={() => orders.reload()} {replied} latest={latestInfo} onopen={() => latest && openNotice(latest)} ondismiss={() => latest && markRead(latest)} openIntent={intent(Detail)} />
+      {/snippet}
+    </Status>
+    {#if full}<Flow {traffic} days={days} bind:range />{/if}
+    <News {announcements} onopen={openNotice} openIntent={intent(Detail)} />
+  </div>
 
-<Section>
-  <Hero
-    value={pct !== null ? usage.left.toFixed(1) : usage.used.toFixed(1)}
-    unit={pct !== null ? t('GB 剩余') : t('GB 已用')}
-    meter={pct !== null ? { pct, low: pct < 10 } : null}
-    label={t('剩余流量')}
-    capL={pct !== null ? tp('剩余 {l} / {t} GB · 已用 {u}', { l: +usage.left.toFixed(1), t: +usage.total.toFixed(1), u: +usage.used.toFixed(1) }) : used}
-    capR={nextReset ? tp('{d} 重置', { d: formatDate(nextReset) }) : undefined}
-  >
-    {#snippet head()}
-      <Crown size={14} strokeWidth={1.75} aria-hidden="true" />
-      <span>{plan?.plan?.name ?? t('还没有套餐')}</span>
-      {#if me?.expired}<span class="pill warn"><i></i>{t('已过期')}</span>
-      {:else if me?.quota_exhausted}<span class="pill warn"><i></i>{t('流量已用完')}</span>
-      {:else if hasPlan}<span class="pill"><i></i>{t('生效中')}</span>{/if}
-    {/snippet}
-    {#snippet facts()}
-      <div><span>{t('套餐到期')}</span><span>{#if !hasPlan}—{:else if left === null}{t('长期')}{:else}{tp('{n} 天', { n: left })}{/if}{#if expiresAt}<small>{formatDate(expiresAt)}</small>{/if}</span></div>
-      <div><span>{t('在线线路')}</span><span>{#if !full}<small>{t('续费后恢复')}</small>{:else if nodes.data}{online} / {nodeList.length}{:else}—{/if}</span></div>
-      <div><span>{t('余额')}</span><span>{balanceText}{#if balance.data}<small>{tp('可提现 {v}', { v: formatMoney(balance.data.withdrawable_cents) })}</small>{/if}</span></div>
-      <div><span>{t('速率')}</span><span>{plan?.plan ? t(formatSpeed(plan.plan.speed_limit_mbps)) : '—'}</span></div>
-    {/snippet}
-  </Hero>
-</Section>
+  <aside class="dside">
+    <!-- #subscribe：付款结果弹窗的「查看订阅」直达这里 -->
+    <section id="subscribe" class="acc" aria-label={t('接入配置')}><Access {full} /></section>
+    <DocsPreview />
+  </aside>
+</div>
 
-<!-- 流量走势（续费范围没有） -->
-{#if full}
-  <Section>
-    {#snippet title()}<TrendingUp size={16} strokeWidth={1.75} aria-hidden="true" />{t('近 7 日流量')}{/snippet}
-    {#snippet extra()}{#if traffic.data}<span class="wk-sum" title={tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(totalDown + totalUp), d: formatBytes(totalDown), u: formatBytes(totalUp) })}>{formatBytes(totalDown + totalUp)} · ↓ {formatBytes(totalDown)} · ↑ {formatBytes(totalUp)} · {t('计费')} {formatBytes(traffic.data.total.billed_bytes)}</span>{/if}{/snippet}
-    {#if traffic.loading && !traffic.data}
-      <Loading block={268} />
-    {:else if traffic.error && !traffic.data}
-      <LoadError error={traffic.error} onretry={traffic.reload} />
-    {:else if totalDown + totalUp === 0}
-      <Empty title={t('近 7 天还没有流量记录')} desc={t('连上节点跑一会儿，这里就会有走势了。')} />
-    {:else}
-      <WeekChart {week} />
-    {/if}
-  </Section>
-{/if}
-
-<!-- 订阅 + 公告（#subscribe：付款结果弹窗的「查看订阅」直达这里） -->
-<Section id="subscribe">
-  <Split>
-    {#snippet left()}<Access {full} />{/snippet}
-    {#snippet right()}
-      <PaneHead>
-        {#snippet title()}<Megaphone size={16} strokeWidth={1.75} aria-hidden="true" />{t('公告与动态')}{/snippet}
-        {#snippet desc()}{t('节点变更、维护与活动通知')}{/snippet}
-        {#snippet extra()}<a class="btn link-btn" href={R.announcements}>{t('全部公告')}</a>{/snippet}
-      </PaneHead>
-      {#if announcements.loading && !announcements.data}
-        <Loading />
-      {:else if announcements.error && !announcements.data}
-        <LoadError error={announcements.error} onretry={announcements.reload} />
-      {:else if ann.length === 0}
-        <Empty title={t('暂时没有公告')} />
-      {:else}
-        {#each ann.slice(0, 3) as a, i (a.id)}
-          {@const at = text(a)}
-          {@const tg = tagOf(a, i18n.locale)}
-          <Row first={i === 0} onclick={() => openNotice(a)} {@attach intent(Detail)}>
-            {#snippet title()}
-              <span class="rt">
-                {#if a.pinned}<span class="pinb"><Pin size={12} strokeWidth={1.75} aria-hidden="true" />{t('置顶')}</span>{/if}
-                {#if tg}<span class="tg {tg.cls}">{tg.name}</span>{/if}
-                <span class={['trunc', !a.read && 'mid']}>{at.title}</span>
-              </span>
-            {/snippet}
-            {#snippet desc()}<span class="clamp1">{summarize(at.html, 60)}</span>{/snippet}
-            {#snippet extra()}<span class="tnum rx">{fromNow(a.created_at, tp)}</span>{/snippet}
-          </Row>
-        {/each}
-      {/if}
-    {/snippet}
-  </Split>
-</Section>
-
-<!-- 文档 + 节点 -->
-<Section>
-  <Split>
-    {#snippet left()}<DocsPreview />{/snippet}
-    {#snippet right()}<NodesPreview {nodes} {full} />{/snippet}
-  </Split>
-</Section>
+<NodesPreview {nodes} {full} />
 
 {#if dialogLoaded}
   {#await chunk(Detail) then m}<m.default item={notice} onclose={() => (notice = null)} />{/await}

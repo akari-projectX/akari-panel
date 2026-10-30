@@ -5,7 +5,6 @@
   import { PLATFORMS } from '@/data/platforms';
   import { mySubUrl } from '@/lib/sub-links';
   import Empty from '../Empty.svelte';
-  import PaneHead from '../flat/PaneHead.svelte';
   import ResetSubscription from '../ResetSubscription.svelte';
   import Subscribe from './Subscribe.svelte';
   import { auth, site } from '$lib/auth.svelte';
@@ -29,11 +28,13 @@
   const platformName = (id: string) => PLATFORMS.find((p) => p.id === id)?.name ?? id;
 </script>
 
-<PaneHead>
-  {#snippet title()}<Wifi size={16} strokeWidth={1.75} aria-hidden="true" />{t('接入配置')}{/snippet}
-  {#snippet desc()}{me?.sub_own_client ? t('下载 Akari 客户端，登录账户即可使用') : t('一个链接，导入任意客户端')}{/snippet}
-  {#snippet extra()}{#if full && hasPlan}<ResetSubscription />{/if}{/snippet}
-</PaneHead>
+<div class="acc-h">
+  <div>
+    <h2><Wifi size={16} strokeWidth={1.75} aria-hidden="true" />{t('接入配置')}</h2>
+    <p>{me?.sub_own_client ? t('下载 Akari 客户端，登录账户即可使用') : t('一个链接，导入任意客户端')}</p>
+  </div>
+  {#if full && hasPlan}<ResetSubscription />{/if}
+</div>
 
   {#if full && hasPlan && me?.sub_own_client}
     <div class="own" data-testid="own-client">

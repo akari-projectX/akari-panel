@@ -1,5 +1,5 @@
 /*
- * 门户 v2 · PR 3：仪表盘。覆盖切换前 React 门户 e2e 里仪表盘的全部场景（support #60、polish #60、subscription #27–#30 / B1、
+ * 门户 v2 · PR 3：仪表盘（2026-10-30 起外观 A · A3：两栏首屏 + 整宽线路）。覆盖切换前 React 门户 e2e 里仪表盘的全部场景（support #60、polish #60、subscription #27–#30 / B1、
  * account #17 的验证邮箱、#18 封禁、#19 续费范围、support #14 的客户端下载），外加新设计的：流量图（平滑面积图、7 / 30 天、
  * 悬停 / 键盘提示）、提醒细行（待付款、工单回复、流量快用完、邮箱未验证）、最新公告横幅与详情、线路与文档预览、#subscribe 直达，
  * 以及设计评审截图（默认 / 提醒 / 仅自研客户端 / 续费范围 / 封禁 × 桌面 / 手机 × 浅 / 深）。
@@ -76,35 +76,43 @@ async function stubNotices(page: Page) {
 test('#60 plan, days left, traffic left, lines, balance, subscription, announcements; nothing waits on a spinner', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
-  await expect(page.locator('main .page-sub')).toHaveText('你的账号状态、流量走势与订阅信息一览。');
-  /* 首屏：剩余流量大字 + 分段条，右侧套餐到期 / 在线线路 / 余额 / 速率 */
-  const kpis = page.locator('.hx');
+  /* 首屏（外观 A）：页标题那行、一句大字（本期还剩多少、几天后到期）、流量与时间两把尺、四个小事实（套餐到期 / 在线线路 / 余额 / 速率） */
+  const kpis = page.locator('.hs');
+  await expect(kpis.locator('.hs-eye')).toContainText('生效中');
+  await expect(kpis.locator('.hs-lede')).toContainText(/本期还剩 [\d.]+ GB/);
   for (const k of ['套餐到期', '在线线路', '余额', '速率']) await expect(kpis.getByText(k, { exact: true }).first()).toBeVisible();
-  await expect(kpis.getByRole('meter', { name: '剩余流量' })).toBeVisible();
-  await expect(kpis).toContainText(/GB 剩余/);
-  await expect(kpis).toContainText(/\/ 100 GB · 已用/);
+  const meter = kpis.getByRole('meter', { name: '剩余流量' });
+  await expect(meter).toBeVisible();
+  await expect(meter).toHaveAttribute('aria-valuetext', /\/ 100 GB · 已用/);
+  await expect(kpis).toContainText(/% 已用/);
   await expect(kpis).toContainText(/\d{4}-\d{2}-\d{2}/);
   await expect(kpis).toContainText(/可提现 ¥/);
+  await expect(kpis.getByRole('link', { name: '续费' })).toHaveAttribute('href', '/shop');
   await expect(page.getByRole('button', { name: '复制订阅链接' })).toBeVisible();
   await expect(page.getByText('E2E 维护通知').first()).toBeVisible();
-  /* 线路：细线表格，每个入口一行，名称前是国旗（地区名是国旗的读屏名称），倍率是此刻生效的（中转 ×2、日本全天 ×0.5） */
-  const lines = page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '订阅内的线路' }) });
+  /* 线路（整宽）：细线表格，每个入口一行，名称前是国旗（地区名是国旗的读屏名称），倍率是此刻生效的（中转 ×2、日本全天 ×0.5），状态在最右 */
+  const lines = page.locator('section.dlines');
+  await expect(lines.getByRole('heading', { name: '线路' })).toBeVisible();
   await expect(lines.locator('.ntbl tbody tr')).toHaveCount(3);
   await expect(lines.locator('.ntbl .nname .flag').first()).toBeVisible();
   for (const h of ['线路', '状态', '延迟', '倍率']) await expect(lines.getByRole('columnheader', { name: h })).toBeVisible();
+  await expect(lines.getByRole('columnheader').last()).toHaveText('状态');
   await expect(lines.getByText('×2', { exact: true })).toBeVisible();
   await expect(lines.getByText('×0.5', { exact: true })).toBeVisible();
-  await expect(lines.getByRole('link', { name: '全部线路' })).toHaveAttribute('href', '/nodes');
-  /* 文档：第一个分类是大卡，其余是图标格，点进文档页的该分类 */
-  const docs = page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '使用文档' }) });
-  await expect(docs.locator('.feat, .oth-g button').first()).toBeVisible();
-  await expect(docs).toContainText(/\d+ 篇/);
+  await expect(lines.getByRole('link', { name: /全部线路/ })).toHaveAttribute('href', '/nodes');
+  /* 教程（右栏）：细线列表，每行分类名 + 文章标题，点进那篇文章 */
+  const docs = page.locator('section', { has: page.getByRole('heading', { name: '教程', exact: true }) });
+  await expect(docs.locator('a.drow.doc').first()).toHaveAttribute('href', /^\/help\?id=/);
+  await expect(docs.getByRole('link', { name: /全部教程/ })).toHaveAttribute('href', '/help');
+  /* 公告：细线列表 */
+  await expect(page.locator('section', { has: page.getByRole('heading', { name: '公告', exact: true }) }).locator('.drow').first()).toBeVisible();
 });
 
-test('#60 traffic chart: 7 daily bars with axis and unit, today\'s label, tooltip by pointer and keyboard', async ({ page }, info) => {
+test('#60 traffic chart: 7 daily bars with axis and unit, today\'s label, tooltip by pointer and keyboard; 30 days on request', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await dashboard(page);
-  const sec = page.locator('section.sec', { has: page.getByRole('heading', { name: '近 7 日流量' }) });
+  const sec = page.locator('section.flow', { has: page.getByRole('heading', { name: '流量', exact: true }) });
+  await expect(sec.getByRole('button', { name: '7 天' })).toHaveAttribute('aria-pressed', 'true');
   await expect(sec.locator('.wk-sum')).toContainText(/↓ .+ · ↑ .+/);
   await expect(sec).toContainText(/计费 \d/);
   await expect(sec).toContainText(/单位 (GB|MB|KB)/);
@@ -125,6 +133,13 @@ test('#60 traffic chart: 7 daily bars with axis and unit, today\'s label, toolti
   await cols.first().blur();
   await expect(tip).toHaveCount(0);
   await shot(page, info, 'dashboard-week-light');
+  /* 30 天：切换后才取，每天一根，横轴只标今天和往前每 5 天 */
+  await sec.getByRole('button', { name: '30 天' }).click();
+  await expect(cols).toHaveCount(30);
+  await expect(sec.locator('.wk-x .is-today b')).toHaveText('今天');
+  await expect(sec.locator('.wk-x b')).toHaveCount(6);
+  await sec.getByRole('button', { name: '7 天' }).click();
+  await expect(cols).toHaveCount(7);
 });
 
 test('#27 #30 D11: the link is the panel\'s random subscription path, it works, a reset on the dashboard replaces it', async ({ page, context }, info) => {
@@ -139,6 +154,10 @@ test('#27 #30 D11: the link is the panel\'s random subscription path, it works, 
   expect(url.pathname.split('/')[1]).toBe(subPath);
   /* 页面上不显示链接本身（v1.4.0 只给复制与扫码）；二维码是本地生成的 SVG，不出浏览器 */
   await expect(page.locator('#subscribe')).not.toContainText(url.pathname.split('/')[2]);
+  /* 二维码默认收起，点「二维码」才展开 */
+  await expect(page.locator('svg:has(> title)').filter({ hasText: '订阅二维码' })).toHaveCount(0);
+  await page.locator('#subscribe').getByRole('button', { name: '二维码' }).click();
+  await expect(page.locator('#subscribe').getByRole('button', { name: '二维码' })).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('svg:has(> title)').filter({ hasText: '订阅二维码' })).toBeVisible();
   const r = await fetch(`${process.env.E2E_API}${url.pathname}?format=clash`);
   expect(r.status).toBe(200);
@@ -233,6 +252,7 @@ test('B1 own client only: no link, copy, QR or import buttons; only the client d
     await expect(area).toContainText('客户端下载地址还没有公布');
     await expect(page.getByRole('button', { name: '复制订阅链接' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '订阅格式' })).toHaveCount(0);
+    await expect(page.locator('#subscribe').getByRole('button', { name: '二维码' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Clash Verge \/ mihomo/ })).toHaveCount(0);
     await expect(page.locator('svg:has(> title)').filter({ hasText: '订阅二维码' })).toHaveCount(0);
     /* 订阅只回答 Akari 客户端；其余（含显式格式）都是统一的 404 */
@@ -404,10 +424,10 @@ test('#19 renewal scope (expired): banner, no lines, subscription or traffic; th
   expect(b!.y).toBeGreaterThan(h!.y + h!.height);
   await expect(page.getByRole('button', { name: '复制订阅链接' })).toHaveCount(0);
   await expect(page.locator('#subscribe')).toContainText('订阅已暂停');
-  await expect(page.locator('section[aria-labelledby="h-traffic"]')).toHaveCount(0);
-  await expect(page.locator('.split2 .pane', { has: page.getByRole('heading', { name: '订阅内的线路' }) })).toContainText('线路暂不可用');
-  await expect(page.locator('.hx')).toContainText('续费后恢复');
-  await expect(page.locator('.hx')).not.toContainText('购买套餐后可用');
+  await expect(page.locator('section.flow')).toHaveCount(0);
+  await expect(page.locator('section.dlines')).toContainText('线路暂不可用');
+  await expect(page.locator('.hs')).toContainText('续费后恢复');
+  await expect(page.locator('.hs-lede')).toHaveText('套餐已到期，续费后立即恢复。');
   /* 红色「已暂停」胶囊没有 × */
   const paused = page.locator('[data-page-notices] .cap', { hasText: '已暂停' });
   await expect(paused).toBeVisible();
