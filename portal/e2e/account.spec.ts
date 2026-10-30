@@ -19,16 +19,16 @@ async function settings(page: Page, path = '/account', title = '设置') {
   await expect(page.locator('main [aria-busy]')).toHaveCount(0, { timeout: 15_000 });
 }
 
-/** 去一页：桌面 = 顶栏导航 / 账户菜单；手机 = 菜单卡片里的链接（客户端切页） */
+/** 去一页（页面标题仪表盘 = 导航里的「概览」）：桌面 = 顶栏导航 / 头像菜单；手机 = 菜单卡片里的链接（客户端切页） */
 async function go(page: Page, info: TestInfo, name: '仪表盘' | '设置') {
   if (isDesktop(info) && name === '仪表盘') {
-    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name }).click();
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '概览' }).click();
   } else if (isDesktop(info)) {
     await page.locator('header .acct').click();
     await page.getByRole('menu', { name: '账户菜单' }).getByRole('menuitem', { name: /^设置/ }).click();
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
-    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: new RegExp(`^${name}`) }).click();
+    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: new RegExp(`^${name === '仪表盘' ? '概览' : name}`) }).click();
   }
 }
 

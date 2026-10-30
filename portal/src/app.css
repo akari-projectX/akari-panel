@@ -124,26 +124,25 @@
   .logo img { display: block; height: 28px; width: auto; max-width: 200px; object-fit: contain; }
   .wordmark { display: block; height: 26px; width: auto; stroke: currentColor; }
   .wordmark-dot { fill: var(--logo-dot); stroke: none; }
-  .topnav { position: relative; display: none; flex: 1; align-items: center; gap: 28px; }
+  .topnav { position: relative; display: none; flex: 1; align-items: center; gap: 24px; }
   .topnav-link {
     position: relative; display: flex; align-items: center; height: 36px; white-space: nowrap;
-    border: 0; background: none; padding: 0; font: inherit; font-size: 14px; font-weight: var(--fw-strong);
+    border: 0; background: none; padding: 0; font: inherit; font-size: 14px; font-weight: var(--fw-regular);
     color: var(--muted); transition: color var(--dur-hover);
   }
   .topnav-link::after {
-    content: ''; position: absolute; inset-inline: 0; bottom: 0; height: 2px; border-radius: 2px; background: var(--brand);
+    content: ''; position: absolute; inset-inline: 0; bottom: 0; height: 1.5px; background: var(--line2);
     transform: scaleX(0); transform-origin: left; transition: transform var(--dur-fast) var(--ease-out);
   }
   .topnav-link:hover { color: var(--fg); }
   .topnav-link:hover::after { transform: scaleX(1); }
-  .topnav-link[data-active='true'] { color: var(--brand); }
+  .topnav-link[data-active='true'] { color: var(--fg); font-weight: var(--fw-strong); }
   /* 当前项的下划线由导航上那一根 .nav-indicator 画（切页时从旧的一项滑到新的一项），伪元素只管悬停 */
   .topnav-link[data-active='true']::after { transform: scaleX(0); }
-  .nav-indicator { position: absolute; left: 0; top: 0; height: 2px; border-radius: 2px; background: var(--brand); pointer-events: none; }
+  .nav-indicator { position: absolute; left: 0; top: 0; height: 1.5px; background: var(--fg); pointer-events: none; }
   .nav-indicator[data-ready='true'] { transition: translate .32s var(--ease-out), width .32s var(--ease-out); }
-  /* 顶部导航项上的提醒点（工单有新回复） */
+  /* 顶部导航项上的提醒点（工单有新回复、待支付订单） */
   .nav-dot { display: inline-block; width: 6px; height: 6px; margin-left: 4px; vertical-align: 7px; border-radius: 9999px; background: var(--brand); }
-  .more-btn { gap: 4px; cursor: pointer; }
 
   .tools { margin-left: auto; display: flex; align-items: center; gap: 2px; flex: none; }
   .ibtn, .lbtn {
@@ -161,77 +160,47 @@
   .iconbtn:hover { color: var(--fg); background: var(--hover); }
   .hide-m { display: none; }
 
-  /* 账号入口：名字 + 名字下面一根线（长度 = 剩余流量） */
+  /* 头像（邮箱首字母）：宽屏的账户按钮、窄屏的菜单按钮、卡片抬头共用；右上的小圆点 = 有事等你 */
   .menu-host { position: relative; }
-  .acct, .menu-lines { --line-fg: var(--fg); --line-fill: var(--brand); }
-  .acct[data-tone='warn'], .menu-lines[data-tone='warn'] { --line-fill: var(--amber); }
-  .acct {
-    display: none; align-items: center; gap: 6px; height: 40px; margin-left: 4px; padding: 0 10px 0 14px; border: 0; border-radius: 9999px;
-    background: none; color: var(--fg); font: inherit; font-size: 14px; font-weight: var(--fw-strong); cursor: pointer; transition: background-color var(--dur-hover);
+  .av {
+    position: relative; display: inline-grid; flex: none; place-items: center; width: 28px; height: 28px; border-radius: 9999px;
+    background: var(--fg); color: var(--bg); font-size: 12.5px; font-weight: var(--fw-strong); line-height: 1;
   }
-  .acct:hover, .acct[data-state='open'] { background: var(--hover); }
-  .acct-name { position: relative; max-width: 140px; margin-top: 4px; padding-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .acct-name::after {
-    content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1.5px; border-radius: 1px;
-    background: linear-gradient(90deg, var(--line-fill) 0 var(--v, 0%), var(--line-track) var(--v, 0%) 100%);
+  .av.lg { width: 40px; height: 40px; font-size: 16px; }
+  .av-dot { position: absolute; top: -1px; right: -1px; width: 8px; height: 8px; border-radius: 9999px; background: var(--brand); box-shadow: 0 0 0 2px var(--bg); }
+  .acct, .menu-me {
+    display: none; align-items: center; gap: 6px; height: 40px; padding: 0 8px 0 6px; border: 0; border-radius: 9999px;
+    background: none; color: var(--fg); font: inherit; cursor: pointer; transition: background-color var(--dur-hover);
   }
-  .acct-dot { flex: none; width: 4px; height: 4px; border-radius: 9999px; background: var(--brand); }
-  .acct .acct-chev { flex: none; opacity: .6; }
+  .acct { margin-left: 6px; }
+  .acct:hover, .acct[data-state='open'], .menu-me:hover, .menu-me[data-state='open'] { background: var(--hover); }
+  .acct .acct-chev { flex: none; color: var(--muted); transition: rotate var(--dur-fast) var(--ease-out); }
+  .acct[data-state='open'] .acct-chev { rotate: 180deg; }
 
-  /* 窄屏的菜单按钮：两根线。上面那根就是菜单；下面那根是剩余流量；末尾的小圆点 = 有事等你；打开时旋成 × */
+  /* 窄屏的菜单按钮：头像 + 三道线，打开时三道线旋成 × */
   html.menu-open { overflow: hidden; }
-  .lines-host { display: block; margin-right: -10px; }
-  .menu-lines {
-    position: relative; flex: none; display: block; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 9999px; background: none;
-    cursor: pointer; transition: background-color var(--dur-hover);
-  }
-  .menu-lines:hover, .menu-lines[data-state='open'] { background: var(--hover); }
-  .menu-lines > i {
-    position: absolute; left: 13px; top: 21.25px; width: 18px; height: 1.5px; border-radius: 1px; overflow: hidden;
-    transition: transform .38s var(--ease-out), background-color var(--dur-hover);
-  }
-  .menu-lines > i:first-child { background: var(--line-fg); transform: translateY(-3.5px); }
-  .menu-lines > i:nth-child(2) { background: var(--line-track); transform: translateY(3.5px); }
-  .menu-lines > i > b { position: absolute; inset: 0 auto 0 0; width: var(--v, 0%); background: var(--line-fill); transition: opacity .18s; }
-  .menu-lines[data-state='open'] > i:first-child { transform: rotate(45deg); }
-  .menu-lines[data-state='open'] > i:nth-child(2) { transform: rotate(-45deg); background: var(--line-fg); }
-  .menu-lines[data-state='open'] > i > b { opacity: 0; }
-  .menu-lines > s { position: absolute; left: 34px; top: 16.5px; width: 4px; height: 4px; border-radius: 9999px; background: var(--brand); transition: opacity .2s, transform .3s var(--ease-out); }
-  .menu-lines[data-state='open'] > s { opacity: 0; transform: scale(.4); }
-  .menu-lines[data-intro] > i > b { animation: line-draw var(--dur-slow) var(--ease-out) .1s both; }
+  .lines-host { display: block; margin-right: -6px; }
+  .menu-me { display: inline-flex; gap: 8px; padding: 0 10px 0 6px; }
+  .burger { position: relative; display: block; width: 16px; height: 12px; }
+  .burger > i { position: absolute; left: 0; width: 16px; height: 1.5px; border-radius: 1px; background: var(--fg); transition: transform .3s var(--ease-out), opacity .2s; }
+  .burger > i:nth-child(1) { top: 0; }
+  .burger > i:nth-child(2) { top: 5.25px; }
+  .burger > i:nth-child(3) { top: 10.5px; }
+  .menu-me[data-state='open'] .burger > i:nth-child(1) { transform: translateY(5.25px) rotate(45deg); }
+  .menu-me[data-state='open'] .burger > i:nth-child(2) { opacity: 0; }
+  .menu-me[data-state='open'] .burger > i:nth-child(3) { transform: translateY(-5.25px) rotate(-45deg); }
   @keyframes line-draw { from { width: 0; } }
 
-  /* 弹出的卡片（账号 / 窄屏菜单 / 更多）：圆角 rounded-2xl、popover 底、一圈 1px 的描边、很长的软投影 */
+  /* 弹出的卡片（头像菜单 / 窄屏菜单）：popover 底、一圈 1px 的细边、很淡的长投影 */
   .menu-card {
-    position: absolute; z-index: 50; top: calc(100% + 10px); right: 0; width: 292px; max-height: calc(100dvh - 90px);
-    overflow-x: hidden; overflow-y: auto; border-radius: calc(var(--radius) * 1.8); padding: 0;
-    background: var(--popover); color: var(--fg); box-shadow: var(--shadow-card), 0 0 0 1px color-mix(in srgb, var(--fg) 10%, transparent);
+    position: absolute; z-index: 50; top: calc(100% + 10px); right: 0; width: 300px; max-height: calc(100dvh - 90px);
+    overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line2); border-radius: calc(var(--radius) * 1.6); padding: 0;
+    background: var(--popover); color: var(--fg); box-shadow: var(--shadow-card);
     transform-origin: top right; outline: none;
   }
   .menu-card[data-state='open'] { animation: menu-in var(--dur-hover) var(--ease-out); }
   .menu-card[data-state='closed'] { animation: menu-out var(--dur-exit) var(--ease-in) forwards; }
-  .lines-host .menu-card { top: calc(100% + 18px); }
-  .menu-card.more-card { right: auto; left: 0; top: calc(100% + 12px); width: 340px; transform-origin: top left; }
-  /* 「更多」：带编号的目录 */
-  .more-head { display: flex; align-items: baseline; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); }
-  .more-head > span:first-child { letter-spacing: .2em; }
-  .more-head > span:last-child { letter-spacing: .1em; }
-  .more-list { padding: 6px; }
-  .more-item { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 10px 12px; border-radius: calc(var(--radius) * 1.4); outline: none; cursor: pointer; }
-  .more-item:hover, .more-item:focus { background: color-mix(in srgb, var(--hover) 70%, transparent); }
-  .more-item[data-on='true'] { background: color-mix(in srgb, var(--hover) 50%, transparent); }
-  .more-item[data-on='true']:hover, .more-item[data-on='true']:focus { background: color-mix(in srgb, var(--hover) 70%, transparent); }
-  .more-tick { position: absolute; top: 50%; left: 0; width: 0; height: 1px; translate: 0 -50%; background: var(--brand); transition: width var(--dur-fast); }
-  .more-item[data-on='true'] .more-tick, .more-item:hover .more-tick, .more-item:focus .more-tick { width: 10px; }
-  .more-no { flex: none; margin-top: 2px; font-size: 11.5px; font-weight: var(--fw-regular); color: var(--faint); transition: color var(--dur-hover); }
-  .more-item[data-on='true'] .more-no, .more-item:hover .more-no, .more-item:focus .more-no { color: var(--brand); }
-  .more-body { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
-  .more-l1 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  .more-t { font-size: 14.5px; font-weight: var(--fw-strong); }
-  .more-item[data-on='true'] .more-t { color: var(--brand); }
-  .more-m { flex: none; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
-  .more-d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; line-height: 1.5; color: var(--muted); }
-
+  .lines-host .menu-card { top: calc(100% + 14px); }
 
   /* ========== 页面框架（v1.4.0） ========== */
   .page { animation: page-in var(--dur-fast) var(--ease-out) backwards; }
@@ -250,8 +219,16 @@
   .quiet { color: var(--faint); font-size: 13px; }
   .link { color: var(--brand); font-size: 13px; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
   .link:hover { text-decoration: underline; text-underline-offset: 3px; }
-  /* 页脚：一道线 + 一行版权 + 一组法务 / 支持链接（站长配了外链就用外链） */
-  footer.site { margin-top: auto; }
+  /* 页脚（F1b）：巨大的空心站点名 + 一道线 + 一行版权 + 一组法务 / 支持链接（站长配了外链就用外链） */
+  footer.site { margin-top: auto; padding-top: 40px; overflow: hidden; }
+  /* 站点名越长字越小（--n = 字数），始终一行；只露出上面 82%，像压在那道线上 */
+  footer.site .bigw {
+    height: .82em; overflow: hidden; padding-top: 8px; white-space: nowrap; text-align: center; user-select: none;
+    font-size: clamp(64px, min(19vw, calc(118vw / var(--n, 5))), 260px); font-weight: var(--fw-strong); line-height: .82; letter-spacing: -.05em;
+    color: transparent; -webkit-text-stroke: 1.5px var(--line2); transition: -webkit-text-stroke-color .4s var(--ease-out);
+  }
+  footer.site .bigw:hover { -webkit-text-stroke-color: var(--faint); }
+  @media (max-width: 640px) { footer.site { padding-top: 24px; } }
   footer.site .rule { height: 1px; background: var(--line); }
   footer.site .wrap.row2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 32px; padding-block: 28px; font-size: 12.5px; color: var(--muted); }
   footer.site .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; }
@@ -268,8 +245,9 @@
     border: 1px solid var(--btn-line); background: var(--btn-bg); color: var(--fg); font-size: 14px; font-weight: var(--fw-strong); white-space: nowrap; box-shadow: var(--shadow-xs);
   }
   .btn:hover { background: var(--hover); }
-  .btn.pri { background: var(--brand); border-color: transparent; color: var(--on-brand); }
-  .btn.pri:hover { background: var(--brand-hover); }
+  /* 主按钮（外观 A）：正文色实底，不用强调色 */
+  .btn.pri { background: var(--fg); border-color: transparent; color: var(--bg); }
+  .btn.pri:hover { background: var(--body); }
 
   /* 错误与空白页（找不到页面、分包没下完、连不上面板） */
   .err { max-width: 560px; padding: 72px 0 48px; }
@@ -627,10 +605,10 @@
 
 /* 减少动效：入场、弹出层的位移与淡入全部关闭；加载指示器只放慢（冻住的指示器等于告诉用户「卡死了」） */
 @media (prefers-reduced-motion: reduce) {
-  .page, .menu-card, .toast, .dlg, .dlg-overlay, .lines i, .sk, .load-in, .state-in, .menu-lines[data-intro] > i > b { animation: none; }
+  .page, .menu-card, .toast, .dlg, .dlg-overlay, .lines i, .sk, .load-in, .state-in { animation: none; }
   .load-hint { opacity: 1; animation: none; }
   .spinner i { animation-duration: 1.4s; }
-  .menu-lines > i, .menu-lines > s { transition: none; }
+  .burger > i, .acct .acct-chev { transition: none; }
   .topnav-link, .iconbtn, .ibtn, .lbtn, .tabs a, .input, .btn, .rules li, .switch, .switch-thumb { transition: none; }
   .switch:active { scale: none; }
   ::view-transition-old(root), ::view-transition-new(root) { animation: none; }

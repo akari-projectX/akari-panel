@@ -1,5 +1,5 @@
 /*
- * 门户外壳（v1.4.0 外观）。门禁、导航（桌面顶栏 + 「更多」 / 账号卡片 / 窄屏的两根线菜单）、明暗、语言、账户范围、旧地址、退出，
+ * 门户外壳（外观 A · 纸面简约）。门禁、导航（桌面顶栏八项 + 头像菜单 / 窄屏「头像 + 三道线」菜单）、明暗、语言、账户范围、旧地址、退出，
  * 以及设计评审截图（桌面 1440 / 手机 390 × 浅 / 深）。
  * 账户来自 e2e/support/seed.ts：user@e2e.test（正常）、expired@e2e.test（续费范围）、banned@e2e.test（封禁）；
  * 退出用 logout-<视口>@e2e.test——user@e2e.test 永远不退出（退出会结束这个账户的所有会话）。
@@ -8,25 +8,21 @@ import type { Page } from '@playwright/test';
 import { FIELDS } from './support/panel.ts';
 import { admin, expect, mine, ready, shot, signIn, test } from './fixtures';
 
-/** 顶栏五项 + 「更多」里的五项（v1.4.0：仪表盘 · 商店 · 文档 · 邀请 · 工单 · 更多） */
-const NAV = ['仪表盘', '商店', '文档', '邀请', '工单', '节点状态', '使用明细', '公告与动态', '我的订单', '设置'];
+/** 顶栏八项（N1：概览 · 商店 · 线路 · 用量 · 订单 · 公告 · 文档 · 工单）+ 头像菜单里的两项 */
+const NAV = ['概览', '商店', '线路', '用量', '订单', '公告', '文档', '工单', '邀请', '设置'];
 
 const desktop = (name: string) => name === 'desktop';
 
-/** 某个视口下可见的导航名（桌面 = 顶栏 + 展开的「更多」；手机 = 打开菜单后卡片里的全部导航行） */
+/** 某个视口下可见的导航名（桌面 = 顶栏 + 头像菜单里的页面行；手机 = 打开菜单后卡片里的全部页面行） */
 async function navNames(page: Page, isDesktop: boolean): Promise<string[]> {
   if (isDesktop) {
-    const nav = page.getByRole('navigation', { name: '主导航' });
-    const names = await nav.getByRole('link').allInnerTexts();
-    const more = nav.getByRole('button', { name: '更多' });
-    if (await more.count()) {
-      await more.click();
-      const menu = page.getByRole('menu', { name: '更多' });
-      await expect(menu).toBeVisible();
-      names.push(...(await menu.locator('.more-t').allInnerTexts()));
-      await page.keyboard.press('Escape');
-      await expect(menu).toHaveCount(0);
-    }
+    const names = await page.getByRole('navigation', { name: '主导航' }).getByRole('link').allInnerTexts();
+    await page.locator('header .acct').click();
+    const menu = page.getByRole('menu', { name: '账户菜单' });
+    await expect(menu).toBeVisible();
+    names.push(...(await menu.locator('a.row .row-t').allInnerTexts()));
+    await page.keyboard.press('Escape');
+    await expect(menu).toHaveCount(0);
     return names.map((n) => n.trim());
   }
   await page.getByRole('button', { name: '菜单' }).click();
@@ -73,17 +69,17 @@ test('navigation: order, current page, client-side switches', async ({ page }, i
 
   if (desktop(info.project.name)) {
     const nav = page.getByRole('navigation', { name: '主导航' });
-    await expect(nav.getByRole('link', { name: /^仪表盘/ })).toHaveAttribute('aria-current', 'page');
+    await expect(nav.getByRole('link', { name: /^概览/ })).toHaveAttribute('aria-current', 'page');
     await nav.getByRole('link', { name: /^商店/ }).click();
     await expect(page).toHaveURL(/\/shop$/);
     await expect(page.locator('main h1')).toHaveText('商店');
     await expect(nav.getByRole('link', { name: /^商店/ })).toHaveAttribute('aria-current', 'page');
-    await expect(nav.getByRole('link', { name: /^仪表盘/ })).not.toHaveAttribute('aria-current', 'page');
+    await expect(nav.getByRole('link', { name: /^概览/ })).not.toHaveAttribute('aria-current', 'page');
     await page.goBack();
     await expect(page.locator('main h1')).toHaveText('仪表盘');
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
-    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: /^节点状态/ }).click();
+    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: /^线路/ }).click();
     await expect(page).toHaveURL(/\/nodes$/);
     await expect(page.locator('main h1')).toHaveText('节点状态');
     await expect(page.getByRole('menu', { name: '菜单' })).toHaveCount(0);
@@ -93,22 +89,28 @@ test('navigation: order, current page, client-side switches', async ({ page }, i
 });
 
 test('user menu (desktop): items, keyboard, Esc and focus return', async ({ page }, info) => {
-  test.skip(!desktop(info.project.name), 'desktop only (the phone has the two-line menu)');
+  test.skip(!desktop(info.project.name), 'desktop only (the phone has the avatar + burger menu)');
   await signIn(page, 'user@e2e.test');
   await page.goto('/');
   await ready(page, '仪表盘');
   const button = page.locator('header .acct');
+  /* 头像是邮箱首字母，名字只给读屏 */
+  await expect(button.locator('.av')).toHaveText('U');
   await expect(button).toHaveText(/user/);
   await button.click();
   const menu = page.getByRole('menu', { name: '账户菜单' });
   await expect(menu).toBeVisible();
   await expect(button).toHaveAttribute('aria-expanded', 'true');
   const items = menu.getByRole('menuitem');
-  await expect(items).toHaveText([/续费/, /我的订单/, /设置/, /退出登录/]);
-  /* 抬头：剩余流量 · 剩余天数、套餐、邮箱；顶边那根线 */
-  await expect(menu.locator('.acc-l1')).toContainText('GB 剩余');
-  await expect(menu.locator('.acc-l2').last()).toHaveText('user@e2e.test');
-  await expect(menu.locator('.card-line')).toBeAttached();
+  await expect(items).toHaveText([/复制订阅/, /续费/, /邀请/, /设置/, /退出登录/]);
+  /* 抬头：名字、邮箱；套餐块：还有几天、用量条、已用 / 剩余 */
+  await expect(menu.locator('.acc-name')).toHaveText('user');
+  await expect(menu.locator('.acc-email')).toHaveText('user@e2e.test');
+  await expect(menu.locator('.acc-plan')).toContainText('GB');
+  await expect(menu.locator('.acc-bar')).toBeAttached();
+  /* 外观与语言两枚开关也在卡片里 */
+  await expect(menu.getByRole('group', { name: '切换明暗模式' })).toBeVisible();
+  await expect(menu.getByRole('group', { name: '切换语言' })).toBeVisible();
   await shot(page, info, 'user-menu-light');
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
@@ -123,7 +125,7 @@ test('user menu (desktop): items, keyboard, Esc and focus return', async ({ page
   await expect(items.first()).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/orders$/);
+  await expect(page).toHaveURL(/\/shop$/);
   await expect(menu).toHaveCount(0);
 
   /* 点外面关闭 */
@@ -138,34 +140,6 @@ test('user menu (desktop): items, keyboard, Esc and focus return', async ({ page
   await shot(page, info, 'user-menu-dark');
 });
 
-test('more menu (desktop): numbered directory, current item, Esc', async ({ page }, info) => {
-  test.skip(!desktop(info.project.name), 'desktop only');
-  await signIn(page, 'user@e2e.test');
-  await page.goto('/orders');
-  await ready(page);
-  const nav = page.getByRole('navigation', { name: '主导航' });
-  const more = nav.getByRole('button', { name: '更多' });
-  /* 当前页在「更多」里：触发按钮变蓝（data-active），顶栏五项都不是当前项 */
-  await expect(more).toHaveAttribute('data-active', 'true');
-  await expect(nav.locator('a[aria-current="page"]')).toHaveCount(0);
-  await more.click();
-  const menu = page.getByRole('menu', { name: '更多' });
-  await expect(menu).toBeVisible();
-  await expect(menu.locator('.more-head')).toContainText('05 – 09');
-  await expect(menu.locator('.more-no')).toHaveText(['05', '06', '07', '08', '09']);
-  await expect(menu.getByRole('menuitem', { name: /^08\s*我的订单/ })).toHaveAttribute('aria-current', 'page');
-  await shot(page, info, 'more-menu-light');
-  await page.keyboard.press('Escape');
-  await expect(menu).toHaveCount(0);
-  await expect(more).toBeFocused();
-  await more.focus();
-  await page.keyboard.press('ArrowDown');
-  await expect(menu.getByRole('menuitem').first()).toBeFocused();
-  await page.keyboard.press('Enter');
-  await expect(page).toHaveURL(/\/nodes$/);
-  await expect(menu).toHaveCount(0);
-});
-
 test('mobile menu: card, keyboard, Esc, scroll lock', async ({ page }, info) => {
   test.skip(desktop(info.project.name), 'phone only');
   await signIn(page, 'user@e2e.test');
@@ -178,8 +152,8 @@ test('mobile menu: card, keyboard, Esc, scroll lock', async ({ page }, info) => 
   await expect(menu).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('html')).toHaveClass(/menu-open/);
-  await expect(menu.locator('.acc-l2').last()).toHaveText('user@e2e.test');
-  await expect(menu.getByRole('menuitem', { name: /^仪表盘/ })).toHaveAttribute('aria-current', 'page');
+  await expect(menu.locator('.acc-email')).toHaveText('user@e2e.test');
+  await expect(menu.getByRole('menuitem', { name: /^概览/ })).toHaveAttribute('aria-current', 'page');
   await expect(menu.locator('a.row .row-t')).toHaveText(NAV);
   await shot(page, info, 'menu-light');
 
@@ -228,13 +202,16 @@ test('language: English labels and <html lang>, then back', async ({ page }, inf
   await page.goto('/');
   await ready(page, '仪表盘');
   if (desktop(info.project.name)) {
-    await page.getByRole('button', { name: 'Switch to English' }).click();
+    /* 语言在头像菜单里（按下不收起菜单） */
+    await page.locator('header .acct').click();
+    await page.getByRole('button', { name: 'English' }).click();
     await expect(page.locator('main h1')).toHaveText('Dashboard');
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-    await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: /^Store/ })).toBeVisible();
+    await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: /^Overview/ })).toBeVisible();
     await page.reload();
     await ready(page, 'Dashboard');
-    await page.getByRole('button', { name: 'Switch to Chinese' }).click();
+    await page.locator('header .acct').click();
+    await page.getByRole('button', { name: '中文' }).click();
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
     await page.getByRole('button', { name: 'English' }).click();
@@ -253,10 +230,10 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await page.goto('/');
   await ready(page, '仪表盘');
   const renewal = await navNames(page, isDesktop);
-  expect(renewal).not.toContain('节点状态');
-  expect(renewal).not.toContain('使用明细');
+  expect(renewal).not.toContain('线路');
+  expect(renewal).not.toContain('用量');
   expect(renewal).toContain('商店');
-  /* 续费范围没有邀请，同一项叫「钱包」 */
+  /* 续费范围没有邀请，同一项叫「钱包」（桌面在头像菜单里） */
   expect(renewal).toContain('钱包');
   expect(renewal).not.toContain('邀请');
   await page.goto('/nodes');
@@ -269,7 +246,7 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await page.goto('/');
   /* 封禁账户的仪表盘就是封禁说明（dashboard.spec.ts 详测） */
   await ready(page, '账户已被封禁');
-  expect(await navNames(page, isDesktop)).toEqual(['仪表盘', '工单']);
+  expect(await navNames(page, isDesktop)).toEqual(['概览', '工单']);
   await page.goto('/shop');
   await expect(page).toHaveURL(/\/$/);
   await page.goto('/tickets');

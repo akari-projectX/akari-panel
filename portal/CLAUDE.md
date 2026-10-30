@@ -2,10 +2,17 @@
 
 用户门户（样稿只剩默认 Logo：`design/portal-v2-2026-10/logo/`）。面板只下发 `dist/app`（`src/spa.rs`）。
 
-## 外观 = v1.4.0（门户外观恢复，PR #160）
+## 外观 = A · 纸面简约（2026-10-30 用户确认，分三步接入）
 
-门户的外观是 v1.4.0 React 门户的外观（2026-10-26 用户裁决：v2 样稿的新外观作废，只保留 Svelte 的性能与架构；新 Logo 除外）。
-改外观时先对照 v1.4.0 源码（`git show v1.4.0:spa/src/...`），不要凭样稿。
+2026-10-30 用户确认新外观「A · 纸面简约」（取代 2026-10-26 恢复的 v1.4.0 外观）：暖白纸面、近黑正文、细线分隔、墨蓝只做强调，主按钮是正文色实底（`.btn.pri`）。
+样稿（单文件，所有页面）不进仓库；裁决要点：
+
+- 顶栏 **N1**：Logo（门户现有字标）+ 纯文字导航八项 `概览 商店 线路 用量 订单 公告 文档 工单`（`lib/account.ts` 的 `PRIMARY`，按账户范围过滤；没有「更多」），
+  当前项正文色加粗 + 一道同色细线（`.nav-indicator`，切页时滑动）；右侧明暗按钮 + 头像（邮箱首字母，`.av`）。
+- **头像菜单**（`AccountCard`，桌面点头像 / 窄屏点「头像 + 三道线」）：抬头（头像、名字、邮箱）、套餐块（名字、还有几天、用量条、已用 / 剩余、快捷按钮「复制订阅」「续费」）、
+  窄屏才有的页面导航（八项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
+- 页脚 **F1b**（`SiteFooter`）：巨大的空心站点名（只描边，字数越多字越小，读屏不念）+ 细线 + 一行版权与条款 / 隐私 / 站长链接；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
+- 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3 两栏：首屏用量、接入配置、活动位、公告、教程、线路预览）；③ 其余各页。尚未改版的页面沿用下文的 v1.4.0 版式零件。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
   `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；common/rest 由 `lib/pages.ts` 的 `withCss` 在页面分包之前动态引入（Vite 不保证共用 CSS 先于页面 CSS 进 `<head>`；`withCss` 按调用顺序先插 common、rest 再插页面自己的），各 `pages/*.svelte` 只 import 自己的那份，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
@@ -31,7 +38,7 @@
   `@/lib/content-text`、`@/lib/doc-categories`、`@/lib/shop`、`@/lib/confetti`、`@/data/platforms`；
   `$lib/` = 本应用自己的代码（`src/lib/`）。
 - 默认 Logo = L3 小写 akari 字标（`src/components/Wordmark.svelte`、`index.html` 启动画面里同形的 SVG，颜色 `--logo-ink` / `--logo-dot`；favicon `src/assets/favicon.svg`、`apple-touch-icon.png`；源文件 `design/portal-v2-2026-10/logo/`）；站长上传了 Logo / favicon 时用站长的。
-- 外壳（`src/components/`、`src/layouts/`）：顶栏导航、邮箱下拉、窄屏全屏菜单都是手写的、完整无障碍（menu button 模式：↑↓ Home End、
+- 外壳（`src/components/`、`src/layouts/`）：顶栏导航、头像菜单、窄屏菜单都是手写的、完整无障碍（menu button 模式：↑↓ Home End、
   Esc 还焦点、Tab 关闭、点外面关闭；全屏菜单是模态对话框：焦点困在「关闭按钮 + 菜单」、Esc、锁滚动、切页 / 变宽自动收起；
   aria-expanded / aria-controls；减少动效；指针 / 触摸打开时焦点在菜单容器上（不画焦点环），键盘（click 的 detail 为 0）打开时在第一项上）。
   不为外壳引入 bits-ui，首屏更小。
