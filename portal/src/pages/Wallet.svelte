@@ -25,7 +25,7 @@
   import { scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
-  import { t } from '$lib/i18n.svelte';
+  import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
   import { loc, navigate } from '$lib/router.svelte';
   import { R } from '$lib/routes';
@@ -155,7 +155,7 @@
   {/if}
 {/snippet}
 
-<PageTitle {title} {sub} />
+<PageTitle {title} lead={balance.data ? tp('余额 {v}', { v: formatMoney(balance.data.balance_cents) }) : undefined} {sub} />
 
 {#if balance.loading && !balance.data}
   <Loading />

@@ -81,7 +81,7 @@
   const level = (x: TicketRow) => tp('{level}优先级', { level: t(PRIORITY[x.priority].text) });
 </script>
 
-<PageTitle title={t('工单')} sub={t('遇到问题在这里提交，客服的回复也会出现在同一条对话里。')} />
+<PageTitle title={t('工单')} lead={waiting > 0 ? tp('{n} 张工单等待客服回复', { n: waiting }) : t('有问题，随时找我们')} sub={t('遇到问题在这里提交，客服的回复也会出现在同一条对话里。')} />
 
 <Section>
   <StatRow items={[

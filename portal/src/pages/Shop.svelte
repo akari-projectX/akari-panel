@@ -127,7 +127,7 @@
   const resetBuy = $derived(currentPlan && resetOffer?.action ? { plan: currentPlan, offer: resetOffer } : null);
 </script>
 
-<PageTitle title={t('商店')} sub={t('管理当前订阅，随时续费或更换套餐。')} />
+<PageTitle title={t('商店')} lead={t('选一个适合你的套餐')} sub={t('管理当前订阅，随时续费或更换套餐。')} />
 
 {#if pending}<PendingOrder order={pending} onchange={() => orders.reload()} className="mt5" />{/if}
 

@@ -65,7 +65,7 @@
   {#if nodeUp(n) && n.load}<span class={['nload', n.load]} data-node-load={n.load}>{t(LOAD_TEXT[n.load])}</span>{/if}
 {/snippet}
 
-<PageTitle title={t('节点状态')} sub={t('订阅内所有线路的实时状态。倍率越低，同样的流量能用得越久。')}>
+<PageTitle title={t('节点状态')} lead={nodes.data ? tp('{n} 条线路，{on} 条在线', { n: all.length, on: up }) : undefined} sub={t('订阅内所有线路的实时状态。倍率越低，同样的流量能用得越久。')}>
   {#snippet extra()}
     <button type="button" class="btn" style="height: 36px" disabled={nodes.loading} onclick={() => nodes.reload()}>
       <RefreshCw class={nodes.loading ? 'turning' : ''} size={14} strokeWidth={1.75} aria-hidden="true" />{t('刷新')}

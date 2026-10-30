@@ -105,7 +105,7 @@
   ];
 </script>
 
-<PageTitle title={t('设置')} sub={t('账户、登录与安全、订阅链接、语言与明暗。')} />
+<PageTitle title={t('设置')} lead={t('账户与安全')} sub={t('账户、登录与安全、订阅链接、语言与明暗。')} />
 
 <div class="settings-page">
   <nav aria-label={t('设置分区')} class="settings-nav">
