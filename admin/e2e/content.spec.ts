@@ -426,7 +426,8 @@ test("CNT-09 CNT-10: promotions — create with a live preview, an unknown coupo
   await d.getByRole("button", { name: "保存" }).click();
   await expect(d.getByText("请填写标题")).toBeVisible();
   await expect(d.getByText("请填写一句说明")).toBeVisible();
-  await d.getByLabel("标题", { exact: true }).fill(title);
+  // The label wraps the error line, so after the required check its name is "标题 请填写标题".
+  await d.getByLabel(/^标题/).fill(title);
   await d.getByLabel("折扣字样").fill("8折");
   await d.getByLabel("一句说明").fill("续费同样适用");
   const preview = d.getByTestId("promotion-preview");
