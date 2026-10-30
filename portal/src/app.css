@@ -228,6 +228,13 @@
     color: transparent; -webkit-text-stroke: 1.5px var(--line2); transition: -webkit-text-stroke-color .4s var(--ease-out);
   }
   footer.site .bigw:hover { -webkit-text-stroke-color: var(--faint); }
+  /* 默认站点名的 SVG 轮廓：只描边，线宽不随缩放变 */
+  footer.site .bigw-svg { display: block; width: min(100%, clamp(300px, 60vw, 900px)); height: auto; margin-inline: auto; padding-top: 8px; overflow: visible; user-select: none; }
+  footer.site .bigw-svg path {
+    fill: none; stroke: var(--line2); stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke;
+    transition: stroke var(--dur-slow) var(--ease-out);
+  }
+  footer.site .bigw-svg:hover path { stroke: var(--faint); }
   @media (max-width: 640px) { footer.site { padding-top: 24px; } }
   footer.site .rule { height: 1px; background: var(--line); }
   footer.site .wrap.row2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 32px; padding-block: 28px; font-size: 12.5px; color: var(--muted); }
