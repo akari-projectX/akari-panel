@@ -12,7 +12,7 @@
 - **头像菜单**（`AccountCard`，桌面点头像 / 窄屏点「头像 + 三道线」）：抬头（头像、名字、邮箱）、套餐块（名字、还有几天、用量条、已用 / 剩余、快捷按钮「复制订阅」「续费」）、
   窄屏才有的页面导航（八项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
 - 页脚 **F1b**（`SiteFooter`）：巨大的空心站点名（只描边，字数越多字越小，读屏不念）+ 细线 + 一行版权与条款 / 隐私 / 站长链接；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
-- 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3 两栏：首屏用量、接入配置、活动位、公告、教程、线路预览）；③ 其余各页。尚未改版的页面沿用下文的 v1.4.0 版式零件。
+- 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3，见下文「仪表盘」）；③ 其余各页。尚未改版的页面沿用下文的 v1.4.0 版式零件。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
   `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；common/rest 由 `lib/pages.ts` 的 `withCss` 在页面分包之前动态引入（Vite 不保证共用 CSS 先于页面 CSS 进 `<head>`；`withCss` 按调用顺序先插 common、rest 再插页面自己的），各 `pages/*.svelte` 只 import 自己的那份，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
@@ -57,12 +57,15 @@
 - **页面取数** `lib/resource.svelte.ts`：`resource(() => ({ key, fetch, enabled }))`（= React 的 `useApi` 带缓存用法：先读 sessionStorage 缓存、后台刷新、
   没缓存时 soft 拖住启动画面、键变了读新键的缓存）与 `autoReload`（线路每 30 秒，后台标签页不取）。只能在组件初始化时调用。
   区块占位用 `components/Loading.svelte`（`aria-busy`，测速脚本等它消失），空状态 `Empty.svelte`（文字由调用处 `t()`）。
-- **仪表盘（PR 3）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（页头、`Notices` 提示胶囊（已暂停 / 待支付 / 邮箱 / 工单 / 公告，每条一行，窄屏变小卡片；除「已暂停」外都有 ×：公告 = 标为已读，工单与订单记在 `lib/notice-dismiss`），
-  首屏大数字（`flat/Hero`：剩余流量 + 40 格分段条 + 右侧无边框信息行，商店当前套餐共用）、`TrafficSection` + `TrafficChart`（手写 SVG 平滑面积图，纯函数在 `lib/chart.ts`；7 / 30 天都是 `/me/traffic` 的真实数据；
-  图本身是 `role=slider`，← → 逐日看）、`Access`（订阅 / 仅自研客户端 / 空状态）+ `Subscribe`（格式菜单、打码链接、一键导入、`Qr`（uqr 本地生成）、
-  下载或教程）、公告列表、`NodesPreview`、`DocsPreview`）。对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。
-  小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。内容页共用样式（区块头、两栏、行式列表、提醒细行、横幅、公告标签、
-  线路状态、空状态）在 `src/styles/pages/dashboard.css`/`common.css`。e2e `e2e/dashboard.spec.ts`。
+- **仪表盘（外观 A · A3，2026-10-30）** `pages/Dashboard.svelte` → `components/dash/`：`Banned`（封禁说明）/ `Overview`（两栏首屏 + 整宽线路）：
+  左栏 `Status`（页标题那行 `<h1>仪表盘</h1> · 问候 · 套餐 · 状态`；`Notices` 提醒细行（已暂停 / 待支付 / 邮箱 / 工单 / 公告，类别字带色点 + 加粗标题 + 说明 + 操作；除「已暂停」外都有 ×：公告 = 标为已读，工单与订单记在 `lib/notice-dismiss`）；
+  一句大字（本期还剩多少、几天后到期，数字取译文按占位符切开加粗）；流量 / 时间两把尺（流量是 `role=meter`「剩余流量」，时间 = 本期（上次重置或开通 → 下次重置或到期）过了几天）；
+  照近 7 天计费流量的判断（会在本期结束前用完才提醒日期）；续费 / 买重置包（剩不到一成或已用完）；四个小事实（套餐到期、在线线路、余额与可提现、速率））
+  → `Flow`（7 / 30 天切换，默认 7 天 = 预取的那份（`lib/dash-data` 的 `trafficSpec`），切到 30 天才取；`WeekChart` 30 天时只标今天和往前每 5 天）→ `News`（三条公告的细线列表，点开公告详情）；
+  右栏 `Access`（`#subscribe`；仅自研客户端 / 暂停 / 读不出 / 没有套餐几种分支）+ `Subscribe`（「复制订阅链接」正文色胶囊、格式菜单、二维码开关（默认收起，`Qr` 本地生成）、导入的客户端名字之间细竖线 + 更多、还没有客户端）→ `DocsPreview`（教程：四篇文章，分类名 + 标题，当前设备的分类在前）；
+  整宽 `NodesPreview`（线路 · 负载（小条 + 字）· 延迟 · 倍率 · 状态，至多两个入口标签，每页 5 条）。
+  样稿里的「活动位」（限时活动、倒计时、优惠码）没有数据来源，不画。样式全在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`、`ntbl`、`dload`）。
+  对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
   `PlanGrid`（样稿 shop-cards，2026-10-29 用户裁决恢复独立卡片：无周期切换、「¥x /月 起」、三格规格（流量 / 重置 / 速率）、功能清单、一个按钮（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，
   单独分包、空闲时预载：周期单选 + 省 x%、优惠码、「用余额抵扣」开关（逐单打开）、原价 / 各项抵扣 / 还需支付、换套餐作废确认、支付方式单选；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、

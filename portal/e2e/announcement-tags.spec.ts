@@ -63,15 +63,15 @@ test('tags: the dashboard capsule carries the tag colour and a one-line title; l
   await shot(page, info, 'announcement-tag-banner-dark');
   await page.emulateMedia({ colorScheme: 'light' });
 
-  /* 「公告与动态」列表：置顶仍是蓝色淡底的「置顶」，标签在它后面、标题前 */
-  const feed = page.locator('#subscribe');
+  /* 仪表盘的「公告」列表（外观 A）：「置顶」在前，标签（标签色的字）在它后面、标题前 */
+  const feed = page.locator('section', { has: page.getByRole('heading', { name: '公告', exact: true }) });
   const first = feed.getByRole('button').filter({ hasText: '维护' }).first();
-  await expect(first.locator('.pinb')).toHaveText('置顶');
-  await expect(first.locator('.tg')).toHaveText('维护');
-  const order = await first.locator('.rt').evaluate((n) => [...n.children].map((c) => c.className.split(' ')[0]));
-  expect(order.slice(0, 2)).toEqual(['pinb', 'tg']);
-  await expect(feed.getByRole('button').filter({ hasText: '双十一全场八折' }).locator('.tg')).toHaveText('活动');
-  await expect(feed.getByRole('button').filter({ hasText: '没有标签的公告' }).locator('.tg')).toHaveCount(0);
+  await expect(first.locator('.dtag.pin')).toHaveText('置顶');
+  await expect(first.locator('.dtag.c-amber')).toHaveText('维护');
+  const order = await first.locator('.drow-m').evaluate((n) => [...n.children].map((c) => c.className));
+  expect(order.slice(0, 2)).toEqual(['dtag pin', 'dtag c-amber']);
+  await expect(feed.getByRole('button').filter({ hasText: '双十一全场八折' }).locator('.dtag')).toHaveText('活动');
+  await expect(feed.getByRole('button').filter({ hasText: '没有标签的公告' }).locator('.dtag')).toHaveCount(0);
   await shot(page, info, 'announcement-tag-feed-light');
 
   /* 详情弹窗 */
