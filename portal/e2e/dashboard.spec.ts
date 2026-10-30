@@ -334,7 +334,7 @@ test('notices: pending order, staff reply; the latest unread announcement as a n
   await expect(dialog).toHaveCount(0);
   await expect(notes).toContainText('双十一全场八折');
   /* 列表里点一条：同一个详情对话框 */
-  await page.locator('#subscribe').getByRole('button', { name: /新增新加坡 IPLC 线路/ }).click();
+  await page.locator('section[aria-labelledby="h-news"]').getByRole('button', { name: /新增新加坡 IPLC 线路/ }).click();
   await expect(page.getByRole('dialog', { name: '新增新加坡 IPLC 线路' })).toBeVisible();
   await page.keyboard.press('Escape');
 
