@@ -19,7 +19,8 @@ async function navNames(page: Page, isDesktop: boolean): Promise<string[]> {
     const names = await page.getByRole('navigation', { name: '主导航' }).getByRole('link').allInnerTexts();
     await page.locator('header .acct').click();
     const menu = page.getByRole('menu', { name: '账户菜单' });
-    await expect(menu).toBeVisible();
+    /* 卡片按需加载：菜单外壳先出现，等最后一行（退出登录）画出来再读 */
+    await expect(menu.getByRole('menuitem', { name: /^退出登录/ })).toBeVisible();
     names.push(...(await menu.locator('a.row .row-t').allInnerTexts()));
     await page.keyboard.press('Escape');
     await expect(menu).toHaveCount(0);
@@ -27,7 +28,7 @@ async function navNames(page: Page, isDesktop: boolean): Promise<string[]> {
   }
   await page.getByRole('button', { name: '菜单' }).click();
   const menu = page.getByRole('menu', { name: '菜单' });
-  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: /^退出登录/ })).toBeVisible();
   const names = await menu.locator('a.row .row-t').allInnerTexts();
   await page.keyboard.press('Escape');
   await expect(menu).toHaveCount(0);
