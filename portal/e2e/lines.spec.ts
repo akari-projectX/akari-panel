@@ -5,6 +5,7 @@
  * 每日明细，以及设计评审截图（线路 / 用量 × 桌面 / 手机 × 浅 / 深）。
  * 账户：user@e2e.test（两天流量：香港 01 直连 + IPLC 中转（2×），日本 01 直连（全天 0.5×））、expired。
  */
+import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { psql } from './support/panel.ts';
 import { dark, expect, ready, shot, signIn, test } from './fixtures';
@@ -101,6 +102,12 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   const days = page.locator('section.sec').filter({ hasText: '30 天的每日上下行流量' }).locator('tbody tr');
   await expect(days).toHaveCount(30);
   await expect(days.first()).toContainText('4.50 GB');
+  /* 导出 CSV：浏览器里生成的那 30 天，带 BOM，表头 + 每天一行 */
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '导出 CSV' }).click()]);
+  expect(download.suggestedFilename()).toMatch(/^usage-\d{4}-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}\.csv$/);
+  const csv = readFileSync(await download.path(), 'utf8');
+  expect(csv.startsWith('\uFEFF日期,')).toBe(true);
+  expect(csv.trimEnd().split('\r\n')).toHaveLength(31);
   await shot(page, info, 'traffic-30d-light');
 });
 

@@ -21,6 +21,7 @@
   import { auth } from '$lib/auth.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
+  import { downloadCsv, usageCsv } from '$lib/usage-csv';
 
   /*
    * 使用明细（只有 full 范围）。指标行 → 流量走势（面积图，本月 / 近 7 天 / 近 30 天）→
@@ -38,6 +39,12 @@
   const from = $derived(range === 'month' ? monthStart() : addDays(to, -(Number(range) - 1)));
 
   const logs = resource(() => ({ key: K.traffic(from, to), fetch: () => meApi.traffic(from, to), keep: true }));
+
+  /* 明细记录的「导出 CSV」：就是页面上这段时间的每日数据（浏览器里生成，不另开接口） */
+  function exportCsv() {
+    const header = [t('日期'), t('下行（字节）'), t('上行（字节）'), t('合计（字节）'), t('计费（字节）'), t('合计（GB）'), t('计费（GB）')];
+    downloadCsv(`usage-${from}-${to}.csv`, usageCsv(days, header));
+  }
 
   const days = $derived(trafficDays(logs.data));
   const lines = $derived(trafficByEntrance(logs.data, t('其他（已隐藏或删除的线路）')));
@@ -158,6 +165,9 @@
     <Section>
       {#snippet title()}{t('明细记录')}{/snippet}
       {#snippet desc()}{tp('{d} 天的每日上下行流量', { d: days.length })}{/snippet}
+      {#snippet extra()}
+        <button type="button" class="btn sm" onclick={exportCsv}>{t('导出 CSV')}</button>
+      {/snippet}
       <div class="tbl-w">
         <table class="tbl flat-head">
           <thead>

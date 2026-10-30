@@ -1185,4 +1185,11 @@ export const EN: Record<string, string> = {
   '限时活动': 'Limited-time offer',
   '距活动结束还有 {d} 天 {t}': '{d} days {t} until the offer ends',
   '还剩 {d} 天': '{d} days left',
+  '导出 CSV': 'Export CSV',
+  '下行（字节）': 'Download (bytes)',
+  '上行（字节）': 'Upload (bytes)',
+  '合计（字节）': 'Total (bytes)',
+  '计费（字节）': 'Billed (bytes)',
+  '合计（GB）': 'Total (GB)',
+  '计费（GB）': 'Billed (GB)',
 };
