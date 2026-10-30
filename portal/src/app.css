@@ -224,7 +224,7 @@
   /* 站点名越长字越小（--n = 字数），始终一行；只露出上面 82%，像压在那道线上 */
   footer.site .bigw {
     height: .82em; overflow: hidden; padding-top: 8px; white-space: nowrap; text-align: center; user-select: none;
-    font-size: clamp(64px, min(19vw, calc(118vw / var(--n, 5))), 260px); font-weight: var(--fw-strong); line-height: .82; letter-spacing: -.05em;
+    font-size: clamp(64px, min(19vw, calc(118vw / var(--n, 5))), 260px); font-weight: var(--fw-strong); line-height: .82; letter-spacing: -.01em;
     color: transparent; -webkit-text-stroke: 1.5px var(--line2); transition: -webkit-text-stroke-color .4s var(--ease-out);
   }
   footer.site .bigw:hover { -webkit-text-stroke-color: var(--faint); }
