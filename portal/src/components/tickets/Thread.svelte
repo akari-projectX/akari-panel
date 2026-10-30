@@ -153,8 +153,8 @@
   .order { font-size: 12.5px; color: var(--muted); }
   .msg { display: flex; gap: 10px; }
   .msg.mine { flex-direction: row-reverse; }
-  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); font-size: 11px; font-weight: var(--fw-strong); }
-  .mine .av { background: linear-gradient(135deg, var(--brand), var(--brand-hover)); color: var(--on-brand); }
+  .av { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--hover); color: var(--fg); font-size: 11px; font-weight: var(--fw-strong); }
+  .mine .av { background: var(--fg); color: var(--bg); }
   .col { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; max-width: 80%; }
   .mine .col { align-items: flex-end; }
   .who { display: flex; align-items: baseline; gap: 8px; }
@@ -162,10 +162,10 @@
   .who b { font-size: 12.5px; font-weight: var(--fw-strong); }
   .who span { font-size: 11.5px; color: var(--muted); }
   .bubble {
-    margin-top: 6px; padding: 10px 14px; border-radius: 16px 16px 16px 6px; background: var(--hover); color: var(--body);
+    margin-top: 6px; padding: 12px 14px; border-radius: 14px; background: var(--hover); color: var(--body);
     font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere;
   }
-  .mine .bubble { border-radius: 16px 16px 6px 16px; background: var(--brand); color: var(--on-brand); }
+  .mine .bubble { background: var(--fg); color: var(--bg); }
   .closed { font-size: 12.5px; line-height: 1.7; color: var(--muted); }
   .reply { display: flex; flex-direction: column; gap: 10px; }
   .reply textarea { height: 64px; min-height: 64px; max-height: 160px; padding: 8px 10px; line-height: 20px; resize: none; }

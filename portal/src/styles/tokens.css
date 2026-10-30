@@ -63,8 +63,6 @@
   --shadow-card: 0 24px 48px -24px rgb(20 18 12 / .22);
   --shadow-dialog: 0 24px 64px -24px rgb(20 18 12 / .28);
   --shadow-toast: 0 12px 32px -12px rgb(13 21 38 / .18), 0 1px 3px rgb(13 21 38 / .06);
-  --shadow-notice: 0 1px 3px 0 rgb(15 23 42 / .03), 0 1px 2px -1px rgb(15 23 42 / .03);
-  --shadow-plan: 0 1px 2px rgb(16 24 40 / .04), 0 1px 3px rgb(16 24 40 / .06);
   --focus-ring: color-mix(in srgb, var(--brand) 55%, transparent);
   /* 默认 Logo（akari 字标，没上传品牌 Logo 时）：字的颜色与品牌蓝的 i 点 */
   --logo-ink: #121211;
@@ -81,12 +79,6 @@
   --qr-ink: #0d1526;
   --qr-paper: #fff;
   --qr-mark: #1677ff;
-  /* 页头那根账号线、卡片顶边线的灰轨（v1.4.0） */
-  --line-track: rgb(18 18 17 / .14);
-  --card-track: rgb(18 18 17 / .07);
-  /* 次要按钮（v1.4.0 outline）：浅色白底细边 + 一道很淡的投影；深色是 input/30 的半透明底 */
-  --btn-bg: var(--surface);
-  --btn-line: var(--line);
   --shadow-xs: 0 1px 2px rgb(0 0 0 / .05);
   /* 启动画面：与页面同一张纸（外观 A） */
   --boot-bg: #fbfaf8;
@@ -125,7 +117,6 @@
   --t-slate: #94a3b8;
   --on-solid: #111317;
   --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
-  --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
   --logo-ink: #f2f1ee;
   --logo-dot: #7d93ff;
   --chart-1: #7d93ff;
@@ -134,10 +125,6 @@
   --chart-4: #cdd6ff;
   --chart-5: #e0e6ff;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
-  --line-track: rgb(255 255 255 / .2);
-  --card-track: rgb(255 255 255 / .12);
-  --btn-bg: rgb(255 255 255 / .045);
-  --btn-line: var(--line2);
   --shadow-xs: none;
   --boot-bg: #0f0f0e;
   --boot-fg: #f2f1ee;
@@ -175,7 +162,6 @@
     --t-slate: #94a3b8;
     --on-solid: #111317;
     --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
-    --shadow-plan: 0 1px 2px rgb(0 0 0 / .3);
     --logo-ink: #f2f1ee;
     --logo-dot: #7d93ff;
     --chart-1: #7d93ff;
@@ -184,10 +170,6 @@
     --chart-4: #cdd6ff;
     --chart-5: #e0e6ff;
     --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
-    --line-track: rgb(255 255 255 / .2);
-    --card-track: rgb(255 255 255 / .12);
-    --btn-bg: rgb(255 255 255 / .045);
-    --btn-line: var(--line2);
     --shadow-xs: none;
     --boot-bg: #0f0f0e;
     --boot-fg: #f2f1ee;

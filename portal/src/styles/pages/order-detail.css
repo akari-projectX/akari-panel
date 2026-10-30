@@ -9,7 +9,8 @@
 .od-b { font-weight: var(--fw-strong); } .od-m, .od-rtx ul { color: var(--muted); }
 .od-grid { display: grid; column-gap: 56px; border-top: 1px solid var(--line); }
 .od-aside { padding: 32px 0 40px; }
-.od-bill { padding: 24px; border: 1px solid var(--line); border-radius: 14px; }
+/* 外观 A：金额明细不画卡片，只在上下两道细线之间 */
+.od-bill { padding: 20px 0; border-block: 1px solid var(--line); }
 .od-bh { display: flex; align-items: center; justify-content: space-between; }
 .od-lines { margin-top: 16px; }
 .od-lines > div { display: flex; justify-content: space-between; padding: 6px 0; font-size: 13px; }
@@ -23,7 +24,7 @@
 .od-main, .od-info { min-width: 0; }
 .od-info { border-top: 1px solid var(--line); }
 .od-pay { display: flex; flex-direction: column; align-items: center; gap: 16px; padding-block: 8px; }
-.od-go { height: 48px; gap: 8px; padding: 0 24px; border-radius: 12px; font-size: 15px; }
+.od-go { height: 48px; gap: 8px; padding: 0 24px; font-size: 15px; }
 .od-ali { width: 100%; background: var(--qr-mark); border-color: transparent; color: var(--qr-paper); }
 .od-jump { display: flex; width: 100%; max-width: 320px; flex-direction: column; align-items: center; gap: 10px; }
 .od-wechat { padding: 12px 16px; border-radius: 12px; background: color-mix(in srgb, var(--amber) 10%, transparent); text-align: center; font-size: 13px; line-height: 1.8; color: var(--warn); }

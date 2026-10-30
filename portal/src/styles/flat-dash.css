@@ -12,19 +12,22 @@
   .pt-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding-top: 48px; padding-bottom: 8px; }
   .page-notices { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 
-  /* 指标：数字在上、标签在下、无分隔线 */
-  /* 等宽栅格：列在各行之间对齐；同一行的卡片等高，说明最多两行。手机 2 列，宽屏 4 列（3 项时 3 列，避免留空洞） */
-  .statrow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 48px; }
+  /* 指标（外观 A）：标签在上、数字在下，上面一道细线（下面是区块之间的那道），格与格之间竖细线 */
+  /* 等宽栅格：列在各行之间对齐；同一行的格等高，说明最多两行。手机 2 列，宽屏 4 列（3 项时 3 列，避免留空洞） */
+  .statrow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+  .statrow > div { padding: 20px 24px 18px; }
+  .statrow > div:first-child { padding-left: 0; }
+  .statrow > div + div { border-left: 1px solid var(--line); }
   .statrow.n3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .statrow.n2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .statrow > div { display: flex; min-width: 0; flex-direction: column; }
-  .stat-v { font-size: 36px; font-weight: var(--fw-strong); letter-spacing: -.025em; line-height: 1.02; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .stat-v { order: 1; margin-top: 6px; font-size: 30px; font-weight: var(--fw-strong); letter-spacing: -.035em; line-height: 1.02; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .stat-unit { margin-left: .22em; font-size: .42em; font-weight: var(--fw-regular); letter-spacing: 0; color: var(--muted); }
-  .stat-k { margin-top: 12px; font-size: 13px; letter-spacing: -.004em; color: var(--muted); }
-  .stat-x { margin-top: 10px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+  .stat-k { font-size: 12.5px; color: var(--muted); }
+  .stat-x { order: 2; margin-top: 6px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
   .stat-x:has(.stat-arrow) { display: block; }
-  .stat-bar { display: block; height: 4px; margin-bottom: 8px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--brand) 20%, transparent); }
-  .stat-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--brand); }
+  .stat-bar { display: block; height: 3px; margin-bottom: 8px; overflow: hidden; border-radius: 999px; background: var(--line2); }
+  .stat-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--fg); }
 
   /* 行式列表：宽松，靠留白 */
   .rowline { display: flex; align-items: center; gap: 18px; width: 100%; padding: 18px 0; border: 0; border-bottom: 1px solid var(--line); background: none; color: inherit; font: inherit; text-align: left; }
@@ -40,8 +43,8 @@
   /* 两栏分区：靠间距，不画竖线 */
   .split2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 72px; }
 
-  /* 提示条：一张浅卡（v1.4.0：卡片底、细边、很淡的投影；深色是 muted 底无边） */
-  .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 18px 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-notice); font-size: 14.5px; }
+  /* 提示条（外观 A）：上下两道细线之间的一行，不画卡片 */
+  .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 14px 0; border-block: 1px solid var(--line); font-size: 14px; }
   /* 图标对齐第一行（标题），不随换行后的整块居中 */
   .notice > svg { flex: none; align-self: flex-start; margin-top: 3px; }
   .notice > .grow ~ :last-child { margin-left: auto; }
@@ -61,7 +64,9 @@
   .split2 { gap: 44px; }
 }
 @media (max-width: 900px) {
-  .statrow, .statrow.n3 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 24px; }
+  .statrow, .statrow.n3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .statrow > div:nth-child(2n + 1) { padding-left: 0; border-left: 0; }
+  .statrow > div:nth-child(n + 3) { border-top: 1px solid var(--line); }
 }
 @media (max-width: 640px) {
   .stat-v { font-size: 28px; }
