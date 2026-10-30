@@ -5,11 +5,11 @@
   import { scope, signOut } from '$lib/auth.svelte';
   import { t } from '$lib/i18n.svelte';
   import { Pop } from '$lib/pop.svelte';
-  
+
   /*
-   * 宽屏右上角的账号入口（v1.4.0）：你的名字，名字下面一根细线——长度是剩余流量，和窄屏页头那两根线里下面那根是同一个意思。
-   * 点开的卡片和窄屏菜单是同一个（AccountCard），只是没有导航：宽屏上导航都摆在顶栏。
-   * 账号没有昵称，邮箱 @ 前那段就是这里能显示的「名字」。
+   * 宽屏右上角的头像（外观 A）：邮箱首字母的圆形头像 + 小箭头；有事等你（工单新回复、待支付订单）时头像右上一个小圆点。
+   * 点开的卡片和窄屏菜单是同一个（AccountCard），只是没有页面导航：宽屏上导航都摆在顶栏。
+   * 账号没有昵称，邮箱 @ 前那段就是读屏念出来的「名字」。
    */
   /* 卡片（含十来个图标）按需加载：不进首屏；指针移上来 / 聚焦时就预取，点开时通常已经到了 */
   let Card = $state<typeof import('./AccountCard.svelte').default | undefined>();
@@ -32,15 +32,13 @@
     aria-expanded={pop.state === 'open'}
     aria-controls="user-menu"
     data-state={pop.state}
-    data-tone={a.tone}
-    style:--v="{a.value}%"
     onpointerenter={loadCard}
     onfocus={loadCard}
     onclick={pop.toggle}
     onkeydown={pop.onButtonKey}
   >
-    <span class="acct-name">{name}</span>
-    {#if attentionDot()}<i class="acct-dot" aria-hidden="true"></i>{/if}
+    <span class="av" aria-hidden="true">{a.initial}{#if attentionDot()}<i class="av-dot"></i>{/if}</span>
+    <span class="sr">{name}</span>
     <ChevronDown class="acct-chev" size={14} strokeWidth={1.75} aria-hidden="true" />
   </button>
   {#if pop.open}
@@ -56,7 +54,7 @@
       onkeydown={pop.onMenuKey}
     >
       {#if Card}
-        <Card groups={[scope() === 'banned' ? [] : accountItems()]} onsignout={() => { pop.close(); void signOut(); }} />
+        <Card links={accountItems()} onsignout={() => { pop.close(); void signOut(); }} />
       {/if}
     </div>
   {/if}

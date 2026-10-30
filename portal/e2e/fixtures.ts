@@ -79,7 +79,7 @@ export async function signInUI(page: Page, email: string, password = seed.passwo
   await page.waitForURL((u) => !u.pathname.endsWith('/login'));
 }
 
-/** 从页头退出：桌面是账号名下拉，窄屏是两根线的菜单（同一张卡片） */
+/** 从页头退出：桌面是头像菜单，窄屏是「头像 + 三道线」的菜单（同一张卡片） */
 export async function signOut(page: Page, info: TestInfo) {
   if (info.project.name === 'desktop') {
     await page.locator('header .acct').click();
