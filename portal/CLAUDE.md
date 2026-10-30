@@ -83,7 +83,7 @@
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
   窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
-  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`）、
+  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`；明细记录的「导出 CSV」在浏览器里由同一份 `/me/traffic` 生成（`lib/usage-csv.ts`：BOM、字节与 GB、防公式注入，不另开接口））、
   `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
   `WithdrawDialog`（含 bits-ui）单独分包、空闲时预载；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
   地址 `?tab=`，换分页 `navigate(…, { replace: true, keepScroll: true })`。文案表与纯函数 `lib/wallet.ts`（`wallet.test.ts`），
