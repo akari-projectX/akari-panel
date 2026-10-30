@@ -71,7 +71,7 @@
   }
 </script>
 
-<PageTitle title={t('公告与动态')} sub={t('节点变更、维护计划与活动通知。没看过的会标出来。')}>
+<PageTitle title={t('公告与动态')} lead={unread > 0 ? tp('{n} 条公告还没看', { n: unread }) : t('最新动态')} sub={t('节点变更、维护计划与活动通知。没看过的会标出来。')}>
   {#snippet extra()}
     {#if data.length > 0}
       <span class="an-count">

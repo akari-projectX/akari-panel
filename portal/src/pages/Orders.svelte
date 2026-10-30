@@ -60,7 +60,7 @@
   const typeText = (o: MyOrder) => t(ORDER_ACTION[o.action]);
 </script>
 
-<PageTitle title={t('我的订单')} sub={t('全部消费记录与支付状态。')} />
+<PageTitle title={t('我的订单')} lead={orders.data ? (pendingCount ? tp('{n} 笔订单等待支付', { n: pendingCount }) : all.length ? tp('共 {n} 笔订单', { n: all.length }) : t('还没有订单')) : undefined} sub={t('全部消费记录与支付状态。')} />
 
 <Section>
   <StatRow items={[

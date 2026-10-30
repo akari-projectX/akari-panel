@@ -10,6 +10,14 @@
 
   /* 页面大标题 + 本页提醒区 */
   .pt-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding-top: 48px; padding-bottom: 8px; }
+  .pt-main { min-width: 0; }
+  .pt-extra { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; color: var(--muted); }
+  /* 外观 A 的页头：小字眉标（h1 = 页名）+ 一句大字 + 右侧的操作 / 刷新时间 */
+  .pt-row.ph { padding-top: 44px; padding-bottom: 12px; }
+  .page-eyebrow { font-size: 13px; font-weight: var(--fw-regular); letter-spacing: .02em; color: var(--muted); }
+  .page-lead { margin-top: 10px; max-width: 760px; font-size: 40px; line-height: 1.15; font-weight: var(--fw-strong); letter-spacing: -.035em; color: var(--fg); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .ph .page-sub { margin-top: 12px; font-size: 14px; }
+  @media (max-width: 640px) { .page-lead { font-size: 28px; } .pt-row.ph { padding-top: 28px; } }
   .page-notices { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
 
   /* 指标（外观 A）：标签在上、数字在下，上面一道细线（下面是区块之间的那道），格与格之间竖细线 */

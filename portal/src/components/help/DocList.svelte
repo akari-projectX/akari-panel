@@ -69,7 +69,7 @@
   const open = (a: KbArticle) => setParams({ id: a.id, cat: a.category, q: q || undefined });
 </script>
 
-<PageTitle title={t('使用手册')} sub={t('各设备的连接教程与常见问题。')} />
+<PageTitle title={t('使用手册')} lead={t('有什么可以帮你？')} sub={t('各设备的连接教程与常见问题。')} />
 
 <div class="top-tools">
   <form novalidate role="search" class="search" onsubmit={submit}>
@@ -131,6 +131,21 @@
     <h2 class="sub-title docs-h" data-testid="docs-heading">
       {tp('{c} · {n} 篇', { c: q ? t('搜索结果') : cat === 'all' ? t('全部文档') : cat, n: shown.length })}
     </h2>
+    {#if !q && cat === 'all'}
+      <!-- 全部文档（外观 A）：每个分类一栏，栏头是分类名，下面是文章标题；栏与栏之间细线 -->
+      <div class="cols">
+        {#each chapters as c (c.name)}
+          <div class="col">
+            <h3 class="col-h"><DocIcon spec={iconOf(c)} size={14} class="ci" />{c.name}</h3>
+            {#each c.articles as a (a.id)}
+              <button type="button" class="card col-a" onclick={() => open(a)}>
+                <span>{a.title}</span>{#if isUnread(a.id)}<i class="ud" title={t('未读')}></i>{/if}
+              </button>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {:else}
     <div class="grid">
       {#each shown as { a, c } (a.id)}
         {@const unread = isUnread(a.id)}
@@ -149,14 +164,15 @@
         </button>
       {/each}
     </div>
+    {/if}
   {/if}
 </section>
 
 <style>
   .top-tools { display: flex; flex-direction: column; gap: 16px; }
-  .search { position: relative; max-width: 560px; }
+  .search { position: relative; }
   .search :global(.search-i) { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
-  .search .input { height: 48px; padding-left: 40px; padding-right: 44px; border-radius: 999px; background: none; font-size: 15px; }
+  .search .input { height: 56px; padding-left: 40px; padding-right: 44px; border-radius: 999px; background: none; font-size: 15px; }
   .search .input::-webkit-search-cancel-button { display: none; }
   .clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 
@@ -208,4 +224,25 @@
   .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px; line-height: 16px; color: var(--muted); }
   .rd { display: flex; align-items: center; gap: 4px; color: var(--muted); transition: transform .15s; }
   .card:hover .rd { transform: translateX(2px); color: var(--fg); }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); }
+  @media (min-width: 768px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (min-width: 1024px) { .cols { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .col { display: flex; flex-direction: column; gap: 2px; padding: 24px 0 28px; border-bottom: 1px solid var(--line); }
+  @media (min-width: 768px) {
+    .col { padding-inline: 28px; border-left: 1px solid var(--line); }
+    .col:nth-child(2n + 1) { padding-left: 0; border-left: 0; }
+  }
+  @media (min-width: 1024px) {
+    .col:nth-child(n) { padding-left: 28px; border-left: 1px solid var(--line); }
+    .col:nth-child(3n + 1) { padding-left: 0; border-left: 0; }
+  }
+  .col-h { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 12.5px; font-weight: var(--fw-strong); letter-spacing: .06em; color: var(--muted); }
+  .col-h :global(.ci) { color: var(--faint); }
+  .cols .col-a {
+    display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 8px; padding: 6px 0; border: 0;
+    font-size: 15px; line-height: 1.5; color: var(--fg);
+  }
+  .cols .col-a > span { min-width: 0; overflow-wrap: anywhere; }
+  .cols .col-a:hover > span { text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
+  .cols .col-a .ud { flex: none; }
 </style>

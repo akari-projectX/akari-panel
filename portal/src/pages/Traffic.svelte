@@ -76,6 +76,7 @@
 {:else}
   <PageTitle
     title={t('使用明细')}
+    lead={tp('这段时间用了 {v} GB', { v: sum.toFixed(1) })}
     sub={logs.data ? tp('上下行流量走势、线路分布与每日用量。日期按 {tz} 计算。', { tz: logs.data.timezone }) : t('上下行流量走势、线路分布与每日用量。')}
   />
 
