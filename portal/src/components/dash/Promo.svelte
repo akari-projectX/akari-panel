@@ -54,7 +54,7 @@
     <div class="slot-h">
       <span class="slot-tag" id="h-promo">{t('限时活动')}</span>
       <span class="slot-cd tnum" role="timer" aria-label={tp('距活动结束还有 {d} 天 {t}', { d: clock.d, t: clock.hms })}>
-        {#if clock.d > 0}{tp('还剩 {d} 天', { d: clock.d })} {/if}<b>{clock.hms}</b>
+        {#if clock.d > 0}{tp('还剩 {d} 天', { d: clock.d })}{' '}{/if}<b>{clock.hms}</b>
       </span>
     </div>
     <div class="slot-b">
