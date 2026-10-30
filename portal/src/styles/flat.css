@@ -9,8 +9,8 @@
   .sec + .sec { border-top: 1px solid var(--line); }
   .sec-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 26px; }
   /* 微标签式标题：小号、半粗、辅助灰 */
-  .sec-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: var(--fw-strong); letter-spacing: .02em; color: var(--muted); }
-  .sec-title svg { color: var(--brand); letter-spacing: normal; }
+  .sec-title { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: var(--fw-strong); letter-spacing: .14em; color: var(--muted); }
+  .sec-title svg { display: none; }
   .sec-desc { margin-top: 6px; font-size: 14px; font-weight: var(--fw-regular); letter-spacing: -.008em; color: var(--muted); }
   .pane-head > .pane-x { display: flex; height: 20px; flex: none; align-items: center; }
   .page-notices:empty { display: none; }
@@ -20,18 +20,17 @@
   .rowline.first { padding-top: 0; }
   .rowline.hov::before { content: ''; position: absolute; inset: 3px -14px; z-index: -1; border-radius: 12px; background: var(--hover); opacity: 0; transition: opacity var(--dur-hover); }
   .split2 > .pane { display: flex; min-width: 0; flex-direction: column; }
-  :root.dark .notice { border-color: transparent; background: var(--hover); box-shadow: none; }
   .notice > .grow { flex: 1 1 0; min-width: min(15rem, 100%); }
   .notice .nt { font-size: 14.5px; font-weight: var(--fw-strong); }
   .notice .nd { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
   .notice .nx { display: flex; flex: none; align-items: center; gap: 6px; }
-  .notice.warn-bg { padding-block: 16px; gap: 12px 16px; border-width: 0; background: color-mix(in srgb, var(--amber) 8%, transparent); box-shadow: none; }
-  :root.dark .notice.warn-bg { background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .notice.warn-bg { gap: 12px 16px; }
+  .notice.warn-bg > svg { color: var(--warn); }
 
-  /* 文字链接按钮（v1 variant=link）：品牌色，悬停下划线 */
-  .btn.link-btn { height: 28px; padding: 0 10px; border: 0; background: none; box-shadow: none; color: var(--brand); font-size: 12.8px; font-weight: var(--fw-strong); }
+  /* 文字链接按钮（外观 A：区块头右侧的「全部 →」）：辅助灰，悬停正文色 */
+  .btn.link-btn { height: 28px; padding: 0 10px; border: 0; background: none; box-shadow: none; color: var(--muted); font-size: 13px; font-weight: var(--fw-regular); }
   .btn.link-btn.warn-link { color: var(--warn); }
-  .btn.link-btn:hover { background: none; text-decoration: underline; text-underline-offset: 4px; }
+  .btn.link-btn:hover { background: none; color: var(--fg); }
   /* 区块头右侧的文字按钮：左右内边距只是点击区域（悬停是下划线、没有底色），文字与区块右边线对齐 */
   .sec-head > .btn.link-btn:last-child { margin-right: -10px; }
 }

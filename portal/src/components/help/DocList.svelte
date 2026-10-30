@@ -155,26 +155,26 @@
 <style>
   .top-tools { display: flex; flex-direction: column; gap: 16px; }
   .search { position: relative; max-width: 560px; }
-  .search :global(.search-i) { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
-  .search .input { padding-left: 36px; padding-right: 40px; }
+  .search :global(.search-i) { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
+  .search .input { height: 48px; padding-left: 40px; padding-right: 44px; border-radius: 999px; background: none; font-size: 15px; }
   .search .input::-webkit-search-cancel-button { display: none; }
   .clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); }
 
   .cats { display: flex; flex-wrap: wrap; gap: 8px; }
   .cats button {
     display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 14px; border: 1px solid var(--line); border-radius: 9999px;
-    background: var(--surface); color: var(--muted); font: inherit; font-size: 13px; font-weight: var(--fw-strong); text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
+    background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: var(--fw-regular); text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
   }
-  .cats button:hover { color: var(--fg); border-color: color-mix(in srgb, var(--brand) 40%, transparent); }
-  .cats button[aria-pressed='true'] { border-color: var(--brand); background: var(--brand); color: var(--on-brand); }
+  .cats button:hover { color: var(--fg); border-color: var(--line2); }
+  .cats button[aria-pressed='true'] { border-color: var(--fg); background: var(--fg); color: var(--bg); }
   .cats span { min-width: 0; overflow-wrap: anywhere; }
   .cats em { flex: none; padding: 0 6px; border-radius: 9999px; background: var(--hover); font-style: normal; font-size: 11px; font-weight: var(--fw-regular); }
-  .cats button[aria-pressed='true'] em { background: color-mix(in srgb, var(--on-brand) 20%, transparent); }
+  .cats button[aria-pressed='true'] em { background: color-mix(in srgb, var(--bg) 20%, transparent); }
 
   .device { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13.5px; color: var(--muted); }
   .device :global(svg) { flex: none; }
   .dot-sep { color: var(--faint); }
-  .found { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; border-radius: calc(var(--radius) * 1.4); background: color-mix(in srgb, var(--hover) 50%, transparent); font-size: 13px; color: var(--muted); }
+  .found { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0; border-block: 1px solid var(--line); font-size: 13px; color: var(--muted); }
   .found .clr { height: 28px; padding: 0 8px; color: var(--brand); }
   .found .clr:hover { color: var(--brand-ink); }
 
@@ -182,22 +182,30 @@
   .docs { margin-top: 40px; }
   @media (min-width: 640px) { .docs { margin-top: 48px; } }
   .docs-h { margin-bottom: 16px; }
-  .grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  /* 外观 A：文章是细线格子（不画卡片），格与格之间竖细线，行与行之间横细线 */
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); }
   @media (min-width: 768px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (min-width: 1024px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .card {
-    display: flex; flex-direction: column; justify-content: space-between; padding: 16px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 16px;
-    background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: transform .2s, box-shadow .2s, border-color .2s;
+    display: flex; flex-direction: column; justify-content: space-between; padding: 20px 0; border: 0; border-bottom: 1px solid var(--line);
+    background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
   }
-  @media (min-width: 640px) { .card { padding: 20px; } }
-  .card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--brand) 35%, transparent); box-shadow: var(--shadow-plan); }
+  @media (min-width: 768px) {
+    .card { padding: 22px 24px 20px; }
+    .card:nth-child(2n + 1) { padding-left: 0; }
+    .card:nth-child(2n) { border-left: 1px solid var(--line); }
+  }
+  @media (min-width: 1024px) {
+    .card:nth-child(n) { padding-left: 24px; border-left: 1px solid var(--line); }
+    .card:nth-child(3n + 1) { padding-left: 0; border-left: 0; }
+  }
   .ct { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .cn { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
-  .cn :global(.ci) { color: var(--brand); }
+  .cn :global(.ci) { color: var(--muted); }
   .ud { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
   .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: var(--fw-strong); line-height: 1.375; transition: color .15s; }
-  .card:hover h4 { color: var(--brand); }
-  .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 12px; line-height: 16px; color: var(--muted); }
-  .rd { display: flex; align-items: center; gap: 4px; font-weight: var(--fw-strong); color: var(--brand); transition: transform .15s; }
-  .card:hover .rd { transform: translateX(2px); }
+  .card:hover h4 { color: var(--fg); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
+  .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px; line-height: 16px; color: var(--muted); }
+  .rd { display: flex; align-items: center; gap: 4px; color: var(--muted); transition: transform .15s; }
+  .card:hover .rd { transform: translateX(2px); color: var(--fg); }
 </style>
