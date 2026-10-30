@@ -1179,6 +1179,7 @@ export const EN: Record<string, string> = {
   '有什么可以帮你？': 'How can we help?',
   '{n} 张工单等待客服回复': '{n} tickets awaiting a reply',
   '有问题，随时找我们': 'Questions? We are here',
-  '余额 {v}': 'Balance {v}',
   '账户与安全': 'Account and security',
+  '邀请朋友，拿返佣': 'Invite friends, earn commission',
+  '余额与收支流水': 'Balance and transactions',
 };
