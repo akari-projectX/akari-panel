@@ -24,12 +24,19 @@
 
   const uid = $props.id();
   let open = $state(false);
+  /* 关闭有一小段退场（--dur-exit，与顶栏的弹出菜单同一套：lib/pop.svelte.ts） */
+  let closing = $state(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const EXIT_MS = 60;
+  $effect(() => () => clearTimeout(timer));
   let button: HTMLButtonElement | undefined = $state();
   let menu: HTMLDivElement | undefined = $state();
 
   const entries = () => [...(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
 
   async function show(focus: 'current' | 'last') {
+    clearTimeout(timer);
+    closing = false;
     open = true;
     await tick();
     const list = entries();
@@ -38,9 +45,14 @@
   }
 
   function hide(returnFocus = true) {
-    if (!open) return;
-    open = false;
+    if (!open || closing) return;
     if (returnFocus) button?.focus();
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      open = false;
+      return;
+    }
+    closing = true;
+    timer = setTimeout(() => { open = false; closing = false; }, EXIT_MS);
   }
 
   function onButtonKey(e: KeyboardEvent) {
@@ -87,14 +99,15 @@
     aria-haspopup="menu"
     aria-expanded={open}
     aria-controls="{uid}-menu"
-    onclick={() => (open ? hide() : void show('current'))}
+    data-state={open && !closing ? 'open' : 'closed'}
+    onclick={() => (open && !closing ? hide() : void show('current'))}
     onkeydown={onButtonKey}
   >
     {@render children()}
   </button>
   {#if open}
     <!-- svelte-ignore a11y_interactive_supports_focus -->
-    <div bind:this={menu} id="{uid}-menu" class="menu-pop" class:end={align === 'end'} role="menu" aria-label={label} onkeydown={onMenuKey}>
+    <div bind:this={menu} id="{uid}-menu" class="menu-pop" class:end={align === 'end'} data-state={closing ? 'closed' : 'open'} role="menu" aria-label={label} onkeydown={onMenuKey}>
       {#each items as item (item.id)}
         <button
           type="button"
@@ -119,14 +132,18 @@
 <style>
   .menu-wrap { position: relative; display: inline-flex; }
   .menu-pop {
-    position: absolute; left: 0; top: calc(100% + 4px); z-index: 30; min-width: 208px; padding: 4px;
-    background: var(--popover); border: 1px solid var(--line); border-radius: calc(var(--radius) * .8); box-shadow: var(--pop-shadow);
-    animation: pop-in var(--dur-hover) var(--ease-out);
+    position: absolute; left: 0; top: calc(100% + 6px); z-index: 30; min-width: 208px; padding: 4px;
+    background: var(--popover); border: 1px solid var(--line2); border-radius: calc(var(--radius) * 1.2); box-shadow: var(--shadow-card);
+    transform-origin: top left; animation: menu-in var(--dur-hover) var(--ease-out);
   }
-  .menu-pop.end { left: auto; right: 0; }
+  .menu-pop[data-state='closed'] { pointer-events: none; animation: menu-out var(--dur-exit) var(--ease-in) forwards; }
+  .menu-pop.end { left: auto; right: 0; transform-origin: top right; }
+  /* 按钮里的下拉箭头：打开时转过来（与头像、「更多」同一手势） */
+  .menu-wrap > button :global(svg:last-child) { transition: rotate var(--dur-fast) var(--ease-out); }
+  .menu-wrap > button[data-state='open'] :global(svg:last-child) { rotate: 180deg; }
   [role='menuitem'] {
     display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 6px 8px;
-    border: 0; border-radius: calc(var(--radius) * .6); background: none; color: var(--fg); font: inherit; font-size: 14px; text-align: left; cursor: pointer;
+    border: 0; border-radius: calc(var(--radius) * .8); background: none; color: var(--fg); font: inherit; font-size: 14px; text-align: left; cursor: pointer;
   }
   [role='menuitem']:hover, [role='menuitem']:focus-visible { background: var(--hover); color: var(--fg); box-shadow: none; outline: none; }
   .mi { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 2px; }
@@ -136,5 +153,6 @@
   [role='menuitem'] :global(svg) { color: var(--brand); }
   @media (prefers-reduced-motion: reduce) {
     .menu-pop { animation: none; }
+    .menu-wrap > button :global(svg:last-child) { transition: none; }
   }
 </style>

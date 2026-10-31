@@ -16,6 +16,7 @@
   import { att } from '$lib/attention.svelte';
   import { i18n, t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
+  import { thumb } from '$lib/thumb';
 
   /*
    * 公告与动态（外观 A，同仪表盘的「公告」）：面板一次给全部（置顶的在前），按界面语言取中 / 英文；
@@ -73,7 +74,7 @@
   <div class="an-empty"><Empty title={t('暂时没有公告')} desc={t('站点发布公告后会出现在这里。')} /></div>
 {:else}
   {#if filters.length > 0}
-    <div class="tabs-pill an-filter" role="group" aria-label={t('按标签筛选')}>
+    <div class="tabs-pill an-filter" {@attach thumb} role="group" aria-label={t('按标签筛选')}>
       <button type="button" aria-pressed={tagId === null} onclick={() => (tagId = null)}>{t('全部')} <span class="n tnum">{all.length}</span></button>
       {#each filters as f (f.id)}
         <button type="button" class={f.cls} aria-pressed={tagId === f.id} onclick={() => (tagId = f.id)}><i></i>{f.name} <span class="n tnum">{f.n}</span></button>

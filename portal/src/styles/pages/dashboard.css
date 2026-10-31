@@ -124,7 +124,7 @@ button.cap-main, a.cap-main { cursor: pointer; }
 .acc-imp:hover { color: var(--brand); }
 :is(.acc-more) { display: inline-flex; align-items: center; gap: 4px; margin-left: 12px; padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; line-height: 1.2; cursor: pointer; }
 :is(.acc-more):hover, :is(.acc-more)[aria-expanded='true'] { color: var(--fg); }
-.acc-qr { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .35s var(--ease-out); }
+.acc-qr { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-slow) var(--ease-out); }
 .acc-qr[data-open] { grid-template-rows: 1fr; }
 .acc-qr > div { display: flex; align-items: center; gap: 18px; min-height: 0; overflow: hidden; }
 .acc-qr[data-open] > div { padding-top: 18px; }

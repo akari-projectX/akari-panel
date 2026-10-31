@@ -130,7 +130,7 @@
   .opts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .opts label {
     display: grid; place-items: center; height: 40px; border: 1px solid var(--line); border-radius: calc(var(--radius) * 1.4);
-    font-size: 13px; font-weight: var(--fw-strong); color: var(--fg); cursor: pointer; transition: background-color .15s, color .15s;
+    font-size: 13px; font-weight: var(--fw-strong); color: var(--fg); cursor: pointer; transition: background-color var(--dur-hover), color var(--dur-hover);
   }
   .opts label:hover { background: color-mix(in srgb, var(--hover) 50%, transparent); }
   .opts label.on { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 5%, transparent); color: var(--brand); }

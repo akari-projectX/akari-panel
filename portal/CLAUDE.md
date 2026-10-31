@@ -8,6 +8,11 @@
 
 **交互与手机浏览器（2026-10-31，用户：「操作起来太死了」，`app.css` 末尾「触摸与按下反馈」一节）**：可点的元素一律 `touch-action: manipulation`（去掉双击缩放等待），系统点按高亮已去掉、由 `:active` 代替：按钮类按下缩小（`scale`，`.btn` 原有 .985、图标按钮 .94、分段 / 胶囊 .97，不加过渡、松手即回弹），整行可点的列表 / 菜单项按下换 `--hover` 底；触屏（`pointer: coarse`）上图标按钮用 `::before` 外扩点按范围到约 44px（外观不变），提示条的关闭钮常显；`viewport-fit=cover` + `env(safe-area-inset-*)`：顶栏高度加上顶部安全区、`.wrap` 两侧与页脚底部让开、吸顶的设置分区 / 订单账单跟着下移；窄屏文本框一律 16px（iOS 聚焦不放大，`!important` 盖过页面里的 13px 等宽框）；菜单卡片、弹窗正文、横向滚动的表格 `overscroll-behavior: contain`；窄屏横向滚动的 `.tbl-w` 两侧有「还能滚」的淡影（`background-attachment: local` 的遮罩）；切页退场与弹层退场从 100 ms 缩到 60 ms（`App.svelte`、`lib/pop.svelte.ts`、`--dur-exit`）；减少动效时按下不缩放。theme-color 仍由 `lib/theme.svelte.ts` 按 `--bg` 设置。
 
+**动效统一（2026-10-31，用户：「整个门户统一」）**：时长与缓动只用 `app.css` 顶部的令牌（`--dur-press/hover/fast/base/slow/exit`、`--ease-out/in/spring`，与后台 `check-tokens` 对齐），不写死秒数（加载指示器、骨架闪光、数据条的绘制除外）。同一类交互同一个动作：
+- **会滑的当前项**：顶栏导航的细线（`.nav-indicator`）与所有分段切换的实底（`lib/thumb.ts` 的 `{@attach thumb}`：`.seg-t`、`.tabs-pill`（含 `flat/Tabs`）、`.seg`（外观 / 语言开关）；容器 `::before` 按 `--thumb-x/y/w/h` 滑过去，当前项只换字色，`--dur-base`）；新的分段切换挂上它即可。
+- **弹层**：头像菜单 / 窄屏菜单 / 「更多」（`.menu-card` + `lib/pop`）、小下拉 `ui/Menu`、下拉选择 `ui/Select` 同一外观（`--popover` 底、`--line2` 细边、`--radius×1.2` 圆角、`--shadow-card`）与同一入场 `menu-in`（`--dur-hover`）/ 退场 `menu-out`（`--dur-exit`；bits-ui 的 Select 没有退场）；触发按钮里的下拉箭头打开时转 180°。
+- **按下 / 悬停**：见上一段；悬停一律 `--dur-hover`。减少动效时滑块、箭头、弹层入场都直接到位。
+
 2026-10-30 用户确认新外观「A · 纸面简约」（取代 2026-10-26 恢复的 v1.4.0 外观）：暖白纸面、近黑正文、细线分隔、墨蓝只做强调，主按钮是正文色实底（`.btn.pri`）。
 样稿（单文件，所有页面）不进仓库；裁决要点：
 

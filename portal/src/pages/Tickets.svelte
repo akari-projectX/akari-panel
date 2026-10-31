@@ -18,6 +18,7 @@
   import { resource } from '$lib/resource.svelte';
   import { loc, navigate } from '$lib/router.svelte';
   import { CATEGORY, PRIORITY, STATE } from '$lib/tickets';
+  import { thumb } from '$lib/thumb';
 
   /*
    * 工单（外观 A，同仪表盘的细线列表）：页头一句话（几张在等客服）+ 右侧「提交工单」；有工单时一排状态筛选（全部 / 待处理 / 已回复 / 已关闭，带张数）；
@@ -91,7 +92,7 @@
 {:else if list.length === 0}
   <div class="tk-empty"><Empty title={t('还没有工单')} desc={t('遇到问题时点右上角提交，我们会在这里回复。')} /></div>
 {:else}
-  <div class="tabs-pill tk-filter" role="group" aria-label={t('按状态筛选')}>
+  <div class="tabs-pill tk-filter" {@attach thumb} role="group" aria-label={t('按状态筛选')}>
     <button type="button" aria-pressed={only === null} onclick={() => (only = null)}>{t('全部')} <span class="n tnum">{list.length}</span></button>
     {#each FILTERS as st (st)}
       <button type="button" aria-pressed={only === st} onclick={() => (only = st)}>{t(STATE[st].text)} <span class="n tnum">{count(st)}</span></button>
