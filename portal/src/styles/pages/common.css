@@ -358,12 +358,6 @@
   .nlat .sig { display: none; }
 }
 
-/* 外观 A 的小分段切换（细线胶囊，当前项正文色实底）：仪表盘流量 7 / 30 天、线路页的标签筛选 */
-.seg-t { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
-.seg-t > button { height: 24px; padding: 0 11px; border: 0; border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12px; transition: color var(--dur-hover), background-color var(--dur-hover); }
-.seg-t > button:hover { color: var(--fg); }
-.seg-t > button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
-
 /* 外观 A 的筛选行：左边小分段切换，右边一行说明，下面一道细线（线路页的标签、商店页） */
 .abar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .abar > .seg-t { margin-left: 0; }
