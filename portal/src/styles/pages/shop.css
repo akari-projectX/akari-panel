@@ -43,7 +43,6 @@
 .pmeth input:checked + label > svg, .pmeth input:checked + label > span { color: var(--brand); }
 .pmeth label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: var(--fw-strong); }
 .rl { display: flex; align-items: center; gap: 8px; } .rl > svg { flex: none; color: var(--brand); }
-.shop-none { margin-top: 10px; font-size: 14px; color: var(--muted); }
 .fbal { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; color: var(--fg); cursor: pointer; }
 
 .fbal > span { flex: 1; min-width: 0; }
@@ -57,3 +56,7 @@
 .fline > div > span:last-child { font-family: var(--font-mono); color: var(--fg); }
 .popt > button[aria-pressed='true'], .pmeth input:checked + label { border-color: var(--fg); background: none; }
 .popt > button[aria-pressed='true'] b, .pmeth input:checked + label > svg, .pmeth input:checked + label > span { color: var(--fg); }
+/* 流量重置包：套餐列表下面的一行（外观 A：两道细线之间，左边名称与价格 + 说明，右边按钮） */
+.shop-reset { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding-block: 20px; border-bottom: 1px solid var(--line); }
+.shop-reset b { font-size: 15px; color: var(--fg); }
+.shop-reset p { margin-top: 4px; font-size: 13px; color: var(--muted); }
