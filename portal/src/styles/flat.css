@@ -3,7 +3,7 @@
 @layer components {/*
  * 版式词汇：区块、微标签标题、指标行、行式列表、
  * 两栏、提示条、翻页。对应的 Svelte 组件在 components/flat/。颜色只引用 tokens.css 的 var(--…)。
- * 类名：sec / sec-head / statrow / rowline / split2 / notice …。
+ * 类名：sec / sec-head / statrow / rowline / notice …。
  */
   .tnum { font-variant-numeric: tabular-nums; }
   .sec + .sec { border-top: 1px solid var(--line); }
@@ -12,14 +12,12 @@
   .sec-title { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: var(--fw-strong); letter-spacing: .14em; color: var(--muted); }
   .sec-title svg { display: none; }
   .sec-desc { margin-top: 6px; font-size: 14px; font-weight: var(--fw-regular); letter-spacing: -.008em; color: var(--muted); }
-  .pane-head > .pane-x { display: flex; height: 20px; flex: none; align-items: center; }
   .page-notices:empty { display: none; }
   .stat-bar.low { background: color-mix(in srgb, var(--danger) 20%, transparent); }
   .stat-bar.low > i { background: var(--danger); }
   .rowline:last-child { border-bottom: 0; }
   .rowline.first { padding-top: 0; }
   .rowline.hov::before { content: ''; position: absolute; inset: 3px -14px; z-index: -1; border-radius: 12px; background: var(--hover); opacity: 0; transition: opacity var(--dur-hover); }
-  .split2 > .pane { display: flex; min-width: 0; flex-direction: column; }
   .notice > .grow { flex: 1 1 0; min-width: min(15rem, 100%); }
   .notice .nt { font-size: 14.5px; font-weight: var(--fw-strong); }
   .notice .nd { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }

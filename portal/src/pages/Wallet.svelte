@@ -4,17 +4,13 @@
 
 <script lang="ts">
   import '../styles/pages/wallet.css';
-  import ArrowDownToLine from '@lucide/svelte/icons/arrow-down-to-line';
-  import Share2 from '@lucide/svelte/icons/share-2';
-  import WalletIcon from '@lucide/svelte/icons/wallet';
   import PageTitle from '../components/flat/PageTitle.svelte';
-  import PaneHead from '../components/flat/PaneHead.svelte';
   import Section from '../components/flat/Section.svelte';
-  import Split from '../components/flat/Split.svelte';
+  import StatRow, { type Stat } from '../components/flat/StatRow.svelte';
   import Tabs from '../components/flat/Tabs.svelte';
   import { inviteApi, walletApi, type LedgerEntry } from '@/api';
   import { K } from '@/lib/cache';
-  import { formatMoney } from '@/lib/format';
+  import { formatMoney, formatMonthDay, signedMoney } from '@/lib/format';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
   import InviteDetails from '../components/wallet/InviteDetails.svelte';
@@ -25,16 +21,19 @@
   import { scope } from '$lib/auth.svelte';
   import { errorText } from '$lib/errors';
   import { Pending } from '$lib/forms.svelte';
-  import { t } from '$lib/i18n.svelte';
+  import { t, tp } from '$lib/i18n.svelte';
   import { resource } from '$lib/resource.svelte';
   import { loc, navigate } from '$lib/router.svelte';
   import { R } from '$lib/routes';
   import { toast } from '$lib/toast.svelte';
+  import { LEDGER_TEXT } from '$lib/wallet';
 
   /*
-   * 邀请与钱包（地址 /wallet）。
+   * 邀请与钱包（地址 /wallet，外观 A）。
    * 面板只有一个余额（佣金入账就进余额，下单可以抵扣），其中「可提现」的部分可以申请 USDT 提现；佣金被追回时余额只扣到 0，差额记为欠款。
-   *   概览   左：账户余额（大数字）、可提现 / 审核中 / 最低提现 + 申请提现；右（仅 full）：邀请链接 + 返佣条款。
+   *   页头   一句「余额 ¥x」。
+   *   三个数 余额、可提现（审核中 / 最低提现）、待结算（冻结中的佣金）。
+   *   两栏   左：邀请好友（返佣条款、邀请链接 + 复制、申请提现与置灰原因）；右：余额明细（最近四笔，「全部 →」到收支流水分页）。
    *   分页   邀请返佣（收益、邀请码、返佣明细）/ 收支流水 / 提现记录，地址 ?tab=；full 默认「邀请返佣」，标题「邀请」。
    * 续费范围（过期 / 流量用完）只有流水：面板对它们不开放提现与邀请，这一页就是「钱包」。
    */
@@ -127,57 +126,57 @@
   );
 
   const title = $derived(full ? t('邀请') : t('钱包'));
-  const sub = $derived(full
-    ? t('把邀请链接发给需要的人，对方付费后你按比例拿佣金。佣金进入账户余额，可以抵扣订单或提现为 USDT。')
-    : t('账户余额与收支流水。余额可以在下单时抵扣。'));
+  const cents = $derived(balance.data?.balance_cents ?? 0);
+  const stats = $derived<Stat[]>([
+    { k: t('余额'), v: formatMoney(cents), x: t('下单时可以选择抵扣') },
+    {
+      k: t('可提现'), v: formatMoney(withdrawable),
+      x: pendingCents > 0 ? tp('审核中 {v}', { v: formatMoney(pendingCents) }) : min > 0 ? tp('最低提现 {v}', { v: formatMoney(min) }) : t('提现为 USDT'),
+    },
+    { k: t('待结算'), v: formatMoney(invite.data?.pending_cents ?? 0), x: invite.data ? tp('冻结 {n} 天后入账', { n: invite.data.hold_days }) : '' },
+  ]);
+  /* 右栏的余额明细：最近四笔 */
+  const recent = $derived(entries.slice(0, 4));
 </script>
 
-{#snippet balancePane()}
-  {@const cents = balance.data?.balance_cents ?? 0}
-  <PaneHead>
-    {#snippet title()}<WalletIcon size={16} strokeWidth={1.75} aria-hidden="true" />{t('账户余额')}{/snippet}
-    {#snippet desc()}{t('下单时可以选择抵扣')}{/snippet}
-  </PaneHead>
-  <div class="stat-v">{formatMoney(cents)}</div>
-  <dl class="mini-stats" style="margin-top: 20px">
-    <div><dt>{t('可提现')}</dt><dd>{formatMoney(withdrawable)}</dd></div>
-    {#if full}<div><dt>{t('审核中')}</dt><dd>{formatMoney(pendingCents)}</dd></div>{/if}
-    {#if min > 0}<div><dt>{t('最低提现')}</dt><dd>{formatMoney(min)}</dd></div>{/if}
-  </dl>
-  {#if full}
-    <div style="margin-top: 24px">
-      <button type="button" class="btn pri wd-btn" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} {@attach intent(Withdraw)} onclick={openDialog}>
-        <ArrowDownToLine size={16} strokeWidth={1.75} aria-hidden="true" />{t('申请提现')}
-      </button>
-      <!-- 按钮置灰时说清楚为什么（只说一条，按优先级）；否则说明打款方式 -->
-      <p class="wd-why">{why}</p>
-    </div>
-  {/if}
-{/snippet}
-
-<!-- 页头那句不重复余额：余额就在下面的大数字里 -->
-<PageTitle {title} lead={full ? t('邀请朋友，拿返佣') : t('余额与收支流水')} {sub} />
+<PageTitle {title} lead={balance.data ? tp('余额 {v}', { v: formatMoney(cents) }) : undefined} />
 
 {#if balance.loading && !balance.data}
   <Loading />
 {:else if balance.error && !balance.data}
   <LoadError error={balance.error} onretry={balance.reload} />
 {:else}
-  <Section>
-    {#if full}
-      <Split left={balancePane}>
-        {#snippet right()}
-          <PaneHead>
-            {#snippet title()}<Share2 size={16} strokeWidth={1.75} aria-hidden="true" />{t('你的邀请链接')}{/snippet}
-            {#snippet desc()}{t('通过链接注册的人会记在你名下')}{/snippet}
-          </PaneHead>
-          <InviteLink {codes} {invite} />
-        {/snippet}
-      </Split>
-    {:else}
-      {@render balancePane()}
-    {/if}
-  </Section>
+  {#if full}
+    <div class="wl-stats"><StatRow items={stats} /></div>
+
+    <div class="wl-two">
+      <section class="wl-pane" aria-labelledby="h-invite">
+        <div class="wl-sh"><h2 id="h-invite">{t('邀请好友')}</h2>{#if invite.data?.enabled}<span>{tp('返 {n}% 现金', { n: invite.data.rate_percent })}</span>{/if}</div>
+        <InviteLink {codes} {invite} />
+        <div class="wl-wd">
+          <button type="button" class="btn" disabled={withdrawable <= 0 || pending.length > 0 || chains.length === 0} {@attach intent(Withdraw)} onclick={openDialog}>{t('申请提现')}</button>
+          <!-- 按钮置灰时说清楚为什么（只说一条，按优先级）；否则说明打款方式 -->
+          <p class="wd-why">{why}</p>
+        </div>
+      </section>
+      <section class="wl-pane" aria-labelledby="h-recent">
+        <div class="wl-sh"><h2 id="h-recent">{t('余额明细')}</h2>{#if tab !== 'ledger'}<button type="button" class="wl-all" onclick={() => setTab('ledger')}>{t('全部 →')}</button>{/if}</div>
+        {#if recent.length === 0}
+          <p class="wl-none">{t('还没有收支记录')}</p>
+        {:else}
+          <ul class="wl-list">
+            {#each recent as e (e.id)}
+              <li>
+                <span class="tnum wl-d">{formatMonthDay(e.created_at)}</span>
+                <span class="wl-k">{t(LEDGER_TEXT[e.kind])}{#if e.out_trade_no ?? e.reason}<small>{' · '}{e.out_trade_no ?? e.reason}</small>{/if}</span>
+                <span class={['tnum wl-a', e.amount_cents < 0 ? 'neg' : 'pos']}>{signedMoney(e.amount_cents)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    </div>
+  {/if}
 
   <Section>
     {#if TABS.length > 1}

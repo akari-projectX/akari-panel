@@ -276,7 +276,7 @@ test('#19 renewal scope (expired): the page is the wallet with the ledger only; 
   page.on('request', (r) => calls.push(new URL(r.url()).pathname));
   await signIn(page, 'expired@e2e.test');
   await wallet(page, '/wallet?tab=invite', '钱包');
-  await expect(page.getByText('账户余额与收支流水。余额可以在下单时抵扣。')).toBeVisible();
+  await expect(page.locator('.page-lead')).toHaveText(/^余额 ¥/);
   await expect(page.getByRole('tab')).toHaveCount(0);
   await expect(page.locator('#panel-ledger')).toBeVisible();
   await expect(page.getByRole('button', { name: '申请提现' })).toHaveCount(0);

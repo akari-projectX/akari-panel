@@ -4,9 +4,6 @@
   /* 区块：靠留白分隔，相邻两块之间一道细线 */
   .sec { padding-block: 44px; container-type: inline-size; }
   .sec[id] { scroll-margin-top: 80px; }
-  .pane-desc { margin-top: 6px; font-size: 13px; font-weight: var(--fw-regular); letter-spacing: -.004em; color: var(--muted); }
-  .pane-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-  .pane-head > div:first-child { min-width: 0; }
 
   /* 页面大标题 + 本页提醒区 */
   .pt-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding-top: 48px; padding-bottom: 8px; }
@@ -48,9 +45,6 @@
   .rowline-d { margin-top: 4px; font-size: 13px; color: var(--muted); }
   .rowline-x { display: flex; flex: none; align-items: center; gap: 14px; }
 
-  /* 两栏分区：靠间距，不画竖线 */
-  .split2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 72px; }
-
   /* 提示条（外观 A）：上下两道细线之间的一行，不画卡片 */
   .notice { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 14px 0; border-block: 1px solid var(--line); font-size: 14px; }
   /* 图标对齐第一行（标题），不随换行后的整块居中 */
@@ -64,12 +58,8 @@
   .pager > div { display: flex; gap: 8px; }
 }
 
-@media (max-width: 1023px) {
-  .split2 { grid-template-columns: minmax(0, 1fr); }
-}
 @media (max-width: 991px) {
   .stat-v { font-size: 32px; }
-  .split2 { gap: 44px; }
 }
 @media (max-width: 900px) {
   .statrow, .statrow.n3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -82,14 +72,14 @@
 @media (max-width: 380px) {
   .stat-v { font-size: 24px; }
 }
-.wk { --wk-down: var(--brand); --wk-up: var(--brand-2); --wk-h: 200px; --wk-y: 34px; }
+.wk { --wk-down: var(--brand); --wk-up: var(--brand-2); --wk-h: 140px; --wk-y: 34px; }
 .wk-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin-bottom: 18px; font-size: 12.5px; color: var(--muted); }
 .wk-legend > span { display: inline-flex; align-items: center; gap: 6px; }
 .wk-legend .wk-unit { margin-left: auto; }
 .wk-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
 .wk-key.is-down { background: var(--wk-down); }
 .wk-key.is-up { background: var(--wk-up); }
-.wk-body { display: grid; grid-template-columns: var(--wk-y) minmax(0, 1fr); margin-top: 26px; }
+.wk-body { display: grid; grid-template-columns: var(--wk-y) minmax(0, 1fr); margin-top: 18px; }
 .wk-y { position: relative; height: var(--wk-h); }
 .wk-y > span {
   position: absolute; right: 10px; translate: 0 50%; font-size: 11.5px; line-height: 1;
@@ -106,9 +96,9 @@
 }
 .wk-col[data-active] { background: color-mix(in srgb, var(--fg) 5%, transparent); }
 .wk-col:focus-visible { outline-offset: -2px; }
-.wk-stack { position: relative; display: flex; flex-direction: column; gap: 2px; width: min(30px, 52%); min-height: 2px; }
+.wk-stack { position: relative; display: flex; flex-direction: column; gap: 2px; width: min(14px, 46%); min-height: 2px; }
 .wk-bar { display: block; flex-basis: 0; min-height: 2px; }
-.wk-bar:first-of-type { border-radius: 4px 4px 0 0; }
+.wk-bar:first-of-type { border-radius: 2px 2px 0 0; }
 .wk-bar.is-down { background: var(--wk-down); }
 .wk-bar.is-up { background: var(--wk-up); }
 .wk-total {
@@ -134,3 +124,18 @@
 .wk-tip dd { font-variant-numeric: tabular-nums; }
 .wk-tip .is-sum { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 6px; }
 .wk-tip .is-sum dt, .wk-tip .is-sum dd { color: var(--fg); font-weight: var(--fw-strong); }
+
+/* 柱图（仪表盘的「流量」与用量页的「每日」共用）补充；分段切换 .seg-t */
+.seg-t { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+.seg-t > button { height: 24px; padding: 0 11px; border: 0; border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12px; transition: color var(--dur-hover), background-color var(--dur-hover); }
+.seg-t > button:hover { color: var(--fg); }
+.seg-t > button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
+.wk-sum { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wk-legend { margin-bottom: 4px; }
+.wk.dense .wk-stack { width: min(8px, 60%); }
+.wk-x > span { min-height: 30px; }
+@media (max-width: 640px) {
+  .wk { --wk-h: 130px; --wk-y: 30px; }
+  .wk-x > span > span { font-size: 10.5px; }
+  .wk-sum { flex: 1 1 100%; order: 3; white-space: normal; }
+}

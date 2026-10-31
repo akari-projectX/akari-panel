@@ -13,18 +13,18 @@
   窄屏才有的页面导航（八项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
 - 页脚（`SiteFooter`）：细线 + 一行版权与条款 / 隐私 / 站长链接（没有大号站点名字样）；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
 - 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3，见下文「仪表盘」）；③ 其余各页（已完成）。
-- 页头（`flat/PageTitle` 的 `lead`）：给了 `lead` 时页名 `<h1>` 是一行小字眉标，下面一句大字说这一页现在的状况（线路「4 条线路，3 条在线」、订单「2 笔订单等待支付」、用量「这段时间用了 X GB」、钱包「余额 ¥x」…），再下面一行说明，右侧操作；h1 文字不变（e2e 的 `ready(page, 标题)` 依赖它）。文档页「全部」视图是每个分类一栏（栏头分类名 + 文章标题，细线分栏），选了分类或搜索时仍是文章格子。
-- **其余各页（③）只改共用零件的外观，结构、类名、取数与 e2e 不变**：页头 `PageTitle`（h1 36px，h1 文字仍是各页原来的标题）；区块标题 `.sec-title`（12px 加字距的辅助灰，不带图标）；
+- 页头（`flat/PageTitle` 的 `lead`）：给了 `lead` 时页名 `<h1>` 是一行小字眉标，下面一句大字说这一页现在的状况（线路「4 条线路，3 条在线」、订单「2 笔订单等待支付」、用量「本期已用 X / Y GB」、钱包「余额 ¥x」…），再下面一行说明，右侧操作；h1 文字不变（e2e 的 `ready(page, 标题)` 依赖它）。文档页「全部」视图是每个分类一栏（栏头分类名 + 文章标题，细线分栏），选了分类或搜索时仍是文章格子。
+- **其余各页（③）先只改了共用零件的外观**（2026-10-31 用户：其余页面也按仪表盘风格重新设计；用量、订单、钱包已按样稿重排，见下文各页）：页头 `PageTitle`（h1 36px，h1 文字仍是各页原来的标题）；区块标题 `.sec-title`（12px 加字距的辅助灰，不带图标）；
   按钮 `.btn` 一律胶囊（次要 = 一圈 `--line2` 细线、无底色，主 = 正文色实底）；分段切换 `.tabs-pill`（细线胶囊，当前项正文色实底）；
   指标 `flat/StatRow`（标签在上、数字在下，上面一道细线、格间竖线）；提示条 `.notice`（上下两道细线之间的一行，不画卡片）；表格 `.tbl` / `.wtbl`（表头 12px faint、行间细线、悬停 `--hover`）；
   商店套餐 `.plan-card`（列间竖细线，不画卡片；右上角只写「当前套餐」/「推荐」一个词）；文档文章 `DocList` 是细线格子、搜索框是胶囊；
   工单对话里自己的气泡是正文色实底；开关 `.switch` 打开是正文色；设置页「危险操作」不再画红框（只有标题是红字）；登录 / 注册页去掉品牌色光晕，输入框 12px 圆角、按钮胶囊。
   强调色只留给链接、未读点、公告标签与图表。
 
-- 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、`Split`、
+- 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、
   `.bdg` 徽章、`.wtbl`、`.nstate` 等）、`src/styles/pages/*.css`（用户中心各页的版式与表格 `.tbl` 等，原 pages.css 按「哪些页面用」拆开：`common.css` 多数页要的（它 `@import` 了 `styles/flat-dash.css`）、`rest.css` 除仪表盘外的页面共用的、`dashboard.css`/`shop.css`/`order-detail.css`/`wallet.css`/`traffic.css`/`account.css`/`nodes.css` 一页独用的；common/rest 由 `lib/pages.ts` 的 `withCss` 在页面分包之前动态引入（Vite 不保证共用 CSS 先于页面 CSS 进 `<head>`；`withCss` 按调用顺序先插 common、rest 再插页面自己的），各 `pages/*.svelte` 只 import 自己的那份，只由登录后的页面分包带，不进首屏 CSS；规则的相对顺序与层包装不变，拆分时要核对「先出现的专页规则不能被后出现、改成先加载的共用规则反超」，新规则放进只有它的使用者会加载的文件，多页共用的放 common）、`styles/flat.css` 只留访客页也要的几条（其余在 `flat-dash.css`）、`tokens.css`（颜色只能写在这里，`check:colors`）。
   页面用 `components/flat/*` 拼，不再手写 `.ph` / `.kpis` / `.banner` / `.li` / `.cols` / `.sh`（已删除）。
-- 图表（`components/charts/`：`AreaChart`、`BarChart`、`Donut`、`ChartTip`、`Legend`，`lib/rechart.ts`）是手写 SVG，复刻 recharts 的外观（刻度、单调曲线、渐变、提示框），不引入图表库。
+- 图表只有一个：`components/dash/WeekChart.svelte`（纯 HTML/CSS 的每日柱图，下行在下、上行叠在上面，键盘可逐日看提示），仪表盘的「流量」与用量页的「每日」共用；样式在 `styles/flat-dash.css`（`.wk*`、分段切换 `.seg-t`）。不引入图表库。
 - 下拉用 `components/ui/Select.svelte`（bits-ui，v1.4.0 的 shadcn Select 外观，高 32px）；对话框三种（2026-10-29 起一律不带图标：`Dialog` 没有 `icon` 片段）：流程（标题 + 说明，底部按钮栏）、确认（`alert`，420px）、
   **阅读**（`reading` + `meta` 片段：公告、工单对话，宽 640，只有正文滚动）。弹窗开着时 `lib/visual-viewport.ts` 把可见视口写进 `--vv-h` / `--vv-top`，
   手机弹出软键盘时弹窗挪到键盘上方。
@@ -84,11 +84,12 @@
 - **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（外观 A，2026-10-31 按仪表盘风格重排：页头一句大字「N 条线路，M 条在线」+ 右侧「每 30 秒自动刷新 · 刚刚」与刷新按钮；
   筛选行 `.abar`（`pages/common.css`：左边 `.seg-t` 标签筛选「全部 + 订阅里出现的入口标签」，右边倍率说明）；一张线路表 `components/NodeTable`（与仪表盘共用，窄屏收起负载列与标签），默认按倍率升序、点「倍率」列头切换（`aria-sort`）；
   表下一行负载图例与「维护中的线路不会出现在订阅里」（`data-node-legend`）；每 30 秒刷新；没有统计格子与搜索框）、
-  `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`；明细记录的「导出 CSV」在浏览器里由同一份 `/me/traffic` 生成（`lib/usage-csv.ts`：BOM、字节与 GB、防公式注入，不另开接口））、
-  `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
+  `pages/Traffic.svelte`（外观 A，2026-10-31 按仪表盘风格重排：页头一句「本期已用 X / Y GB」+ 右侧本月 / 近 7 天 / 近 30 天；三个数（今日与昨天比、这段时间与日均、计费含倍率）；「每日」= 仪表盘的 `WeekChart`（今天那根加深，`.us-week`）；按线路（此刻的倍率与时段规则）；明细（每天一行，右上「导出 CSV」：浏览器里由同一份 `/me/traffic` 生成，`lib/usage-csv.ts`：BOM、字节与 GB、防公式注入，不另开接口）。`resource` 的 `keep` 换范围时留着上一段）、
+  `pages/Wallet.svelte`（外观 A：页头「余额 ¥x」、三个数（余额 / 可提现 / 待结算）、两栏「邀请好友」（`InviteLink` + 返佣条款 + 申请提现与置灰原因）|「余额明细」（最近四笔，「全部 →」切到收支流水）；仅 full）→ `components/wallet/`（`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
   `WithdrawDialog`（含 bits-ui）单独分包、空闲时预载；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
   地址 `?tab=`，换分页 `navigate(…, { replace: true, keepScroll: true })`。文案表与纯函数 `lib/wallet.ts`（`wallet.test.ts`），
-  复制 `lib/copy.svelte.ts`（`Copied`）。页内分页是 `components/flat/Tabs`，关键数字 `flat/StatRow`，表格 `.tbl.flat-head` / `.wtbl`。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
+  复制 `lib/copy.svelte.ts`（`Copied`）。页内分页是 `components/flat/Tabs`，关键数字 `flat/StatRow`，表格 `.tbl.flat-head` / `.wtbl`。
+  订单列表 `pages/Orders.svelte`（外观 A：页头一句（几笔等待支付 / 共几笔）、状态筛选胶囊、宽屏表格「订单号 · 项目（套餐 + 类型 · 周期）· 时间 · 状态点（`.sdot`，`pages/common.css`）· 金额 · 待支付的「取消」+「去支付」/ 其余「详情」」、窄屏一行一笔；没有关键数字行）；订单详情的页头一句 = 套餐 · 金额 · 状态，下面一行订单号。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
   seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
 - **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
   当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
