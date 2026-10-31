@@ -127,7 +127,7 @@
 
 **字体 = HarmonyOS Sans SC**（用户 2026-10-31 选定，取代 2026-10-26 起的「只用系统字体」）：所有平台同一套字形（Windows 上不再落到微软雅黑）。字体栈 `--font-ui`（`src/styles/tokens.css`）把它放在最前，后面仍是原来的系统字体栈作回落。
 文件：`src/assets/fonts/hos/hos-<400|600>-<片号>.woff2`（400 = Regular，600 = Bold），由 `scripts/font-slices.py <HarmonyOS_Sans_SC 目录>` 生成（fonttools；产物进仓库，CI 不跑）：字符集 = ASCII 与常用标点符号 + GB2312 全部汉字 + 门户源码里出现的字，门户界面先用到的字排在前面，每片约 200 字、约 30 KB，两字重共约 2 MB；`src/styles/fonts.css`（同一脚本生成，`app.css` 引入）给每片一条 `@font-face` + `unicode-range`，浏览器只下载页面上真正出现的字所在的片，`font-display: swap`（加载前用系统字体，首帧不等字体）。GB2312 以外的字落到系统字体。
-**授权**：HarmonyOS Sans Fonts License Agreement（原文 `src/assets/fonts/hos/LICENSE.txt`，第三方清单 `make third-party` 收录）：要求在软件里显著注明使用了该字体（页脚「字体：HarmonyOS Sans」，`SiteFooter`），且**不得修改字体**——切片是修改，用户 2026-10-31 知情后仍选择切片，风险由站长承担；改字体或去掉页脚声明前先看这里。`scripts/check-weights.mjs` 跳过生成的 `fonts.css`（那里的 `font-weight` 是字体文件自己的字重）。
+**授权**：HarmonyOS Sans Fonts License Agreement（原文 `src/assets/fonts/hos/LICENSE.txt`，第三方清单 `make third-party` 收录）：要求在软件里显著注明使用了该字体（页脚「字体：HarmonyOS Sans」，`SiteFooter`），且不得修改字体：切片只按 `unicode-range` 把字形分到若干文件里，字形、度量与版权信息原样保留，不改动字体本身（用户 2026-10-31 裁决）；不要做改字形、改名、合并其他字体之类的改动，去掉页脚声明前先看这里。`scripts/check-weights.mjs` 跳过生成的 `fonts.css`（那里的 `font-weight` 是字体文件自己的字重）。
 **字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。字体只带这两个字重，回落的微软雅黑也没有 500，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
 
 ## 偏好与存储

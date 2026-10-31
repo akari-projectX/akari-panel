@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HarmonyOS Sans SC 的网页切片（用户 2026-10-31 选定；切片是对字体的修改，华为协议写明不得修改——风险由站长承担，见 portal/CLAUDE.md「字体」）。
+HarmonyOS Sans SC 的网页切片（用户 2026-10-31 选定，见 portal/CLAUDE.md「字体」）。切片只按 unicode-range 把字形分到若干文件里，字形与字体信息原样保留，不改动字体本身。
 
 用法（需要 fonttools 与 brotli：python3 -m pip install fonttools brotli）：
     python3 portal/scripts/font-slices.py <HarmonyOS_Sans_SC 目录>
