@@ -53,6 +53,19 @@ async fn audit_actions(db: &TestDb, target: Uuid) -> Vec<String> {
         .unwrap()
 }
 
+/// A fresh database carries the default client guides (migration 0009); the
+/// tests below start from an empty knowledge base.
+async fn without_default_guides(db: &TestDb) {
+    sqlx::query("DELETE FROM kb_articles")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM kb_categories")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+}
+
 #[test]
 fn text_rules() {
     assert_eq!(clean_name(" 常见问题 ").unwrap(), "常见问题");
@@ -107,6 +120,7 @@ async fn users_see_published_only() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    without_default_guides(&db).await;
     let state = AppState::for_test(db.pool.clone()).await;
     let admin = client_for(&state, db.admin().await).await;
     let user = client_for(&state, db.user().await).await;
@@ -210,6 +224,7 @@ async fn admin_crud_and_audit() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    without_default_guides(&db).await;
     let state = AppState::for_test(db.pool.clone()).await;
     let admin = client_for(&state, db.admin().await).await;
     let user = client_for(&state, db.user().await).await;
@@ -381,6 +396,7 @@ async fn article_slugs() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    without_default_guides(&db).await;
     let state = AppState::for_test(db.pool.clone()).await;
     let admin = client_for(&state, db.admin().await).await;
     let terms = article(
@@ -457,6 +473,7 @@ async fn public_legal_pages() {
     let Some(db) = TestDb::new().await else {
         return;
     };
+    without_default_guides(&db).await;
     let state = AppState::for_test(db.pool.clone()).await;
     let admin = client_for(&state, db.admin().await).await;
     let anon = Client::new(&state, crate::testdb::http::rand_ip());
@@ -528,4 +545,38 @@ async fn public_legal_pages() {
         "unpublished"
     );
     db.drop().await;
+}
+
+#[tokio::test]
+async fn default_guides_are_published() {
+    let Some(db) = TestDb::new().await else {
+        return;
+    };
+    let state = AppState::for_test(db.pool.clone()).await;
+    let user = client_for(&state, db.user().await).await;
+    let v = user.get("/test/api/v1/me/help").await.json();
+    assert_eq!(v["total"], 4);
+    let cats: Vec<&str> = v["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name_zh"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        cats,
+        [
+            "Windows 教程",
+            "macOS 教程",
+            "iOS 与 iPadOS 教程",
+            "Android 教程"
+        ]
+    );
+    for c in v["categories"].as_array().unwrap() {
+        let id = c["articles"][0]["id"].as_str().unwrap();
+        let a = user.get(&format!("/test/api/v1/me/help/{id}")).await.json();
+        let zh = a["html_zh"].as_str().unwrap();
+        let en = a["html_en"].as_str().unwrap();
+        assert!(zh.contains("<ol>") && zh.contains("<strong>"), "{zh}");
+        assert!(!en.is_empty() && !en.contains("\\n"), "{en}");
+    }
 }

@@ -70,7 +70,7 @@
   const open = (a: KbArticle) => setParams({ id: a.id, cat: a.category, q: q || undefined });
 </script>
 
-<PageTitle title={t('使用手册')} lead={t('有什么可以帮你？')} />
+<PageTitle title={t('使用指南')} lead={t('有什么可以帮你？')} />
 
 <div class="top-tools">
   <form novalidate role="search" class="search" onsubmit={submit}>
@@ -186,7 +186,7 @@
   .cats { display: flex; flex-wrap: wrap; gap: 8px; }
   .cats button {
     display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 6px 14px; border: 1px solid var(--line); border-radius: 9999px;
-    background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: var(--fw-regular); text-align: left; cursor: pointer; transition: color .15s, border-color .15s;
+    background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: var(--fw-regular); text-align: left; cursor: pointer; transition: color var(--dur-hover), border-color var(--dur-hover);
   }
   .cats button:hover { color: var(--fg); border-color: var(--line2); }
   .cats button[aria-pressed='true'] { border-color: var(--fg); background: var(--fg); color: var(--bg); }
@@ -226,10 +226,10 @@
   .cn { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--muted); }
   .cn :global(.ci) { color: var(--muted); }
   .ud { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); }
-  .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: var(--fw-strong); line-height: 1.375; transition: color .15s; }
+  .card h4 { margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 15px; font-weight: var(--fw-strong); line-height: 1.375; transition: color var(--dur-hover); }
   .card:hover h4 { color: var(--fg); text-decoration: underline; text-decoration-color: var(--line2); text-underline-offset: 3px; }
   .cf { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 12px; line-height: 16px; color: var(--muted); }
-  .rd { display: flex; align-items: center; gap: 4px; color: var(--muted); transition: transform .15s; }
+  .rd { display: flex; align-items: center; gap: 4px; color: var(--muted); transition: transform var(--dur-hover); }
   .card:hover .rd { transform: translateX(2px); color: var(--fg); }
   .cols { display: grid; grid-template-columns: minmax(0, 1fr); border-top: 1px solid var(--line); }
   @media (min-width: 768px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

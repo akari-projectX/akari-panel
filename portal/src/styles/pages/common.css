@@ -241,7 +241,17 @@
 .tabs-pill.mb { margin-bottom: 18px; }
 
 /* Table（ui/table.tsx）+ .flat-head */
-.tbl-w { position: relative; width: 100%; overflow-x: auto; }
+.tbl-w { position: relative; width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+/* 窄屏上横向滚动的表格：两侧有内容可滚时出现一道淡影（背景随内容滚动的那层盖住影子，滚到头影子才露出 / 消失） */
+@media (max-width: 767px) {
+  .tbl-w {
+    background:
+      linear-gradient(to right, var(--bg) 40%, transparent) left / 28px 100% no-repeat local,
+      linear-gradient(to left, var(--bg) 40%, transparent) right / 28px 100% no-repeat local,
+      linear-gradient(to right, color-mix(in srgb, var(--fg) 12%, transparent), transparent) left / 12px 100% no-repeat scroll,
+      linear-gradient(to left, color-mix(in srgb, var(--fg) 12%, transparent), transparent) right / 12px 100% no-repeat scroll;
+  }
+}
 .tbl { width: 100%; caption-side: bottom; border-collapse: collapse; font-size: 14px; line-height: 1.4286; }
 .tbl .r { text-align: right; }
 .tbl .btn.link-btn, .wtbl .btn.link-btn { height: 24px; padding: 0 8px; font-size: 12px; gap: 4px; border: 1px solid transparent; border-radius: 10px; }

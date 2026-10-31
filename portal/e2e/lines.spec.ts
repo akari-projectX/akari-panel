@@ -80,7 +80,7 @@ test('lines: lowest multiplier first, the column header flips the order; the tag
 
 test('#34 traffic history by the site\'s days, per entrance with the multiplier now', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
-  await open(page, '/traffic', '使用明细');
+  await open(page, '/traffic', '流量明细');
   await expect(page.getByText(/日期按 Asia\/Shanghai 计算/)).toBeVisible();
   await expect(page.getByRole('tab', { name: '本月' })).toHaveAttribute('aria-selected', 'true');
   const line = () => page.getByText('香港 01 · 直连').first();
@@ -112,7 +112,7 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
 
 test('traffic: three numbers and the daily bars (the dashboard\'s chart); a tooltip by keyboard', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
-  await open(page, '/traffic', '使用明细');
+  await open(page, '/traffic', '流量明细');
   /* 页头一句：本期已用多少；下面三个数：今日、这段时间、计费 */
   await expect(page.locator('.page-lead')).toHaveText(/^本期已用 [\d.]+ (\/ \d+ )?GB$/);
   await expect(page.locator('.statrow > div')).toHaveCount(3);
@@ -145,7 +145,11 @@ test('traffic: a range with no traffic says so; the panel keeps daily rows only 
       },
     });
   });
-  await open(page, '/traffic', '使用明细');
+  await open(page, '/traffic', '流量明细');
+  await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
+  /* 「本月」在每月 1 日（站点时区）起止是同一天，那时没有更早的日子可说：换成近 30 天，日期再怎么落都有 */
+  await page.getByRole('tab', { name: '近 30 天' }).click();
+  await expect(page.getByRole('tab', { name: '近 30 天' })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
   await expect(page.getByText(/按天的明细只保留到 .*，更早的日子显示为 0。/)).toBeVisible();
   await expect(page.locator('.wk')).toHaveCount(0);
@@ -164,7 +168,7 @@ test('#19 renewal scope: no lines or usage (back to the dashboard)', async ({ pa
 test('#60 phones: lines and usage never scroll sideways', async ({ page }, info) => {
   test.skip(info.project.name !== 'mobile', 'only narrow screens can overflow');
   await signIn(page, 'user@e2e.test');
-  for (const [path, title] of [['/nodes', '节点状态'], ['/traffic', '使用明细']]) {
+  for (const [path, title] of [['/nodes', '节点状态'], ['/traffic', '流量明细']]) {
     await open(page, path, title);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), path).toBe(true);
   }

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /*
- * 字重只有两档：--fw-regular（400，正文）与 --fw-strong（600，强调 / 标题），定义在 src/styles/tokens.css。
- * 门户只用系统字体：微软雅黑没有 500，Windows / Android / Linux 上没有 300，其余字重会悄悄并成相邻一档，层次随之消失。
- * 层次靠颜色（--fg / --muted / --faint）与字号，不靠第三档字重。
+ * 字重只有两档：--fw-regular（400，正文）与 --fw-strong（600，强调 / 标题），定义在 src/styles/tokens.css；
+ * 外加只给顶栏导航用的 --fw-nav（500，2026-10-31 用户选定：导航全部中粗，当前项靠颜色与细线），只许出现在 NAV_FILES 里。
+ * 门户的字体（HarmonyOS Sans SC）切片只带 400、500、600 三个字重，回落的系统字体里微软雅黑也没有 500，其余字重会悄悄并成相邻一档，层次随之消失。
+ * 层次靠颜色（--fg / --muted / --faint）与字号，不靠更多档字重。
  *
  * 在 src/ 与 index.html 里找：
  *   · font-weight: 后面不是 var(--fw-regular) / var(--fw-strong) / inherit（tokens.css 里定义令牌的 --fw-*: 数值除外）；
@@ -16,7 +17,11 @@ import { PORTAL } from './strings.mjs';
 
 const ROOTS = [join(PORTAL, 'src'), join(PORTAL, 'index.html')];
 const TOKENS = join(PORTAL, 'src/styles/tokens.css');
+/* 生成的 @font-face（scripts/font-slices.py）：那里的 font-weight 是字体文件自己的字重，不是用法 */
+const FONTS = join(PORTAL, 'src/styles/fonts.css');
 const EXT = /\.(css|svelte|ts|html)$/;
+/* --fw-nav 只给顶栏导航：app.css 的 .topnav-link 与「更多」下拉 */
+const NAV_FILES = new Set([join(PORTAL, 'src/app.css'), join(PORTAL, 'src/components/MoreMenu.svelte')]);
 
 function walk(p) {
   const st = statSync(p);
@@ -27,12 +32,13 @@ function walk(p) {
 const WEIGHT_OK = /^(?:var\(--fw-(?:regular|strong)\)|inherit)$/;
 const bad = [];
 
-for (const file of ROOTS.flatMap(walk).filter((f) => EXT.test(f))) {
+for (const file of ROOTS.flatMap(walk).filter((f) => EXT.test(f) && f !== FONTS)) {
   const lines = readFileSync(file, 'utf8').split('\n');
   lines.forEach((line, i) => {
     const at = (why) => bad.push(`${relative(PORTAL, file)}:${i + 1}: ${why}: ${line.trim().slice(0, 120)}`);
     for (const m of line.matchAll(/font-weight\s*:\s*([^;}"'`]+)/g)) {
-      if (!WEIGHT_OK.test(m[1].trim())) at(`font-weight ${m[1].trim()}`);
+      const v = m[1].trim();
+      if (v === 'var(--fw-nav)' ? !NAV_FILES.has(file) : !WEIGHT_OK.test(v)) at(`font-weight ${v}`);
     }
     for (const m of line.matchAll(/(?<![\w-])font\s*:\s*([^;}"'`]+)/g)) {
       if (/(?<![\w.-])(?:[1-9]00|bold|bolder|lighter)(?![\w.-])/.test(m[1].replace(/var\([^)]*\)/g, ''))) at('font shorthand with a weight');
@@ -45,12 +51,12 @@ for (const file of ROOTS.flatMap(walk).filter((f) => EXT.test(f))) {
 }
 
 const tokens = readFileSync(TOKENS, 'utf8');
-if (!/--fw-regular:\s*400\s*;/.test(tokens) || !/--fw-strong:\s*600\s*;/.test(tokens)) {
-  bad.push('src/styles/tokens.css: --fw-regular must be 400 and --fw-strong 600');
+if (!/--fw-regular:\s*400\s*;/.test(tokens) || !/--fw-strong:\s*600\s*;/.test(tokens) || !/--fw-nav:\s*500\s*;/.test(tokens)) {
+  bad.push('src/styles/tokens.css: --fw-regular must be 400, --fw-strong 600 and --fw-nav 500');
 }
 
 if (bad.length) {
-  console.error(`check-weights: only var(--fw-regular) and var(--fw-strong) are allowed (${bad.length}):\n  ${bad.join('\n  ')}`);
+  console.error(`check-weights: only var(--fw-regular) and var(--fw-strong) are allowed (var(--fw-nav) only in the top navigation) (${bad.length}):\n  ${bad.join('\n  ')}`);
   process.exit(1);
 }
 console.log('check-weights: ok');

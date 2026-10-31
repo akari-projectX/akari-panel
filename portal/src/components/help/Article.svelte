@@ -114,8 +114,8 @@
 {:else if a}
   <div class="pg">
   <header class="head">
-    <nav aria-label={t('使用手册')} class="crumbs">
-      <button type="button" onclick={() => toList()}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('使用手册')}</button>
+    <nav aria-label={t('使用指南')} class="crumbs">
+      <button type="button" onclick={() => toList()}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('使用指南')}</button>
       <ChevronRight class="sep" size={14} strokeWidth={1.75} aria-hidden="true" />
       <button type="button" onclick={() => toList(a.category)}>{a.category}</button>
     </nav>
@@ -209,7 +209,7 @@
   .pg { padding-bottom: 80px; }
   .head { padding-top: 48px; padding-bottom: 8px; }
   .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 13px; color: var(--muted); }
-  .crumbs button { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; overflow-wrap: anywhere; text-align: left; cursor: pointer; transition: color .15s; }
+  .crumbs button { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: inherit; font: inherit; overflow-wrap: anywhere; text-align: left; cursor: pointer; transition: color var(--dur-hover); }
   .crumbs button:hover { color: var(--fg); }
   .crumbs :global(.sep) { opacity: .5; }
   .title-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 24px; margin-top: 16px; }
@@ -229,17 +229,17 @@
   .pn { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 32px; }
   .pn button {
     display: flex; flex-direction: column; justify-content: space-between; min-width: 0; padding: 16px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 12px;
-    background: var(--surface); font: inherit; text-align: left; cursor: pointer; transition: border-color .15s, box-shadow .15s;
+    background: var(--surface); font: inherit; text-align: left; cursor: pointer; transition: border-color var(--dur-hover), box-shadow var(--dur-hover);
   }
   .pn button:hover { border-color: color-mix(in srgb, var(--brand) 40%, transparent); box-shadow: var(--shadow-xs); }
   .pn .next { text-align: right; }
-  .pn .lb { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: var(--muted); transition: color .15s; }
+  .pn .lb { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: var(--muted); transition: color var(--dur-hover); }
   .pn .next .lb { justify-content: flex-end; }
-  .pn .lb :global(svg) { transition: transform .15s; }
+  .pn .lb :global(svg) { transition: transform var(--dur-hover); }
   .pn .prev:hover .lb :global(svg) { transform: translateX(-4px); }
   .pn .next:hover .lb :global(svg) { transform: translateX(4px); }
   .pn button:hover .lb, .pn button:hover .tt { color: var(--brand); }
-  .pn .tt { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 20px; font-weight: var(--fw-strong); color: var(--fg); transition: color .15s; }
+  .pn .tt { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 1; line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 20px; font-weight: var(--fw-strong); color: var(--fg); transition: color var(--dur-hover); }
 
   .ask { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 32px; padding: 20px; border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--hover) 30%, transparent); font-size: 14px; }
   .ask-t { line-height: 20px; display: flex; align-items: center; gap: 12px; color: var(--muted); }
@@ -255,7 +255,7 @@
   .sib { display: flex; flex-direction: column; gap: 4px; max-height: 300px; margin-top: 14px; padding-right: 4px; overflow-y: auto; }
   .side nav a, .sib button, .toc-m nav a {
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1; overflow: hidden; padding: 6px 10px; border: 0; border-radius: 8px; background: none;
-    color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; text-align: left; cursor: pointer; transition: color .15s, background-color .15s;
+    color: var(--muted); font: inherit; font-size: 12px; line-height: 16px; text-align: left; cursor: pointer; transition: color var(--dur-hover), background-color var(--dur-hover);
   }
   .sib button { -webkit-line-clamp: 2; line-clamp: 2; }
   .side nav a:hover, .sib button:hover, .toc-m nav a:hover { background: var(--hover); color: var(--fg); }
@@ -268,7 +268,7 @@
   .sm-l { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .sm-l :global(.bk) { color: var(--brand); }
   .cnt { padding: 0 6px; border-radius: 9999px; background: var(--hover); font-size: 10px; line-height: 16px; }
-  .toc-m :global(.chev) { color: var(--muted); transition: transform .15s; }
+  .toc-m :global(.chev) { color: var(--muted); transition: transform var(--dur-hover); }
   .toc-m details[open] :global(.chev) { transform: rotate(180deg); }
   .toc-m nav { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
 

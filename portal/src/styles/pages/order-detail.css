@@ -42,7 +42,7 @@
 @media (min-width: 1024px) {
   .od-grid { grid-template-columns: minmax(0, 1fr) 340px; grid-template-rows: auto 1fr; }
   .od-aside { grid-column: 2; grid-row: 1 / span 2; padding-top: 44px; }
-  .od-bill { position: sticky; top: 96px; }
+  .od-bill { position: sticky; top: calc(96px + env(safe-area-inset-top)); }
   .od-main { grid-column: 1; grid-row: 1; }
   .od-info { grid-column: 1; grid-row: 2; }
 }

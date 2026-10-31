@@ -17,7 +17,7 @@ const isMobile = (info: TestInfo) => info.project.name === 'mobile';
 /** 进商店，等套餐卡片出来 */
 async function shop(page: Page) {
   await page.goto('/shop');
-  await ready(page, '商店');
+  await ready(page, '套餐');
   await expect(page.locator('.plan-card').first()).toBeVisible({ timeout: 15_000 });
 }
 
@@ -212,7 +212,7 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
 
   /* #46 订单列表：类型、状态；筛选（外观 A：没有关键数字行） */
   await page.goto('/orders');
-  await ready(page, '我的订单');
+  await ready(page, '账单');
   const list = isMobile(info) ? page.locator('.md-hide') : page.locator('table');
   await expect(list).toContainText('更换套餐');
   await expect(list).toContainText('流量重置');
@@ -369,7 +369,7 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
     }
   }
   await page.goto('/orders');
-  await ready(page, '我的订单');
+  await ready(page, '账单');
   await page.getByRole('tab', { name: '已退款', exact: true }).click();
   const list = isMobile(info) ? page.locator('.md-hide button') : page.locator('tbody tr');
   await expect(list).toHaveCount(3);
@@ -378,7 +378,7 @@ test('#47 #49 refunds: the three routes and what happened to the plan', async ({
 test('#19 renewal scope (expired): the shop still works and the plan can be subscribed again', async ({ page }) => {
   await signIn(page, 'expired@e2e.test');
   await shop(page);
-  await expect(page.getByRole('heading', { name: '商店' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '套餐', exact: true })).toBeVisible();
   /* 账户提醒只在仪表盘 */
   await expect(page.getByText('套餐已到期，服务已暂停')).toHaveCount(0);
   await expect(card(page, seed.plan).getByRole('button', { name: '立即订阅' })).toBeVisible();
@@ -389,7 +389,7 @@ test('#19 renewal scope (quota used up): the dashboard leads to the shop, which 
   await page.goto('/');
   await ready(page);
   await page.getByRole('link', { name: '去恢复' }).click();
-  await ready(page, '商店');
+  await ready(page, '套餐');
   /* 流量用完：当前套餐排最前，默认给重置包 */
   await expect(page.locator('.plan-card').first()).toHaveClass(/current/);
   await expect(page.locator('.plan-card.is-current').getByRole('button', { name: '购买重置包' })).toBeVisible();

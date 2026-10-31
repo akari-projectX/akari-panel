@@ -60,7 +60,7 @@ test('shop: the order confirmation chunk is preloaded while the page is idle; th
   await signIn(page, 'user@e2e.test');
   const loaded = chunkLoaded(page, 'ConfirmOrder');
   await page.goto('/shop');
-  await ready(page, '商店');
+  await ready(page, '套餐');
   await expect(page.locator('.plan-card').first()).toBeVisible({ timeout: 15_000 });
   await loaded;
 

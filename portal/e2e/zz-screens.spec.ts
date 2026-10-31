@@ -111,11 +111,11 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       run: async (page) => { await ready(page, '/shop', '选一个适合你的套餐'); const c = page.locator('.plan-cols'); await c.waitFor({ timeout: WAIT }); return c; },
     },
     /* 文档（使用手册）列表与一篇文章 */
-    { name: 'docs', account: 'user@e2e.test', run: (page) => ready(page, '/help', '使用手册') },
+    { name: 'docs', account: 'user@e2e.test', run: (page) => ready(page, '/help', '使用指南') },
     {
       name: 'docs-article', account: 'user@e2e.test',
       run: async (page) => {
-        await ready(page, '/help', '使用手册');
+        await ready(page, '/help', '使用指南');
         await page.locator('main .grid button.card, main button.card').first().click();
         await page.locator('main article').first().waitFor({ timeout: WAIT });
         await page.waitForLoadState('networkidle', { timeout: WAIT }).catch(() => undefined);

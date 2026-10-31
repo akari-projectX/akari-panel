@@ -4,13 +4,25 @@
 
 ## 外观 = A · 纸面简约（2026-10-30 用户确认，分三步接入）
 
+**配色（2026-10-31 用户裁决，取代下文「暖白纸面、墨蓝强调」的颜色）**：中性纯白底（`--bg` #fafafa、卡面 #fff）、近黑正文（#0a0a0a / #404040）、中性灰辅助色、亮蓝强调（`--brand` #2563eb）；深色是中性近黑（#0a0a0a / #141414、细线 #262626）+ 浅亮蓝（#60a5fa）。排版与零件不变。对比度（`tokens.css` 头注）：`--body`/`--muted`/状态色/`--brand` 在底与卡面上 ≥ 4.5，`--faint` 只作次要说明（≥ 3.5）。
+
+**交互与手机浏览器（2026-10-31，用户：「操作起来太死了」，`app.css` 末尾「触摸与按下反馈」一节）**：可点的元素一律 `touch-action: manipulation`（去掉双击缩放等待），系统点按高亮已去掉、由 `:active` 代替：按钮类按下缩小（`scale`，`.btn` 原有 .985、图标按钮 .94、分段 / 胶囊 .97，不加过渡、松手即回弹），整行可点的列表 / 菜单项按下换 `--hover` 底；触屏（`pointer: coarse`）上图标按钮用 `::before` 外扩点按范围到约 44px（外观不变），提示条的关闭钮常显；`viewport-fit=cover` + `env(safe-area-inset-*)`：顶栏高度加上顶部安全区、`.wrap` 两侧与页脚底部让开、吸顶的设置分区 / 订单账单跟着下移；窄屏文本框一律 16px（iOS 聚焦不放大，`!important` 盖过页面里的 13px 等宽框）；菜单卡片、弹窗正文、横向滚动的表格 `overscroll-behavior: contain`；窄屏横向滚动的 `.tbl-w` 两侧有「还能滚」的淡影（`background-attachment: local` 的遮罩）；切页退场与弹层退场从 100 ms 缩到 60 ms（`App.svelte`、`lib/pop.svelte.ts`、`--dur-exit`）；减少动效时按下不缩放。theme-color 仍由 `lib/theme.svelte.ts` 按 `--bg` 设置。
+
+**动效统一（2026-10-31，用户：「整个门户统一」）**：时长与缓动只用 `app.css` 顶部的令牌（`--dur-press/hover/fast/base/slow/exit`、`--ease-out/in/spring`，与后台 `check-tokens` 对齐），不写死秒数（加载指示器、骨架闪光、数据条的绘制除外）。同一类交互同一个动作：
+- **会滑的当前项**：顶栏导航的细线（`.nav-indicator`）与所有分段切换的实底（`lib/thumb.ts` 的 `{@attach thumb}`：`.seg-t`、`.tabs-pill`（含 `flat/Tabs`）、`.seg`（外观 / 语言开关）；容器 `::before` 按 `--thumb-x/y/w/h` 滑过去，当前项只换字色，`--dur-base`）；新的分段切换挂上它即可。
+- **弹层**：头像菜单 / 窄屏菜单 / 「更多」（`.menu-card` + `lib/pop`）、小下拉 `ui/Menu`、下拉选择 `ui/Select` 同一外观（`--popover` 底、`--line2` 细边、`--radius×1.2` 圆角、`--shadow-card`）与同一入场 `menu-in`（`--dur-hover`）/ 退场 `menu-out`（`--dur-exit`；bits-ui 的 Select 没有退场）；触发按钮里的下拉箭头打开时转 180°。
+- **按下 / 悬停**：见上一段；悬停一律 `--dur-hover`。减少动效时滑块、箭头、弹层入场都直接到位。
+
 2026-10-30 用户确认新外观「A · 纸面简约」（取代 2026-10-26 恢复的 v1.4.0 外观）：暖白纸面、近黑正文、细线分隔、墨蓝只做强调，主按钮是正文色实底（`.btn.pri`）。
 样稿（单文件，所有页面）不进仓库；裁决要点：
 
-- 顶栏 **N1**：Logo（门户现有字标）+ 纯文字导航八项 `概览 商店 线路 用量 订单 公告 文档 工单`（`lib/account.ts` 的 `PRIMARY`，按账户范围过滤；没有「更多」），
-  当前项正文色加粗 + 一道同色细线（`.nav-indicator`，切页时滑动）；右侧明暗按钮 + 头像（邮箱首字母，`.av`）。
+- 顶栏 **N1**（2026-10-31 改名方案 ①；同日用户选「顶栏与下拉都带图标」）：Logo（门户现有字标）+ 导航 `总览 套餐 节点 指南 支持 更多⌄`（`lib/account.ts` 的 `PRIMARY`，按账户范围过滤），
+  每项前一个 15px 线性图标（`components/menu-icons.ts`，与窄屏菜单同一套，随顶栏进首屏；平时 `--faint`，悬停 / 当前项正文色），
+  不常用的 `流量明细 账单 动态` 收进「更多」（`MORE`，`components/MoreMenu.svelte`：下拉每项左边浅底图标块、右边名字与一行说明；当前页在其中时「更多」算当前项；
+  范围里一项都没有时不显示）。地址不变，页面标题跟着改名（套餐、流量明细、账单、支持、使用指南；仪表盘、节点状态、公告与动态不变）。
+  导航全部中粗（`--fw-nav` 500），当前项只换正文色 + 一道同色细线（`.nav-indicator`，切页时滑动；字重不变，文字不跳）；右侧明暗按钮 + 头像（邮箱首字母，`.av`）。
 - **头像菜单**（`AccountCard`，桌面点头像 / 窄屏点「头像 + 三道线」）：抬头（头像、名字、邮箱）、套餐块（名字、还有几天、用量条、已用 / 剩余、快捷按钮「复制订阅」「续费」）、
-  窄屏才有的页面导航（八项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
+  窄屏才有的页面导航（八项平铺：先五项后「更多」的三项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
 - 页脚（`SiteFooter`）：细线 + 一行版权与条款 / 隐私 / 站长链接（没有大号站点名字样）；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
 - 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3，见下文「仪表盘」）；③ 其余各页（已完成）。
 - 页头（`flat/PageTitle` 的 `lead`）：给了 `lead` 时页名 `<h1>` 是一行小字眉标，下面一句大字说这一页现在的状况（线路「4 条线路，3 条在线」、订单「2 笔订单等待支付」、用量「本期已用 X / Y GB」、钱包「余额 ¥x」…），再下面一行说明，右侧操作；h1 文字不变（e2e 的 `ready(page, 标题)` 依赖它）。文档页「全部」视图是每个分类一栏（栏头分类名 + 文章标题，细线分栏），选了分类或搜索时仍是文章格子。
@@ -70,7 +82,7 @@
   一句大字（本期还剩多少、几天后到期，数字取译文按占位符切开加粗）；流量 / 时间两把尺（流量是 `role=meter`「剩余流量」，时间 = 本期（上次重置或开通 → 下次重置或到期）过了几天）；
   照近 7 天计费流量的判断（会在本期结束前用完才提醒日期）；续费 / 买重置包（剩不到一成或已用完）；四个小事实（套餐到期、在线线路、余额与可提现、速率））
   → `Flow`（7 / 30 天切换，默认 7 天 = 预取的那份（`lib/dash-data` 的 `trafficSpec`），切到 30 天才取；`WeekChart` 30 天时只标今天和往前每 5 天）→ `News`（三条公告的细线列表，点开公告详情）；
-  右栏 `Access`（`#subscribe`；仅自研客户端 / 暂停 / 读不出 / 没有套餐几种分支）+ `Subscribe`（「复制订阅链接」正文色胶囊、格式菜单、二维码开关（默认收起，`Qr` 本地生成）、导入的客户端名字之间细竖线 + 更多、还没有客户端）→ `DocsPreview`（教程：四篇文章，分类名 + 标题，当前设备的分类在前）；
+  右栏 `Access`（`#subscribe`；仅自研客户端 / 暂停 / 读不出 / 没有套餐几种分支）+ `Subscribe`（「复制订阅链接」正文色胶囊、格式菜单、二维码开关（默认收起，`Qr` 本地生成）、导入的客户端名字之间细竖线 + 更多、还没有客户端）→ `DocsPreview`（教程：四篇文章，分类名 + 标题，当前设备的分类在前）；新站的知识库自带四篇默认客户端教程（迁移 `0009_default_guides.sql`：Windows / macOS 的 Clash Verge Rev、iOS 的 Shadowrocket、Android 的 Clash Meta for Android，分类名对得上 `@/data/platforms` 的关键词；只在知识库为空时插入，站长可改可删；文字在字体切片的字集里，`scripts/font-slices.py` 的 `EXTRA`）；
   整宽 `NodesPreview`（线路表 `components/NodeTable`（与线路页共用）：线路 · 负载（小条 + 字）· 延迟 · 倍率 · 状态，至多两个入口标签，每页 5 条）。
   活动位 `Promo`（右栏，接入配置与教程之间）：数据 = 站长在后台「内容 › 活动」配置的 `GET /me/promotion`（`K.promotion`，在 `lib/dash-data` 里随首屏预取），没有活动整块不画；标签「限时活动」+ 倒计时（`role=timer`，按面板 `now` 与本机时钟的差，每秒走、后台标签页不走，到 0 收起）、大号折扣字样（公告标签的玫红 `--t-pink`）、标题与说明（按界面语言，英文空回落中文）、虚线框优惠码 + 复制（券可用时才有）、按钮（默认去商店，外链新窗口）。样式在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`）；与线路页共用的线路表 `.ntbl`/`.dload`/`.nlat`/`.nrate` 与小分段切换 `.seg-t` 在 `pages/common.css`。
   对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。e2e `e2e/dashboard.spec.ts`。
@@ -119,10 +131,12 @@
 （`scripts/check-colors.mjs`）在 `src/` 与 `index.html` 里找十六进制、颜色函数、`bg-[#…]`、颜色名，`tokens.css` 之外出现即失败。
 `src/assets/` 的图片（favicon.svg）不查。
 
-## 字体与字重（2026-10-26）
+## 字体与字重（2026-10-31：HarmonyOS Sans SC）
 
-**只用系统字体，不自托管任何字体文件**（原来的 Noto Sans SC 切片 + Inter 在挂载后才注入，换字体时整页重排，还多下载约 1.3 MB）。字体栈 `--font-ui`（`src/styles/tokens.css`，`--font-sans` 指向它）：拉丁字母与数字在前（SF / Segoe UI），汉字落到 PingFang SC / 微软雅黑 / Noto Sans CJK SC；`<html lang>` 随界面语言，所以回落的汉字字形按简体选。系统字体的数字默认是比例数字：价格、流量、表格要对齐处显式 `font-variant-numeric: tabular-nums`（`.tnum` 与 `pages/common.css` 里的选择器清单）。
-**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。微软雅黑没有 500，Windows / Android / Linux 上没有 300，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
+**字体 = HarmonyOS Sans SC**（用户 2026-10-31 选定，取代 2026-10-26 起的「只用系统字体」）：所有平台同一套字形（Windows 上不再落到微软雅黑）。字体栈 `--font-ui`（`src/styles/tokens.css`）把它放在最前，后面仍是原来的系统字体栈作回落。
+文件：`src/assets/fonts/hos/hos-<400|500|600>-<片号>.woff2`（400 = Regular，500 = Medium（只给顶栏导航），600 = Bold），由 `scripts/font-slices.py <HarmonyOS_Sans_SC 目录>` 生成（fonttools；产物进仓库，CI 不跑）：字符集 = ASCII 与常用标点符号 + GB2312 全部汉字 + 门户源码里出现的字，门户界面先用到的字排在前面，每片约 200 字、约 30 KB，三字重共约 3 MB（500 的片只有导航上出现的字所在的那一两片会被下载）；`src/styles/fonts.css`（同一脚本生成，`app.css` 引入）给每片一条 `@font-face` + `unicode-range`，浏览器只下载页面上真正出现的字所在的片，`font-display: swap`（加载前用系统字体，首帧不等字体）。GB2312 以外的字落到系统字体。
+**授权**：HarmonyOS Sans Fonts License Agreement（原文 `src/assets/fonts/hos/LICENSE.txt`，第三方清单 `make third-party` 收录）：要求在软件里显著注明使用了该字体（页脚「字体：HarmonyOS Sans」，`SiteFooter`），且不得修改字体：切片只按 `unicode-range` 把字形分到若干文件里，字形、度量与版权信息原样保留，不改动字体本身（用户 2026-10-31 裁决）；不要做改字形、改名、合并其他字体之类的改动，去掉页脚声明前先看这里。`scripts/check-weights.mjs` 跳过生成的 `fonts.css`（那里的 `font-weight` 是字体文件自己的字重）。
+**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）；唯一例外是顶栏导航的 `--fw-nav`（500，用户 2026-10-31 选定，`check-weights.mjs` 只许它出现在 `app.css` 与 `MoreMenu.svelte`）。回落的微软雅黑没有 500，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠更多档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
 
 ## 偏好与存储
 

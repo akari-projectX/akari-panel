@@ -1,5 +1,6 @@
 /*
- * 门户的全部颜色（2026-10-30 起外观 A · 纸面简约：暖白纸面、近黑正文、细线分隔、墨蓝强调）。
+ * 门户的全部颜色（2026-10-31 起：中性纯白底、近黑正文、细线分隔、亮蓝强调；深色是中性近黑 + 浅亮蓝。用户裁决，取代外观 A 的暖白纸面 + 墨蓝）。
+ * 对比度：正文 / 辅助色（--body、--muted）、状态色（--ok、--warn、--danger）与 --brand 在 --bg 与 --surface 上都 ≥ 4.5（WCAG AA）；--faint 只用于次要说明，≥ 3.5。
  * 名字仍是 v2 的（--bg / --surface / --fg …），对应关系：--bg=background、--surface=card、--popover=popover、--hover=muted（底色）、--faint=faint-foreground。
  *
  * **颜色只在这个文件里**：组件、app.css、boot.css、Tailwind 类、SVG 一律用 var(--…) 或 @theme 映射出来的名字，
@@ -11,39 +12,40 @@
 
 :root {
   /*
-   * 字体与字重（不是颜色，但首帧样式表只带这个文件，启动画面也要用）。只用系统字体：拉丁字母与数字取 SF / Segoe UI，
-   * 汉字落到 PingFang SC / 微软雅黑 / Noto Sans CJK SC。字重只有两档（scripts/check-weights.mjs 检查）：
-   * 微软雅黑没有 500、Windows / Android / Linux 上没有 300，多档字重会悄悄并成一档，层次要靠颜色与字号。
+   * 字体与字重（不是颜色，但首帧样式表只带这个文件，启动画面也要用）。HarmonyOS Sans SC（用户 2026-10-31 选定）：切片在 styles/fonts.css，
+   * 只下载页面用到的片，加载完之前用系统字体（font-display: swap）。字重两档 + 顶栏导航专用的 500（scripts/check-weights.mjs 检查）：层次靠颜色与字号。
    */
-  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei',
+  --font-ui: 'HarmonyOS Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei',
     'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
   --fw-regular: 400;
   --fw-strong: 600;
+  /* 只给顶栏导航（含「更多」下拉的条目名）：中粗，当前项靠颜色与细线区分（2026-10-31 用户选定） */
+  --fw-nav: 500;
 
   /* 底与文字 */
-  --bg: #fbfaf8;
+  --bg: #fafafa;
   --surface: #fff;
   --popover: #fff;
-  --fg: #121211;
-  --body: #3d3c39;
-  --muted: #6f6d67;
-  --faint: #8a877f;
-  --line: #ebe8e2;
-  --line2: #dcd8d0;
-  --secondary: #efede8;
-  --hover: #f3f1ec;
-  /* 强调色（外观 A：墨蓝，只用在链接、选中与少数强调上；主按钮是正文色的实底） */
-  --brand: #3451d1;
-  --brand-ink: #2a43b8;
+  --fg: #0a0a0a;
+  --body: #404040;
+  --muted: #6b6b6b;
+  --faint: #808080;
+  --line: #ececec;
+  --line2: #dedede;
+  --secondary: #f1f1f1;
+  --hover: #f4f4f4;
+  /* 强调色（亮蓝，只用在链接、选中与少数强调上；主按钮是正文色的实底） */
+  --brand: #2563eb;
+  --brand-ink: #1d4ed8;
   --brand-hover: color-mix(in srgb, var(--brand) 90%, var(--bg));
   --on-brand: #fff;
   --brand-soft: color-mix(in srgb, var(--brand) 10%, transparent);
   --brand-2: color-mix(in srgb, var(--brand) 38%, var(--bg));
   /* 状态（总配文字）；amber = 流量见底的那一档（账号线、卡片顶线） */
-  --ok: #1f8a4c;
-  --warn: #c96a00;
-  --danger: #c8331f;
-  --amber: #d98a1c;
+  --ok: #15803d;
+  --warn: #b45309;
+  --danger: #dc2626;
+  --amber: #d97706;
   /* 公告标签（实底，design/announcement-tags-2026-10） */
   --t-red: #dc2626;
   --t-orange: #c2410c;
@@ -60,50 +62,50 @@
   /* 弹出层：遮罩、各类投影（v1.4.0：账号卡片 / 弹窗 / 提示条各有一套）、焦点 */
   --overlay: rgb(0 0 0 / .35);
   --pop-shadow: 0 4px 6px -1px rgb(0 0 0 / .1), 0 2px 4px -2px rgb(0 0 0 / .1);
-  --shadow-card: 0 24px 48px -24px rgb(20 18 12 / .22);
-  --shadow-dialog: 0 24px 64px -24px rgb(20 18 12 / .28);
-  --shadow-toast: 0 12px 32px -12px rgb(13 21 38 / .18), 0 1px 3px rgb(13 21 38 / .06);
+  --shadow-card: 0 24px 48px -24px rgb(0 0 0 / .2);
+  --shadow-dialog: 0 24px 64px -24px rgb(0 0 0 / .28);
+  --shadow-toast: 0 12px 32px -12px rgb(0 0 0 / .16), 0 1px 3px rgb(0 0 0 / .06);
   --focus-ring: color-mix(in srgb, var(--brand) 55%, transparent);
   /* 默认 Logo（akari 字标，没上传品牌 Logo 时）：字的颜色与品牌蓝的 i 点 */
-  --logo-ink: #121211;
-  --logo-dot: #3451d1;
+  --logo-ink: #0a0a0a;
+  --logo-dot: #2563eb;
   /* 流量图 */
   --chart-area-opacity: .16;
-  --chart-1: #3451d1;
-  --chart-2: #6f84e3;
-  --chart-3: #93a3ea;
-  --chart-4: #b7c2f1;
-  --chart-5: #d6ddf7;
+  --chart-1: #2563eb;
+  --chart-2: #60a5fa;
+  --chart-3: #93c5fd;
+  --chart-4: #bfdbfe;
+  --chart-5: #dbeafe;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .08);
   /* 订阅二维码：明暗两套主题下都是白底深色码（扫码器只认得这种） */
   --qr-ink: #0d1526;
   --qr-paper: #fff;
   --qr-mark: #1677ff;
   --shadow-xs: 0 1px 2px rgb(0 0 0 / .05);
-  /* 启动画面：与页面同一张纸（外观 A） */
-  --boot-bg: #fbfaf8;
-  --boot-fg: #121211;
-  --boot-link: #3451d1;
+  /* 启动画面：与页面同一底色 */
+  --boot-bg: #fafafa;
+  --boot-fg: #0a0a0a;
+  --boot-link: #2563eb;
 }
 
 :root.dark {
-  --bg: #0f0f0e;
-  --surface: #181816;
-  --popover: #1c1c1a;
-  --fg: #f2f1ee;
-  --body: #c9c7c1;
-  --muted: #9a978f;
-  --faint: #7f7c75;
-  --line: rgb(255 255 255 / .08);
-  --line2: rgb(255 255 255 / .15);
-  --secondary: #232320;
-  --hover: #1f1f1c;
-  --brand: #7d93ff;
-  --brand-ink: #7d93ff;
-  --on-brand: #0b0f22;
-  --ok: #4fc282;
-  --warn: #f0a54a;
-  --danger: #f07a66;
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --popover: #1a1a1a;
+  --fg: #fafafa;
+  --body: #d4d4d4;
+  --muted: #a3a3a3;
+  --faint: #7a7a7a;
+  --line: #262626;
+  --line2: #333;
+  --secondary: #1f1f1f;
+  --hover: #1c1c1c;
+  --brand: #60a5fa;
+  --brand-ink: #93c5fd;
+  --on-brand: #0a0a0a;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
   --t-red: #f87171;
   --t-orange: #fb923c;
   --t-amber: #fbbf24;
@@ -117,38 +119,38 @@
   --t-slate: #94a3b8;
   --on-solid: #111317;
   --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
-  --logo-ink: #f2f1ee;
-  --logo-dot: #7d93ff;
-  --chart-1: #7d93ff;
-  --chart-2: #9fb0ff;
-  --chart-3: #b6c3ff;
-  --chart-4: #cdd6ff;
-  --chart-5: #e0e6ff;
+  --logo-ink: #fafafa;
+  --logo-dot: #60a5fa;
+  --chart-1: #60a5fa;
+  --chart-2: #93c5fd;
+  --chart-3: #bfdbfe;
+  --chart-4: #dbeafe;
+  --chart-5: #eff6ff;
   --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
   --shadow-xs: none;
-  --boot-bg: #0f0f0e;
-  --boot-fg: #f2f1ee;
+  --boot-bg: #0a0a0a;
+  --boot-fg: #fafafa;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not(.light) {
-    --bg: #0f0f0e;
-    --surface: #181816;
-    --popover: #1c1c1a;
-    --fg: #f2f1ee;
-    --body: #c9c7c1;
-    --muted: #9a978f;
-    --faint: #7f7c75;
-    --line: rgb(255 255 255 / .08);
-    --line2: rgb(255 255 255 / .15);
-    --secondary: #232320;
-    --hover: #1f1f1c;
-    --brand: #7d93ff;
-    --brand-ink: #7d93ff;
-    --on-brand: #0b0f22;
-    --ok: #4fc282;
-    --warn: #f0a54a;
-    --danger: #f07a66;
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --popover: #1a1a1a;
+    --fg: #fafafa;
+    --body: #d4d4d4;
+    --muted: #a3a3a3;
+    --faint: #7a7a7a;
+    --line: #262626;
+    --line2: #333;
+    --secondary: #1f1f1f;
+    --hover: #1c1c1c;
+    --brand: #60a5fa;
+    --brand-ink: #93c5fd;
+    --on-brand: #0a0a0a;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --danger: #f87171;
     --t-red: #f87171;
     --t-orange: #fb923c;
     --t-amber: #fbbf24;
@@ -162,17 +164,17 @@
     --t-slate: #94a3b8;
     --on-solid: #111317;
     --shadow-toast: 0 12px 32px -10px rgb(0 0 0 / .6);
-    --logo-ink: #f2f1ee;
-    --logo-dot: #7d93ff;
-    --chart-1: #7d93ff;
-    --chart-2: #9fb0ff;
-    --chart-3: #b6c3ff;
-    --chart-4: #cdd6ff;
-    --chart-5: #e0e6ff;
+    --logo-ink: #fafafa;
+    --logo-dot: #60a5fa;
+    --chart-1: #60a5fa;
+    --chart-2: #93c5fd;
+    --chart-3: #bfdbfe;
+    --chart-4: #dbeafe;
+    --chart-5: #eff6ff;
     --chart-switch-shadow: 0 1px 2px rgb(0 0 0 / .3);
     --shadow-xs: none;
-    --boot-bg: #0f0f0e;
-    --boot-fg: #f2f1ee;
+    --boot-bg: #0a0a0a;
+    --boot-fg: #fafafa;
   }
 }
 

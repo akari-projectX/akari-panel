@@ -52,7 +52,7 @@
   const typeText = (o: MyOrder) => t(ORDER_ACTION[o.action]);
 </script>
 
-<PageTitle title={t('我的订单')} lead={orders.data ? (pendingCount ? tp('{n} 笔订单等待支付', { n: pendingCount }) : all.length ? tp('共 {n} 笔订单', { n: all.length }) : t('还没有订单')) : undefined} />
+<PageTitle title={t('账单')} lead={orders.data ? (pendingCount ? tp('{n} 笔订单等待支付', { n: pendingCount }) : all.length ? tp('共 {n} 笔订单', { n: all.length }) : t('还没有订单')) : undefined} />
 
 <div class="or-bar">
   <Tabs inline label={t('按状态筛选')} value={tab} onchange={(k) => (tab = k)} tabs={TABS.map((x) => ({ key: x.key, label: t(x.label) }))} />

@@ -12,6 +12,7 @@
   import PageTitle from '../components/flat/PageTitle.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import { autoReload, resource } from '$lib/resource.svelte';
+  import { thumb } from '$lib/thumb';
 
   /*
    * 线路（外观 A，与仪表盘同一套零件；只有 full 范围，门禁在 App）。数据：/me/nodes 每行是「节点 + 入口」，
@@ -56,7 +57,7 @@
 
 <div class="abar">
   {#if tags.length > 0}
-    <div class="seg-t" role="group" aria-label={t('按标签筛选')}>
+    <div class="seg-t" {@attach thumb} role="group" aria-label={t('按标签筛选')}>
       <button type="button" aria-pressed={tag === null} onclick={() => (tag = null)}>{t('全部')}</button>
       {#each tags as x (x)}<button type="button" aria-pressed={tag === x} onclick={() => (tag = x)}>{x}</button>{/each}
     </div>

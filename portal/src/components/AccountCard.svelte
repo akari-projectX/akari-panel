@@ -11,6 +11,7 @@
   import { R } from '$lib/routes';
   import { loc } from '$lib/router.svelte';
   import { setTheme, theme, type ThemeMode } from '$lib/theme.svelte';
+  import { thumb } from '$lib/thumb';
   import { ICONS } from './menu-icons';
   import MenuRow from './MenuRow.svelte';
 
@@ -87,7 +88,7 @@
 <div class="prefs" role="none">
   <div class="pref">
     <span>{t('外观')}</span>
-    <div class="seg" role="group" aria-label={t('切换明暗模式')}>
+    <div class="seg" {@attach thumb} role="group" aria-label={t('切换明暗模式')}>
       {#each THEMES as o (o.id)}
         <button type="button" data-nav class="seg-b" aria-pressed={theme.mode === o.id} onclick={() => setTheme(o.id)}>{t(o.label)}</button>
       {/each}
@@ -95,7 +96,7 @@
   </div>
   <div class="pref">
     <span>{t('语言')}</span>
-    <div class="seg" role="group" aria-label={t('切换语言')} onpointerenter={preloadEN} onfocusin={preloadEN}>
+    <div class="seg" {@attach thumb} role="group" aria-label={t('切换语言')} onpointerenter={preloadEN} onfocusin={preloadEN}>
       <button type="button" data-nav lang="zh-CN" class="seg-b" aria-pressed={i18n.locale === 'zh-CN'} onclick={() => changeLocale('zh-CN')}>{'中文'}</button>
       <button type="button" data-nav lang="en" class="seg-b" aria-label="English" aria-pressed={i18n.locale === 'en'} onclick={() => changeLocale('en')}>EN</button>
     </div>
@@ -142,10 +143,12 @@
 .seg { display: flex; align-items: center; padding: 2px; border: 1px solid var(--line); border-radius: 9999px; }
 .seg-b {
   display: inline-flex; align-items: center; justify-content: center; height: 24px; padding: 0 10px; border: 0; border-radius: 9999px;
-  background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: var(--fw-strong); transition: color var(--dur-hover), background-color var(--dur-hover);
+  background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: var(--fw-strong); transition: color var(--dur-base) var(--ease-out);
 }
 .seg-b:hover { color: var(--fg); }
-.seg-b[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
+.seg-b[aria-pressed='true'] { color: var(--bg); }
+/* 当前项的实底是 .seg 上会滑的那块（lib/thumb.ts、app.css「分段切换的滑块」）；量到之前当前项自己铺底 */
+.seg:not([data-thumb]) .seg-b[aria-pressed='true'] { background: var(--fg); }
 
 .soft { font-weight: var(--fw-regular); color: var(--muted); }
 @media (prefers-reduced-motion: reduce) { .acc-bar > b { animation: none; } }

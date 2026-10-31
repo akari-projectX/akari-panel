@@ -97,11 +97,14 @@ def npm_app(app, seen):
 
 def data_components():
     """Data files embedded in the binary under their own licence (W29: the
-    built-in block lists, src/blockrules/lists/)."""
+    built-in block lists, src/blockrules/lists/; the portal's HarmonyOS Sans SC
+    web font slices, portal/src/assets/fonts/hos/)."""
     lists = os.path.join(ROOT, "src", "blockrules", "lists")
     version = open(os.path.join(lists, "VERSION")).read().strip()[:12]
     return [
         ("data", "v2fly/domain-list-community", version, "MIT", [os.path.join(lists, "LICENSE.v2fly")]),
+        ("font", "HarmonyOS Sans SC (portal web font slices)", "2021", "HarmonyOS Sans Fonts License Agreement",
+         [os.path.join(ROOT, "portal", "src", "assets", "fonts", "hos", "LICENSE.txt")]),
     ]
 
 
