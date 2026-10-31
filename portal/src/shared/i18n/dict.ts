@@ -46,7 +46,6 @@ export const EN: Record<string, string> = {
   '低': 'Low',
   '天': 'days',
   '合计': 'Total',
-  '占比': 'Share',
 
   /* ── 页脚与法务 ── */
   '服务条款': 'Terms of Service',
@@ -61,7 +60,6 @@ export const EN: Record<string, string> = {
   '应付金额': 'Amount due',
   '订单金额': 'Order amount',
   '订单号': 'Order ID',
-  '订单记录': 'Order history',
   '下单时间': 'Placed at',
   '支付方式': 'Payment method',
   '确认订单': 'Confirm order',
@@ -69,7 +67,6 @@ export const EN: Record<string, string> = {
   '年付': 'Yearly',
   '佣金': 'Commission',
   '返佣明细': 'Commission log',
-  '明细记录': 'Records',
   '邀请码': 'Referral code',
 
   /* ── 节点与流量 ── */
@@ -77,6 +74,8 @@ export const EN: Record<string, string> = {
   '延迟': 'Latency',
   '线路': 'Route',
   '流量走势': 'Traffic trend',
+  '标签': 'Tags',
+  '流量倍率': 'Traffic multiplier',
   '上行': 'Upload',
   '下行': 'Download',
 
@@ -129,7 +128,6 @@ export const EN: Record<string, string> = {
   /* 门户 v2：线路、用量、钱包 */
   /* 门户 v2 仪表盘 */
   '时间范围': 'Range',
-  '流量走势，用左右方向键逐日查看': 'Traffic trend; use the arrow keys to step through the days',
   '点击任意工单查看完整对话': 'Open any ticket to see the full thread',
   '请描述问题现象、出现时间、使用的节点与客户端版本，以便我们更快定位。': 'Tell us what happened, when, which node you were on and your client version — it helps us find it faster.',
   '设置一个安全的密码': 'Choose a strong password',
@@ -150,11 +148,7 @@ export const EN: Record<string, string> = {
   '价格': 'Price',
 
   /* ── 统计与单位 ── */
-  '距离重置': 'Until reset',
-  '订单总数': 'Orders',
-  '累计消费': 'Lifetime spend',
   '全部工单': 'All tickets',
-  '周期': 'Term',
 
   /* ── 状态词 ── */
   '待支付': 'Unpaid',
@@ -192,13 +186,10 @@ export const EN: Record<string, string> = {
   '不限速': 'No throttling',
 
   ' 张': '',
-  ' 笔': '',
-  '日均': 'Daily avg',
 
   '共 {n} 条': '{n} items',
   '共 {n} 笔订单': '{n} orders',
   '当前设备': 'This device',
-  '占总流量': 'of total',
   '重置订阅': 'Reset subscription',
 
   '最后更新': 'Last updated',
@@ -278,7 +269,6 @@ export const EN: Record<string, string> = {
   '密码已重置，请用新密码登录': 'Password reset — sign in with the new one',
 
   /* ── 仪表盘 ── */
-  '账户余额': 'Balance',
   '全部文档': 'All docs',
   '还没有可用的订阅': 'No subscription yet',
   '购买套餐后，订阅链接会出现在这里。': 'Your subscription link appears here once you buy a plan.',
@@ -299,9 +289,6 @@ export const EN: Record<string, string> = {
   '提交订单': 'Place order',
 
   /* ── 订单 ── */
-  '全部消费记录与支付状态。': 'Every purchase and its payment status.',
-  '最近一笔 {d}': 'Latest {d}',
-  '还没有下过单': 'No orders yet',
   '这里还没有订单': 'No orders here yet',
   '选一个套餐下单后，记录会出现在这里。': 'Once you order a plan, it shows up here.',
   '新购': 'New',
@@ -323,11 +310,9 @@ export const EN: Record<string, string> = {
   /* ── 节点 / 服务状态 ── */
 
   /* ── 使用明细 ── */
-  '套餐已用流量': 'Plan traffic used',
   '剩余流量': 'Traffic left',
   '近 7 天': 'Last 7 days',
   '本月': 'This month',
-  '计费流量': 'Billed traffic',
   '连接节点并产生流量后，这里会按天统计出来。': 'Once you use a node, daily figures show up here.',
 
   /* ── 公告 / 文档 ── */
@@ -560,17 +545,13 @@ export const EN: Record<string, string> = {
   "该提现申请已处理": "This withdrawal request has already been handled.",
 
   /* ── W36-b：面板接入后的新界面文案 ── */
-  "{a} 至 {b}，按天统计": "{a} to {b}, per day",
   "{d} 入账": "credited {d}",
   "{d} 天的每日上下行流量": "Daily upload and download over {d} days",
-  "{d} 重置，计费 {b}": "Resets on {d}, {b} billed",
   "{n} 天": "{n} days",
   "{t} 前未支付将自动关闭": "closes automatically if unpaid by {t}",
   "一次性（{n} 天）": "One-time ({n} days)",
   "一次性（永久）": "One-time (permanent)",
   "一般问题": "General",
-  "上下行流量走势、线路分布与每日用量。": "Upload/download trend, per-line split and daily usage.",
-  "上下行流量走势、线路分布与每日用量。日期按 {tz} 计算。": "Upload/download trend, per-line split and daily usage. Days are in {tz}.",
   "下单时可以选择抵扣": "Can be applied when you order",
   "下次可以直接用它登录": "Use it to sign in next time",
   "下次用 Face ID、指纹或锁屏密码登录，不用再输密码。": "Next time, sign in with Face ID, a fingerprint or your screen lock instead of a password.",
@@ -589,7 +570,6 @@ export const EN: Record<string, string> = {
   "余额": "Balance",
   "保存的订阅链接读不出来了（站点主密钥已更换）。重置一次就会换成新的链接（旧链接随即失效）。": "The stored subscription link can no longer be read (the site master key was replaced). Reset it once to get a new link (the old one stops working).",
   "你现在的套餐长期有效。换成别的套餐后，它剩下的长期权益会作废，不折算、不退回，也不能换回来。": "Your current plan never expires. After switching, what is left of it is forfeited: it is not converted into credit or balance, not refunded, and you cannot switch back.",
-  "你的邀请链接": "Your invite link",
   "佣金入账、余额支付、退款到余额、提现都会记在这里。": "Commissions, balance payments, refunds to balance and withdrawals are recorded here.",
   "佣金追回": "Commission clawback",
   "使用": "Apply",
@@ -619,7 +599,6 @@ export const EN: Record<string, string> = {
   "同一时间只能有一笔待审核的提现申请。": "Only one withdrawal can be pending at a time.",
   "填写登录邮箱，我们会把重置链接发给你。": "Enter your sign-in email and we will send you a reset link.",
   "套餐「{p}」立即失效，剩余时长作废": "Plan “{p}” ends at once; remaining time is forfeited",
-  "套餐不限流量": "Unlimited traffic",
   "套餐已到期，服务已暂停": "Your plan has expired; service is paused",
   "套餐生效后线路会自动出现。": "Lines appear once your plan is active.",
   "如有异议，可以提交工单联系管理员。": "If you disagree, open a ticket to contact the administrator.",
@@ -630,7 +609,6 @@ export const EN: Record<string, string> = {
   "封禁期间不能使用订阅和节点，也不能购买。": "While banned you cannot use the subscription or nodes, or buy anything.",
   "属于旧域名": "Old domain",
   "已付款": "Paid",
-  "已付款且未退款": "Paid and not refunded",
   "已入账": "Credited",
   "已恢复密码登录": "Password sign-in is back on",
   "已打款": "Paid out",
@@ -688,7 +666,6 @@ export const EN: Record<string, string> = {
   "更换邮箱": "Change email",
   "最低提现 {v}": "Minimum withdrawal {v}",
   "有优惠码就填在这里": "Have a coupon? Enter it here",
-  "当前倍率是此刻生效的倍率；有时段倍率的线路按全站时区的时段计费": "The multiplier in effect now; lines with time-window multipliers bill by the window (site time zone)",
   "未开通": "Not activated",
   "未验证": "Unverified",
   "本期流量已用完，服务已暂停": "This period's traffic is used up; service is paused",
@@ -752,7 +729,6 @@ export const EN: Record<string, string> = {
   "购买流量重置包或续费后立即恢复；订阅链接和节点在恢复前不可用。": "Buy a traffic reset pack or renew to restore service; the subscription and nodes are unavailable until then.",
   "购买重置包": "Buy reset pack",
   "超时": "Timeout",
-  "超时自动关闭": "Closes automatically on timeout",
   "输入当前密码确认": "Enter your current password to confirm",
   "近 30 天": "Last 30 days",
   "还没有提现记录": "No withdrawals yet",
@@ -1008,11 +984,6 @@ export const EN: Record<string, string> = {
   '{n} 人': '{n}',
   '被追回的佣金因订单退款从余额里扣回，余额不够时差额记为欠款，从之后入账的佣金里抵扣（余额不会变成负数）。': 'Clawed-back commission was taken back from your balance after an order refund; if the balance was short, the rest is owed and deducted from future commission (the balance never goes negative).',
   '返佣明细 · 共 {n} 条': 'Commissions · {n}',
-  '把邀请链接发给需要的人，对方付费后你按比例拿佣金。佣金进入账户余额，可以抵扣订单或提现为 USDT。': 'Share your invite link. When the people you invite pay, you earn a commission. It goes into your balance, which you can spend on orders or withdraw as USDT.',
-  '账户余额与收支流水。余额可以在下单时抵扣。': 'Your balance and its history. You can spend the balance on orders.',
-  '审核中': 'Under review',
-  '最低提现': 'Minimum withdrawal',
-  '通过链接注册的人会记在你名下': 'People who sign up through it are credited to you',
   '邀请返佣': 'Invites',
   '今天': 'Today',
   '{d}：下行 {down}，上行 {up}，合计 {total}': '{d}: {down} down, {up} up, {total} in total',
@@ -1063,14 +1034,6 @@ export const EN: Record<string, string> = {
   '客服有新回复': 'New reply from support',
   /* ── 门户恢复 v1.4.0 ── */
   '阅读教程': 'Read',
-  '线路分布': 'By line',
-  '这段时间的流量落在各条线路上的比例（原始流量）': "How this period's raw traffic splits across lines",
-  '（上行 + 下行）× 倍率，也就是真正扣掉的量': '(upload + download) × multiplier — what is actually counted',
-  '每日计费流量，用左右方向键逐日查看': 'Daily billed traffic; use the left and right arrow keys to step through days',
-  '下行流量': 'Download',
-  '上行流量': 'Upload',
-  '每日计费流量': 'Billed traffic per day',
-  '单位 GB': 'in GB',
   '下载': 'Download',
   '看教程': 'Guide',
   '导入到客户端': 'Import into the client',
@@ -1133,15 +1096,12 @@ export const EN: Record<string, string> = {
   '{n} 笔订单等待支付': '{n} orders awaiting payment',
   '还没有订单': 'No orders yet',
   '选一个适合你的套餐': 'Pick the plan that fits you',
-  '这段时间用了 {v} GB': '{v} GB used in this range',
   '{n} 条公告还没看': '{n} unread announcements',
   '最新动态': 'Latest news',
   '有什么可以帮你？': 'How can we help?',
   '{n} 张工单等待客服回复': '{n} tickets awaiting a reply',
   '有问题，随时找我们': 'Questions? We are here',
   '账户与安全': 'Account and security',
-  '邀请朋友，拿返佣': 'Invite friends, earn commission',
-  '余额与收支流水': 'Balance and transactions',
   '限时活动': 'Limited-time offer',
   '距活动结束还有 {d} 天 {t}': '{d} days {t} until the offer ends',
   '还剩 {d} 天': '{d} days left',
@@ -1159,4 +1119,25 @@ export const EN: Record<string, string> = {
   '维护中的线路不会出现在订阅里': 'Lines under maintenance are left out of your subscription',
   '价格按月折算 · 购买时长在下单时选择': 'Prices per month · pick the term when you order',
   '价格以人民币计。续费从当前到期日顺延；换套餐按剩余价值抵扣，多出的部分作废。': 'Prices are in CNY. Renewals extend from the current expiry; switching plans credits the remaining value, and any excess is forfeited.',
+  '今日': 'Today',
+  '余额 {v}': 'Balance {v}',
+  '余额明细': 'Balance history',
+  '倍率是此刻生效的倍率': 'Multipliers are the ones in effect now',
+  '全部 →': 'All →',
+  '和昨天一样': 'Same as yesterday',
+  '审核中 {v}': '{v} under review',
+  '待结算': 'Pending',
+  '提现为 USDT': 'Withdrawn as USDT',
+  '日均 {v}': '{v} a day on average',
+  '日期按 {tz} 计算。': 'Days are counted in {tz}.',
+  '明细': 'Details',
+  '本期已用 {u} / {t} GB': '{u} / {t} GB used this period',
+  '本期已用 {u} GB': '{u} GB used this period',
+  '每日': 'Daily',
+  '比昨天多 {v}': '{v} more than yesterday',
+  '比昨天少 {v}': '{v} less than yesterday',
+  '计费（含倍率）': 'Billed (with multipliers)',
+  '返 {n}% 现金': '{n}% cash back',
+  '邀请好友': 'Invite friends',
+  '项目': 'Item',
 };

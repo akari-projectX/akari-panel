@@ -122,20 +122,6 @@ button.cap-main, a.cap-main { cursor: pointer; }
 
 /* ---- 流量（Flow + WeekChart）：矮柱图，下行墨蓝、上行浅蓝；7 / 30 天切换 ---- */
 .flow .dsh { align-items: center; }
-.wk { --wk-down: var(--brand); --wk-up: var(--brand-2); --wk-h: 140px; --wk-y: 34px; }
-.wk-sum { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.wk-legend { margin-bottom: 4px; }
-.wk-body { margin-top: 18px; }
-.wk-stack { width: min(14px, 46%); }
-.wk.dense .wk-stack { width: min(8px, 60%); }
-.wk-bar:first-of-type { border-radius: 2px 2px 0 0; }
-.wk-total { color: var(--muted); }
-.wk-x > span { min-height: 30px; }
-@media (max-width: 640px) {
-  .wk { --wk-h: 130px; --wk-y: 30px; }
-  .wk-x > span > span { font-size: 10.5px; }
-  .wk-sum { flex: 1 1 100%; order: 3; white-space: normal; }
-}
 
 /* ---- 接入配置（Access + Subscribe） ---- */
 .acc-h { display: flex; align-items: flex-start; gap: 12px; }

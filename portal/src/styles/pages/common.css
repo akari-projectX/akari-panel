@@ -124,6 +124,13 @@
 .bdg.ml { margin-left: 4px; }
 .bdg.ok12 { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
 .bdg.warn12 { background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--warn); }
+/* 状态点 + 字（外观 A 的订单、用量表格）：色调同 .bdg（StatusTone） */
+.sdot { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--body); white-space: nowrap; }
+.sdot > i { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.sdot.info > i { background: var(--brand); }
+.sdot.success > i { background: var(--ok); }
+.sdot.warning > i { background: var(--warn); }
+.sdot.danger > i { background: var(--danger); }
 
 /* Progress（ui/progress.tsx，h-2） */
 .prog { position: relative; display: flex; align-items: center; width: 100%; height: 8px; overflow: hidden; border-radius: 9999px; background: var(--hover); }
@@ -302,8 +309,6 @@
   .stat-arrow svg.brand { color: var(--brand); }
   .stat-arrow svg.brand-light { color: var(--brand-2); }
 }
-.rc-area .clg { margin: 0 10px 0 -20px; }
-.rc-pie .clg { margin-top: -5px; }
 
 /* 设置页（v1.4.0 index.css 的 .settings-*） */
 .parts { min-width: 0; }

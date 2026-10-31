@@ -210,14 +210,14 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
     await drop();
   }
 
-  /* #46 订单列表：类型、状态、四个数字；筛选 */
+  /* #46 订单列表：类型、状态；筛选（外观 A：没有关键数字行） */
   await page.goto('/orders');
   await ready(page, '我的订单');
   const list = isMobile(info) ? page.locator('.md-hide') : page.locator('table');
   await expect(list).toContainText('更换套餐');
   await expect(list).toContainText('流量重置');
   await expect(list).toContainText('已付款');
-  await expect(page.locator('.statrow')).toContainText('累计消费');
+  await expect(page.locator('.statrow')).toHaveCount(0);
   await page.getByRole('tab', { name: '已关闭', exact: true }).click();
   await expect(page.getByRole('tab', { name: '已关闭', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByText('这里还没有订单')).toBeVisible();

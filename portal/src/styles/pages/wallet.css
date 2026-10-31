@@ -12,3 +12,27 @@
 .cp-code > span:first-child { display: flex; min-width: 0; align-items: center; gap: 12px; }
 .cp-code code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-code > span:last-child { display: flex; flex: none; align-items: center; gap: 4px; }
+
+/* 外观 A：三个数、两栏（邀请好友 | 余额明细）、下面的分页 */
+.wl-stats { margin-top: 36px; }
+.wl-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px 72px; padding-block: 44px; }
+.wl-pane { min-width: 0; }
+.wl-sh { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 14px; margin-bottom: 16px; }
+.wl-sh > h2 { font-size: 12px; font-weight: var(--fw-strong); letter-spacing: .14em; color: var(--muted); }
+.wl-sh > span, .wl-all { font-size: 13px; color: var(--muted); }
+.wl-all { border: 0; padding: 0; background: none; font-family: inherit; cursor: pointer; transition: color var(--dur-hover); }
+.wl-all:hover { color: var(--fg); }
+.wl-wd { margin-top: 22px; }
+.wl-wd .wd-why { margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+.wl-list { border-top: 1px solid var(--line); }
+.wl-list > li { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: baseline; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.wl-d { color: var(--faint); font-size: 13px; }
+.wl-k { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.wl-k small { font-size: 13px; color: var(--muted); }
+.wl-a { font-weight: var(--fw-strong); }
+.wl-a.pos { color: var(--ok); }
+.wl-a.neg { color: var(--fg); }
+.wl-none { padding: 14px 0; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); }
+@media (max-width: 860px) {
+  .wl-two { grid-template-columns: minmax(0, 1fr); }
+}

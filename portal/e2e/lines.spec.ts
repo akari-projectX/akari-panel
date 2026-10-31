@@ -1,7 +1,7 @@
 /*
  * 门户 v2 · PR 5：线路（/nodes）与用量明细（/traffic）。覆盖切换前 React 门户 e2e 的 subscription.spec.ts #32 #33（每个入口一行、
  * 此刻的倍率、状态与图例、维护中置灰）与 #34（按全站时区的日、按入口的倍率与时段规则）、polish.spec.ts #60（手机不横向滚动）、
- * shell / account 的范围门禁（续费范围没有线路与用量），外加：倍率排序、标签筛选、刷新、用量的范围切换与平滑面积图、
+ * shell / account 的范围门禁（续费范围没有线路与用量），外加：倍率排序、标签筛选、刷新、用量的范围切换、三个数与每日柱图、
  * 每日明细，以及设计评审截图（线路 / 用量 × 桌面 / 手机 × 浅 / 深）。
  * 账户：user@e2e.test（两天流量：香港 01 直连 + IPLC 中转（2×），日本 01 直连（全天 0.5×））、expired。
  */
@@ -110,28 +110,25 @@ test('#34 traffic history by the site\'s days, per entrance with the multiplier 
   await shot(page, info, 'traffic-30d-light');
 });
 
-test('traffic charts: area, donut and daily bars; a tooltip by keyboard', async ({ page }, info) => {
+test('traffic: three numbers and the daily bars (the dashboard\'s chart); a tooltip by keyboard', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/traffic', '使用明细');
+  /* 页头一句：本期已用多少；下面三个数：今日、这段时间、计费 */
+  await expect(page.locator('.page-lead')).toHaveText(/^本期已用 [\d.]+ (\/ \d+ )?GB$/);
+  await expect(page.locator('.statrow > div')).toHaveCount(3);
+  await expect(page.locator('.statrow')).toContainText('今日');
+  await expect(page.locator('.statrow')).toContainText('计费（含倍率）');
   await page.getByRole('tab', { name: '近 7 天' }).click();
-  await expect(page.getByText(/至 .*，按天统计/)).toBeVisible();
-  const chart = page.getByRole('slider', { name: '流量走势，用左右方向键逐日查看' });
-  /* 下行 / 上行两条曲线；横轴首尾保留：最后一天（今天）一定有标签 */
-  await expect(chart.locator('path.rc-ln')).toHaveCount(2);
-  await expect(chart.locator('text.rc-t').last()).toHaveText(/^\d\d-\d\d$/);
-  await chart.focus();
-  await page.keyboard.press('ArrowLeft');
-  const tip = chart.getByRole('status');
+  await expect(page.getByRole('tab', { name: '近 7 天' })).toHaveAttribute('aria-selected', 'true');
+  /* 每天一根柱子，最后一天写「今天」；键盘聚焦一天出提示（下行 / 上行 / 合计 / 计费） */
+  const chart = page.getByRole('group', { name: '近 7 日流量，每天一项' });
+  const cols = chart.getByRole('button');
+  await expect(cols).toHaveCount(7);
+  await expect(page.locator('.wk-x .is-today')).toContainText('今天');
+  await cols.last().focus();
+  const tip = page.locator('.wk-tip');
   await expect(tip).toBeVisible();
-  for (const k of ['下行流量', '上行流量']) await expect(tip.getByText(k, { exact: true })).toBeVisible();
-  await expect(chart).toHaveAttribute('aria-valuenow', '6');
-  await page.keyboard.press('Escape');
-  await expect(tip).toHaveCount(0);
-  /* 柱状图：每天一根，键盘同样可逐日看 */
-  const bars = page.getByRole('slider', { name: '每日计费流量，用左右方向键逐日查看' });
-  await bars.focus();
-  await page.keyboard.press('End');
-  await expect(bars.getByRole('status')).toBeVisible();
+  for (const k of ['下行', '上行', '合计', '计费']) await expect(tip.getByText(k, { exact: true })).toBeVisible();
   await shot(page, info, 'traffic-light');
   await dark(page);
   await shot(page, info, 'traffic-dark');
@@ -151,8 +148,8 @@ test('traffic: a range with no traffic says so; the panel keeps daily rows only 
   await open(page, '/traffic', '使用明细');
   await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
   await expect(page.getByText(/按天的明细只保留到 .*，更早的日子显示为 0。/)).toBeVisible();
-  await expect(page.getByRole('slider')).toHaveCount(0);
-  await expect(page.getByText('明细记录')).toHaveCount(0);
+  await expect(page.locator('.wk')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '导出 CSV' })).toHaveCount(0);
 });
 
 test('#19 renewal scope: no lines or usage (back to the dashboard)', async ({ page }) => {

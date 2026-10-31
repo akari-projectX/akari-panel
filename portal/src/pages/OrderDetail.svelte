@@ -187,7 +187,7 @@
   <PageTitle title={t('订单详情')} />
   <LoadError error={order.error} onretry={order.reload} />
 {:else if data && view}
-  <PageTitle title={t('订单详情')} sub={tp('{p} · {n}', { p: data.plan_name, n: data.out_trade_no })}>
+  <PageTitle title={t('订单详情')} lead={tp('{p} · {a} · {s}', { p: data.plan_name, a: formatMoney(data.amount_cents), s: t(view.state.text) })} sub={data.out_trade_no}>
     {#snippet extra()}<a class="btn" style="height: 36px" href={R.orders}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('返回订单列表')}</a>{/snippet}
   </PageTitle>
 
