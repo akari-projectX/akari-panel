@@ -13,12 +13,14 @@
 :root {
   /*
    * 字体与字重（不是颜色，但首帧样式表只带这个文件，启动画面也要用）。HarmonyOS Sans SC（用户 2026-10-31 选定）：切片在 styles/fonts.css，
-   * 只下载页面用到的片，加载完之前用系统字体（font-display: swap）。字重只有两档（scripts/check-weights.mjs 检查）：层次靠颜色与字号。
+   * 只下载页面用到的片，加载完之前用系统字体（font-display: swap）。字重两档 + 顶栏导航专用的 500（scripts/check-weights.mjs 检查）：层次靠颜色与字号。
    */
   --font-ui: 'HarmonyOS Sans SC', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Segoe UI', 'Microsoft YaHei',
     'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
   --fw-regular: 400;
   --fw-strong: 600;
+  /* 只给顶栏导航（含「更多」下拉的条目名）：中粗，当前项靠颜色与细线区分（2026-10-31 用户选定） */
+  --fw-nav: 500;
 
   /* 底与文字 */
   --bg: #fafafa;

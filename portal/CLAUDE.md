@@ -11,10 +11,12 @@
 2026-10-30 用户确认新外观「A · 纸面简约」（取代 2026-10-26 恢复的 v1.4.0 外观）：暖白纸面、近黑正文、细线分隔、墨蓝只做强调，主按钮是正文色实底（`.btn.pri`）。
 样稿（单文件，所有页面）不进仓库；裁决要点：
 
-- 顶栏 **N1**：Logo（门户现有字标）+ 纯文字导航八项 `概览 商店 线路 用量 订单 公告 文档 工单`（`lib/account.ts` 的 `PRIMARY`，按账户范围过滤；没有「更多」），
-  当前项正文色加粗 + 一道同色细线（`.nav-indicator`，切页时滑动）；右侧明暗按钮 + 头像（邮箱首字母，`.av`）。
+- 顶栏 **N1**（2026-10-31 改名方案 ①）：Logo（门户现有字标）+ 纯文字导航 `总览 套餐 节点 指南 支持 更多⌄`（`lib/account.ts` 的 `PRIMARY`，按账户范围过滤），
+  不常用的 `流量明细 账单 动态` 收进「更多」（`MORE`，`components/MoreMenu.svelte`：纯文字下拉，每项一行说明；当前页在其中时「更多」算当前项；
+  范围里一项都没有时不显示）。地址不变，页面标题跟着改名（套餐、流量明细、账单、支持、使用指南；仪表盘、节点状态、公告与动态不变）。
+  导航全部中粗（`--fw-nav` 500），当前项只换正文色 + 一道同色细线（`.nav-indicator`，切页时滑动；字重不变，文字不跳）；右侧明暗按钮 + 头像（邮箱首字母，`.av`）。
 - **头像菜单**（`AccountCard`，桌面点头像 / 窄屏点「头像 + 三道线」）：抬头（头像、名字、邮箱）、套餐块（名字、还有几天、用量条、已用 / 剩余、快捷按钮「复制订阅」「续费」）、
-  窄屏才有的页面导航（八项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
+  窄屏才有的页面导航（八项平铺：先五项后「更多」的三项，带图标与实时数字）、钱包 / 邀请与设置（`ACCOUNT`）、外观与语言两枚开关、退出登录。窄屏的导航只在这里。
 - 页脚（`SiteFooter`）：细线 + 一行版权与条款 / 隐私 / 站长链接（没有大号站点名字样）；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
 - 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3，见下文「仪表盘」）；③ 其余各页（已完成）。
 - 页头（`flat/PageTitle` 的 `lead`）：给了 `lead` 时页名 `<h1>` 是一行小字眉标，下面一句大字说这一页现在的状况（线路「4 条线路，3 条在线」、订单「2 笔订单等待支付」、用量「本期已用 X / Y GB」、钱包「余额 ¥x」…），再下面一行说明，右侧操作；h1 文字不变（e2e 的 `ready(page, 标题)` 依赖它）。文档页「全部」视图是每个分类一栏（栏头分类名 + 文章标题，细线分栏），选了分类或搜索时仍是文章格子。
@@ -126,9 +128,9 @@
 ## 字体与字重（2026-10-31：HarmonyOS Sans SC）
 
 **字体 = HarmonyOS Sans SC**（用户 2026-10-31 选定，取代 2026-10-26 起的「只用系统字体」）：所有平台同一套字形（Windows 上不再落到微软雅黑）。字体栈 `--font-ui`（`src/styles/tokens.css`）把它放在最前，后面仍是原来的系统字体栈作回落。
-文件：`src/assets/fonts/hos/hos-<400|600>-<片号>.woff2`（400 = Regular，600 = Bold），由 `scripts/font-slices.py <HarmonyOS_Sans_SC 目录>` 生成（fonttools；产物进仓库，CI 不跑）：字符集 = ASCII 与常用标点符号 + GB2312 全部汉字 + 门户源码里出现的字，门户界面先用到的字排在前面，每片约 200 字、约 30 KB，两字重共约 2 MB；`src/styles/fonts.css`（同一脚本生成，`app.css` 引入）给每片一条 `@font-face` + `unicode-range`，浏览器只下载页面上真正出现的字所在的片，`font-display: swap`（加载前用系统字体，首帧不等字体）。GB2312 以外的字落到系统字体。
+文件：`src/assets/fonts/hos/hos-<400|500|600>-<片号>.woff2`（400 = Regular，500 = Medium（只给顶栏导航），600 = Bold），由 `scripts/font-slices.py <HarmonyOS_Sans_SC 目录>` 生成（fonttools；产物进仓库，CI 不跑）：字符集 = ASCII 与常用标点符号 + GB2312 全部汉字 + 门户源码里出现的字，门户界面先用到的字排在前面，每片约 200 字、约 30 KB，三字重共约 3 MB（500 的片只有导航上出现的字所在的那一两片会被下载）；`src/styles/fonts.css`（同一脚本生成，`app.css` 引入）给每片一条 `@font-face` + `unicode-range`，浏览器只下载页面上真正出现的字所在的片，`font-display: swap`（加载前用系统字体，首帧不等字体）。GB2312 以外的字落到系统字体。
 **授权**：HarmonyOS Sans Fonts License Agreement（原文 `src/assets/fonts/hos/LICENSE.txt`，第三方清单 `make third-party` 收录）：要求在软件里显著注明使用了该字体（页脚「字体：HarmonyOS Sans」，`SiteFooter`），且不得修改字体：切片只按 `unicode-range` 把字形分到若干文件里，字形、度量与版权信息原样保留，不改动字体本身（用户 2026-10-31 裁决）；不要做改字形、改名、合并其他字体之类的改动，去掉页脚声明前先看这里。`scripts/check-weights.mjs` 跳过生成的 `fonts.css`（那里的 `font-weight` 是字体文件自己的字重）。
-**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）。字体只带这两个字重，回落的微软雅黑也没有 500，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠第三档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
+**字重只有两档**：`--fw-regular`（400，正文）与 `--fw-strong`（600，标题 / 强调 / 按钮 / 数字）；唯一例外是顶栏导航的 `--fw-nav`（500，用户 2026-10-31 选定，`check-weights.mjs` 只许它出现在 `app.css` 与 `MoreMenu.svelte`）。回落的微软雅黑没有 500，别的字重会悄悄并成相邻一档、层次消失。所以层次靠颜色（`--fg` / `--muted` / `--faint`）与字号，不靠更多档字重；一律写 `font-weight: var(--fw-strong)`，不写数字。`npm run check:weights`（`scripts/check-weights.mjs`，在 `npm run check` 里）拒绝 `src/` 与 `index.html` 里任何其他字重（`font-weight`、`font:` 简写、Tailwind `font-medium` 之类、`wght` 轴）。UA 默认加粗的元素（h1–h6、th、b、strong）在 `app.css` 基础层统一成 `--fw-strong`。`body` 的 `font-synthesis: weight`：系统汉字字体缺粗体时由浏览器合成 600（不合成斜体），不要改回 `none`。
 
 ## 偏好与存储
 

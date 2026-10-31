@@ -18,7 +18,7 @@
   const c = $derived(COPY[kind]);
   /* 找不到页面时给几个常去的地方 */
   const places = $derived(auth.me
-    ? [{ to: R.dashboard, label: '仪表盘' }, { to: R.shop, label: '商店' }, { to: R.help, label: '文档' }]
+    ? [{ to: R.dashboard, label: '仪表盘' }, { to: R.shop, label: '套餐' }, { to: R.help, label: '指南' }]
     : [{ to: R.login, label: '登录' }, { to: R.register, label: '注册' }]);
 </script>
 

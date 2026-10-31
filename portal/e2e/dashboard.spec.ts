@@ -469,7 +469,7 @@ test('#19 renewal scope (expired): banner, no lines, subscription or traffic; th
   await shot(page, info, 'dashboard-renewal-dark');
   await page.emulateMedia({ colorScheme: 'light' });
   await page.getByRole('link', { name: '去续费' }).click();
-  await ready(page, '商店');
+  await ready(page, '套餐');
 });
 
 test('#19 renewal scope (quota used up): "restore" goes to the shop', async ({ page }) => {
@@ -477,7 +477,7 @@ test('#19 renewal scope (quota used up): "restore" goes to the shop', async ({ p
   await dashboard(page);
   await expect(page.getByText('本期流量已用完，服务已暂停')).toBeVisible();
   await page.getByRole('link', { name: '去恢复' }).click();
-  await ready(page, '商店');
+  await ready(page, '套餐');
 });
 
 test('#18 banned: the reason and tickets only', async ({ page }, info) => {
@@ -492,7 +492,7 @@ test('#18 banned: the reason and tickets only', async ({ page }, info) => {
   await shot(page, info, 'dashboard-banned-dark');
   await page.emulateMedia({ colorScheme: 'light' });
   await page.getByRole('link', { name: '提交或查看工单' }).click();
-  await ready(page, '工单');
+  await ready(page, '支持');
 });
 
 test('#subscribe: the payment result\'s "view subscription" lands on the access section', async ({ page }) => {

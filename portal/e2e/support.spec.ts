@@ -24,7 +24,7 @@ const noSideways = async (page: Page) =>
 
 test('#57 tickets: inline errors; category, priority, linked order; reply, the staff answer is unread, close', async ({ page }, info) => {
   await signIn(page, 'refund@e2e.test');
-  await open(page, '/tickets', '工单');
+  await open(page, '/tickets', '支持');
   await page.getByRole('button', { name: '提交工单' }).first().click();
   const form = page.getByRole('dialog', { name: '提交新工单' });
   /* 空着提交：内联错误，第一个出错的字段被聚焦，按钮不预先置灰（polish #57） */
@@ -65,7 +65,7 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
   await page.keyboard.press('Escape');
   await expect(thread).toHaveCount(0);
   await page.reload();
-  await ready(page, '工单');
+  await ready(page, '支持');
   const row = page.locator('main button.rowline').filter({ hasText: subject });
   await expect(row.getByText('已回复')).toBeVisible();
   await expect(row.getByText('客服有新回复')).toHaveCount(1);
@@ -100,7 +100,7 @@ test('#57 tickets: inline errors; category, priority, linked order; reply, the s
 
 test('#18 tickets for a banned account: no linked order (it cannot see orders)', async ({ page }) => {
   await signIn(page, 'banned@e2e.test');
-  await open(page, '/tickets', '工单');
+  await open(page, '/tickets', '支持');
   await page.getByRole('button', { name: '提交工单' }).first().click();
   const form = page.getByRole('dialog', { name: '提交新工单' });
   await expect(form.getByLabel('分类')).toBeVisible();
@@ -139,7 +139,7 @@ test('#58 announcements: unread first, the panel\'s HTML, read state kept by the
 test('#59 docs: categories wrap (none cut off), the device line, search, an article with a table of contents', async ({ page }, info) => {
   await signIn(page, 'user@e2e.test');
   await page.evaluate(() => { try { localStorage.removeItem('akari.read.kb'); } catch { /* 无 */ } });
-  await open(page, '/help', '使用手册');
+  await open(page, '/help', '使用指南');
   await expect(page.getByRole('link', { name: '提交工单' })).toHaveAttribute('href', '/tickets');
   await expect(page.getByText(/客户端下载、连接指南/)).toHaveCount(0);
   /* 设备捷径不重复「教程」（分类名已以「教程」结尾）；没有下载链接、没有「复制订阅地址」 */
@@ -195,15 +195,15 @@ test('#59 docs: categories wrap (none cut off), the device line, search, an arti
   }
   await expect(page.getByRole('heading', { name: '导入订阅' })).toBeInViewport();
   /* 面包屑回到列表；读过的文档不再标蓝点 */
-  await page.getByRole('navigation', { name: '使用手册' }).getByRole('button', { name: '使用手册' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: '使用手册' })).toBeVisible();
+  await page.getByRole('navigation', { name: '使用指南' }).getByRole('button', { name: '使用指南' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: '使用指南' })).toBeVisible();
   await expect(first.locator('.ud')).toHaveCount(0);
 });
 
 test('docs: a long article (code, quote, nested headings), copy the subscription link, no sideways scroll; screens', async ({ page, context }, info) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await signIn(page, 'user@e2e.test');
-  await open(page, '/help?cat=' + encodeURIComponent('iOS 与 iPadOS 教程'), '使用手册');
+  await open(page, '/help?cat=' + encodeURIComponent('iOS 与 iPadOS 教程'), '使用指南');
   await page.getByText(/在 iPhone 上用 Shadowrocket/).first().click();
   await expect(page.getByRole('heading', { level: 1, name: /在 iPhone 上用 Shadowrocket/ })).toBeVisible();
   await expect(page.locator('main pre')).toBeVisible();
@@ -219,6 +219,6 @@ test('docs: a long article (code, quote, nested headings), copy the subscription
   await page.emulateMedia({ colorScheme: 'light' });
   /* 同一分类只有这一篇：没有上一篇 / 下一篇 */
   await expect(page.getByRole('button', { name: /上一篇|下一篇/ })).toHaveCount(0);
-  await page.getByRole('navigation', { name: '使用手册' }).getByRole('button', { name: '使用手册' }).click();
-  await ready(page, '使用手册');
+  await page.getByRole('navigation', { name: '使用指南' }).getByRole('button', { name: '使用指南' }).click();
+  await ready(page, '使用指南');
 });

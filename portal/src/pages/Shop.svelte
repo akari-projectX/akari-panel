@@ -117,7 +117,7 @@
   const resetBuy = $derived(currentPlan && resetOffer?.action ? { plan: currentPlan, offer: resetOffer } : null);
 </script>
 
-<PageTitle title={t('商店')} lead={t('选一个适合你的套餐')}>
+<PageTitle title={t('套餐')} lead={t('选一个适合你的套餐')}>
   {#snippet extra()}<span>{t('价格按月折算 · 购买时长在下单时选择')}</span>{/snippet}
 </PageTitle>
 

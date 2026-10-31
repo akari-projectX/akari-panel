@@ -6,12 +6,14 @@
   import { R } from '$lib/routes';
   import Logo from './Logo.svelte';
   import MobileMenu from './MobileMenu.svelte';
+  import MoreMenu from './MoreMenu.svelte';
   import ThemeButton from './ThemeButton.svelte';
   import UserMenu from './UserMenu.svelte';
 
   /*
-   * 顶栏（外观 A · N1）：Logo，纯文字导航 `概览 商店 线路 用量 订单 公告 文档 工单`（当前项正文色 + 一道同色细线，
-   * 切页时那道线从旧的一项滑到新的一项；工单有新回复、有待支付订单时标签右上一个小圆点），右侧明暗按钮与头像。
+   * 顶栏（外观 A · N1；2026-10-31 名称方案 ①）：Logo，纯文字导航 `总览 套餐 节点 指南 支持 更多⌄`，全部中粗（--fw-nav 500），
+   * 当前项只换正文色 + 一道同色细线（字重不变，切换时文字不跳；切页时那道线从旧的一项滑到新的一项；「更多」里的页面算「更多」），
+   * 工单有新回复、有待支付订单时标签右上一个小圆点；右侧明暗按钮与头像。
    * 窄屏（< 1024px）导航收进头像菜单：只剩 Logo 与「头像 + 三道线」的菜单按钮。
    */
   const items = $derived(primaryItems());
@@ -58,6 +60,7 @@
           {t(it.label)}{#if it.attention}<span class="nav-dot" role="status" aria-label={it.to === R.tickets ? tp('{n} 张工单有新回复', { n: repliedTickets() }) : t('有待支付的订单')}></span>{/if}
         </a>
       {/each}
+      <MoreMenu />
       {#if pos}<span class="nav-indicator" aria-hidden="true" data-ready={ready} style:width="{pos.w}px" style:translate="{pos.x}px {pos.y}px"></span>{/if}
     </nav>
     <div class="tools">

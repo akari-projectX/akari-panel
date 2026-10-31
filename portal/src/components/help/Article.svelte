@@ -114,8 +114,8 @@
 {:else if a}
   <div class="pg">
   <header class="head">
-    <nav aria-label={t('使用手册')} class="crumbs">
-      <button type="button" onclick={() => toList()}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('使用手册')}</button>
+    <nav aria-label={t('使用指南')} class="crumbs">
+      <button type="button" onclick={() => toList()}><ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />{t('使用指南')}</button>
       <ChevronRight class="sep" size={14} strokeWidth={1.75} aria-hidden="true" />
       <button type="button" onclick={() => toList(a.category)}>{a.category}</button>
     </nav>
