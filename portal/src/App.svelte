@@ -83,7 +83,7 @@
   const dash = $derived(found ? found.page.layout === 'dash' || !!auth.me : !!auth.me);
 
   /*
-   * 切页外壳（v1.4.0 page-transition）：旧页面淡出（--dur-exit）→ 回到页首 → 新页面淡入（PageView 的 .page）。
+   * 切页外壳（v1.4.0 page-transition）：旧页面淡出（--dur-exit，60 ms：再长切页就显得迟钝）→ 回到页首 → 新页面淡入（PageView 的 .page）。
    * 旧页面这一份实例留在原地淡出（shown 是它的页面与参数）；退场期间又切了一次：退完时直接换成最新的那一页。
    * 刷新后的第一页不播退场；系统要求减少动效时直接换页。
    */
@@ -108,7 +108,7 @@
       if (leaveTimer) return;
       if (matchMedia('(prefers-reduced-motion: reduce)').matches) { swap(); return; }
       leaving = true;
-      leaveTimer = setTimeout(swap, 100);
+      leaveTimer = setTimeout(swap, 60);
     });
   });
 
