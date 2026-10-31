@@ -5,7 +5,7 @@
 
   /*
    * 页脚（外观 A）：一道细线 + 一行：
-   * © 年份 站点名、站长写的页脚文字；条款 / 隐私（站长配了外链就用外链）与站长加的链接。
+   * © 年份 站点名、站长写的页脚文字、字体声明（HarmonyOS Sans 的授权要求显著注明）；条款 / 隐私（站长配了外链就用外链）与站长加的链接。
    */
   const b = $derived(site.options?.branding);
   const year = new Date().getFullYear();
@@ -22,7 +22,7 @@
   <div class="wrap"><div class="rule" aria-hidden="true"></div></div>
   <div class="wrap row2">
     <!-- 版权署站点名称（后台系统设置）。不显示后端版本号：等于告诉别人后端是什么 -->
-    <span class="copy"><span>© {year} {name}</span>{#if b?.footer_text}<span class="extra">{b.footer_text}</span>{/if}</span>
+    <span class="copy"><span>© {year} {name}</span>{#if b?.footer_text}<span class="extra">{b.footer_text}</span>{/if}<span class="font-note">{t('字体：HarmonyOS Sans')}</span></span>
     <nav aria-label={t('页脚')}>
       {#each links as l, i (l.url + l.label)}
         <span>
