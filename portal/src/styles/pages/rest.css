@@ -31,7 +31,7 @@
 @media (max-width: 720px) {
   .sh { align-items: flex-start; }
 }
-.prog > i { display: block; width: 100%; height: 100%; flex: 1; background: var(--brand); transition: all .15s; }
+.prog > i { display: block; width: 100%; height: 100%; flex: 1; background: var(--brand); transition: width var(--dur-hover) var(--ease-out); }
 .tabs-pill.inl { display: inline-flex; }
 .tabs-pill > button { position: relative; display: inline-flex; flex: 1; height: 100%; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; border: 0; border-radius: 999px; background: none; font: inherit; font-size: 12.5px; font-weight: var(--fw-regular); line-height: 20px; white-space: nowrap; color: var(--muted); transition: color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out); }
 .tabs-pill > button:hover { color: var(--fg); }
@@ -77,13 +77,15 @@
 .pt-why { font-size: 13.5px; line-height: 1.8; color: var(--muted); }
 .tp-sm { flex: 1; font-size: 14px; line-height: 1.4286; }
 
-/* 下拉选择（ui/Select.svelte，shadcn Select 的外观） */
+/* 下拉选择（ui/Select.svelte）：浮层与 ui/Menu、顶栏的弹出菜单同一外观与入场（2026-10-31 统一交互） */
 .sel-trig { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; height: 32px; line-height: 20px; padding: 0 8px 0 10px; text-align: left; cursor: pointer; white-space: nowrap; }
-.sel-trig > svg { flex: none; color: var(--muted); pointer-events: none; }
+.sel-trig > svg { flex: none; color: var(--muted); pointer-events: none; transition: rotate var(--dur-fast) var(--ease-out); }
+.sel-trig[data-state='open'] > svg { rotate: 180deg; }
 .sel-val { overflow: hidden; text-overflow: ellipsis; }
-.sel-pop { z-index: 60; min-width: var(--bits-select-anchor-width); max-height: var(--bits-select-content-available-height); overflow: hidden auto; border-radius: 8px; background: var(--surface); color: var(--fg); box-shadow: var(--pop-shadow), 0 0 0 1px var(--line); }
+.sel-pop { z-index: 60; min-width: var(--bits-select-anchor-width); max-height: var(--bits-select-content-available-height); overflow: hidden auto; border: 1px solid var(--line2); border-radius: calc(var(--radius) * 1.2); background: var(--popover); color: var(--fg); box-shadow: var(--shadow-card); transform-origin: var(--bits-select-content-transform-origin, top left); }
+.sel-pop[data-state='open'] { animation: menu-in var(--dur-hover) var(--ease-out); }
 .sel-vp { padding: 4px; }
-.sel-item { position: relative; display: flex; align-items: center; width: 100%; padding: 4px 32px 4px 6px; border-radius: 6px; font-size: 14px; cursor: default; user-select: none; outline: none; }
+.sel-item { position: relative; display: flex; align-items: center; width: 100%; padding: 6px 32px 6px 8px; border-radius: calc(var(--radius) * .8); font-size: 14px; cursor: default; user-select: none; outline: none; }
 .sel-item[data-highlighted] { background: var(--hover); }
 .sel-item[data-disabled] { opacity: .5; pointer-events: none; }
 .sel-ck { position: absolute; right: 8px; pointer-events: none; }

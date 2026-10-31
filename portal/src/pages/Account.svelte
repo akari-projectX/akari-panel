@@ -23,6 +23,7 @@
   import { siteFlags } from '$lib/site';
   import { chunk, intent, preloadDialogs } from '$lib/dialogs';
   import { setTheme, theme, type ThemeMode } from '$lib/theme.svelte';
+  import { thumb } from '$lib/thumb';
 
   /*
    * 设置：
@@ -194,7 +195,7 @@
           <p class="set-d">{t('邮件也用这门语言：在这里或页头切换时一起改。')}</p>
         </div>
         <div class="set-r">
-          <div class="seg" role="group" aria-label={t('切换语言')} onpointerenter={preloadEN} onfocusin={preloadEN}>
+          <div class="seg" {@attach thumb} role="group" aria-label={t('切换语言')} onpointerenter={preloadEN} onfocusin={preloadEN}>
             {#each LOCALES as l (l.id)}
               <button type="button" lang={l.id} title={l.label} aria-pressed={i18n.locale === l.id} onclick={() => { if (i18n.locale !== l.id) void changeLocale(l.id); }}>{l.short}</button>
             {/each}
@@ -207,7 +208,7 @@
           <p class="set-d">{t('浅色、深色，或跟随系统（默认）。')}</p>
         </div>
         <div class="set-r">
-          <div class="seg" role="group" aria-label={t('切换明暗模式')}>
+          <div class="seg" {@attach thumb} role="group" aria-label={t('切换明暗模式')}>
             {#each THEMES as x (x.id)}
               {@const Icon = x.icon}
               <button type="button" class="ic" aria-pressed={theme.mode === x.id} aria-label={t(x.label)} title={t(x.label)} onclick={() => setTheme(x.id)}>
@@ -249,11 +250,13 @@
   .seg { display: inline-flex; align-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 9999px; }
   .seg button {
     height: 24px; padding: 0 8px; border: 0; border-radius: 9999px; background: none; color: var(--muted);
-    font: inherit; font-size: 12px; font-weight: var(--fw-strong); cursor: pointer;
+    font: inherit; font-size: 12px; font-weight: var(--fw-strong); cursor: pointer; transition: color var(--dur-base) var(--ease-out);
   }
   .seg button.ic { display: inline-grid; place-items: center; padding: 0; width: 32px; }
   .seg button:hover { color: var(--fg); }
-  .seg button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
+  .seg button[aria-pressed='true'] { color: var(--bg); }
+  /* 当前项的实底是 .seg 上会滑的那块（lib/thumb.ts）；量到之前当前项自己铺底 */
+  .seg:not([data-thumb]) button[aria-pressed='true'] { background: var(--fg); }
   .bad { color: var(--danger); }
   .bad:hover { border-color: var(--danger); }
 </style>

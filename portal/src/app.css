@@ -145,7 +145,7 @@
   /* 当前项的下划线由导航上那一根 .nav-indicator 画（切页时从旧的一项滑到新的一项），伪元素只管悬停 */
   .topnav-link[data-active='true']::after { transform: scaleX(0); }
   .nav-indicator { position: absolute; left: 0; top: 0; height: 1.5px; background: var(--fg); pointer-events: none; }
-  .nav-indicator[data-ready='true'] { transition: translate .32s var(--ease-out), width .32s var(--ease-out); }
+  .nav-indicator[data-ready='true'] { transition: translate var(--dur-slow) var(--ease-out), width var(--dur-slow) var(--ease-out); }
   /* 顶部导航项上的提醒点（工单有新回复、待支付订单） */
   .nav-dot { display: inline-block; width: 6px; height: 6px; margin-left: 4px; vertical-align: 7px; border-radius: 9999px; background: var(--brand); }
 
@@ -187,7 +187,7 @@
   .lines-host { display: block; margin-right: -6px; }
   .menu-me { display: inline-flex; gap: 8px; padding: 0 10px 0 6px; }
   .burger { position: relative; display: block; width: 16px; height: 12px; }
-  .burger > i { position: absolute; left: 0; width: 16px; height: 1.5px; border-radius: 1px; background: var(--fg); transition: transform .3s var(--ease-out), opacity .2s; }
+  .burger > i { position: absolute; left: 0; width: 16px; height: 1.5px; border-radius: 1px; background: var(--fg); transition: transform var(--dur-slow) var(--ease-out), opacity var(--dur-base); }
   .burger > i:nth-child(1) { top: 0; }
   .burger > i:nth-child(2) { top: 5.25px; }
   .burger > i:nth-child(3) { top: 10.5px; }
@@ -477,7 +477,7 @@
   .toast {
     position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; pointer-events: auto;
     background: var(--popover); border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-radius: 14px; box-shadow: var(--shadow-toast);
-    animation: toast-in .4s var(--ease-out);
+    animation: toast-in var(--dur-slow) var(--ease-out);
   }
   .toast-i { display: grid; flex: none; place-items: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 9999px; }
   .toast[data-kind='success'] .toast-i { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
@@ -600,6 +600,20 @@
   .toast { animation-name: toast-in-top; }
 }
 
+/* 分段切换的滑块（2026-10-31 统一交互，lib/thumb.ts）：时间范围、筛选、标签页、外观 / 语言开关的当前项实底是容器上的一块，
+   换选项时滑过去（与顶栏导航的细线同一手感）；当前项自己不铺底、只换字色，字色与滑块同一时长。不放进 @layer：
+   要盖过各页（含组件内作用域样式）给当前项铺的底。没量到之前（还没挂上 / 当前项不可见）照旧由当前项自己铺底。 */
+.seg-t, .tabs-pill, .seg { position: relative; isolation: isolate; }
+.seg-t[data-thumb]::before, .tabs-pill[data-thumb]::before, .seg[data-thumb]::before {
+  content: ''; position: absolute; z-index: -1; left: 0; top: 0; width: var(--thumb-w); height: var(--thumb-h);
+  translate: var(--thumb-x) var(--thumb-y); border-radius: 9999px; background: var(--fg); pointer-events: none;
+}
+.seg-t[data-thumb='ready']::before, .tabs-pill[data-thumb='ready']::before, .seg[data-thumb='ready']::before {
+  transition: translate var(--dur-base) var(--ease-out), width var(--dur-base) var(--ease-out);
+}
+.seg-t[data-thumb] > [aria-pressed='true'], .tabs-pill[data-thumb] > [aria-pressed='true'], .tabs-pill[data-thumb] > [aria-selected='true'] { background: none; }
+.seg-t > button, .tabs-pill > button { transition: color var(--dur-base) var(--ease-out); }
+
 /* 减少动效：入场、弹出层的位移与淡入全部关闭；加载指示器只放慢（冻住的指示器等于告诉用户「卡死了」） */
 @media (prefers-reduced-motion: reduce) {
   .page, .menu-card, .toast, .dlg, .dlg-overlay, .lines i, .sk, .load-in, .state-in { animation: none; }
@@ -607,6 +621,8 @@
   .spinner i { animation-duration: 1.4s; }
   .burger > i, .acct .acct-chev { transition: none; }
   .topnav-link, .iconbtn, .ibtn, .lbtn, .tabs a, .input, .btn, .rules li, .switch, .switch-thumb { transition: none; }
+  [data-thumb]::before, .nav-indicator, .sel-trig > svg { transition: none !important; }
+  .sel-pop[data-state='open'] { animation: none; }
   .switch:active { scale: none; }
   ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
 }

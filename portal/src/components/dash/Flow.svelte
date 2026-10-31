@@ -8,6 +8,7 @@
   import WeekChart from './WeekChart.svelte';
   import { t, tp } from '$lib/i18n.svelte';
   import type { Resource } from '$lib/resource.svelte';
+  import { thumb } from '$lib/thumb';
 
   /*
    * 仪表盘的「流量」（外观 A）：小标题 + 合计（↓ 下行 · ↑ 上行 · 计费）+ 7 / 30 天切换，下面一张柱图。
@@ -26,7 +27,7 @@
     {#if traffic.data}
       <span class="wk-sum" title={tp('合计 {t}，其中下行 {d}、上行 {u}', { t: formatBytes(down + up), d: formatBytes(down), u: formatBytes(up) })}>{formatBytes(down + up)} · ↓ {formatBytes(down)} · ↑ {formatBytes(up)} · {t('计费')} {formatBytes(traffic.data.total.billed_bytes)}</span>
     {/if}
-    <div class="seg-t" role="group" aria-label={t('时间范围')}>
+    <div class="seg-t" {@attach thumb} role="group" aria-label={t('时间范围')}>
       {#each RANGES as r (r)}
         <button type="button" aria-pressed={range === r} onclick={() => (range = r)}>{tp('{n} 天', { n: r })}</button>
       {/each}
