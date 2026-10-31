@@ -6,7 +6,7 @@ HarmonyOS Sans SC 的网页切片（用户 2026-10-31 选定，见 portal/CLAUDE
     python3 portal/scripts/font-slices.py <HarmonyOS_Sans_SC 目录>
 
 读 HarmonyOS_Sans_SC_Regular.ttf（400）、HarmonyOS_Sans_SC_Medium.ttf（500，只用于顶栏导航）与 HarmonyOS_Sans_SC_Bold.ttf（600 用它），字符集 = ASCII 与常用标点符号 + GB2312 全部汉字
-+ 门户源码里出现的全部字符；按「门户界面先用到的字在前、其余 GB2312 按编码」切成每片约 200 字，输出 WOFF2 到 src/assets/fonts/hos/，
++ 门户源码与默认教程（EXTRA）里出现的全部字符；按「门户界面先用到的字在前、其余 GB2312 按编码」切成每片约 200 字，输出 WOFF2 到 src/assets/fonts/hos/，
 并生成 src/styles/fonts.css（@font-face + unicode-range：浏览器只下载页面上真正用到的片）。产物进仓库，CI 不跑本脚本。
 """
 import pathlib
@@ -18,6 +18,8 @@ PORTAL = pathlib.Path(__file__).resolve().parent.parent
 OUT = PORTAL / 'src/assets/fonts/hos'
 CSS = PORTAL / 'src/styles/fonts.css'
 SLICE = 200
+# 门户源码之外、也由门户显示的固定文字：默认客户端教程（迁移 0009，新站的知识库自带）
+EXTRA = [PORTAL.parent / 'migrations/0009_default_guides.sql']
 WEIGHTS = {400: 'HarmonyOS_Sans_SC_Regular.ttf', 500: 'HarmonyOS_Sans_SC_Medium.ttf', 600: 'HarmonyOS_Sans_SC_Bold.ttf'}
 
 
@@ -34,11 +36,11 @@ def gb2312():
 
 def portal_chars():
     seen = {}
-    for f in (PORTAL / 'src').rglob('*'):
-        if f.suffix in {'.svelte', '.ts', '.css', '.html'} and 'assets' not in f.parts:
-            for ch in f.read_text(encoding='utf-8', errors='ignore'):
-                if ord(ch) > 0x2E7F:
-                    seen[ch] = seen.get(ch, 0) + 1
+    files = [f for f in (PORTAL / 'src').rglob('*') if f.suffix in {'.svelte', '.ts', '.css', '.html'} and 'assets' not in f.parts]
+    for f in sorted(files) + EXTRA:
+        for ch in f.read_text(encoding='utf-8', errors='ignore'):
+            if ord(ch) > 0x2E7F:
+                seen[ch] = seen.get(ch, 0) + 1
     return [c for c, _ in sorted(seen.items(), key=lambda kv: -kv[1])]
 
 

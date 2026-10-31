@@ -6,11 +6,12 @@
   import { Pop } from '$lib/pop.svelte';
   import { loc } from '$lib/router.svelte';
   import { R } from '$lib/routes';
+  import { ICONS } from './menu-icons';
 
   /*
    * 顶栏的「更多」（2026-10-31）：不常用的三项（流量明细、账单、动态）收在这里。
    * 按钮和外面的导航项同一个样子（.topnav-link）：当前页在这三项里时它算当前项（那道线滑到它下面）；
-   * 有待支付订单时按钮上挂一个小圆点。下拉是纯文字的一张小卡片，每项一行说明。窄屏不用它：窄屏菜单里八项平铺。
+   * 有待支付订单时按钮上挂一个小圆点。下拉是一张小卡片：每项左边一个浅底图标块（与窄屏菜单同一套图标），右边名字与一行说明。窄屏不用它：窄屏菜单里八项平铺。
    */
   const NOTES: Record<string, string> = {
     [R.traffic]: '每天的用量与节点分布',
@@ -54,7 +55,9 @@
       >
         {#each items as it (it.to)}
           {@const cur = isCurrent(it.to, loc.path)}
+          {@const Icon = ICONS[it.icon]}
           <a role="menuitem" tabindex="-1" class="more-row" href={it.to} aria-current={cur ? 'page' : undefined} data-active={cur || undefined}>
+            <span class="more-ic" aria-hidden="true"><Icon size={15} strokeWidth={1.75} /></span>
             <span class="more-t">{t(it.label)}{#if it.to === R.orders && pendingOrders() > 0}<i class="more-dot" aria-hidden="true"></i>{/if}</span>
             <span class="more-d">{t(NOTES[it.to] ?? '')}</span>
           </a>
@@ -67,17 +70,20 @@
 <style>
 .more-host { display: flex; }
 .more-btn { gap: 2px; cursor: pointer; }
+.more-btn .nav-dot { margin-left: 3px; }
 .more-btn :global(.more-chev) { flex: none; margin-left: 2px; color: var(--faint); transition: rotate var(--dur-fast) var(--ease-out); }
 .more-btn[data-state='open'] { color: var(--fg); }
 .more-btn[data-state='open'] :global(.more-chev) { rotate: 180deg; }
 .more-btn:focus-visible { outline: none; box-shadow: var(--focus); border-radius: 4px; }
 .more-card { top: calc(100% + 12px); right: auto; left: -14px; width: 248px; padding: 6px; transform-origin: top left; }
 .more-row {
-  display: block; padding: 9px 10px; border-radius: calc(var(--radius) * .9); color: var(--fg); outline: none;
+  display: grid; grid-template-columns: 28px 1fr; column-gap: 10px; align-items: start; padding: 9px 10px; border-radius: calc(var(--radius) * .9); color: var(--fg); outline: none;
   transition: background-color var(--dur-hover);
 }
 .more-row:hover, .more-row:focus { background: var(--hover); }
 .more-row:focus-visible { box-shadow: var(--focus); }
+.more-ic { grid-row: span 2; display: grid; place-items: center; width: 28px; height: 28px; margin-top: 1px; border-radius: 8px; background: var(--line); color: var(--body); }
+.more-row[data-active] .more-ic { color: var(--brand); }
 .more-t { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: var(--fw-nav); }
 .more-row[data-active] .more-t { color: var(--brand); }
 .more-d { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
