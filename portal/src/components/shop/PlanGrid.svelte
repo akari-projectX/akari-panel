@@ -7,10 +7,10 @@
   import { t, tp } from '$lib/i18n.svelte';
 
   /*
-   * 套餐卡片（样稿 design/shop-cards-2026-10）：
-   * 卡片上**没有**周期切换，周期只在确认订单里选。每张卡 = 名称 + 状态（当前套餐 / 已售罄 / 仅续费 / 推荐 / 仅剩 N 个名额）
+   * 套餐列（外观 A，细线分隔、不画卡片；1 个套餐时横排一整行，功能清单在右）：
+   * **没有**周期切换，周期只在确认订单里选。每张卡 = 名称 + 状态（当前套餐 / 已售罄 / 仅续费 / 推荐 / 仅剩 N 个名额）
    * + 一行简介（说明开头的段落，面板渲染好的 summary_html）→ 大字「¥x /月 起」（@/lib/shop 的 headline：各周期按月折算的最低价，只是标价换个说法）
-   * +「N 种周期可选 · 年付省 x%」→ 三格规格（流量 / 重置 / 速率）→ 功能清单（说明的其余部分 details_html：套餐说明是 Markdown，由面板 src/markdown.rs 渲染并清洗，经 RichHtml 插入）→ 一个按钮 + 一行说明。
+   * +「N 种周期可选 · 年付省 x%」→ 三格规格（流量 / 重置 / 速率）→ 功能清单（说明的其余部分 details_html：套餐说明是 Markdown，由面板 src/markdown.rs 渲染并清洗，经 RichHtml 插入）→ 一个按钮（胶囊，靠左）+ 旁边一行说明。
    * 按钮的动作 = preselect（流量用完的当前套餐 = 重置包）；买不了的按钮置灰并写原因。当前套餐卡与「推荐」套餐卡用主按钮（2026-10-22 裁决）。
    */
   let { plans, me, onbuy, buyIntent }: {
@@ -51,7 +51,7 @@
   {#each plans as pl (pl.plan_id)}
     {@const v = view(pl)}
     {@const note = v.act?.action ? ACTION_NOTE[v.act.action] : undefined}
-    <article class={['plan-card', pl.current && 'is-current', v.off && 'is-off']} aria-label={pl.name}>
+    <article class={['plan-card', pl.current && 'is-current', !pl.current && pl.recommended && !v.off && 'is-rec', v.off && 'is-off']} aria-label={pl.name}>
       <div class="plan-card-body">
         <header class="plan-head">
           <h3>{pl.name}</h3>
@@ -81,21 +81,22 @@
           <div><dd>{pl.speed_limit_mbps ? `${pl.speed_limit_mbps} Mbps` : t('不限速')}</dd><dt>{t('速率')}</dt></div>
         </dl>
 
-        {#if pl.details_html}
-          <div class="plan-rich"><RichHtml html={pl.details_html} /></div>
-        {/if}
       </div>
+
+      {#if pl.details_html}
+        <div class="plan-rich"><RichHtml html={pl.details_html} /></div>
+      {/if}
 
       <div class="plan-cta">
         {#if v.act?.action}
           {@const act = v.act}
-          <button type="button" class={['btn', 'btn-block', (pl.current || pl.recommended) && 'pri']} {@attach buyIntent} onclick={() => onbuy(pl, act, act.action === 'reset')}>
+          <button type="button" class={['btn', (pl.current || pl.recommended) && 'pri']} {@attach buyIntent} onclick={() => onbuy(pl, act, act.action === 'reset')}>
             {t(ACTION_TEXT[act.action!])}
           </button>
         {:else}
-          <button type="button" class="btn btn-block" disabled>{t(REFUSAL_TEXT[v.refusal ?? 'not_for_sale'])}</button>
+          <button type="button" class="btn" disabled>{t(REFUSAL_TEXT[v.refusal ?? 'not_for_sale'])}</button>
         {/if}
-        <p>{note ? t(note) : ''}</p>
+        {#if note}<p>{t(note)}</p>{/if}
       </div>
     </article>
   {/each}

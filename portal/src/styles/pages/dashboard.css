@@ -122,10 +122,6 @@ button.cap-main, a.cap-main { cursor: pointer; }
 
 /* ---- 流量（Flow + WeekChart）：矮柱图，下行墨蓝、上行浅蓝；7 / 30 天切换 ---- */
 .flow .dsh { align-items: center; }
-.seg-t { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
-.seg-t > button { height: 24px; padding: 0 11px; border: 0; border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12px; transition: color var(--dur-hover), background-color var(--dur-hover); }
-.seg-t > button:hover { color: var(--fg); }
-.seg-t > button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
 .wk { --wk-down: var(--brand); --wk-up: var(--brand-2); --wk-h: 140px; --wk-y: 34px; }
 .wk-sum { font-size: 12.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .wk-legend { margin-bottom: 4px; }
@@ -176,43 +172,9 @@ button.cap-main, a.cap-main { cursor: pointer; }
 .acc .st-empty, .acc .own { margin-top: 18px; }
 @media (max-width: 420px) { .acc-qr > div { flex-direction: column; align-items: flex-start; } }
 
-/* ---- 线路（NodesPreview）：整宽细线表格，状态在最右 ---- */
+/* ---- 线路（NodesPreview）：整宽细线表格（components/NodeTable，样式在 common.css） ---- */
 .dlines { padding-top: 64px; }
-.ntbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
-.ntbl th { padding: 0 12px 8px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; font-weight: var(--fw-regular); color: var(--faint); white-space: nowrap; }
-.ntbl th:nth-child(2) { width: 128px; } .ntbl th:nth-child(3) { width: 136px; } .ntbl th:nth-child(4) { width: 72px; } .ntbl th:nth-child(5) { width: 96px; }
-.ntbl td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: middle; color: var(--fg); white-space: nowrap; }
-.ntbl th:last-child, .ntbl td:last-child { padding-right: 0; }
-.ntbl tbody tr { transition: background-color var(--dur-hover); }
-.ntbl tbody tr:hover { background: var(--hover); }
-.ntbl .nr { text-align: right; }
-.ntbl td.nl { font-size: 12.5px; color: var(--body); }
-.ntbl tr.is-off td > * { opacity: .55; }
-.nname { display: flex; min-width: 0; align-items: center; gap: 10px; font-size: 13.5px; font-weight: var(--fw-strong); }
-.nname > .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nflag { display: inline-flex; flex: none; width: 18px; height: 12px; }
-.nflag > .flag { border-radius: 2px; }
-.ntags { display: inline-flex; flex: none; gap: 4px; }
-.ntags > span { padding: 2px 7px; border: 1px solid var(--line2); border-radius: 999px; font-size: 11px; font-weight: var(--fw-regular); line-height: 1.2; color: var(--body); }
-.dload { display: inline-flex; align-items: center; gap: 8px; }
-.dload > i { position: relative; width: 40px; height: 4px; overflow: hidden; border-radius: 2px; background: var(--line2); }
-.dload > i > b { position: absolute; inset: 0 auto 0 0; width: 33%; border-radius: 2px; background: var(--ok); }
-.dload[data-node-load='medium'] > i > b { width: 66%; background: var(--warn); }
-.dload[data-node-load='high'] > i > b { width: 100%; background: var(--danger); }
-.ntbl .nstate { justify-content: flex-end; font-size: 13px; color: var(--muted); }
-.ntbl .nstate[data-node-status='online'] > i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
-.nlat { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--body); font-variant-numeric: tabular-nums; }
-.sig { display: inline-flex; gap: 2px; }
-.sig > i { width: 3px; height: 10px; border-radius: 1px; background: var(--line2); }
-.sig > i.on { background: var(--ok); }
-.nrate { font-size: 13.5px; font-weight: var(--fw-strong); font-variant-numeric: tabular-nums; }
-.nrate.rate-lo { color: var(--ok); } .nrate.rate-hi { color: var(--warn); } .nrate.rate-mid { color: var(--fg); }
-@media (max-width: 640px) {
-  .dlines { padding-top: 48px; }
-  .ntbl .nl, .ntags { display: none; }
-  .ntbl th:nth-child(3) { width: 92px; } .ntbl th:nth-child(4) { width: 52px; } .ntbl th:nth-child(5) { width: 64px; }
-  .nlat .sig { display: none; }
-}
+@media (max-width: 640px) { .dlines { padding-top: 48px; } }
 
 @media (prefers-reduced-motion: reduce) {
   .track-fill, .track-pin, .drow, .drow-go, .acc-qr, .cap-main > svg { transition: none; }

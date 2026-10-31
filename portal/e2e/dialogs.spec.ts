@@ -65,7 +65,7 @@ test('shop: the order confirmation chunk is preloaded while the page is idle; th
   await loaded;
 
   const after = noLateFetch(page, 'ConfirmOrder');
-  const ms = await clickToDialog(page.locator('.plan-card button.btn-block:not([disabled])').first());
+  const ms = await clickToDialog(page.locator('.plan-cta button:not([disabled])').first());
   expect(ms).toBeLessThan(300);
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: '确认订单' })).toBeVisible();

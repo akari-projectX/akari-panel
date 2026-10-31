@@ -70,19 +70,20 @@
   照近 7 天计费流量的判断（会在本期结束前用完才提醒日期）；续费 / 买重置包（剩不到一成或已用完）；四个小事实（套餐到期、在线线路、余额与可提现、速率））
   → `Flow`（7 / 30 天切换，默认 7 天 = 预取的那份（`lib/dash-data` 的 `trafficSpec`），切到 30 天才取；`WeekChart` 30 天时只标今天和往前每 5 天）→ `News`（三条公告的细线列表，点开公告详情）；
   右栏 `Access`（`#subscribe`；仅自研客户端 / 暂停 / 读不出 / 没有套餐几种分支）+ `Subscribe`（「复制订阅链接」正文色胶囊、格式菜单、二维码开关（默认收起，`Qr` 本地生成）、导入的客户端名字之间细竖线 + 更多、还没有客户端）→ `DocsPreview`（教程：四篇文章，分类名 + 标题，当前设备的分类在前）；
-  整宽 `NodesPreview`（线路 · 负载（小条 + 字）· 延迟 · 倍率 · 状态，至多两个入口标签，每页 5 条）。
-  活动位 `Promo`（右栏，接入配置与教程之间）：数据 = 站长在后台「内容 › 活动」配置的 `GET /me/promotion`（`K.promotion`，在 `lib/dash-data` 里随首屏预取），没有活动整块不画；标签「限时活动」+ 倒计时（`role=timer`，按面板 `now` 与本机时钟的差，每秒走、后台标签页不走，到 0 收起）、大号折扣字样（公告标签的玫红 `--t-pink`）、标题与说明（按界面语言，英文空回落中文）、虚线框优惠码 + 复制（券可用时才有）、按钮（默认去商店，外链新窗口）。样式全在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`、`ntbl`、`dload`）。
+  整宽 `NodesPreview`（线路表 `components/NodeTable`（与线路页共用）：线路 · 负载（小条 + 字）· 延迟 · 倍率 · 状态，至多两个入口标签，每页 5 条）。
+  活动位 `Promo`（右栏，接入配置与教程之间）：数据 = 站长在后台「内容 › 活动」配置的 `GET /me/promotion`（`K.promotion`，在 `lib/dash-data` 里随首屏预取），没有活动整块不画；标签「限时活动」+ 倒计时（`role=timer`，按面板 `now` 与本机时钟的差，每秒走、后台标签页不走，到 0 收起）、大号折扣字样（公告标签的玫红 `--t-pink`）、标题与说明（按界面语言，英文空回落中文）、虚线框优惠码 + 复制（券可用时才有）、按钮（默认去商店，外链新窗口）。样式在 `src/styles/pages/dashboard.css`（类名 `hs-*`、`dsec`/`dsh`/`dlist`/`drow`、`acc-*`）；与线路页共用的线路表 `.ntbl`/`.dload`/`.nlat`/`.nrate` 与小分段切换 `.seg-t` 在 `pages/common.css`。
   对话框（公告详情、重置订阅、验证邮箱，含 bits-ui）不进页面分包，空闲时与按钮意图时预载（`lib/dialogs`）。小下拉菜单 `ui/Menu.svelte`（手写 menu button，不用 bits-ui 的浮层）。e2e `e2e/dashboard.spec.ts`。
 - **商店与订单（PR 4）** `pages/Shop.svelte`、`Orders.svelte`、`OrderDetail.svelte`（也是易支付 `return_url` 回来的页面）→ `components/shop/`：
-  `PlanGrid`（样稿 shop-cards，2026-10-29 用户裁决恢复独立卡片：无周期切换、「¥x /月 起」、三格规格（流量 / 重置 / 速率）、功能清单、一个按钮（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，
+  `PlanGrid`（外观 A，2026-10-31 按仪表盘风格重排：细线分隔的列、不画卡片，一行最多 3 列；1 个套餐时横排一整行（左：名称、价格、规格、按钮；右：功能清单），2 个时各占一半；无周期切换（2026-10-29 裁决）、「¥x /月 起」（「推荐」的价格用强调色）、三格规格（流量 / 重置 / 速率，左对齐）、功能清单、一个靠左的胶囊按钮 + 旁边一行说明（当前套餐与「推荐」用主按钮）；简介与功能清单 = 面板把套餐说明（Markdown）经 `src/markdown.rs` 渲染好的 `summary_html` / `details_html`，经 `RichHtml` 插入，门户不再自己解析说明）、`ConfirmOrder`（确认订单对话框，
   单独分包、空闲时预载：周期单选 + 省 x%、优惠码、「用余额抵扣」开关（逐单打开）、原价 / 各项抵扣 / 还需支付、换套餐作废确认、支付方式单选；窄屏底部抽屉、操作栏吸底）、`PendingOrder`（待付款细行）、
   `PayResult`（付款结果，
   轮询到变化或商店当场付清后带着 `history.state.paid` 跳来时弹一次）。报价、拒绝原因、默认档、卡片大字价格的纯逻辑在 `@/lib/shop`；
   本应用的小工具在 `lib/shop.ts`（省 x%、支付方式说明、`safeUrl`、支付宝唤起、倒计时、状态色调）、`lib/copy.svelte.ts`（`Copied`）。
-  余额抵扣是确认订单里的开关（`ui/Switch`）。商店页没有「当前订阅」区（2026-10-31 用户裁决删掉：天数大字、流量尺、到期 / 速率 / 余额），页头下面是待付款细行与套餐卡片；流量重置包是套餐列表下面的一行（`.shop-reset`，当前套餐配了重置包且现在能买时；流量用完时当前套餐卡的按钮本身就是重置包，这一行不出现）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
+  余额抵扣是确认订单里的开关（`ui/Switch`）。商店页没有「当前订阅」区（2026-10-31 用户裁决删掉：天数大字、流量尺、到期 / 速率 / 余额），页头（「选一个适合你的套餐」，右侧一行价格说明）下面是待付款细行与套餐列，最后一行小字（人民币、续费顺延、换套餐抵扣）；流量重置包是套餐列表下面的一行（`.shop-reset`，当前套餐配了重置包且现在能买时；流量用完时当前套餐卡的按钮本身就是重置包，这一行不出现）。`resource` 的 `keep`：换优惠码 / 余额重新报价时不闪空。
   e2e `e2e/shop.spec.ts`（React shop 全部场景 + #19 商店部分）；账户 `v2-shop-<视口>`（seed）。
-- **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（关键数字、图例、搜索、默认按倍率升序、宽屏表格（点「流量倍率」列头切换排序，`aria-sort`）/
-  窄屏行式列表（`svelte/reactivity` 的 `MediaQuery`，只渲染一份）、每 30 秒刷新；状态 / 倍率的样式在 `flat.css`（`.nstate` / `.rate`），仪表盘的线路预览共用）、
+- **线路、用量、钱包（PR 5）**：`pages/Nodes.svelte`（外观 A，2026-10-31 按仪表盘风格重排：页头一句大字「N 条线路，M 条在线」+ 右侧「每 30 秒自动刷新 · 刚刚」与刷新按钮；
+  筛选行 `.abar`（`pages/common.css`：左边 `.seg-t` 标签筛选「全部 + 订阅里出现的入口标签」，右边倍率说明）；一张线路表 `components/NodeTable`（与仪表盘共用，窄屏收起负载列与标签），默认按倍率升序、点「倍率」列头切换（`aria-sort`）；
+  表下一行负载图例与「维护中的线路不会出现在订阅里」（`data-node-legend`）；每 30 秒刷新；没有统计格子与搜索框）、
   `pages/Traffic.svelte`（本月 / 近 7 天 / 近 30 天，`resource` 的 `keep` 换范围时留着上一段；面积图、线路环形图与每日计费柱图都按 v1.4.0 恢复，见 `components/charts/`；明细记录的「导出 CSV」在浏览器里由同一份 `/me/traffic` 生成（`lib/usage-csv.ts`：BOM、字节与 GB、防公式注入，不另开接口））、
   `pages/Wallet.svelte` → `components/wallet/`（`InviteLink` 概览右栏、`InviteDetails` / `Ledger` / `Withdrawals` 三个分页、
   `WithdrawDialog`（含 bits-ui）单独分包、空闲时预载；USDT 网络是 `ui/Select`）。分页是 WAI-ARIA tabs（← → Home End），
