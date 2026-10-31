@@ -5,13 +5,14 @@
   import { loc } from '$lib/router.svelte';
   import { R } from '$lib/routes';
   import Logo from './Logo.svelte';
+  import { ICONS } from './menu-icons';
   import MobileMenu from './MobileMenu.svelte';
   import MoreMenu from './MoreMenu.svelte';
   import ThemeButton from './ThemeButton.svelte';
   import UserMenu from './UserMenu.svelte';
 
   /*
-   * 顶栏（外观 A · N1；2026-10-31 名称方案 ①）：Logo，纯文字导航 `总览 套餐 节点 指南 支持 更多⌄`，全部中粗（--fw-nav 500），
+   * 顶栏（外观 A · N1；2026-10-31 名称方案 ①，用户选「顶栏与下拉都带图标」）：Logo，导航 `总览 套餐 节点 指南 支持 更多⌄`，每项前一个 15px 线性图标（与窄屏菜单同一套），全部中粗（--fw-nav 500），
    * 当前项只换正文色 + 一道同色细线（字重不变，切换时文字不跳；切页时那道线从旧的一项滑到新的一项；「更多」里的页面算「更多」），
    * 工单有新回复、有待支付订单时标签右上一个小圆点；右侧明暗按钮与头像。
    * 窄屏（< 1024px）导航收进头像菜单：只剩 Logo 与「头像 + 三道线」的菜单按钮。
@@ -56,8 +57,9 @@
     <nav bind:this={nav} class="topnav" aria-label={t('主导航')}>
       {#each items as it (it.to)}
         {@const on = isCurrent(it.to, loc.path)}
+        {@const Icon = ICONS[it.icon]}
         <a class="topnav-link" href={it.to} data-active={on} aria-current={on ? 'page' : undefined}>
-          {t(it.label)}{#if it.attention}<span class="nav-dot" role="status" aria-label={it.to === R.tickets ? tp('{n} 张工单有新回复', { n: repliedTickets() }) : t('有待支付的订单')}></span>{/if}
+          <Icon class="topnav-ic" size={15} strokeWidth={1.75} aria-hidden="true" />{t(it.label)}{#if it.attention}<span class="nav-dot" role="status" aria-label={it.to === R.tickets ? tp('{n} 张工单有新回复', { n: repliedTickets() }) : t('有待支付的订单')}></span>{/if}
         </a>
       {/each}
       <MoreMenu />

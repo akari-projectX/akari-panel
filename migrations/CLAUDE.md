@@ -73,3 +73,5 @@ CHECK 约束——`users.role IN (admin,user)`、`nodes.status IN (pending,onlin
 `sub_templates`：`format` PK ∈ sing-box/clash/surge/surfboard；`body` 1–262144 字符；`version`；`updated_at`/`updated_by`；无行 = 内置默认，由 `sub::templates::apply_set`/`apply_reset` 写并同事务审计。`panel_settings.sub_formats`/`sub_import_clients` 的 CHECK 含 `surge`/`surfboard`（NULL = 全开）。
 
 `promotions`（0008，仪表盘活动位）：标题/说明 zh 必填、en 可选（长度 CHECK 同 `promotions::check`）、`badge` ≤8、`coupon_id` → coupons（SET NULL，删券 = 活动保留、不带码）、`cta_url`（`^(https?://|/)`）、`starts_at` < `ends_at`（都必填，倒计时要终点）、`audience` all/with_plan/without_plan、`enabled`、`sort` ±1e6、`version` ≥1（乐观并发）；部分索引 `promotions_live (ends_at) WHERE enabled`。只由 `promotions::apply_*` 写，同事务审计。
+
+`0009_default_guides.sql`：四篇默认客户端教程（Windows / macOS / iOS 与 iPadOS / Android，各一个分类、已发布、中英双语），**只在 `kb_categories` 与 `kb_articles` 都为空时插入**（新站或从没写过教程的站）；之后与普通文章一样由 `kb::apply_*` 改删。门户字体切片读这个文件取字（`portal/scripts/font-slices.py` `EXTRA`），改文字后重新生成切片。测试库同样带着它们：`kb::tests` 先 `without_default_guides`，门户 e2e 的 seed 先删光知识库。

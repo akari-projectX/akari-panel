@@ -227,7 +227,7 @@ test('language: English labels and <html lang>, then back', async ({ page }, inf
     await page.getByRole('button', { name: 'English' }).click();
     await expect(page.locator('main h1')).toHaveText('Dashboard');
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-    await expect(page.getByRole('menu', { name: 'Menu' }).getByRole('menuitem', { name: /^Store/ })).toBeVisible();
+    await expect(page.getByRole('menu', { name: 'Menu' }).getByRole('menuitem', { name: /^Plan/ })).toBeVisible();
     await page.getByRole('button', { name: '中文' }).click();
   }
   await expect(page.locator('main h1')).toHaveText('仪表盘');

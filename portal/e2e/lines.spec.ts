@@ -147,6 +147,10 @@ test('traffic: a range with no traffic says so; the panel keeps daily rows only 
   });
   await open(page, '/traffic', '流量明细');
   await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
+  /* 「本月」在每月 1 日（站点时区）起止是同一天，那时没有更早的日子可说：换成近 30 天，日期再怎么落都有 */
+  await page.getByRole('tab', { name: '近 30 天' }).click();
+  await expect(page.getByRole('tab', { name: '近 30 天' })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('这段时间还没有流量记录')).toBeVisible();
   await expect(page.getByText(/按天的明细只保留到 .*，更早的日子显示为 0。/)).toBeVisible();
   await expect(page.locator('.wk')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '导出 CSV' })).toHaveCount(0);

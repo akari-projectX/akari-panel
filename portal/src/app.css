@@ -135,6 +135,10 @@
     content: ''; position: absolute; inset-inline: 0; bottom: 0; height: 1.5px; background: var(--line2);
     transform: scaleX(0); transform-origin: left; transition: transform var(--dur-fast) var(--ease-out);
   }
+  .topnav-link { gap: 6px; }
+  .topnav-link .nav-dot { margin-left: -2px; }
+  .topnav-ic { flex: none; color: var(--faint); transition: color var(--dur-hover); }
+  .topnav-link:hover .topnav-ic, .topnav-link[data-active='true'] .topnav-ic { color: var(--fg); }
   .topnav-link:hover { color: var(--fg); }
   .topnav-link:hover::after { transform: scaleX(1); }
   .topnav-link[data-active='true'] { color: var(--fg); }

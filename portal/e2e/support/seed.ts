@@ -185,6 +185,9 @@ await admin.call('POST', '/api/v1/announcements', {
   title_zh: 'E2E 双十一活动', title_en: 'E2E sale', body_zh: '全场八折，年付再送流量。', body_en: 'Everything 20% off.', pinned: false,
   tag_id: tagId('活动'),
 });
+/* 新库自带四篇默认客户端教程（迁移 0009）：先清掉，下面的分类、篇数与搜索断言只对种子自己的文章 */
+for (const a of await admin.call<{ id: string }[]>('GET', '/api/v1/kb/articles')) await admin.call('DELETE', `/api/v1/kb/articles/${a.id}`);
+for (const c of await admin.call<{ id: string }[]>('GET', '/api/v1/kb/categories')) await admin.call('DELETE', `/api/v1/kb/categories/${c.id}`);
 const win = await admin.call<{ id: string }>('POST', '/api/v1/kb/categories', { name_zh: 'Windows 教程', name_en: 'Windows guides' });
 const ios = await admin.call<{ id: string }>('POST', '/api/v1/kb/categories', { name_zh: 'iOS 与 iPadOS 教程', name_en: 'iOS and iPadOS guides' });
 /* 多几个分类（名字长短不一）：分类要换行排开、不被截断 */
