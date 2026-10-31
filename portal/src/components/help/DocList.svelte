@@ -70,7 +70,7 @@
   const open = (a: KbArticle) => setParams({ id: a.id, cat: a.category, q: q || undefined });
 </script>
 
-<PageTitle title={t('使用手册')} lead={t('有什么可以帮你？')} />
+<PageTitle title={t('使用指南')} lead={t('有什么可以帮你？')} />
 
 <div class="top-tools">
   <form novalidate role="search" class="search" onsubmit={submit}>

@@ -1,5 +1,5 @@
 /*
- * 门户外壳（外观 A · 纸面简约）。门禁、导航（桌面顶栏八项 + 头像菜单 / 窄屏「头像 + 三道线」菜单）、明暗、语言、账户范围、旧地址、退出，
+ * 门户外壳（外观 A · 纸面简约）。门禁、导航（桌面顶栏五项 + 「更多」 + 头像菜单 / 窄屏「头像 + 三道线」菜单）、明暗、语言、账户范围、旧地址、退出，
  * 以及设计评审截图（桌面 1440 / 手机 390 × 浅 / 深）。
  * 账户来自 e2e/support/seed.ts：user@e2e.test（正常）、expired@e2e.test（续费范围）、banned@e2e.test（封禁）；
  * 退出用 logout-<视口>@e2e.test——user@e2e.test 永远不退出（退出会结束这个账户的所有会话）。
@@ -8,15 +8,24 @@ import type { Page } from '@playwright/test';
 import { FIELDS } from './support/panel.ts';
 import { admin, expect, mine, ready, shot, signIn, test } from './fixtures';
 
-/** 顶栏八项（N1：概览 · 商店 · 线路 · 用量 · 订单 · 公告 · 文档 · 工单）+ 头像菜单里的两项 */
-const NAV = ['概览', '商店', '线路', '用量', '订单', '公告', '文档', '工单', '邀请', '设置'];
+/** 导航八项（2026-10-31 名称方案 ①：桌面顶栏五项 + 「更多」里三项，窄屏菜单平铺同一顺序）+ 头像菜单里的两项 */
+const NAV = ['总览', '套餐', '节点', '指南', '支持', '流量明细', '账单', '动态', '邀请', '设置'];
 
 const desktop = (name: string) => name === 'desktop';
 
-/** 某个视口下可见的导航名（桌面 = 顶栏 + 头像菜单里的页面行；手机 = 打开菜单后卡片里的全部页面行） */
+/** 某个视口下可见的导航名（桌面 = 顶栏 + 「更多」下拉 + 头像菜单里的页面行；手机 = 打开菜单后卡片里的全部页面行） */
 async function navNames(page: Page, isDesktop: boolean): Promise<string[]> {
   if (isDesktop) {
-    const names = await page.getByRole('navigation', { name: '主导航' }).getByRole('link').allInnerTexts();
+    const nav = page.getByRole('navigation', { name: '主导航' });
+    const names = await nav.getByRole('link').allInnerTexts();
+    const more = nav.getByRole('button', { name: /^更多/ });
+    if (await more.count()) {
+      await more.click();
+      const list = page.getByRole('menu', { name: '更多' });
+      names.push(...(await list.locator('.more-t').allInnerTexts()));
+      await page.keyboard.press('Escape');
+      await expect(list).toHaveCount(0);
+    }
     await page.locator('header .acct').click();
     const menu = page.getByRole('menu', { name: '账户菜单' });
     /* 卡片按需加载：菜单外壳先出现，等最后一行（退出登录）画出来再读 */
@@ -70,17 +79,17 @@ test('navigation: order, current page, client-side switches', async ({ page }, i
 
   if (desktop(info.project.name)) {
     const nav = page.getByRole('navigation', { name: '主导航' });
-    await expect(nav.getByRole('link', { name: /^概览/ })).toHaveAttribute('aria-current', 'page');
-    await nav.getByRole('link', { name: /^商店/ }).click();
+    await expect(nav.getByRole('link', { name: /^总览/ })).toHaveAttribute('aria-current', 'page');
+    await nav.getByRole('link', { name: /^套餐/ }).click();
     await expect(page).toHaveURL(/\/shop$/);
-    await expect(page.locator('main h1')).toHaveText('商店');
-    await expect(nav.getByRole('link', { name: /^商店/ })).toHaveAttribute('aria-current', 'page');
-    await expect(nav.getByRole('link', { name: /^概览/ })).not.toHaveAttribute('aria-current', 'page');
+    await expect(page.locator('main h1')).toHaveText('套餐');
+    await expect(nav.getByRole('link', { name: /^套餐/ })).toHaveAttribute('aria-current', 'page');
+    await expect(nav.getByRole('link', { name: /^总览/ })).not.toHaveAttribute('aria-current', 'page');
     await page.goBack();
     await expect(page.locator('main h1')).toHaveText('仪表盘');
   } else {
     await page.getByRole('button', { name: '菜单' }).click();
-    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: /^线路/ }).click();
+    await page.getByRole('menu', { name: '菜单' }).getByRole('menuitem', { name: /^节点/ }).click();
     await expect(page).toHaveURL(/\/nodes$/);
     await expect(page.locator('main h1')).toHaveText('节点状态');
     await expect(page.getByRole('menu', { name: '菜单' })).toHaveCount(0);
@@ -154,7 +163,7 @@ test('mobile menu: card, keyboard, Esc, scroll lock', async ({ page }, info) => 
   await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('html')).toHaveClass(/menu-open/);
   await expect(menu.locator('.acc-email')).toHaveText('user@e2e.test');
-  await expect(menu.getByRole('menuitem', { name: /^概览/ })).toHaveAttribute('aria-current', 'page');
+  await expect(menu.getByRole('menuitem', { name: /^总览/ })).toHaveAttribute('aria-current', 'page');
   await expect(menu.locator('a.row .row-t')).toHaveText(NAV);
   await shot(page, info, 'menu-light');
 
@@ -231,9 +240,9 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await page.goto('/');
   await ready(page, '仪表盘');
   const renewal = await navNames(page, isDesktop);
-  expect(renewal).not.toContain('线路');
-  expect(renewal).not.toContain('用量');
-  expect(renewal).toContain('商店');
+  expect(renewal).not.toContain('节点');
+  expect(renewal).not.toContain('流量明细');
+  expect(renewal).toContain('套餐');
   /* 续费范围没有邀请，同一项叫「钱包」（桌面在头像菜单里） */
   expect(renewal).toContain('钱包');
   expect(renewal).not.toContain('邀请');
@@ -247,11 +256,11 @@ test('scopes: renewal and banned accounts see only their pages', async ({ page }
   await page.goto('/');
   /* 封禁账户的仪表盘就是封禁说明（dashboard.spec.ts 详测） */
   await ready(page, '账户已被封禁');
-  expect(await navNames(page, isDesktop)).toEqual(['概览', '工单']);
+  expect(await navNames(page, isDesktop)).toEqual(['总览', '支持']);
   await page.goto('/shop');
   await expect(page).toHaveURL(/\/$/);
   await page.goto('/tickets');
-  await ready(page, '工单');
+  await ready(page, '支持');
   if (isDesktop) {
     await page.locator('header .acct').click();
     await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText([/退出登录/]);
@@ -274,7 +283,7 @@ test('unknown addresses', async ({ page }) => {
 test('sign out ends the session', async ({ page }, info) => {
   await signIn(page, mine(info, 'logout'));
   await page.goto('/orders');
-  await ready(page, '我的订单');
+  await ready(page, '账单');
   if (desktop(info.project.name)) {
     await page.locator('header .acct').click();
     await page.getByRole('menuitem', { name: /^退出登录/ }).click();

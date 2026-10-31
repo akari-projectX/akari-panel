@@ -24,8 +24,6 @@ export const EN: Record<string, string> = {
   '套餐': 'Plan',
   '工单': 'Tickets',
   '设置': 'Settings',
-  '使用明细': 'Usage details',
-  '我的订单': 'My orders',
   '退出登录': 'Sign out',
   '登录': 'Sign in',
   '登录成功': 'Signed in',
@@ -130,8 +128,6 @@ export const EN: Record<string, string> = {
 
   /* ── 导航 / 外壳（存在局部数组里，经 tr(变量) 渲染） ── */
   '仪表盘': 'Dashboard',
-  '商店': 'Store',
-  '文档': 'Docs',
   '邀请': 'Referral',
   '账户': 'Account',
   /* 页头「一线」：菜单按钮与弹出的卡片 */
@@ -424,7 +420,6 @@ export const EN: Record<string, string> = {
   '站长在后台的「知识库」里发布文章后，这里就会有入口。': 'Entries appear here once the site publishes articles in its knowledge base.',
 
   /* 文档页：使用手册 */
-  '使用手册': 'Handbook',
 
   /* ── 面板错误码（src/i18n/errors.ts 的简体原文） ── */
   "账户已被封禁": "This account is banned.",
@@ -991,15 +986,24 @@ export const EN: Record<string, string> = {
   '复制邀请码': 'Copy code',
 
   /* ── 门户 v2（portal/）的外壳与导航 ── */
-  '用量': 'Usage',
   '公告': 'Announcements',
-  '订单': 'Orders',
   '账户设置': 'Account settings',
   '菜单': 'Menu',
   /* 语言自称保持原文 */
   '切换到中文': 'Switch to Chinese',
   '{site} 首页': '{site} home',
   '页脚': 'Footer',
+  '总览': 'Overview',
+  '节点': 'Nodes',
+  '指南': 'Guides',
+  '支持': 'Support',
+  '流量明细': 'Usage details',
+  '账单': 'Billing',
+  '动态': 'Updates',
+  '使用指南': 'Guides',
+  '每天的用量与节点分布': 'Daily usage by node',
+  '订单、付款与退款记录': 'Orders, payments and refunds',
+  '公告与服务更新': 'Announcements and service updates',
   '主导航': 'Main navigation',
   '跳到主要内容': 'Skip to main content',
   /* ── 门户 v2：登录、注册 ── */
@@ -1040,7 +1044,6 @@ export const EN: Record<string, string> = {
   '确认购买': 'Confirm purchase',
   '立即把本周期已用流量清零，不改变套餐与到期时间。': 'Clears this period\'s used traffic right away; the plan and expiry stay the same.',
   '还需支付': 'To pay',
-  '概览': 'Overview',
   '复制订阅': 'Copy link',
   '外观': 'Appearance',
   '语言': 'Language',

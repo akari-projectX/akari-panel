@@ -78,7 +78,7 @@
   }
 </script>
 
-<PageTitle title={t('工单')} lead={waiting > 0 ? tp('{n} 张工单等待客服回复', { n: waiting }) : t('有问题，随时找我们')}>
+<PageTitle title={t('支持')} lead={waiting > 0 ? tp('{n} 张工单等待客服回复', { n: waiting }) : t('有问题，随时找我们')}>
   {#snippet extra()}
     <button type="button" class="btn pri tk-new" {@attach intent(NewTicket)} onclick={openNew}><Plus size={16} strokeWidth={1.75} aria-hidden="true" />{t('提交工单')}</button>
   {/snippet}

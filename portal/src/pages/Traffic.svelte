@@ -79,10 +79,10 @@
 {#if logs.loading && !logs.data}
   <DashSkeleton hold={false} />
 {:else if logs.error && !logs.data}
-  <PageTitle title={t('使用明细')} />
+  <PageTitle title={t('流量明细')} />
   <LoadError error={logs.error} onretry={logs.reload} />
 {:else}
-  <PageTitle title={t('使用明细')} {lead} sub={logs.data ? tp('日期按 {tz} 计算。', { tz: logs.data.timezone }) : undefined}>
+  <PageTitle title={t('流量明细')} {lead} sub={logs.data ? tp('日期按 {tz} 计算。', { tz: logs.data.timezone }) : undefined}>
     {#snippet extra()}
       <Tabs inline idPrefix="range" label={t('时间范围')} value={range} onchange={(k) => (range = k as Range)} tabs={RANGES.map((r) => ({ key: r.id, label: t(r.label) }))} />
     {/snippet}

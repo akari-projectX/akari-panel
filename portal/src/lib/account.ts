@@ -15,18 +15,23 @@ export type IconKey = 'dashboard' | 'shop' | 'docs' | 'invite' | 'tickets' | 'no
 export type NavLink = { to: string; label: string; icon: IconKey; meta?: string; attention?: boolean };
 
 /**
- * 顶栏八项（2026-10-30 用户确认的 N1：概览 · 商店 · 线路 · 用量 · 订单 · 公告 · 文档 · 工单），没有「更多」。
- * 每一项按账户范围显示（routes.ts 的 PAGE_SCOPES）：过期 / 流量用完的看不到线路、用量，被封禁的只剩概览和工单。
+ * 顶栏（2026-10-31 用户确认：名称方案 ①）：常用的五项 `总览 · 套餐 · 节点 · 指南 · 支持` 摆在外面，
+ * 不常用的三项 `流量明细 · 账单 · 动态` 收进「更多」（桌面是一个下拉；窄屏菜单里全部平铺，先五项后三项）。
+ * 地址不变（旧链接照样能开）。每一项按账户范围显示（routes.ts 的 PAGE_SCOPES）：过期 / 流量用完的看不到节点、流量明细，
+ * 被封禁的只剩总览和支持（「更多」里一项都没有时不显示「更多」）。
  */
 const PRIMARY: NavLink[] = [
-  { to: R.dashboard, label: '概览', icon: 'dashboard' },
-  { to: R.shop, label: '商店', icon: 'shop' },
-  { to: R.nodes, label: '线路', icon: 'nodes' },
-  { to: R.traffic, label: '用量', icon: 'traffic' },
-  { to: R.orders, label: '订单', icon: 'orders' },
-  { to: R.announcements, label: '公告', icon: 'news' },
-  { to: R.help, label: '文档', icon: 'docs' },
-  { to: R.tickets, label: '工单', icon: 'tickets' },
+  { to: R.dashboard, label: '总览', icon: 'dashboard' },
+  { to: R.shop, label: '套餐', icon: 'shop' },
+  { to: R.nodes, label: '节点', icon: 'nodes' },
+  { to: R.help, label: '指南', icon: 'docs' },
+  { to: R.tickets, label: '支持', icon: 'tickets' },
+];
+
+const MORE: NavLink[] = [
+  { to: R.traffic, label: '流量明细', icon: 'traffic' },
+  { to: R.orders, label: '账单', icon: 'orders' },
+  { to: R.announcements, label: '动态', icon: 'news' },
 ];
 
 /**
@@ -59,18 +64,27 @@ export function accountLine() {
 
 const hasWallet = (s: string | undefined) => s === 'full';
 
-/** 顶部导航（桌面）：不显示数字，只有工单新回复、待支付订单上的小圆点 */
-export function primaryItems(): NavLink[] {
+const withAttention = (list: NavLink[]): NavLink[] => {
   const s = scope();
-  return PRIMARY.filter((n) => allowed(n.to, s)).map((n) => ({
+  return list.filter((n) => allowed(n.to, s)).map((n) => ({
     ...n,
     attention: (n.to === R.tickets && repliedTickets() > 0) || (n.to === R.orders && pendingOrders() > 0),
   }));
+};
+
+/** 顶部导航（桌面）外面的五项：不显示数字，只有工单新回复上的小圆点 */
+export function primaryItems(): NavLink[] {
+  return withAttention(PRIMARY);
 }
 
-/** 窄屏菜单里的导航：同样八项，右边挂实时数字（数字带单位，语序随语言变，所以用 tp 组装） */
+/** 「更多」里的三项（账单有待支付订单时带圆点，「更多」按钮上也挂一个） */
+export function moreItems(): NavLink[] {
+  return withAttention(MORE);
+}
+
+/** 窄屏菜单里的导航：同样八项（先五项后三项），右边挂实时数字（数字带单位，语序随语言变，所以用 tp 组装） */
 export function navItems(): NavLink[] {
-  return primaryItems().map((n) => {
+  return [...primaryItems(), ...moreItems()].map((n) => {
     if (n.to === R.tickets) {
       const replied = repliedTickets();
       const meta = replied ? tp('{n} 条新回复', { n: replied }) : openTickets() ? tp('{n} 张未关闭', { n: openTickets() }) : undefined;
@@ -103,7 +117,7 @@ export function linesLabel(t: (s: string) => string): string {
   return a.has ? tp('菜单，剩余流量 {n}%', { n: a.value }) : t('打开菜单');
 }
 
-/** 当前页：同一路径或它下面的子路径（/orders/x 算「我的订单」） */
+/** 当前页：同一路径或它下面的子路径（/orders/x 算「账单」） */
 export function isCurrent(to: string, path: string): boolean {
   return to === '/' ? path === '/' : path === to || path.startsWith(`${to}/`);
 }
