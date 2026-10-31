@@ -1125,4 +1125,5 @@ export const EN: Record<string, string> = {
   '新用户': 'New here',
   '这一类里没有工单': 'No tickets here',
   '{t}更新': 'Updated {t}',
+  '字体：HarmonyOS Sans': 'Font: HarmonyOS Sans',
 };

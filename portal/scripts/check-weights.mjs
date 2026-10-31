@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
  * 字重只有两档：--fw-regular（400，正文）与 --fw-strong（600，强调 / 标题），定义在 src/styles/tokens.css。
- * 门户只用系统字体：微软雅黑没有 500，Windows / Android / Linux 上没有 300，其余字重会悄悄并成相邻一档，层次随之消失。
+ * 门户的字体（HarmonyOS Sans SC）只带 400 与 600 两个字重，回落的系统字体里微软雅黑也没有 500，其余字重会悄悄并成相邻一档，层次随之消失。
  * 层次靠颜色（--fg / --muted / --faint）与字号，不靠第三档字重。
  *
  * 在 src/ 与 index.html 里找：
@@ -16,6 +16,8 @@ import { PORTAL } from './strings.mjs';
 
 const ROOTS = [join(PORTAL, 'src'), join(PORTAL, 'index.html')];
 const TOKENS = join(PORTAL, 'src/styles/tokens.css');
+/* 生成的 @font-face（scripts/font-slices.py）：那里的 font-weight 是字体文件自己的字重，不是用法 */
+const FONTS = join(PORTAL, 'src/styles/fonts.css');
 const EXT = /\.(css|svelte|ts|html)$/;
 
 function walk(p) {
@@ -27,7 +29,7 @@ function walk(p) {
 const WEIGHT_OK = /^(?:var\(--fw-(?:regular|strong)\)|inherit)$/;
 const bad = [];
 
-for (const file of ROOTS.flatMap(walk).filter((f) => EXT.test(f))) {
+for (const file of ROOTS.flatMap(walk).filter((f) => EXT.test(f) && f !== FONTS)) {
   const lines = readFileSync(file, 'utf8').split('\n');
   lines.forEach((line, i) => {
     const at = (why) => bad.push(`${relative(PORTAL, file)}:${i + 1}: ${why}: ${line.trim().slice(0, 120)}`);

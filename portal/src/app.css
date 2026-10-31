@@ -3,6 +3,7 @@
  * 颜色全部来自 src/styles/tokens.css（main.ts 先引它）；这里只引用 var(--…)，不写颜色字面量。
  */
 @import 'tailwindcss';
+@import './styles/fonts.css';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -226,6 +227,7 @@
   footer.site .wrap.row2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px 32px; padding-block: 28px; font-size: 12.5px; color: var(--muted); }
   footer.site .copy { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; }
   footer.site .copy .extra { white-space: pre-line; }
+  footer.site .copy .font-note { color: var(--faint); }
   footer.site nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; margin-right: -6px; }
   footer.site nav > span { display: flex; align-items: center; }
   footer.site nav i { width: 1px; height: 12px; margin-inline: 2px; background: var(--line); }
