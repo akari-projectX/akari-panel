@@ -100,26 +100,6 @@ button.cap-main, a.cap-main { cursor: pointer; }
   .cap-close { position: absolute; top: 8px; right: 0; }
 }
 
-/* ---- 细线列表（公告、教程）：日期 / 分类、标题与摘要、→ ---- */
-.dlist { border-top: 1px solid var(--line); }
-.drow {
-  display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: baseline; gap: 14px; width: 100%; padding: 12px 0;
-  border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--body); font: inherit; font-size: 13.5px; text-align: left;
-  cursor: pointer; transition: padding-left var(--dur-fast) var(--ease-out);
-}
-.drow:hover { padding-left: 6px; }
-.drow > time, .drow-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--faint); }
-.drow.doc { grid-template-columns: 76px minmax(0, 1fr) auto; }
-.drow-k.mine { color: var(--brand); }
-.drow-m { min-width: 0; }
-.drow-m > b { font-weight: var(--fw-regular); color: var(--fg); }
-.drow.unread .drow-m > b, .drow.doc .drow-m > b { font-weight: var(--fw-strong); }
-.drow-m > small { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
-.dtag { margin-right: 8px; color: var(--c, var(--muted)); font-size: 11.5px; font-weight: var(--fw-strong); }
-.dtag.pin { color: var(--brand); }
-.drow-go { color: var(--faint); transition: translate var(--dur-fast), color var(--dur-hover); }
-.drow:hover .drow-go { translate: 3px 0; color: var(--fg); }
-
 /* ---- 流量（Flow + WeekChart）：矮柱图，下行墨蓝、上行浅蓝；7 / 30 天切换 ---- */
 .flow .dsh { align-items: center; }
 
@@ -163,7 +143,7 @@ button.cap-main, a.cap-main { cursor: pointer; }
 @media (max-width: 640px) { .dlines { padding-top: 48px; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .track-fill, .track-pin, .drow, .drow-go, .acc-qr, .cap-main > svg { transition: none; }
+  .track-fill, .track-pin, .acc-qr, .cap-main > svg { transition: none; }
 }
 
 /* 活动位（Promo）：标签 + 倒计时、大号折扣字样（公告标签的玫红）、标题 / 说明、虚线框优惠码 + 复制、去商店 */

@@ -25,7 +25,7 @@
   .tbl th:last-child, .tbl td:last-child { padding-right: 0; }
 }
 @layer components {
-  @media (min-width: 640px) { .set-row:not(.stack) { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); align-items: start; }
+  @media (min-width: 640px) { .set-row:not(.stack) { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 }
 }
 @media (max-width: 720px) {
@@ -35,7 +35,7 @@
 .tabs-pill.inl { display: inline-flex; }
 .tabs-pill > button { position: relative; display: inline-flex; flex: 1; height: 100%; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; border: 0; border-radius: 999px; background: none; font: inherit; font-size: 12.5px; font-weight: var(--fw-regular); line-height: 20px; white-space: nowrap; color: var(--muted); transition: color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out); }
 .tabs-pill > button:hover { color: var(--fg); }
-.tabs-pill > button[aria-selected='true'] { background: var(--fg); color: var(--bg); }
+.tabs-pill > button[aria-selected='true'], .tabs-pill > button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
 .tabs-pill > button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .tbl thead tr, .tbl tbody tr { border-bottom: 1px solid var(--line); }
 .tbl tbody tr:last-child { border-bottom: 0; }

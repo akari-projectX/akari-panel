@@ -95,10 +95,6 @@ export function setSiteTimeZone(tz: string | null | undefined) {
   } catch { /* 不认识的时区名：保留原来的 */ }
 }
 
-export function siteTimeZone(): string {
-  return zone;
-}
-
 type Parts = { year: string; month: string; day: string; hour: string; minute: string; weekday: string };
 
 function parts(d: Date): Parts {

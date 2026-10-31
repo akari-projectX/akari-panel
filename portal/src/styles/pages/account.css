@@ -1,22 +1,17 @@
 @layer components {
 
-  /* ── 设置行（设置页）：左边名称 + 说明，右边当前值 + 操作，细线分隔；窄屏上下两层 ── */
-  .set-row { display: grid; gap: 10px 32px; padding-block: 16px; border-bottom: 1px solid var(--line); }
-  .set-row:last-child { border-bottom: 0; padding-bottom: 0; }
+  /* ── 设置行（外观 A）：左边名称 + 说明，右边当前值 + 操作，上下细线；窄屏上下两层 ── */
+  .set-row { display: grid; gap: 10px 32px; padding-block: 20px; border-bottom: 1px solid var(--line); }
+  .sec-head + .set-row, .sec-head + * > .set-row:first-child { border-top: 1px solid var(--line); }
   .set-t { font-size: 14.5px; font-weight: var(--fw-strong); color: var(--fg); }
   .set-d { margin-top: 3px; font-size: 13px; line-height: 1.65; color: var(--muted); }
   .set-r { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; min-width: 0; min-height: 36px; }
   .set-r > :last-child { margin-left: auto; }
+  @media (min-width: 640px) { .set-r { justify-content: flex-end; } .set-r > :last-child { margin-left: 0; } }
   .set-r .btns { display: flex; flex-wrap: wrap; gap: 8px; }
 }
-.settings-page { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 56px; margin-top: 8px; }
-@media (min-width: 1024px) { .settings-page { grid-template-columns: 184px minmax(0, 760px); }
-}
-.settings-nav { position: sticky; top: 64px; z-index: 10; min-width: 0; margin-inline: calc(-1 * var(--gutter)); padding: 10px var(--gutter); background: color-mix(in srgb, var(--bg) 95%, transparent); border-bottom: 1px solid var(--line); }
-.settings-nav ul { display: flex; gap: 4px; list-style: none; overflow-x: auto; scrollbar-width: none; }
-.settings-nav-link { display: block; white-space: nowrap; border-radius: 9999px; padding: 6px 12px; font-size: 13px; color: var(--muted); transition: color var(--dur-hover), background-color var(--dur-hover); }
-@media (min-width: 1024px) {
-  .settings-nav { top: 96px; align-self: start; margin: 44px 0 0; padding: 0; background: none; border: 0; }
-  .settings-nav ul { flex-direction: column; overflow: visible; }
-  .settings-nav-link { border-radius: 8px; padding: 7px 12px; }
-}
+.settings-page { margin-top: 4px; }
+/* 分区导航：页头下一排细线胶囊（当前分区正文色实底），滚动时吸在顶栏下面；放不下时横滑 */
+.settings-nav { position: sticky; top: 64px; z-index: 10; min-width: 0; margin-inline: calc(-1 * var(--gutter)); padding: 10px var(--gutter); background: color-mix(in srgb, var(--bg) 94%, transparent); }
+.settings-nav ul { display: flex; width: fit-content; max-width: 100%; gap: 2px; padding: 3px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); list-style: none; overflow-x: auto; scrollbar-width: none; }
+.settings-nav-link { display: block; white-space: nowrap; border-radius: 999px; padding: 5px 14px; font-size: 12.5px; color: var(--muted); transition: color var(--dur-hover), background-color var(--dur-hover); }

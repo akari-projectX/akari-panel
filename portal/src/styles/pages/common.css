@@ -313,13 +313,13 @@
 /* 设置页（v1.4.0 index.css 的 .settings-*） */
 .parts { min-width: 0; }
 .settings-nav-link:hover { color: var(--fg); }
-.settings-nav-link[aria-current] { color: var(--fg); background: var(--hover); font-weight: var(--fw-strong); }
-.settings-page .sec-title { font-size: 15.5px; letter-spacing: -.01em; color: var(--fg); }
-.settings-page .sec-head { margin-bottom: 14px; }
-.settings-page .sec { padding-block: 36px; }
+.settings-nav-link[aria-current] { color: var(--bg); background: var(--fg); }
+/* 分区标题同仪表盘的小标题：12px、加字距、辅助灰 */
+.settings-page .sec-title { font-size: 12px; font-weight: var(--fw-strong); letter-spacing: .14em; color: var(--muted); }
+.settings-page .sec-head { margin-bottom: 12px; }
+.settings-page .sec { padding-block: 32px 8px; }
+.settings-page .sec + .sec { border-top: 0; }
 .settings-page .sec[id] { scroll-margin-top: 128px; }
-@media (min-width: 1024px) { .settings-page .sec[id] { scroll-margin-top: 80px; }
-}
 .settings-danger .sec-title { color: var(--danger); }
 
 /* 线路表（components/NodeTable：仪表盘的线路预览与线路页共用）：细线表格，状态在最右；窄屏收起负载列与标签 */
@@ -362,3 +362,24 @@
 .abar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .abar > .seg-t { margin-left: 0; }
 .abar-hint { margin-left: auto; font-size: 12.5px; color: var(--muted); }
+
+/* ---- 细线列表（仪表盘的公告与教程、公告页、工单列表）：日期 / 分类、标题与摘要、→ ---- */
+.dlist { border-top: 1px solid var(--line); }
+.drow {
+  display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: baseline; gap: 14px; width: 100%; padding: 12px 0;
+  border: 0; border-bottom: 1px solid var(--line); background: none; color: var(--body); font: inherit; font-size: 13.5px; text-align: left;
+  cursor: pointer; transition: padding-left var(--dur-fast) var(--ease-out);
+}
+.drow:hover { padding-left: 6px; }
+.drow > time, .drow-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--faint); }
+.drow.doc { grid-template-columns: 76px minmax(0, 1fr) auto; }
+.drow-k.mine { color: var(--brand); }
+.drow-m { min-width: 0; }
+.drow-m > b { font-weight: var(--fw-regular); color: var(--fg); }
+.drow.unread .drow-m > b, .drow.doc .drow-m > b { font-weight: var(--fw-strong); }
+.drow-m > small { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+.dtag { margin-right: 8px; color: var(--c, var(--muted)); font-size: 11.5px; font-weight: var(--fw-strong); }
+.dtag.pin { color: var(--brand); }
+.drow-go { color: var(--faint); transition: translate var(--dur-fast), color var(--dur-hover); }
+.drow:hover .drow-go { translate: 3px 0; color: var(--fg); }
+@media (prefers-reduced-motion: reduce) { .drow, .drow-go { transition: none; } }
