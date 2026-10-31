@@ -11,7 +11,7 @@ import { loc } from './router.svelte';
  * 菜单 {#if pop.open} bind:this={pop.menu} data-state={pop.state} onkeydown={pop.onMenuKey}。
  * 可以聚焦的条目：[role="menuitem"] 与带 data-nav 的按钮（偏好开关：按下不收起菜单）。
  */
-const EXIT_MS = 100;
+const EXIT_MS = 60;
 const ITEMS = '[role="menuitem"], [data-nav]';
 
 export class Pop {

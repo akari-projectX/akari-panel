@@ -53,7 +53,7 @@
   --dur-fast: .16s;
   --dur-base: .2s;
   --dur-slow: .32s;
-  --dur-exit: .1s;
+  --dur-exit: .06s;
   /* 圆角（v1.4.0：--radius .8rem，Tailwind 的 rounded-* 是它的倍数）：menu = rounded-md，card = rounded-2xl */
   --radius: .8rem;
   color-scheme: light;
@@ -194,6 +194,7 @@
 
   /* 弹出的卡片（头像菜单 / 窄屏菜单）：popover 底、一圈 1px 的细边、很淡的长投影 */
   .menu-card {
+    overscroll-behavior: contain;
     position: absolute; z-index: 50; top: calc(100% + 10px); right: 0; width: 300px; max-height: calc(100dvh - 90px);
     overflow-x: hidden; overflow-y: auto; border: 1px solid var(--line2); border-radius: calc(var(--radius) * 1.6); padding: 0;
     background: var(--popover); color: var(--fg); box-shadow: var(--shadow-card);
@@ -257,7 +258,7 @@
   .au-bar { justify-content: space-between; gap: 24px; }
   .au-bar .logo { min-width: 0; }
   .au-bar .tools { gap: 6px; }
-  .au-sec { position: relative; display: flex; min-height: calc(100vh - 160px); align-items: center; justify-content: center; padding: 40px 0 80px; }
+  .au-sec { position: relative; display: flex; min-height: calc(100vh - 160px); min-height: calc(100svh - 160px); align-items: center; justify-content: center; padding: 40px 0 80px; }
   .au-col { position: relative; width: 100%; max-width: 400px; }
   .au-title { margin-bottom: 32px; }
   .au-title .au-eye { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
@@ -508,7 +509,7 @@
     border: 0; border-radius: calc(var(--radius) * .8); background: none; color: var(--muted); transition: background-color var(--dur-hover), color var(--dur-hover);
   }
   .dlg-x:hover { background: var(--hover); color: var(--fg); }
-  .dlg .bd { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 24px 24px; }
+  .dlg .bd { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 24px 24px; }
   .dlg footer { display: grid; flex: none; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 8px; padding: 14px 24px; border-top: 1px solid var(--line); background: var(--popover); }
   .dlg footer .btn { height: 40px; }
   /* 确认：窄、按钮等宽并排；「会发生什么」在最前面 */
@@ -604,4 +605,45 @@
   .topnav-link, .iconbtn, .ibtn, .lbtn, .tabs a, .input, .btn, .rules li, .switch, .switch-thumb { transition: none; }
   .switch:active { scale: none; }
   ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+}
+
+/*
+ * 触摸与按下反馈（2026-10-31，用户：「操作起来太死了」）：
+ * - 所有可点的东西去掉 300ms 双击缩放等待（touch-action: manipulation），系统的灰色点按高亮在 base 层已去掉，由下面的 :active 代替；
+ * - 按下即有反应：按钮类缩小一点（scale），整行可点的列表行 / 菜单项换底色；不加过渡，松手立刻回弹，按下的瞬间最跟手；
+ * - 触屏（pointer: coarse）上小图标按钮的点按范围补到约 44px（::before 外扩，不改外观与排版）；
+ * - 刘海屏 / 底部横条：viewport-fit=cover 之后，顶栏、页面两侧、页脚按 env(safe-area-inset-*) 让开。
+ */
+@layer components {
+  a, button, summary, label, select, [role='button'], [role='menuitem'], [role='menuitemradio'], [role='tab'], [role='switch'] { touch-action: manipulation; }
+
+  .ibtn:not(:disabled):active, .lbtn:not(:disabled):active, .iconbtn:not(:disabled):active, .dlg-x:active, .toast-x:active,
+  .acct:active, .menu-me:active, .ln-refresh:active { background: var(--hover); scale: .94; }
+  .seg-t > button:active, .tabs-pill > button:active, .settings-nav-link:active, .popt > button:active, .slot-copy:active,
+  .qa:active, .seg-b:active, .acc-imp:active, .back:active, .cap-x .btn:active { scale: .97; }
+  .topnav-link:active, footer.site a:active, .dsh-more:active, .field-link:active { opacity: .65; }
+  .rowline:active, .drow:active, .ntbl tbody tr:active, .tbl tbody tr:active, [role='menuitem']:active, [role='menuitemradio']:active { background: var(--hover); }
+  .link:active { opacity: .7; }
+
+  @media (pointer: coarse) {
+    .ibtn, .iconbtn, .dlg-x, .toast-x, .ln-refresh, .acc-imp { position: relative; }
+    .ibtn::before, .iconbtn::before, .dlg-x::before, .toast-x::before, .ln-refresh::before { content: ''; position: absolute; inset: -6px; }
+    .dlg-x::before, .ln-refresh::before { inset: -8px; }
+    /* 触屏上没有悬停：提示条的关闭钮一直显示 */
+    .toast-x { opacity: 1; }
+  }
+
+  .topbar { height: calc(64px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
+  .wrap { padding-left: max(var(--gutter), env(safe-area-inset-left)); padding-right: max(var(--gutter), env(safe-area-inset-right)); }
+  footer.site .wrap.row2 { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+  .lines-host .menu-card { max-height: calc(100dvh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+}
+/* 窄屏的文本框一律 16px（iOS 聚焦时不放大页面；有的页面把它们设成了 13px 等宽字） */
+@media (max-width: 767px) {
+  :is(input, select, textarea):not([type='checkbox'], [type='radio'], [type='range']) { font-size: 16px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ibtn:active, .lbtn:active, .iconbtn:active, .dlg-x:active, .toast-x:active, .acct:active, .menu-me:active, .ln-refresh:active,
+  .seg-t > button:active, .tabs-pill > button:active, .settings-nav-link:active, .popt > button:active, .slot-copy:active,
+  .qa:active, .seg-b:active, .acc-imp:active, .back:active, .cap-x .btn:active, .btn:active { scale: none; }
 }
