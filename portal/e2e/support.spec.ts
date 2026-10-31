@@ -140,7 +140,7 @@ test('#59 docs: categories wrap (none cut off), the device line, search, an arti
   await signIn(page, 'user@e2e.test');
   await page.evaluate(() => { try { localStorage.removeItem('akari.read.kb'); } catch { /* 无 */ } });
   await open(page, '/help', '使用手册');
-  await expect(page.getByText('各设备的连接教程与常见问题。')).toBeVisible();
+  await expect(page.getByRole('link', { name: '提交工单' })).toHaveAttribute('href', '/tickets');
   await expect(page.getByText(/客户端下载、连接指南/)).toHaveCount(0);
   /* 设备捷径不重复「教程」（分类名已以「教程」结尾）；没有下载链接、没有「复制订阅地址」 */
   await expect(page.getByText(/教程\s+教程/)).toHaveCount(0);

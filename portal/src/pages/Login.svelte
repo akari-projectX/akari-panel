@@ -122,7 +122,7 @@
 {/snippet}
 
 <AuthShell>
-  <AuthTitle title={t('登录')} lead={t('继续使用你的订阅')} />
+  <AuthTitle eyebrow={t('欢迎回来')} title={t('登录')} lead={t('继续使用你的订阅')} />
 
   {#if needPasskey}
     <div class="callout" data-testid="passkey-fallback">

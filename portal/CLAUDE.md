@@ -14,11 +14,12 @@
 - 页脚（`SiteFooter`）：细线 + 一行版权与条款 / 隐私 / 站长链接（没有大号站点名字样）；不显示后端版本号；页脚贴底（`.shell` 是纵向 flex）。
 - 接入顺序：① 配色 + 外壳（本节）；② 仪表盘（A3，见下文「仪表盘」）；③ 其余各页（已完成）。
 - 页头（`flat/PageTitle` 的 `lead`）：给了 `lead` 时页名 `<h1>` 是一行小字眉标，下面一句大字说这一页现在的状况（线路「4 条线路，3 条在线」、订单「2 笔订单等待支付」、用量「本期已用 X / Y GB」、钱包「余额 ¥x」…），再下面一行说明，右侧操作；h1 文字不变（e2e 的 `ready(page, 标题)` 依赖它）。文档页「全部」视图是每个分类一栏（栏头分类名 + 文章标题，细线分栏），选了分类或搜索时仍是文章格子。
-- **其余各页（③）先只改了共用零件的外观**（2026-10-31 用户：其余页面也按仪表盘风格重新设计；用量、订单、钱包已按样稿重排，见下文各页）：页头 `PageTitle`（h1 36px，h1 文字仍是各页原来的标题）；区块标题 `.sec-title`（12px 加字距的辅助灰，不带图标）；
+- **其余各页（③）**：先只改了共用零件的外观（下面这些），2026-10-31 用户要求按仪表盘的风格重排全部页面（商店、线路、用量、订单、钱包、公告、文档、工单、设置、登录 / 注册都已重排，见下文各页）：页头 `PageTitle`（h1 36px，h1 文字仍是各页原来的标题）；区块标题 `.sec-title`（12px 加字距的辅助灰，不带图标）；
   按钮 `.btn` 一律胶囊（次要 = 一圈 `--line2` 细线、无底色，主 = 正文色实底）；分段切换 `.tabs-pill`（细线胶囊，当前项正文色实底）；
   指标 `flat/StatRow`（标签在上、数字在下，上面一道细线、格间竖线）；提示条 `.notice`（上下两道细线之间的一行，不画卡片）；表格 `.tbl` / `.wtbl`（表头 12px faint、行间细线、悬停 `--hover`）；
   商店套餐 `.plan-card`（列间竖细线，不画卡片；右上角只写「当前套餐」/「推荐」一个词）；文档文章 `DocList` 是细线格子、搜索框是胶囊；
-  工单对话里自己的气泡是正文色实底；开关 `.switch` 打开是正文色；设置页「危险操作」不再画红框（只有标题是红字）；登录 / 注册页去掉品牌色光晕，输入框 12px 圆角、按钮胶囊。
+  工单对话里自己的气泡是正文色实底；开关 `.switch` 打开是正文色；设置页「危险操作」不再画红框（只有标题是红字）；登录 / 注册页去掉品牌色光晕，输入框 12px 圆角、按钮胶囊，标题是一行小字眉标（`AuthTitle` 的 `eyebrow`：「欢迎回来」「新用户」）+ 40px 的 h1。
+  仪表盘的细线列表 `.dlist` / `.drow` / `.dtag` / `.drow-go` 在 `pages/common.css`（仪表盘、公告页、工单页共用）；分段胶囊 `.tabs-pill` 也可以是一组 `aria-pressed` 按钮（筛选），当前项正文色实底。
   强调色只留给链接、未读点、公告标签与图表。
 
 - 样式分层：`src/app.css`（外壳、对话框、阅读弹窗、切页）、`src/styles/flat.css`（v1.4.0 的版式零件：`PageTitle`、`StatRow`、`Section`、`Row`、`Tabs`、
@@ -91,11 +92,11 @@
   复制 `lib/copy.svelte.ts`（`Copied`）。页内分页是 `components/flat/Tabs`，关键数字 `flat/StatRow`，表格 `.tbl.flat-head` / `.wtbl`。
   订单列表 `pages/Orders.svelte`（外观 A：页头一句（几笔等待支付 / 共几笔）、状态筛选胶囊、宽屏表格「订单号 · 项目（套餐 + 类型 · 周期）· 时间 · 状态点（`.sdot`，`pages/common.css`）· 金额 · 待支付的「取消」+「去支付」/ 其余「详情」」、窄屏一行一笔；没有关键数字行）；订单详情的页头一句 = 套餐 · 金额 · 状态，下面一行订单号。e2e `e2e/wallet.spec.ts`（账户 `v2-inviter-<视口>` / `v2-invitee-<视口>`，
   seed.ts 给门户 v2 单独建的一对）、`e2e/lines.spec.ts`。
-- **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：搜索 `?q=`（面板搜）、分类 `?cat=`、
+- **文档、公告、工单、设置（PR 6）**：`pages/Help.svelte`（`?id=` 时 `components/help/Article`，否则 `DocList`：页头「有什么可以帮你？」（没有说明行）、搜索 `?q=`（面板搜）、分类 `?cat=`、最下面「找不到答案？提交工单」、
   当前设备一行、「全部文档 · N 篇」、细线文章列表与本机未读点 `lib/read-state.svelte.ts`（与 React 同键 `akari.read.kb`）；文章：面包屑、目录（宽屏右侧吸顶、
-  窄屏 `<details>`，`RichHtml headings` 给 h3 / h4 补锚点）、同类文档、上一篇 / 下一篇、复制订阅链接）；`pages/Announcements.svelte`（头条 + 按月细线时间轴，
-  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部的公告胶囊用标签色（`pages/dashboard.css` 的 `.cap`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte` → `components/tickets/`
-  （`NewTicket`、`Thread` 两个对话框按需加载；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（分区导航 + `#锚点`、旧 `?tab=security`）→
+  窄屏 `<details>`，`RichHtml headings` 给 h3 / h4 补锚点）、同类文档、上一篇 / 下一篇、复制订阅链接）；`pages/Announcements.svelte`（页头一句「N 条公告还没看」；用到的标签多于一个时一排分段胶囊筛选（`role=group`「按标签筛选」，标签色圆点 + 条数）；头条（置顶 · 标签 · 日期 · 未读一行、26px 标题、摘要、阅读全文）+ 其余是仪表盘同款细线行（日期、标签、标题（未读加粗 + 蓝点）、摘要、→）；
+  打开 = 面板记已读并更新导航未读数；标签（实底，`/me/announcements` 的 `tag`：两种语言的名称 + 预设色键）画在标题前，`lib/announcement.ts` 的 `tagOf` / `tagFilters`；用到的标签多于一个时列表上方出现按标签筛选；仪表盘顶部的公告胶囊用标签色（`pages/dashboard.css` 的 `.cap`），颜色类 `.c-<色>` 与 `.tg` 在 `pages/common.css`、色值在 `tokens.css` 的 `--t-*`）；`pages/Tickets.svelte`（页头一句话 + 右侧「提交工单」；状态分段胶囊（全部 / 待处理 / 已回复 / 已关闭，带张数）；细线行 `button.rowline.tk-row`：未读蓝点 + 加粗标题、分类 · 高 / 紧急优先级 · 多久前更新、状态色点 + 字、→；没有统计格子）→ `components/tickets/`
+  （`NewTicket`、`Thread` 两个对话框按需加载，对话仍是阅读对话框；`?id=` 直达；文字表 `lib/tickets.ts`）；`pages/Account.svelte`（页头大字是登录邮箱；单栏，分区导航是页头下吸顶的一排细线胶囊（`nav`「设置分区」）+ `#锚点`、旧 `?tab=security`；分区小标题同仪表盘、设置行上下细线、右侧值与操作靠右）→
   `components/settings/`（`Security`、`Passkeys`（含「只用通行密钥」开关、窄屏「⋯」菜单 `ui/Menu align=end`）、`PasswordDialog`、`ChangeEmailDialog`、
   `DeleteAccountDialog`、`HolderConfirm` + `lib/holder.svelte.ts`（确认是本人：密码或通行密钥））。确认框 `ui/ConfirmDialog.svelte`（按需加载）。
   设置行样式 `.set-row` 在 `styles/pages/` 下（account.css 或 rest.css）。`lib/router.svelte.ts` 的 `setParams`（换查询串）、`navigate(…, { keepScroll })`；`auth.forget()`（注销后只收本地态）。

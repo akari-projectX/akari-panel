@@ -256,10 +256,12 @@
   .au-bar .logo { min-width: 0; }
   .au-bar .tools { gap: 6px; }
   .au-sec { position: relative; display: flex; min-height: calc(100vh - 160px); align-items: center; justify-content: center; padding: 40px 0 80px; }
-  .au-col { position: relative; width: 100%; max-width: 380px; }
+  .au-col { position: relative; width: 100%; max-width: 400px; }
   .au-title { margin-bottom: 32px; }
-  .au-title h1 { font-size: 32px; line-height: 1.2; font-weight: var(--fw-strong); letter-spacing: -.03em; color: var(--fg); }
-  .au-title p { margin-top: 8px; font-size: 14.5px; line-height: 1.75; color: var(--muted); }
+  .au-title .au-eye { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+  .au-title h1 { font-size: 40px; line-height: 1.15; font-weight: var(--fw-strong); letter-spacing: -.035em; color: var(--fg); }
+  .au-title p { margin-top: 10px; font-size: 14.5px; line-height: 1.75; color: var(--muted); }
+  @media (max-width: 640px) { .au-title h1 { font-size: 32px; } }
   .au-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 24px; border-radius: 50%; background: var(--fg); color: var(--bg); }
   .au-hide { display: none; }
   @media (min-width: 640px) { .au-hide { display: inline-flex; } }

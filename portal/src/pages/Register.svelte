@@ -173,7 +173,7 @@
     <p class="quiet-box">{t('目前不接受新账号注册，恢复开放后这里会重新出现注册表单。已有账号的用户不受影响，可以正常登录使用。')}</p>
     <a class="btn pri btn-block btn-gap" href={R.login}>{t('登录已有账号')}</a>
   {:else}
-    <AuthTitle title={t('创建账号')} lead={t('注册后即可取得订阅链接')} />
+    <AuthTitle eyebrow={t('新用户')} title={t('创建账号')} lead={t('注册后即可取得订阅链接')} />
 
     <form novalidate onsubmit={submit} class="form">
       <TextField

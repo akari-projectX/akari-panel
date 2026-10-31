@@ -26,7 +26,6 @@ export const EN: Record<string, string> = {
   '设置': 'Settings',
   '使用明细': 'Usage details',
   '我的订单': 'My orders',
-  '我的工单': 'My tickets',
   '退出登录': 'Sign out',
   '登录': 'Sign in',
   '登录成功': 'Signed in',
@@ -73,9 +72,6 @@ export const EN: Record<string, string> = {
   '在线': 'Online',
   '延迟': 'Latency',
   '线路': 'Route',
-  '流量走势': 'Traffic trend',
-  '标签': 'Tags',
-  '流量倍率': 'Traffic multiplier',
   '上行': 'Upload',
   '下行': 'Download',
 
@@ -128,7 +124,6 @@ export const EN: Record<string, string> = {
   /* 门户 v2：线路、用量、钱包 */
   /* 门户 v2 仪表盘 */
   '时间范围': 'Range',
-  '点击任意工单查看完整对话': 'Open any ticket to see the full thread',
   '请描述问题现象、出现时间、使用的节点与客户端版本，以便我们更快定位。': 'Tell us what happened, when, which node you were on and your client version — it helps us find it faster.',
   '设置一个安全的密码': 'Choose a strong password',
   '请输入当前密码': 'Enter your current password',
@@ -148,7 +143,6 @@ export const EN: Record<string, string> = {
   '价格': 'Price',
 
   /* ── 统计与单位 ── */
-  '全部工单': 'All tickets',
 
   /* ── 状态词 ── */
   '待支付': 'Unpaid',
@@ -179,13 +173,11 @@ export const EN: Record<string, string> = {
 
   /* ── 工单 ── */
   '工单已提交': 'Ticket submitted',
-  '等待你的确认': 'Waiting on you',
   '创建中': 'Creating',
 
   /* ── 落地页 ── */
   '不限速': 'No throttling',
 
-  ' 张': '',
 
   '共 {n} 条': '{n} items',
   '共 {n} 笔订单': '{n} orders',
@@ -225,7 +217,6 @@ export const EN: Record<string, string> = {
 
   /* 审计补漏：这些字符串此前渲染时没有走词典 */
   '订单详情': 'Order details',
-  '更新于 {d}': 'updated {d}',
   '{what}已复制': '{what} copied',
   '登录中': 'Signing in',
   '与': 'and',
@@ -320,16 +311,10 @@ export const EN: Record<string, string> = {
   '站点还没有发布文档': 'No docs published yet',
 
   /* ── 工单 ── */
-  '遇到问题在这里提交，客服的回复也会出现在同一条对话里。': 'Raise an issue here; replies land in the same thread.',
-  '等待客服': 'Awaiting support',
-  '已提交，等待处理': 'Submitted, waiting to be picked up',
-  '问题已经了结': 'Settled',
-  '还没有提交过工单': 'No tickets yet',
   '还没有工单': 'No tickets yet',
   '遇到问题时点右上角提交，我们会在这里回复。': 'Open one from the top right and we answer here.',
   '把现象、时间和用的客户端写清楚，能省掉一轮来回': 'Describing what happened, when, and which client saves a round trip',
   '客服回复后这一页会显示新消息': 'New replies show up on this page',
-  '最近更新 {t}': 'Updated {t}',
   '工单已关闭': 'Ticket closed',
   '这张工单已关闭，如果问题再次出现，请新开一张。': 'This ticket is closed. If it happens again, open a new one.',
 
@@ -416,10 +401,7 @@ export const EN: Record<string, string> = {
   /* ── 仪表盘节点汇总、节点页线路列 ── */
 
   /* ── 公告时间轴 ── */
-  '节点变更、维护计划与活动通知。没看过的会标出来。': 'Node changes, maintenance and promotions. Unread ones are marked.',
   '条未读': 'unread',
-  '最新': 'Latest',
-  '新': 'New',
   '阅读全文': 'Read more',
 
   /* ── 客户端下载（后台 APP 设置里的地址） ── */
@@ -766,7 +748,6 @@ export const EN: Record<string, string> = {
   '账户会被整个删除': 'The account will be deleted entirely',
   '还有 {n} 笔待支付订单：请先在订单页取消': '{n} unpaid orders: cancel them on the Orders page first',
   '还有 {n} 笔待审核的提现（{v}）：请先在钱包页撤回': '{n} pending withdrawals ({v}): withdraw them on the Wallet page first',
-  '各设备的连接教程与常见问题。': 'Setup guides for each device, and FAQs.',
   '搜索文档': 'Search the docs',
   '搜索文档标题或内容…': 'Search titles and contents…',
   '文档分类': 'Categories',
@@ -951,7 +932,6 @@ export const EN: Record<string, string> = {
   "浅色、深色，或跟随系统（默认）。": "Light, dark, or follow the system (default).",
   "危险操作": "Danger zone",
   "注销账户…": "Delete account…",
-  "账户、登录与安全、订阅链接、语言与明暗。": "Account, sign-in & security, subscription link, language and appearance.",
   "请输入邮箱": "Enter your email",
   "请先发送验证码": "Send the code first",
   "密码至少 8 位": "The password needs at least 8 characters",
@@ -1140,4 +1120,9 @@ export const EN: Record<string, string> = {
   '返 {n}% 现金': '{n}% cash back',
   '邀请好友': 'Invite friends',
   '项目': 'Item',
+  '找不到答案？': "Can't find an answer?",
+  '欢迎回来': 'Welcome back',
+  '新用户': 'New here',
+  '这一类里没有工单': 'No tickets here',
+  '{t}更新': 'Updated {t}',
 };

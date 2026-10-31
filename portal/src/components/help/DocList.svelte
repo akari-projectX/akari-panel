@@ -19,12 +19,13 @@
   import { isUnread } from '$lib/read-state.svelte';
   import { resource } from '$lib/resource.svelte';
   import { loc, setParams } from '$lib/router.svelte';
+  import { R } from '$lib/routes';
 
   /*
    * 文档列表：搜索（面板 GET /me/help?q= 在服务端搜）、分类筛选（换行排开，
    * 不截断）、当前设备的捷径（有同名分类才出现；分类名已以「教程」结尾时不再重复）、「全部文档 · N 篇」小标题、文章列表。
    * 状态全在地址里：?cat= 分类、?q= 搜索词、?id= 打开文章（pages/Help.svelte 切到 Article）。
-   * 版式按样稿的克制排版：筛选是文字 + 下划线，文章是细线分隔的行（标题、分类、更新日期，没读过的标蓝点），不用卡片。
+   * 版式（外观 A）：大号搜索框、分类胶囊（换行排开）、「全部」是每个分类一栏的细线格子，选了分类或搜索时是文章格子（没读过的标蓝点）；最下面一行「找不到答案？提交工单」。
    */
   const params = $derived(new URLSearchParams(loc.search));
   const q = $derived(params.get('q') ?? '');
@@ -69,7 +70,7 @@
   const open = (a: KbArticle) => setParams({ id: a.id, cat: a.category, q: q || undefined });
 </script>
 
-<PageTitle title={t('使用手册')} lead={t('有什么可以帮你？')} sub={t('各设备的连接教程与常见问题。')} />
+<PageTitle title={t('使用手册')} lead={t('有什么可以帮你？')} />
 
 <div class="top-tools">
   <form novalidate role="search" class="search" onsubmit={submit}>
@@ -168,7 +169,13 @@
   {/if}
 </section>
 
+<!-- 找不到答案就去提交工单（工单对所有能进这一页的账户都开着） -->
+<p class="ask">{t('找不到答案？')}<a href={R.tickets}>{t('提交工单')}</a></p>
+
 <style>
+  .ask { margin-top: 28px; font-size: 13.5px; color: var(--muted); }
+  .ask a { margin-left: 4px; font-weight: var(--fw-strong); color: var(--brand); }
+  .ask a:hover { text-decoration: underline; text-underline-offset: 3px; }
   .top-tools { display: flex; flex-direction: column; gap: 16px; }
   .search { position: relative; }
   .search :global(.search-i) { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }

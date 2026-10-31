@@ -31,8 +31,8 @@
    *   #subscription  订阅链接：状态 + 重置（读不出来的链接也能重置；续费范围说明续费后可用）
    *   #preferences   偏好：界面语言（= 邮件语言，主动切换时才同步）、明暗（含跟随系统）
    *   #danger        危险操作：注销账户
-   * 旧链接 /account?tab=security 换成 #security。分区导航：宽屏左侧吸顶竖排，窄屏页头下吸顶横排（可横滑）；滚动时高亮当前分区。
-   * 版式：每个分区一个小标题 + 细线分隔的设置行（左：名称 + 说明，右：当前值 + 操作），不套卡片。对话框第一次打开时才下载。
+   * 旧链接 /account?tab=security 换成 #security。页头那句大字是登录邮箱；分区导航是页头下一排细线胶囊（吸在顶栏下，可横滑），滚动时高亮当前分区。
+   * 版式（外观 A，同仪表盘）：单栏，每个分区一个小标题（12px 加字距的辅助灰）+ 上下细线的设置行（左：名称 + 说明，右：当前值 + 操作），不套卡片。对话框第一次打开时才下载。
    */
   const PARTS = [
     { id: 'account', label: '账户' },
@@ -105,7 +105,7 @@
   ];
 </script>
 
-<PageTitle title={t('设置')} lead={t('账户与安全')} sub={t('账户、登录与安全、订阅链接、语言与明暗。')} />
+<PageTitle title={t('设置')} lead={me?.email || t('账户与安全')} />
 
 <div class="settings-page">
   <nav aria-label={t('设置分区')} class="settings-nav">
