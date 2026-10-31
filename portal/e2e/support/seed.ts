@@ -65,7 +65,7 @@ const hk = await node('香港 01', '香港', 21443);
 const jp = await node('日本 01', '日本', 21444);
 const direct = (n: NodeView) => n.entrances.find((e) => e.kind === 'direct')?.id ?? '';
 const relay = await admin.call<{ id: string }>('POST', `/api/v1/nodes/${hk.id}/entrances`, {
-  name: 'IPLC', connect_host: '127.0.0.1', connect_port: 21446, listen_port: 21446, source_cidrs: ['127.0.0.1'], rate: 2,
+  name: 'IPLC', connect_host: '127.0.0.1', connect_port: 21446, listen_port: 21446, source_cidrs: ['127.0.0.1'], rate: 2, tags: ['IPLC'],
 });
 await admin.call('PUT', `/api/v1/entrances/${direct(jp)}/rate-rules`, {
   rules: [{ weekdays: [1, 2, 3, 4, 5, 6, 7], start: '00:00', end: '24:00', rate: 0.5 }],
