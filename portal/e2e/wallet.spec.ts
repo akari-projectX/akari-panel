@@ -262,8 +262,8 @@ test('ledger: older entries load page by page', async ({ page }) => {
     return r.fulfill({ json: { balance_cents: 4500, withdrawable_cents: 0, entries: ids.map(entry) } });
   });
   await wallet(page, '/wallet?tab=ledger');
-  /* 宽屏「说明」一格就是原因，窄屏是「时间 · 原因」一行 */
-  const reason = (n: number) => page.getByText(new RegExp(`(^|· )e2e ${n}$`)).filter({ visible: true });
+  /* 宽屏「说明」一格就是原因，窄屏是「时间 · 原因」一行；只看下面的分页（上面「余额明细」一栏也列着最近几笔） */
+  const reason = (n: number) => page.getByRole('tabpanel').getByText(new RegExp(`(^|· )e2e ${n}$`)).filter({ visible: true });
   await expect(reason(45)).toBeVisible();
   await expect(reason(15)).toHaveCount(0);
   await page.getByRole('button', { name: '加载更早的记录' }).click();
