@@ -125,7 +125,7 @@
 .wk-tip .is-sum { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 6px; }
 .wk-tip .is-sum dt, .wk-tip .is-sum dd { color: var(--fg); font-weight: var(--fw-strong); }
 
-/* 柱图（仪表盘的「流量」与用量页的「每日」共用）补充；分段切换 .seg-t */
+/* 柱图（仪表盘的「流量」与用量页的「每日」共用）补充；分段切换 .seg-t（细线胶囊，当前项正文色实底：流量 7 / 30 天、用量范围、线路页的标签筛选） */
 .seg-t { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
 .seg-t > button { height: 24px; padding: 0 11px; border: 0; border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12px; transition: color var(--dur-hover), background-color var(--dur-hover); }
 .seg-t > button:hover { color: var(--fg); }
