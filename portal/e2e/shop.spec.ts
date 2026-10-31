@@ -74,12 +74,9 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await expect(cur.getByText('从到期日顺延')).toBeVisible();
   await expect(prem.getByText('旧套餐剩余价值自动抵扣')).toBeVisible();
   await expect(prem.getByRole('button', { name: '更换到此套餐' })).toHaveClass(/pri/);
-  /* 当前套餐区：名称 + 生效中、到期与剩余天数、流量用量 */
-  await expect(page.locator('main section.sec').first()).toContainText('生效中');
-  await expect(page.locator('main section.sec').first()).toContainText(/到期\s*\d{4}-\d{2}-\d{2}/);
-  await expect(page.getByRole('meter', { name: '本期流量' })).toBeVisible();
-  /* 余额在右上的信息行里；「用余额抵扣」只在确认订单里 */
-  await expect(page.locator('.facts')).toContainText(/余额\s*¥/);
+  /* 套餐列表上面没有「当前订阅」区（天数大字、流量尺、到期 / 速率 / 余额）；「用余额抵扣」只在确认订单里 */
+  await expect(page.getByRole('meter', { name: '本期流量' })).toHaveCount(0);
+  await expect(page.getByText('天后到期')).toHaveCount(0);
   await expect(page.getByRole('switch', { name: '用余额抵扣' })).toHaveCount(0);
   /* 手机一栏，桌面同一行并排 */
   const [b1, b2] = [await std.boundingBox(), await prem.boundingBox()];
@@ -123,16 +120,15 @@ test('cards: monthly headline, periods and savings, three specs, features, curre
   await page.keyboard.press('Escape');
 });
 
-test('#31 the current plan: quota, reset period and next reset, expiry, speed', async ({ page }) => {
+test('#31 the current plan card: quota, reset period, speed', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await shop(page);
-  const cur = page.locator('main section.sec').first();
-  await expect(cur).toContainText(/当前套餐 · E2E 标准/);
-  await expect(cur).toContainText(/到期\s*\d{4}-\d{2}-\d{2}/);
+  const cur = page.locator('.plan-card.is-current');
+  await expect(cur).toContainText('E2E 标准');
+  await expect(cur.locator('.plan-tag')).toHaveText('当前套餐');
   await expect(cur).toContainText('300 Mbps');
-  await expect(cur).toContainText(/\/ 100 GB/);
-  await expect(cur).toContainText(/本期流量 剩余 [\d.]+ \/ 100 GB/);
-  await expect(cur).toContainText(/\d{4}-\d{2}-\d{2} 重置/);
+  await expect(cur).toContainText('100 GB');
+  await expect(cur).toContainText('每月');
 });
 
 test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 #44 a switch with proration is paid by QR; #46 types', async ({ page }, info) => {
@@ -141,9 +137,9 @@ test('#35 #36 #39 #41 #43 a balance-covered reset pack is paid at once; #37 #42 
   await shop(page);
   const dialog = page.getByRole('dialog');
 
-  /* 流量重置包（右上「流量用完？买重置包」直接打开它的确认订单），余额全额抵扣：面板当场付清，订单页弹付款结果（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
+  /* 流量重置包（套餐列表下面那一行的「购买重置包」直接打开它的确认订单），余额全额抵扣：面板当场付清，订单页弹付款结果（对勾 + 金额 / 套餐 / 到期 + 两个去处） */
   await expect(page.getByText(`重置「${seed.plan}」的流量`)).toHaveCount(0);
-  await page.getByRole('button', { name: /^买重置包 / }).click();
+  await page.locator('.shop-reset').getByRole('button', { name: '购买重置包' }).click();
   await expect(dialog.getByText(`流量重置包 · ${seed.plan}`)).toBeVisible();
   await expect(dialog.locator('.popt > button')).toHaveCount(0);
   await dialog.getByRole('switch', { name: '用余额抵扣' }).click();
@@ -253,8 +249,7 @@ test('#37 credit beyond the new price is forfeited only after an explicit acknow
 test('#45 a pending order is shown on the shop, blocks a new order, and can be cancelled', async ({ page }, info) => {
   await signIn(page, 'plain@e2e.test');
   await shop(page);
-  /* 没有套餐：当前套餐区写未订阅，按钮是立即订阅 */
-  await expect(page.locator('main section.sec').first()).toContainText('未订阅');
+  /* 没有套餐：按钮是立即订阅 */
   await card(page, seed.plan).getByRole('button', { name: '立即订阅' }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: '去支付' }).click();
@@ -398,5 +393,4 @@ test('#19 renewal scope (quota used up): the dashboard leads to the shop, which 
   /* 流量用完：当前套餐排最前，默认给重置包 */
   await expect(page.locator('.plan-card').first()).toHaveClass(/current/);
   await expect(page.locator('.plan-card.is-current').getByRole('button', { name: '购买重置包' })).toBeVisible();
-  await expect(page.locator('main section.sec').first()).toContainText('流量已用完');
 });

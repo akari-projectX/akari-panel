@@ -323,31 +323,3 @@
 }
 .settings-danger .sec-title { color: var(--danger); }
 
-/* 首屏大数字（flat/Hero，仪表盘与商店共用）：等宽数字、40 格分段条、右侧无边框信息行 */
-.hx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); align-items: end; gap: 32px 72px; }
-.hx-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; font-size: 12.5px; color: var(--muted); }
-.hx-big { display: flex; align-items: baseline; gap: 10px; margin-top: 14px; }
-.hx-v { font-variant-numeric: tabular-nums; font-size: 64px; line-height: 1; font-weight: var(--fw-strong); letter-spacing: -.05em; color: var(--fg); white-space: nowrap; }
-.hx-u { font-size: 18px; color: var(--muted); }
-/* 外观 A：一根连续的细尺（格子只决定填到哪里） */
-.hx-meter { display: flex; height: 4px; margin-top: 18px; overflow: hidden; border-radius: 4px; background: var(--line2); }
-.hx-meter > i { flex: 1; }
-.hx-meter > i.on { background: var(--fg); }
-.hx-meter.low > i.on { background: var(--warn); }
-.hx-cap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin-top: 8px; font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--muted); }
-.pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border: 1px solid var(--line2); border-radius: 999px; font-size: 12px; color: var(--body); white-space: nowrap; }
-.pill > i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
-.pill.warn > i { background: var(--amber); }
-.pill.off > i { background: var(--faint); }
-.facts { display: flex; min-width: 0; flex-direction: column; border-top: 1px solid var(--line); }
-.facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
-.facts > div > :last-child { min-width: 0; text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; font-weight: var(--fw-strong); color: var(--fg); }
-.facts small { margin-left: 6px; font-size: 12px; font-weight: var(--fw-regular); color: var(--muted); }
-.facts .go { border: 0; padding: 0; background: none; font-family: var(--font-ui); cursor: pointer; }
-.facts .go:hover { text-decoration: underline; text-underline-offset: 3px; }
-@media (max-width: 860px) {
-  .hx { grid-template-columns: minmax(0, 1fr); }
-  .hx-v { font-size: 52px; }
-}
-.facts small::before { content: '· '; }
-.hx-head > svg { flex: none; margin-right: -4px; color: var(--muted); }
