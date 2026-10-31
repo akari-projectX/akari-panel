@@ -1,7 +1,7 @@
 /*
  * 门户 v2 · PR 5：线路（/nodes）与用量明细（/traffic）。覆盖切换前 React 门户 e2e 的 subscription.spec.ts #32 #33（每个入口一行、
  * 此刻的倍率、状态与图例、维护中置灰）与 #34（按全站时区的日、按入口的倍率与时段规则）、polish.spec.ts #60（手机不横向滚动）、
- * shell / account 的范围门禁（续费范围没有线路与用量），外加：倍率排序、搜索与空结果、刷新、用量的范围切换与平滑面积图、
+ * shell / account 的范围门禁（续费范围没有线路与用量），外加：倍率排序、标签筛选、刷新、用量的范围切换与平滑面积图、
  * 每日明细，以及设计评审截图（线路 / 用量 × 桌面 / 手机 × 浅 / 深）。
  * 账户：user@e2e.test（两天流量：香港 01 直连 + IPLC 中转（2×），日本 01 直连（全天 0.5×））、expired。
  */
@@ -27,12 +27,15 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   await expect(shown('直连')).toBeVisible();
   /* 只显示入口名与标签：节点（服务器）名不出现 */
   await expect(page.getByText(/香港 01|日本 01/)).toHaveCount(0);
-  /* 图例说明三种状态与负载 / 延迟的来源；e2e 里没有 agent，线路都是离线 */
-  await expect(page.locator('[data-node-legend]')).toContainText('维护中');
-  await expect(page.locator('[data-node-legend]')).toContainText('每 30 秒自动刷新');
+  /* 页头：一句大字（几条线路、几条在线）+ 刷新间隔；表下的图例：负载三档与「维护中的线路不在订阅里」；e2e 里没有 agent，线路都是离线 */
+  await expect(page.locator('.page-lead')).toHaveText(/^\d+ 条线路，0 条在线$/);
+  await expect(page.locator('main .pt-extra')).toContainText('每 30 秒自动刷新');
+  await expect(page.locator('[data-node-legend]')).toContainText('负载高');
+  await expect(page.locator('[data-node-legend]')).toContainText('维护中的线路不会出现在订阅里');
   await expect(page.locator('[data-node-status="offline"]:visible').first()).toBeVisible();
-  await expect(page.getByText('最低倍率')).toBeVisible();
-  await expect(page.getByText('客户端会自动跳过')).toBeVisible();
+  /* 没有统计格子、搜索框 */
+  await expect(page.locator('main .statrow')).toHaveCount(0);
+  await expect(page.getByRole('textbox')).toHaveCount(0);
 
   /* 香港 01 的服务器在线、日本 01 所在服务器流量额度用完：日本 01 仍列出来，但是「维护中」并置灰（订阅里没有它） */
   psql(`UPDATE servers s SET status = 'online', last_seen_at = now() FROM nodes n WHERE n.server_id = s.id AND n.name = '香港 01';
@@ -52,30 +55,26 @@ test('#32 #33 D9 D5 entrances: one row per entrance, the multiplier in effect no
   }
 });
 
-test('lines: lowest multiplier first, the column header flips the order; search by name, region or tag; no match', async ({ page }, info) => {
+test('lines: lowest multiplier first, the column header flips the order; the tag filter', async ({ page }) => {
   await signIn(page, 'user@e2e.test');
   await open(page, '/nodes', '节点状态');
-  const rates = () => page.locator('main .rate:visible').allTextContents();
+  const rates = () => page.locator('main .nrate:visible').allTextContents();
   await expect.poll(rates).toContain('×2');
   const asc = await rates();
   expect(asc[0]).toBe('×0.5');
   expect(asc.at(-1)).toBe('×2');
-  if (info.project.name === 'desktop') {
-    await expect(page.getByText(/点击「倍率」列可切换排序/)).toBeVisible();
-    const head = page.getByRole('columnheader', { name: /流量倍率/ });
-    await expect(head).toHaveAttribute('aria-sort', 'ascending');
-    await head.getByRole('button').click();
-    await expect(head).toHaveAttribute('aria-sort', 'descending');
-    expect((await rates())[0]).toBe('×2');
-  } else {
-    await expect(page.getByText(/按倍率从低到高排列/)).toBeVisible();
-  }
-  const search = page.getByLabel('搜索线路、地区或标签');
-  await search.fill('iplc');
+  const head = page.getByRole('columnheader', { name: /倍率/ });
+  await expect(head).toHaveAttribute('aria-sort', 'ascending');
+  await head.getByRole('button').click();
+  await expect(head).toHaveAttribute('aria-sort', 'descending');
+  expect((await rates())[0]).toBe('×2');
+  /* 标签筛选：全部 + 订阅里出现的入口标签 */
+  const filter = page.getByRole('group', { name: '按标签筛选' });
+  await expect(filter.getByRole('button', { name: '全部' })).toHaveAttribute('aria-pressed', 'true');
+  await filter.getByRole('button', { name: 'IPLC' }).click();
+  await expect(filter.getByRole('button', { name: 'IPLC' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(rates).toEqual(['×2']);
-  await search.fill('没有这条线路');
-  await expect(page.getByText('没有匹配的线路')).toBeVisible();
-  await search.fill('');
+  await filter.getByRole('button', { name: '全部' }).click();
   await expect.poll(async () => (await rates()).length).toBe(asc.length);
 });
 

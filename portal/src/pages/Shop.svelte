@@ -9,7 +9,6 @@
   import { formatMoney } from '@/lib/format';
   import { offerKey } from '@/lib/shop';
   import PageTitle from '../components/flat/PageTitle.svelte';
-  import Section from '../components/flat/Section.svelte';
   import Empty from '../components/Empty.svelte';
   import LoadError from '../components/LoadError.svelte';
   import Loading from '../components/Loading.svelte';
@@ -118,14 +117,14 @@
   const resetBuy = $derived(currentPlan && resetOffer?.action ? { plan: currentPlan, offer: resetOffer } : null);
 </script>
 
-<PageTitle title={t('商店')} lead={t('选一个适合你的套餐')} sub={t('管理当前订阅，随时续费或更换套餐。')} />
+<PageTitle title={t('商店')} lead={t('选一个适合你的套餐')}>
+  {#snippet extra()}<span>{t('价格按月折算 · 购买时长在下单时选择')}</span>{/snippet}
+</PageTitle>
 
 {#if pending}<PendingOrder order={pending} onchange={() => orders.reload()} className="mt5" />{/if}
 
-<!-- ── 套餐列表 ── -->
-<Section>
-  {#snippet title()}{t('选择套餐')}{/snippet}
-  {#snippet desc()}{t('价格为各周期按月折算后的最低价；购买时长在确认订单时选择')}{/snippet}
+<!-- ── 套餐列（细线分隔，上面一道细线） ── -->
+<div class="shop-plans">
   {#if !data && shop.loading}
     <Loading block={420} />
   {:else if !data && shop.error}
@@ -135,7 +134,7 @@
   {:else}
     <PlanGrid {plans} {me} onbuy={openBuy} buyIntent={intent(Confirm)} />
   {/if}
-</Section>
+</div>
 
 <!-- ── 流量重置包：当前套餐配了重置包且现在能买才出现，点开就是重置包的确认订单（流量用完时当前套餐卡的按钮已经是它） ── -->
 {#if resetBuy && !me?.quota_exhausted}
@@ -147,6 +146,10 @@
     </div>
     <button type="button" class="btn" {@attach intent(Confirm)} onclick={() => openBuy(rb.plan, rb.offer, true)}>{t('购买重置包')}</button>
   </div>
+{/if}
+
+{#if data && plans.length > 0}
+  <p class="shop-fine">{t('价格以人民币计。续费从当前到期日顺延；换套餐按剩余价值抵扣，多出的部分作废。')}</p>
 {/if}
 
 {#if dialogLoaded}

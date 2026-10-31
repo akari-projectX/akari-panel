@@ -94,26 +94,14 @@
 .ns-flags > span { font-size: 11.5px; line-height: 12px; color: var(--muted); }
 @media (min-width: 640px) { .ns { gap: 36px; } .ns-n { font-size: 30px; }
 }
-.nlegend { display: flex; flex-direction: column; gap: 6px; padding-block: 14px; border-bottom: 1px solid var(--line); font-size: 12.5px; line-height: 1.7; color: var(--muted); }
-.nlegend > div { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
-.nstate-w { display: inline-flex; align-items: center; gap: 4px; }
 .nstate { display: inline-flex; flex: none; align-items: center; gap: 6px; white-space: nowrap; font-size: 14px; line-height: 1.4286; }
-.nlegend .nstate, .nd .nstate { font-size: 12.5px; line-height: inherit; }
 .nstate > i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
 .nstate[data-node-status='offline'] { color: var(--muted); }
 .nstate[data-node-status='offline'] > i { background: color-mix(in srgb, var(--muted) 60%, transparent); }
 .nstate[data-node-status='maintenance'] { color: var(--warn); }
 .nstate[data-node-status='maintenance'] > i { background: var(--amber); }
 .nd { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
-.nload { font-size: 12.5px; white-space: nowrap; }
-.nload.low { color: var(--ok); } .nload.medium { color: var(--warn); } .nload.high { color: var(--danger); }
 .nt { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
-.tags { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tags > span { display: inline-flex; height: 18px; align-items: center; padding-inline: 6px; border: 1px solid var(--line); border-radius: 5px; font-size: 11px; font-weight: var(--fw-regular); letter-spacing: .01em; white-space: nowrap; color: var(--muted); }
-.rate { display: inline-flex; height: 20px; align-items: center; padding-inline: 8px; border-radius: 999px; font-size: 12px; font-weight: var(--fw-strong); white-space: nowrap; }
-.rate.rate-lo { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
-.rate.rate-hi { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }
-.rate.rate-mid { background: var(--brand-soft); color: var(--brand-ink); }
 
 .notice > .nd.wrap2 { overflow: visible; text-overflow: clip; white-space: normal; }
 .btn.ghost.muted { color: var(--muted); }
@@ -140,46 +128,54 @@
 /* Progress（ui/progress.tsx，h-2） */
 .prog { position: relative; display: flex; align-items: center; width: 100%; height: 8px; overflow: hidden; border-radius: 9999px; background: var(--hover); }
 
-/* 套餐卡片（plan-grid）：一行最多 3 张（2026-10-29 用户裁决），多的换行 */
-/* 套餐（外观 A）：列之间竖细线，不画卡片；当前套餐 / 推荐只在右上角写一个词 */
-.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-block: 1px solid var(--line); }
-.plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
-.plan-cols[data-count='2'] { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 900px; }
-.plan-card { display: flex; flex-direction: column; justify-content: space-between; padding: 28px 28px 24px 0; }
+/* 套餐列（外观 A，PlanGrid）：细线分隔的列，不画卡片；一行最多 3 列（2026-10-29 用户裁决），多的换行。
+   1 个套餐：横排一整行（左：名称、价格、规格、按钮；右：功能清单），不留一窄列孤零零在左边；2 个：两列各占一半。 */
+.plan-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+.plan-cols[data-count='2'] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.plan-card { display: flex; flex-direction: column; min-width: 0; padding: 28px 28px 28px 0; }
 .plan-card + .plan-card { padding-left: 28px; border-left: 1px solid var(--line); }
 .plan-card:nth-child(3n + 1) { padding-left: 0; border-left: 0; }
 .plan-card:nth-child(n + 4) { border-top: 1px solid var(--line); }
-.plan-card.is-off > .plan-card-body { opacity: .62; }
+.plan-cols[data-count='1'] { grid-template-columns: minmax(0, 1fr); }
+.plan-cols[data-count='1'] > .plan-card { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-rows: auto 1fr; grid-template-areas: 'body rich' 'cta rich'; gap: 0 56px; padding-right: 0; }
+.plan-cols[data-count='1'] .plan-card-body { grid-area: body; }
+.plan-cols[data-count='1'] .plan-rich { grid-area: rich; margin-top: 0; padding-left: 56px; margin-left: -56px; border-left: 1px solid var(--line); }
+.plan-cols[data-count='1'] .plan-cta { grid-area: cta; }
+.plan-card.is-off > .plan-card-body, .plan-card.is-off > .plan-rich { opacity: .62; }
 .plan-head { display: flex; align-items: center; gap: 8px; min-height: 22px; }
 .plan-sum { min-height: 21px; margin-top: 4px; font-size: 13px; color: var(--muted); }
-.plan-price { display: flex; align-items: baseline; gap: 4px; margin-top: 18px; }
+.plan-price { display: flex; align-items: baseline; gap: 4px; margin-top: 14px; }
 .plan-price .y { align-self: flex-start; padding-top: 6px; font-size: 15px; font-weight: var(--fw-strong); }
 .plan-price .n { font-size: 44px; line-height: 1; font-weight: var(--fw-strong); letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
 .plan-price .n.none { color: var(--faint); }
 .plan-price .u { font-size: 13px; color: var(--muted); }
-.plan-per { min-height: 20px; font-size: 12.5px; color: var(--muted); }
+.plan-card.is-rec .plan-price { color: var(--brand); }
+.plan-per { min-height: 20px; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
 .plan-tag { flex: none; margin-left: auto; font-size: 11.5px; font-weight: var(--fw-strong); line-height: 20px; white-space: nowrap; }
 .plan-tag.is-brand { color: var(--ok); }
 .plan-tag.is-warn { color: var(--warn); }
 .plan-tag.is-rec { color: var(--brand); }
-.plan-specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; border-block: 1px solid var(--line); text-align: center; }
+.plan-specs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18px; border-block: 1px solid var(--line); }
 .plan-rich { font-size: 13.5px; line-height: 1.75; }
 .plan-rich > * + * { margin-top: 10px; }
-.plan-card .plan-rich { margin-top: 16px; }
+.plan-card .plan-rich { margin-top: 20px; }
 .plan-card .plan-rich ul { gap: 7px; }
-.plan-cta { margin-top: 18px; }
-.plan-cta .btn { height: 42px; }
+.plan-cta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: auto; padding-top: 24px; }
+.plan-cta .btn { height: 40px; padding-inline: 22px; }
 @media (max-width: 1023px) {
-  .plan-cols, .plan-cols[data-count] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .plan-cols[data-count='1'] { grid-template-columns: minmax(0, 420px); }
+  .plan-cols:not([data-count='1']) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .plan-card:nth-child(n) { padding-left: 28px; border-left: 1px solid var(--line); border-top: 0; }
   .plan-card:nth-child(2n + 1) { padding-left: 0; border-left: 0; }
   .plan-card:nth-child(n + 3) { border-top: 1px solid var(--line); }
+  .plan-cols[data-count='1'] > .plan-card { gap: 0 32px; }
+  .plan-cols[data-count='1'] .plan-rich { padding-left: 32px; margin-left: -32px; }
 }
 @media (max-width: 640px) {
   .plan-cols, .plan-cols[data-count] { grid-template-columns: minmax(0, 1fr); }
   .plan-card:nth-child(n) { padding: 24px 0; border-left: 0; }
   .plan-card:nth-child(n + 2) { border-top: 1px solid var(--line); }
+  .plan-cols[data-count='1'] > .plan-card { display: flex; }
+  .plan-cols[data-count='1'] .plan-rich { margin-top: 20px; padding-left: 0; margin-left: 0; border-left: 0; }
 }
 
 /* 黑白主按钮（提示胶囊、确认订单） */
@@ -298,9 +294,7 @@
 .cp-code .btn { height: 28px; padding: 0 10px; font-size: 12.8px; gap: 4px; }
 .tabs-pill.mb7 { margin-bottom: 28px; }
 .pt-note.warn { color: var(--warn); margin-top: 8px; }
-.srch .input { height: 36px; padding-left: 36px; }
 .trunc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nlegend.plain { padding-block: 0; border-bottom: 0; margin-bottom: 16px; }
 @layer components {
 
 /* 用量页图表（components/charts/*，v1.4.0 的 recharts + shadcn chart 的外观） */
@@ -323,3 +317,49 @@
 }
 .settings-danger .sec-title { color: var(--danger); }
 
+/* 线路表（components/NodeTable：仪表盘的线路预览与线路页共用）：细线表格，状态在最右；窄屏收起负载列与标签 */
+.ntbl { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; }
+.ntbl th { padding: 0 12px 8px 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; font-weight: var(--fw-regular); color: var(--faint); white-space: nowrap; }
+.ntbl th:nth-child(2) { width: 128px; } .ntbl th:nth-child(3) { width: 136px; } .ntbl th:nth-child(4) { width: 72px; } .ntbl th:nth-child(5) { width: 96px; }
+.ntbl td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: middle; color: var(--fg); white-space: nowrap; }
+.ntbl th:last-child, .ntbl td:last-child { padding-right: 0; }
+.ntbl tbody tr { transition: background-color var(--dur-hover); }
+.ntbl tbody tr:hover { background: var(--hover); }
+.ntbl .nr { text-align: right; }
+.ntbl td.nl { font-size: 12.5px; color: var(--body); }
+.ntbl tr.is-off td > * { opacity: .55; }
+.nname { display: flex; min-width: 0; align-items: center; gap: 10px; font-size: 13.5px; font-weight: var(--fw-strong); }
+.nname > .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nflag { display: inline-flex; flex: none; width: 18px; height: 12px; }
+.nflag > .flag { border-radius: 2px; }
+.ntags { display: inline-flex; flex: none; gap: 4px; }
+.ntags > span { padding: 2px 7px; border: 1px solid var(--line2); border-radius: 999px; font-size: 11px; font-weight: var(--fw-regular); line-height: 1.2; color: var(--body); }
+.dload { display: inline-flex; align-items: center; gap: 8px; }
+.dload > i { position: relative; width: 40px; height: 4px; overflow: hidden; border-radius: 2px; background: var(--line2); }
+.dload > i > b { position: absolute; inset: 0 auto 0 0; width: 33%; border-radius: 2px; background: var(--ok); }
+.dload[data-node-load='medium'] > i > b { width: 66%; background: var(--warn); }
+.dload[data-node-load='high'] > i > b { width: 100%; background: var(--danger); }
+.ntbl .nstate { justify-content: flex-end; font-size: 13px; color: var(--muted); }
+.ntbl .nstate[data-node-status='online'] > i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+.nlat { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--body); font-variant-numeric: tabular-nums; }
+.sig { display: inline-flex; gap: 2px; }
+.sig > i { width: 3px; height: 10px; border-radius: 1px; background: var(--line2); }
+.sig > i.on { background: var(--ok); }
+.nrate { font-size: 13.5px; font-weight: var(--fw-strong); font-variant-numeric: tabular-nums; }
+.nrate.rate-lo { color: var(--ok); } .nrate.rate-hi { color: var(--warn); } .nrate.rate-mid { color: var(--fg); }
+@media (max-width: 640px) {
+  .ntbl .nl, .ntags { display: none; }
+  .ntbl th:nth-child(3) { width: 92px; } .ntbl th:nth-child(4) { width: 52px; } .ntbl th:nth-child(5) { width: 64px; }
+  .nlat .sig { display: none; }
+}
+
+/* 外观 A 的小分段切换（细线胶囊，当前项正文色实底）：仪表盘流量 7 / 30 天、线路页的标签筛选 */
+.seg-t { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+.seg-t > button { height: 24px; padding: 0 11px; border: 0; border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12px; transition: color var(--dur-hover), background-color var(--dur-hover); }
+.seg-t > button:hover { color: var(--fg); }
+.seg-t > button[aria-pressed='true'] { background: var(--fg); color: var(--bg); }
+
+/* 外观 A 的筛选行：左边小分段切换，右边一行说明，下面一道细线（线路页的标签、商店页） */
+.abar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-top: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.abar > .seg-t { margin-left: 0; }
+.abar-hint { margin-left: auto; font-size: 12.5px; color: var(--muted); }

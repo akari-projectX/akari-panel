@@ -1,7 +1,7 @@
 .plan-head h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: var(--fw-strong); }
 .plan-per b { font-weight: var(--fw-strong); white-space: nowrap; color: var(--ok); }
-.plan-specs > div { display: flex; flex-direction: column-reverse; min-width: 0; padding: 12px 4px; }
-.plan-specs > div + div { border-left: 1px solid var(--line); }
+.plan-specs > div { display: flex; flex-direction: column-reverse; min-width: 0; padding: 12px 12px 12px 0; }
+.plan-specs > div + div { padding-left: 14px; border-left: 1px solid var(--line); }
 .plan-specs dd { font-size: 15px; font-weight: var(--fw-strong); font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 一行四张卡时格子窄：数值小一号，「300 Mbps」不折行 */
 .plan-specs dt { font-size: 12px; color: var(--faint); }
@@ -15,7 +15,7 @@
 .plan-sum .rich > * + * { margin-top: 2px; }
 .plan-rich .rich > * + * { margin-top: 10px; }
 .plan-rich .rich ol { padding-left: 18px; }
-.plan-cta p { min-height: 18px; margin-top: 8px; font-size: 12px; text-align: center; color: var(--faint); }
+.plan-cta p { font-size: 12px; color: var(--faint); }
 .fstep-h h3 { font-size: 14px; font-weight: var(--fw-strong); }
 .fspec > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--body); }
 .fspec svg { flex: none; color: var(--brand); }
@@ -60,3 +60,7 @@
 .shop-reset { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; padding-block: 20px; border-bottom: 1px solid var(--line); }
 .shop-reset b { font-size: 15px; color: var(--fg); }
 .shop-reset p { margin-top: 4px; font-size: 13px; color: var(--muted); }
+/* 外观 A：套餐列上面一道细线（页头之后或待付款细行之后），列表下面是重置包一行与一行小字 */
+.shop-plans { margin-top: 28px; border-top: 1px solid var(--line); }
+.shop-fine { margin-top: 24px; font-size: 12.5px; color: var(--muted); }
+.notice.mt5 + .shop-plans { margin-top: 0; border-top: 0; }

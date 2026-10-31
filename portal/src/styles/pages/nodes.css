@@ -1,9 +1,15 @@
-/* 节点页 */
-.srch { position: relative; margin-bottom: 18px; }
-@media (min-width: 768px) { .srch { max-width: 480px; }
-}
-.srch > svg { position: absolute; top: 50%; left: 12px; translate: 0 -50%; color: var(--faint); pointer-events: none; }
+/* 线路页（外观 A）：页头右侧的刷新按钮、线路表、表下的负载图例。线路表与 .abar 在 common.css */
+.ln-refresh { display: inline-grid; width: 28px; height: 28px; place-items: center; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--muted); cursor: pointer; transition: color var(--dur-hover), border-color var(--dur-hover); }
+.ln-refresh:hover:not(:disabled) { color: var(--fg); border-color: var(--line2); }
+.ln-refresh:disabled { cursor: default; opacity: .6; }
+.ln-tbl { margin-top: 8px; }
+.ln-tbl .ntbl th { padding-top: 14px; }
+.ln-tbl .ntbl td { padding-block: 12px; }
 .sortbtn { display: inline-flex; cursor: pointer; align-items: center; gap: 4px; padding: 0; border: 0; border-radius: 2px; background: none; font: inherit; color: inherit; letter-spacing: inherit; }
-.md-hide-i { display: inline; } .md-only-i { display: none; }
-@media (min-width: 768px) { .md-hide-i { display: none; } .md-only-i { display: inline; }
-}
+.sortbtn:hover { color: var(--fg); }
+.ln-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 16px; font-size: 12.5px; color: var(--muted); }
+.ln-legend i { display: inline-block; width: 14px; height: 4px; margin-right: 6px; border-radius: 2px; vertical-align: 2px; background: var(--ok); }
+.ln-legend i.mid { background: var(--warn); }
+.ln-legend i.hi { background: var(--danger); }
+.ln-legend .grow { flex: 1; }
+@media (max-width: 640px) { .ln-legend .grow { flex-basis: 100%; height: 0; } }

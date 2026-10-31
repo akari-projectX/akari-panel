@@ -105,10 +105,10 @@ test('screens: nav, pages, loading skeleton (desktop + mobile × light + dark)',
       },
     })),
     /* 商店：整页、套餐卡片一列 */
-    { name: 'shop', account: 'user@e2e.test', run: (page) => ready(page, '/shop', '选择套餐') },
+    { name: 'shop', account: 'user@e2e.test', run: (page) => ready(page, '/shop', '选一个适合你的套餐') },
     {
       name: 'shop-cards', account: 'user@e2e.test',
-      run: async (page) => { await ready(page, '/shop', '选择套餐'); const c = page.locator('.plan-cols'); await c.waitFor({ timeout: WAIT }); return c; },
+      run: async (page) => { await ready(page, '/shop', '选一个适合你的套餐'); const c = page.locator('.plan-cols'); await c.waitFor({ timeout: WAIT }); return c; },
     },
     /* 文档（使用手册）列表与一篇文章 */
     { name: 'docs', account: 'user@e2e.test', run: (page) => ready(page, '/help', '使用手册') },
